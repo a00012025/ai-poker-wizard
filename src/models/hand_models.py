@@ -5,14 +5,14 @@ from pydantic import BaseModel
 class Action(BaseModel):
     position: str
     action: str
-    amount: Optional[int] = None
+    amount: Optional[float] = None
     cards: Optional[str] = None
 
 class Hand(BaseModel):
     hero_position: str
-    effective_stack: int
+    effective_stack: float
     actions: List[Action]
     flop: Optional[str] = None
     turn: Optional[str] = None
     river: Optional[str] = None
-    pot_size: Optional[int] = None
+    pot_size: Optional[float] = None
