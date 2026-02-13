@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+data/
+config/secrets.yaml
+config/local.yaml
+*.log
+
+# Telegram bot token
+bot_token.txt
+
+# Browser automation
+*.png
+*.jpg
+downloads/
