@@ -14,7 +14,7 @@ class NaturalLanguageParser:
         hero_position = hero_pos_match.group(1).upper() if hero_pos_match else "UNKNOWN"
 
         # Extract flop
-        flop_match = re.search(r'Flop ([A-K0-9][hdsc][A-K0-9][hdsc][A-K0-9][hdsc])', text)
+        flop_match = re.search(r'Flop ([2-9AKQJT][hdsc][2-9AKQJT][hdsc][2-9AKQJT][hdsc])', text)
         flop = flop_match.group(1) if flop_match else None
 
         # Extract pot size
