@@ -19,8 +19,19 @@ SYSTEM_PROMPT = f"""\
 - 一律使用繁體中文
 - 提供具體數據和推理過程，不要泛泛而談
 - 如果資訊不足，主動追問關鍵細節（例如：錦標賽階段、對手傾向、籌碼結構）
-- 寫 JS 給 agent-browser eval 時，先寫到 /tmp/ 檔案再用 cat 讀取執行，避免引號問題
+
+效能規則（非常重要）：
+- **禁止使用 agent-browser screenshot** — 截圖浪費 token 且慢。改用 JS eval 檢查狀態和提取數據
+- 用 `agent-browser eval "window.location.href"` 確認當前頁面
+- 用 `agent-browser eval` 搭配 `.hspotcrd_active` 確認當前 focus 的位置
+- 把多個提取（action summary + 特定手牌 + 位置驗證）合併到一次 eval 呼叫
 - Postflop 只用 JS click 導航，不要用 URL 參數（flop_actions= 等），錯的參數會靜默回退到 preflop
+- 寫 JS 給 agent-browser eval 時，先寫到 /tmp/ 檔案再用 cat 讀取執行，避免引號問題
+
+Postflop 位置導航：
+- history_spot 是全域計數器（preflop 0-7, postflop 8+）
+- 點擊座位卡可以切換 focus 位置，URL 會自動更新 history_spot
+- 切換位置後用 JS eval 確認 `.hspotcrd_active` 的文字內容，不要截圖
 
 收到第一個問題時，先用 Bash 執行 cat {_SKILL_PATH} 讀取完整的 GTO Wizard 自動化指南，然後按照指南操作。
 JS 腳本路徑：{_SCRIPTS_PATH}
@@ -96,26 +107,31 @@ class ClaudeSessionManager:
             proc.kill()
             raise TimeoutError(f"Claude 回應超時（{self.timeout}s）")
 
+        raw_out = (stdout or b"").decode()
+        raw_err = (stderr or b"").decode().strip()
+
+        # Always try to parse stdout first — hooks may cause non-zero
+        # exit code even when a valid result exists in stdout.
+        output = self._parse_output(raw_out)
+
+        if output.get("result"):
+            if output.get("is_error"):
+                raise RuntimeError(f"Claude 錯誤：{output['result']}")
+            # Store session for future messages
+            if not session_id and output.get("session_id"):
+                self.sessions[chat_id] = output["session_id"]
+            return output["result"]
+
+        # No result found — handle as error
         if proc.returncode != 0:
-            err = (stderr or b"").decode().strip()
-            out = (stdout or b"").decode().strip()
-            combined = err or out or f"exit code {proc.returncode}"
+            combined = raw_err or raw_out.strip() or f"exit code {proc.returncode}"
             # Session might have expired — retry as new session
             if session_id and ("not found" in combined.lower() or "invalid" in combined.lower()):
                 self.sessions.pop(chat_id, None)
                 return await self._send(chat_id, user_text)
-            raise RuntimeError(f"Claude 錯誤：{combined[:500]}")
+            raise RuntimeError(f"Claude 錯誤（exit {proc.returncode}）：{combined[-1000:]}")
 
-        output = self._parse_output(stdout.decode())
-
-        if output.get("is_error"):
-            raise RuntimeError(f"Claude 錯誤：{output.get('result', 'unknown')}")
-
-        # Store session for future messages
-        if not session_id and output.get("session_id"):
-            self.sessions[chat_id] = output["session_id"]
-
-        return output["result"]
+        raise RuntimeError("Claude 回傳空結果")
 
     def _parse_output(self, raw: str) -> dict:
         """Parse output — handles hook messages mixed into stdout."""

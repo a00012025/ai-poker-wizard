@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tee:*)",
+      "Bash(echo:*)",
+      "Editor(read:*, write:*)",
+      "FileSystem(read:*, write:*)",
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)"
+    ]
+  }
+}
