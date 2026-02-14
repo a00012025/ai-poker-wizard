@@ -802,10 +802,6 @@ CLAUDE_API_KEY=your_claude_api_key_here
 # Browser settings
 HEADLESS_BROWSER=false
 BROWSER_TIMEOUT=30000
-
-# GTO Wizard credentials
-GTO_WIZARD_USERNAME=your_username
-GTO_WIZARD_PASSWORD=your_password
 ```
 
 **Step 2: Create setup script**
