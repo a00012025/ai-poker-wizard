@@ -2,34 +2,38 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import Dict
 
-SYSTEM_PROMPT = """你是 AI Poker Wizard — 一位專業的 MTT 撲克錦標賽教練。
+# Resolve project root (parent of src/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SKILL_PATH = _PROJECT_ROOT / ".claude" / "skills" / "ai-poker-wizard" / "SKILL.md"
+_SCRIPTS_PATH = _PROJECT_ROOT / "scripts" / "gto-wizard-extract.js"
 
-你的職責：
-1. 解析玩家描述的手牌場景
-2. 基於 GTO 理論提供精確的策略分析
-3. 考慮 ICM 和錦標賽特殊因素
-4. 用中文提供專業、實用的教練建議
+SYSTEM_PROMPT = f"""\
+你是 AI Poker Wizard — 一位專業的 MTT 撲克錦標賽教練。
 
-分析框架：
-- 手牌概況：場景摘要、位置、籌碼深度
-- GTO 策略：基於求解器原理的頻率分析
-- 範圍分析：對手範圍推測和 equity 計算
-- ICM 考量：錦標賽 chip EV vs $ EV
-- 改進建議：具體可執行的策略建議
+當用戶描述手牌場景時，你**必須**使用 agent-browser 從 GTO Wizard 抓取真實求解器數據，不要憑記憶猜測。
 
 回覆規則：
 - 一律使用繁體中文
-- 使用 Markdown 格式方便閱讀
 - 提供具體數據和推理過程，不要泛泛而談
-- 如果資訊不足，主動追問關鍵細節（例如：錦標賽階段、對手傾向、籌碼結構）"""
+- 如果資訊不足，主動追問關鍵細節（例如：錦標賽階段、對手傾向、籌碼結構）
+- 寫 JS 給 agent-browser eval 時，先寫到 /tmp/ 檔案再用 cat 讀取執行，避免引號問題
+- Postflop 只用 JS click 導航，不要用 URL 參數（flop_actions= 等），錯的參數會靜默回退到 preflop
+
+收到第一個問題時，先用 Bash 執行 cat {_SKILL_PATH} 讀取完整的 GTO Wizard 自動化指南，然後按照指南操作。
+JS 腳本路徑：{_SCRIPTS_PATH}
+工作目錄：{_PROJECT_ROOT}
+"""
 
 
 class ClaudeSessionManager:
     def __init__(self):
         self.model = os.getenv("CLAUDE_MODEL", "sonnet")
-        self.timeout = int(os.getenv("CLAUDE_TIMEOUT", "120"))
+        self.timeout = int(os.getenv("CLAUDE_TIMEOUT", "600"))
+        self.max_turns = int(os.getenv("CLAUDE_MAX_TURNS", "30"))
+        self.verbose = os.getenv("DEBUG", "").lower() == "true"
         # chat_id -> claude session_id
         self.sessions: Dict[int, str] = {}
         # Per-chat lock to serialize messages within the same session
@@ -54,11 +58,14 @@ class ClaudeSessionManager:
 
         cmd = [
             "claude", "-p",
-            "--output-format", "json",
+            "--output-format", "stream-json" if self.verbose else "json",
             "--model", self.model,
-            "--allowed-tools", "Bash(python*)",
+            "--max-turns", str(self.max_turns),
+            "--allowed-tools", "Bash",
             "--dangerously-skip-permissions",
         ]
+        if self.verbose:
+            cmd.append("--verbose")
 
         if session_id:
             cmd.extend(["--resume", session_id])
@@ -70,10 +77,14 @@ class ClaudeSessionManager:
         # Clear CLAUDECODE env to avoid nested session check
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+        # In verbose mode, let stderr flow to terminal for live output
+        stderr_target = None if self.verbose else asyncio.subprocess.PIPE
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=stderr_target,
+            cwd=str(_PROJECT_ROOT),
             env=env,
         )
 
@@ -86,14 +97,16 @@ class ClaudeSessionManager:
             raise TimeoutError(f"Claude 回應超時（{self.timeout}s）")
 
         if proc.returncode != 0:
-            err = stderr.decode().strip()
+            err = (stderr or b"").decode().strip()
+            out = (stdout or b"").decode().strip()
+            combined = err or out or f"exit code {proc.returncode}"
             # Session might have expired — retry as new session
-            if session_id and ("not found" in err.lower() or "invalid" in err.lower()):
+            if session_id and ("not found" in combined.lower() or "invalid" in combined.lower()):
                 self.sessions.pop(chat_id, None)
                 return await self._send(chat_id, user_text)
-            raise RuntimeError(f"Claude 錯誤：{err}")
+            raise RuntimeError(f"Claude 錯誤：{combined[:500]}")
 
-        output = json.loads(stdout.decode())
+        output = self._parse_output(stdout.decode())
 
         if output.get("is_error"):
             raise RuntimeError(f"Claude 錯誤：{output.get('result', 'unknown')}")
@@ -103,6 +116,40 @@ class ClaudeSessionManager:
             self.sessions[chat_id] = output["session_id"]
 
         return output["result"]
+
+    def _parse_output(self, raw: str) -> dict:
+        """Parse output — handles hook messages mixed into stdout."""
+        lines = raw.strip().splitlines()
+
+        # Try single JSON first (ideal case: no hooks, --output-format json)
+        if len(lines) == 1:
+            return json.loads(lines[0])
+
+        # Multiple lines: hooks or stream-json mixed in. Find the result.
+        result = {}
+        for line in lines:
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg_type = msg.get("type", "")
+            # Skip hook/system messages
+            if msg_type == "system":
+                continue
+            if msg_type == "result":
+                result = msg
+            elif not self.verbose and "result" in msg and "session_id" in msg:
+                # Non-verbose json format: the actual result object
+                result = msg
+            elif self.verbose and msg_type == "assistant":
+                content = msg.get("message", {}).get("content", [])
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        print(f"  🔧 Tool: {block.get('name')} → {block.get('input', {}).get('command', '')[:120]}")
+                    elif block.get("type") == "text":
+                        preview = block.get("text", "")[:100]
+                        print(f"  💬 Text: {preview}...")
+        return result
 
     def clear_session(self, chat_id: int) -> None:
         """Clear the session for a chat (next message starts fresh)."""
