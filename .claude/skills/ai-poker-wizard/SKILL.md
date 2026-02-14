@@ -33,7 +33,10 @@ agent-browser eval "js code"      # Execute JavaScript (use for data extraction)
 agent-browser screenshot file.png # Take screenshot
 ```
 
-**Important:** Always use the default session (no `--profile` flag). User is logged in on the default session.
+**Important:**
+- Always use `--headed --session-name gto-wizard` flags on EVERY command to keep session cookies persistent and browser visible
+- Example: `agent-browser --headed --session-name gto-wizard open <url>`
+- The `--session-name` flag auto-saves/restores cookies and localStorage across browser restarts (requires agent-browser >= 0.10.0)
 
 ### URL-Based Direct Navigation (Fastest Method)
 

@@ -31,4 +31,4 @@ bot_token.txt
 # Browser automation
 *.png
 *.jpg
-downloads/
+downloads/.browser-profile/

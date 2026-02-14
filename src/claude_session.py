@@ -20,7 +20,8 @@ SYSTEM_PROMPT = f"""\
 - 提供具體數據和推理過程，不要泛泛而談
 - 如果資訊不足，主動追問關鍵細節（例如：錦標賽階段、對手傾向、籌碼結構）
 
-效能規則（非常重要）：
+瀏覽器規則：
+- 所有 agent-browser 命令都必須加 `--headed --session-name gto-wizard`（例如：`agent-browser --headed --session-name gto-wizard open <url>`）
 - **禁止使用 agent-browser screenshot** — 截圖浪費 token 且慢。改用 JS eval 檢查狀態和提取數據
 - 用 `agent-browser eval "window.location.href"` 確認當前頁面
 - 用 `agent-browser eval` 搭配 `.hspotcrd_active` 確認當前 focus 的位置

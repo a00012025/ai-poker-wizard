@@ -6,7 +6,10 @@
       "Editor(read:*, write:*)",
       "FileSystem(read:*, write:*)",
       "Read(//tmp/**)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(agent-browser:*)",
+      "Bash(npm install:*)",
+      "Bash(npx agent-browser:*)"
     ]
   }
 }
