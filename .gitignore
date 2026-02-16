@@ -24,6 +24,7 @@ data/
 config/secrets.yaml
 config/local.yaml
 *.log
+logs/
 
 # Telegram bot token
 bot_token.txt
@@ -31,4 +32,6 @@ bot_token.txt
 # Browser automation
 *.png
 *.jpg
-downloads/.browser-profile/
+downloads/
+.browser-profile/
+.tokens.json

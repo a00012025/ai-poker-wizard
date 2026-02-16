@@ -9,7 +9,10 @@
       "Read(//private/tmp/**)",
       "Bash(agent-browser:*)",
       "Bash(npm install:*)",
-      "Bash(npx agent-browser:*)"
+      "Bash(npx agent-browser:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(python scripts/analyze_hand.py:*)"
     ]
   }
 }
