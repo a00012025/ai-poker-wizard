@@ -10,6 +10,8 @@ def normalize_hand_name(hand: str) -> str:
     GTO Wizard uses simplified names: 66, AKs, Q6o.
     LLM may output specific combos: 6h6s, AhKh, Qs6d.
     """
+    if not hand:
+        return ""
     if len(hand) <= 3:
         return hand  # "66", "AKs", "Q6o" — already simplified
     if len(hand) == 4:
@@ -159,6 +161,79 @@ def format_range_overview(spot_solution: dict, position: str) -> str:
             f"  {h['name']}: {h['combos']:.1f} combos（{pct:.1f}%）"
             f" | EV {h['ev']:.2f}bb | Eq {h['eq']*100:.1f}%"
         )
+
+    return "\n".join(lines)
+
+
+def format_range_by_action(spot_solution: dict, position: str) -> str:
+    """Format range grouped by action for a position.
+
+    Shows which hands take each action, with mixed frequencies highlighted.
+    Used for questions like "SB all-in / 3bet range 分別有哪些牌？"
+    """
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+
+    if not player_info:
+        return f"找不到 {position} 的資料"
+
+    shc = player_info.get("simple_hand_counters", {})
+    if not shc:
+        return f"{position} 沒有 range 資料"
+
+    game = spot_solution["game"]
+    street = game["current_street"]["type"].capitalize()
+    board = game["board"]
+
+    # Group hands by action
+    action_groups: dict[str, list] = {}  # {action_code: [(hand, freq, combos)]}
+
+    for hand_name, data in shc.items():
+        actions_freq = data.get("actions_total_frequencies", {})
+        actions_combos = data.get("actions_total_combos", {})
+
+        if not actions_freq:
+            continue
+
+        for action_code, freq in actions_freq.items():
+            if freq < 0.001:
+                continue
+            combos = actions_combos.get(action_code, 0)
+            if combos < 0.01:
+                continue
+            if action_code not in action_groups:
+                action_groups[action_code] = []
+            action_groups[action_code].append((hand_name, freq, combos))
+
+    if not action_groups:
+        return f"{position} 沒有動作分佈資料"
+
+    # Sort each group by combos descending
+    for code in action_groups:
+        action_groups[code].sort(key=lambda x: -x[2])
+
+    # Order action groups by total combos descending, but put Fold last
+    def sort_key(code):
+        if code == "F":
+            return (1, 0)
+        return (0, -sum(x[2] for x in action_groups[code]))
+
+    lines = [f"【{position} 在 {street} {board} 的策略分佈】"]
+
+    for code in sorted(action_groups.keys(), key=sort_key):
+        group = action_groups[code]
+        total = sum(x[2] for x in group)
+        label = _action_label(code, spot_solution)
+        lines.append(f"\n{label}（{total:.0f} combos）:")
+
+        for hand_name, freq, combos in group:
+            if freq >= 0.995:
+                lines.append(f"  {hand_name}: {combos:.1f}")
+            else:
+                lines.append(f"  {hand_name}: {combos:.1f}（{freq*100:.0f}%）")
 
     return "\n".join(lines)
 

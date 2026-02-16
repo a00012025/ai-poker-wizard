@@ -32,7 +32,9 @@ PARSE_PROMPT = """\
 - preflop_actions：每個位置一個動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in
   例：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
 - Board 格式：Js6h5s（rank+suit: c/d/h/s）。如果用戶只說 "J65 two spade" 你要推斷出 Js6s5x 之類的（花色不確定的用最合理的猜測）
-- Postflop actions 必須包含所有動作（check, bet, call, fold 都要列出）
+- 翻牌後行動順序（重要！）：SB 永遠先行動，然後 BB，然後其他位置按順序，BTN 最後。
+  BvB 例子：SB bet, BB call → [{"position":"SB","action":"R2","size":2},{"position":"BB","action":"C"}]（SB 先行動，不要在前面加 BB check！）
+- Postflop actions 只列出實際發生的動作，不要自己推測或補上未提及的 check
 - streets：flop 用 "board"，turn/river 用 "card"
 - hero_hand：如果用戶說 "66" 就用 "66"，如果說 "Ah Ks" 就用 "AhKs"
 - effective_bb：取整數
@@ -71,36 +73,36 @@ JSON 格式：
 注意：
 - 如果用戶沒給某些資訊（例如花色），用最合理的猜測並在 JSON 外加一句說明
 - Raise size 如果用戶沒說具體金額，用常見的 size（preflop open 通常 2-2.5bb）
-- 只回覆 JSON（可以用 ```json ``` 包住）"""
+- 只回覆 JSON（可以用 ```json ``` 包住）
+- 再次強調：翻牌後 SB 永遠第一個行動！BvB 時 SB bet → 不需要在前面加 BB check"""
 
 COACH_SYSTEM = """\
-你是專業 MTT 撲克錦標賽教練，名叫 AI Poker Wizard。用繁體中文回覆。
+你是專業 MTT 撲克教練 AI Poker Wizard。用繁體中文回覆。
 
 格式規則（嚴格遵守！輸出直接發送到 Telegram）：
 - 絕對不要用 # ## ### 等任何標題語法
 - 絕對不要用 * 作為列表符號（Telegram 會誤判為粗體）
 - 列表只用 1. 2. 3. 數字 或 • 符號
-- 段落標題用 *粗體*（單星號），例如 *Preflop 分析*
-- 重點詞也用 *粗體*（單星號 *text*）
-- 不要用 **雙星號**
-- 不要用表格
-- 簡潔有力，像教練對學生說話
+- 段落標題用 *粗體*（單星號），例如 *Preflop*
+- 重點詞也用 *粗體*
+- 不要用 **雙星號**、不要用表格
+
+風格：
+- 精簡直接，像教練用最少的話點出重點
+- 不要廢話、不要重複已知資訊、不要客套開場
+- 每條街 2-4 行就夠：GTO 怎麼打 → hero 怎麼打 → 差在哪 → 為什麼（一句話）
+- 如果 hero 打得對，一句帶過就好，不用展開分析
+- 數據引用要精準但不要列出所有選項，只提最重要的 1-2 個動作頻率
 
 重要原則：
-- 你的分析必須完全基於提供的 GTO Solver 數據
-- 如果某條街顯示「無 solver 數據」，直接說明該街無法分析，不要猜測或自行編造 solver 的建議
-- 只有在有具體數據（頻率、EV、combo 數）時才引用這些數字
-- 當你需要額外的 solver 數據（例如對手範圍、假設情境、特定手牌策略），使用 query_gto 工具查詢
+- 分析必須完全基於 GTO Solver 數據，不要自行編造
+- 「無 solver 數據」的街直接跳過
+- 需要額外數據時使用 query_gto 工具查詢
 
-分析框架：
-1. 手牌概況 — 一句話摘要場景和結果
-2. 每條街逐一分析（僅限有 solver 數據的街）：
-   a) *Solver 建議*：GTO 在這個 spot 會怎麼打？各動作的頻率和 combo 數是多少？
-   b) *Hero 實際打法*：hero 做了什麼？
-   c) *差異比較*：hero 的選擇跟 solver 建議差多少？是純策略還是混合策略的偏差？
-   d) *原因解釋*：為什麼 solver 推薦這樣打？背後的邏輯是什麼？（例如：range 保護、榨取價值、平衡頻率、阻擋牌效果等）
-3. 關鍵錯誤 — 找出 EV 損失最大的決策點，用具體數據說明
-4. 改進建議 — 1-2 個可以立即應用到牌桌上的調整"""
+分析結構：
+1. 每條街的 GTO vs Hero 對比（只講有意義的差異）
+2. 最關鍵的 1 個錯誤 + 為什麼
+3. 一句改進建議"""
 
 # ── Gemini tool schema for GTO queries ──
 
@@ -119,9 +121,20 @@ QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
                 enum=["preflop", "flop", "turn", "river"],
                 description="要查詢哪條街的可用動作",
             ),
+            "effective_bb": types.Schema(
+                type=types.Type.NUMBER,
+                description="有效籌碼深度（bb 數）。不同深度的 solver sizing 不同。不指定則使用目前手牌的深度。",
+            ),
             "actions_so_far": types.Schema(
                 type=types.Type.STRING,
                 description="這條街到目前為止的動作序列（如果要查詢街中某個後續決策點）。例如查詢 flop 上 SB bet 後 BB 的選項，傳入 'R3.6'。留空表示查詢該街第一個行動者的選項。",
+            ),
+            "preflop_actions_override": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "覆蓋 preflop 動作序列（同 query_gto 的格式）。"
+                    "用於查詢不同 preflop 路線下的可用動作。"
+                ),
             ),
             "board_override": types.Schema(
                 type=types.Type.STRING,
@@ -146,6 +159,8 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
         "查詢 GTO solver 策略數據。可以查詢目前手牌中任何位置在任何街的完整範圍或特定手牌策略。"
         "也可以修改 board 或 actions 來查詢假設情境。"
         "重要：使用 override actions 時，必須先用 query_next_actions 取得正確的 action code。"
+        "查詢不同位置的 preflop 策略時，用 preflop_actions_override 指定到該位置行動前的動作序列。"
+        "Raise size 不需要精確，系統會自動校正到最接近的 solver sizing（例如 R2 會自動校正為 R2.1）。"
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -162,6 +177,23 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             "hand": types.Schema(
                 type=types.Type.STRING,
                 description="查詢特定手牌的策略，例如 66, AhKs, QQ。不指定則回傳該位置的完整範圍概覽。",
+            ),
+            "effective_bb": types.Schema(
+                type=types.Type.NUMBER,
+                description=(
+                    "有效籌碼深度（bb 數）。當用戶問的情境深度與目前手牌不同時必須指定。"
+                    "例如用戶問 '30bb effective' 就傳 30。系統會自動選擇最近的 solver 深度。"
+                    "不指定則使用目前手牌的深度。"
+                ),
+            ),
+            "preflop_actions_override": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "覆蓋 preflop 動作序列。格式：每個位置一個動作，按 UTG-UTG+1-LJ-HJ-CO-BTN-SB-BB 順序，用 - 分隔。"
+                    "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。"
+                    "例如查詢 BB 面對 UTG+1 open 的策略：傳入 F-R2-F-F-F-F-F。"
+                    "例如查詢 UTG+1 open 後 BB 3bet 後 UTG+1 的決策：傳入 F-R2-F-F-F-F-F-AI。"
+                ),
             ),
             "board_override": types.Schema(
                 type=types.Type.STRING,
@@ -278,7 +310,7 @@ class GeminiSessionManager:
         try:
             result = json.loads(json_str)
             hand = result.get("hand")
-            if hand and hand.get("hero_position") and hand.get("preflop_actions"):
+            if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}")
@@ -320,36 +352,9 @@ class GeminiSessionManager:
         return result
 
     async def _chat(self, chat_id: int, user_text: str) -> str:
-        """Chat with optional GTO tool access for follow-up questions."""
-        has_context = chat_id in self.hand_contexts
-
-        if has_context:
-            self._logger.debug(f"[chat={chat_id}] Chat WITH tools (model={self.model}): {user_text[:300]}")
-            return await self._chat_with_tools(chat_id, user_text)
-
-        self._logger.debug(f"[chat={chat_id}] Plain chat (model={self.model}): {user_text[:300]}")
-
-        history = self.histories.get(chat_id, [])
-        messages = list(history) + [
-            types.Content(role="user", parts=[types.Part(text=user_text)]),
-        ]
-
-        response = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=messages,
-            config=types.GenerateContentConfig(
-                system_instruction=COACH_SYSTEM,
-            ),
-        )
-
-        result = response.text or ""
-        self._logger.debug(f"[chat={chat_id}] Chat response ({len(result)} chars):\n{result}")
-
-        history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
-        history.append(types.Content(role="model", parts=[types.Part(text=result)]))
-        self.histories[chat_id] = history[-20:]
-
-        return result
+        """Chat with GTO tool access — always provides tools so model can query solver."""
+        self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
+        return await self._chat_with_tools(chat_id, user_text)
 
     async def _chat_with_tools(self, chat_id: int, user_text: str) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
@@ -432,24 +437,58 @@ class GeminiSessionManager:
 
         return result_text
 
+    def _build_standalone_context(self, args: dict) -> dict | None:
+        """Build a minimal hand context from tool args when no cached context exists.
+
+        Requires effective_bb and preflop_actions_override at minimum.
+        """
+        from gto_api import nearest_depth as _nearest_depth
+
+        effective_bb = args.get("effective_bb")
+        preflop_override = args.get("preflop_actions_override")
+
+        if not effective_bb or not preflop_override:
+            return None
+
+        return {
+            "gametype": "MTTGeneral",
+            "depth": _nearest_depth(effective_bb),
+            "preflop_actions": preflop_override,
+            "hero_position": "",
+            "hero_hand": "",
+            "hero_spots": [],
+            "solutions": [],
+            "street_states": {},
+            "final_actions": {},
+        }
+
     def _execute_query_gto(self, chat_id: int, args: dict) -> str:
         """Execute a query_gto tool call. Returns formatted solver data."""
         from gto_api import get_spot_solution, get_next_actions, find_closest_action
         from gto_formatter import format_action_summary, format_hand_detail, format_range_overview
 
+        from gto_api import nearest_depth as _nearest_depth
+
         ctx = self.hand_contexts.get(chat_id)
         if not ctx:
-            return "錯誤：沒有手牌 context，請先發送手牌描述。"
+            ctx = self._build_standalone_context(args)
+            if not ctx:
+                return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
 
         street = args.get("street", "flop")
         position = args.get("position")
         hand = args.get("hand")
+        effective_bb = args.get("effective_bb")
+        preflop_override = args.get("preflop_actions_override")
         board_override = args.get("board_override")
         flop_override = args.get("flop_actions_override")
         turn_override = args.get("turn_actions_override")
         river_override = args.get("river_actions_override")
 
-        has_override = any([board_override, flop_override, turn_override, river_override])
+        # Override depth if effective_bb specified
+        depth_override = _nearest_depth(effective_bb) if effective_bb else None
+
+        has_override = any([preflop_override, board_override, flop_override, turn_override, river_override, depth_override])
 
         # Try cached solution first (no overrides)
         if not has_override:
@@ -459,12 +498,18 @@ class GeminiSessionManager:
 
         # Build API params from context + overrides
         params = self._build_query_params(ctx, street, board_override,
-                                          flop_override, turn_override, river_override)
+                                          flop_override, turn_override, river_override,
+                                          preflop_override=preflop_override)
         if not params:
             return f"無法建構 {street} 的查詢參數。"
 
+        # Apply depth override
+        if depth_override:
+            params["depth"] = depth_override
+
         # Normalize any raise codes in override actions
-        params = self._normalize_override_actions(params, street, flop_override, turn_override, river_override)
+        params = self._normalize_override_actions(params, street, flop_override, turn_override, river_override,
+                                                  preflop_override=preflop_override)
 
         try:
             solution = get_spot_solution(**params)
@@ -487,16 +532,18 @@ class GeminiSessionManager:
                             board_override: str | None,
                             flop_override: str | None,
                             turn_override: str | None,
-                            river_override: str | None) -> dict | None:
+                            river_override: str | None,
+                            preflop_override: str | None = None) -> dict | None:
         """Build API params for a query, using context + optional overrides."""
         states = ctx.get("street_states", {})
         base = states.get(street)
+        preflop_actions = preflop_override or ctx["preflop_actions"]
 
         if street == "preflop":
             return dict(
                 gametype=ctx["gametype"],
                 depth=ctx["depth"],
-                preflop_actions=ctx["preflop_actions"],
+                preflop_actions=preflop_actions,
             )
 
         if not base:
@@ -509,7 +556,7 @@ class GeminiSessionManager:
                 return dict(
                     gametype=ctx["gametype"],
                     depth=ctx["depth"],
-                    preflop_actions=ctx["preflop_actions"],
+                    preflop_actions=preflop_actions,
                     board=board_override or flop_state["board"],
                     flop_actions=flop_override or flop_state["flop_actions"],
                     turn_actions=turn_override or "",
@@ -520,7 +567,7 @@ class GeminiSessionManager:
         return dict(
             gametype=ctx["gametype"],
             depth=ctx["depth"],
-            preflop_actions=ctx["preflop_actions"],
+            preflop_actions=preflop_actions,
             board=board_override or base["board"],
             flop_actions=flop_override if flop_override is not None else base["flop_actions"],
             turn_actions=turn_override if turn_override is not None else base["turn_actions"],
@@ -530,11 +577,54 @@ class GeminiSessionManager:
     def _normalize_override_actions(self, params: dict, street: str,
                                      flop_override: str | None,
                                      turn_override: str | None,
-                                     river_override: str | None) -> dict:
+                                     river_override: str | None,
+                                     preflop_override: str | None = None) -> dict:
         """Normalize raise codes in overridden action strings."""
         from gto_api import get_next_actions, find_closest_action
 
-        # Only normalize the overridden street's actions
+        # Normalize preflop override (walk through each position's action)
+        if preflop_override:
+            parts = preflop_override.split("-")
+            corrected = []
+            for code in parts:
+                if code in ("F", "C", ""):
+                    corrected.append(code)
+                elif code == "AI":
+                    # Find actual all-in code from solver
+                    try:
+                        check_params = dict(
+                            gametype=params["gametype"],
+                            depth=params["depth"],
+                            preflop_actions="-".join(corrected) if corrected else "",
+                        )
+                        resp = get_next_actions(**check_params)
+                        avail = resp["next_actions"]["available_actions"]
+                        allin_code = next(
+                            (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                            code,
+                        )
+                        corrected.append(allin_code)
+                    except Exception:
+                        corrected.append(code)
+                elif code.startswith("R"):
+                    try:
+                        check_params = dict(
+                            gametype=params["gametype"],
+                            depth=params["depth"],
+                            preflop_actions="-".join(corrected) if corrected else "",
+                        )
+                        resp = get_next_actions(**check_params)
+                        avail = resp["next_actions"]["available_actions"]
+                        target = float(code[1:])
+                        correct_code = find_closest_action(avail, target)
+                        corrected.append(correct_code)
+                    except Exception:
+                        corrected.append(code)
+                else:
+                    corrected.append(code)
+            params["preflop_actions"] = "-".join(corrected)
+
+        # Normalize postflop overrides
         overrides = {
             "flop_actions": flop_override,
             "turn_actions": turn_override,
@@ -547,8 +637,22 @@ class GeminiSessionManager:
             parts = override_val.split("-")
             corrected = []
             for code in parts:
-                if code in ("X", "C", "F", "AI", "RAI", ""):
+                if code in ("X", "C", "F", ""):
                     corrected.append(code)
+                elif code in ("AI", "RAI"):
+                    # Find actual all-in code from solver
+                    try:
+                        check_params = dict(params)
+                        check_params[key] = "-".join(corrected) if corrected else ""
+                        resp = get_next_actions(**check_params)
+                        avail = resp["next_actions"]["available_actions"]
+                        allin_code = next(
+                            (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                            code,
+                        )
+                        corrected.append(allin_code)
+                    except Exception:
+                        corrected.append(code)
                 elif code.startswith("R"):
                     # Discover correct code from solver
                     try:
@@ -569,7 +673,7 @@ class GeminiSessionManager:
 
     def _format_solution(self, solution: dict, position: str | None, hand: str | None) -> str:
         """Format a spot-solution based on what was requested."""
-        from gto_formatter import format_action_summary, format_hand_detail, format_range_overview
+        from gto_formatter import format_action_summary, format_hand_detail, format_range_by_action
 
         parts = [format_action_summary(solution)]
 
@@ -578,7 +682,7 @@ class GeminiSessionManager:
             parts.append(format_hand_detail(solution, hand, position))
         elif position:
             parts.append("")
-            parts.append(format_range_overview(solution, position))
+            parts.append(format_range_by_action(solution, position))
         elif hand:
             # Hand specified but no position — use active position
             active_pos = solution["game"]["active_position"]
@@ -589,17 +693,23 @@ class GeminiSessionManager:
 
     def _execute_query_next_actions(self, chat_id: int, args: dict) -> str:
         """Execute a query_next_actions tool call. Returns available actions."""
-        from gto_api import get_next_actions
+        from gto_api import get_next_actions, nearest_depth as _nearest_depth
 
         ctx = self.hand_contexts.get(chat_id)
         if not ctx:
-            return "錯誤：沒有手牌 context，請先發送手牌描述。"
+            ctx = self._build_standalone_context(args)
+            if not ctx:
+                return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
 
         street = args.get("street", "flop")
+        effective_bb = args.get("effective_bb")
         actions_so_far = args.get("actions_so_far", "")
+        preflop_override = args.get("preflop_actions_override")
         board_override = args.get("board_override")
         flop_override = args.get("flop_actions_override")
         turn_override = args.get("turn_actions_override")
+
+        depth = _nearest_depth(effective_bb) if effective_bb else ctx["depth"]
 
         # Build params for the target street
         states = ctx.get("street_states", {})
@@ -607,8 +717,8 @@ class GeminiSessionManager:
 
         params = dict(
             gametype=ctx["gametype"],
-            depth=ctx["depth"],
-            preflop_actions=ctx["preflop_actions"],
+            depth=depth,
+            preflop_actions=preflop_override or ctx["preflop_actions"],
         )
 
         if street != "preflop":
@@ -622,6 +732,13 @@ class GeminiSessionManager:
                 else base.get("turn_actions", "")
             )
             params["river_actions"] = ""
+
+        # Normalize raise codes (R2 → R2.1, AI → correct code)
+        if preflop_override:
+            params = self._normalize_override_actions(
+                params, street, flop_override, turn_override, None,
+                preflop_override=preflop_override,
+            )
 
         # If actions_so_far provided, set it on the target street
         if actions_so_far:
@@ -655,7 +772,18 @@ class GeminiSessionManager:
         """Build a concise hand summary for the system prompt."""
         ctx = self.hand_contexts.get(chat_id)
         if not ctx:
-            return ""
+            return (
+                "目前沒有分析中的手牌。\n"
+                "你可以使用 query_gto 和 query_next_actions 工具查詢任何 GTO 策略，但必須同時提供：\n"
+                "• effective_bb — 有效籌碼深度（例如 30）\n"
+                "• preflop_actions_override — preflop 動作序列\n"
+                "\n"
+                "Preflop 動作編碼：每個位置一個動作，按 UTG(0)-UTG+1(1)-LJ(2)-HJ(3)-CO(4)-BTN(5)-SB(6)-BB(7) 順序，用 - 分隔。\n"
+                "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。\n"
+                "查詢某位置的策略時，preflop_actions_override 只需包含到該位置行動前的動作。\n"
+                "例：查詢 30bb 下 LJ open 後 SB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F', street='preflop', position='SB'\n"
+                "例：查詢 25bb 下 UTG+1 open 後 BB all-in 範圍 → effective_bb=25, preflop_actions_override='F-R2-F-F-F-F-F', street='preflop', position='BB'"
+            )
 
         lines = [
             "目前分析的手牌：",
@@ -679,8 +807,16 @@ class GeminiSessionManager:
             "1. query_next_actions — 查詢某個決策點的所有可用動作和正確的 action code\n"
             "2. query_gto — 查詢完整策略數據（範圍、頻率、EV）\n"
             "\n"
-            "重要：當用戶問假設情境（例如「如果 flop 打滿池」），你必須先用 query_next_actions 查出正確的 action code（例如 R3.6），"
-            "再用 query_gto 搭配正確的 override actions 查詢。絕對不要自己猜測 action code。"
+            "重要規則：\n"
+            "• 當用戶問假設情境（例如「如果 flop 打滿池」），先用 query_next_actions 查出正確的 action code，再用 query_gto。\n"
+            "• Raise size 不需要精確（例如可以寫 R2），系統會自動校正到最近的 solver sizing（如 R2.1）。\n"
+            "• 當用戶指定不同的籌碼深度（如 '30bb effective'），必須傳入 effective_bb 參數。不同深度的 solver sizing 不同！\n"
+            "\n"
+            "Preflop 動作編碼：每個位置一個動作，按 UTG(0)-UTG+1(1)-LJ(2)-HJ(3)-CO(4)-BTN(5)-SB(6)-BB(7) 順序，用 - 分隔。\n"
+            "F=Fold, C=Call, RX=Raise to X, AI=All-in。\n"
+            "查詢某位置的策略時，preflop_actions_override 只需包含到該位置行動前的動作。\n"
+            "例：查詢 30bb 下 LJ open 後 BB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F-F'\n"
+            "例：查詢 UTG+1 open 後 BTN 3bet 範圍 → preflop_actions_override='F-R2-F-F-F'"
         )
 
         return "\n".join(lines)

@@ -17,7 +17,8 @@
       "Bash(source:*)",
       "Bash(:)",
       "Bash(pip show:*)",
-      "WebFetch(domain:ai.google.dev)"
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(set:*)"
     ]
   }
 }
