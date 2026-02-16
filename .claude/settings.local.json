@@ -12,7 +12,10 @@
       "Bash(npx agent-browser:*)",
       "Bash(curl:*)",
       "Bash(python3:*)",
-      "Bash(python scripts/analyze_hand.py:*)"
+      "Bash(python scripts/analyze_hand.py:*)",
+      "Bash(python -c:*)",
+      "Bash(source:*)",
+      "Bash(:)"
     ]
   }
 }

@@ -93,8 +93,10 @@ class ClaudeSessionManager:
             return await self._send(chat_id, user_text)
 
     async def _send(self, chat_id: int, user_text: str) -> str:
+        import time
         session_id = self.sessions.get(chat_id)
-        self._logger.info(f"[chat={chat_id}] User: {user_text[:200]}")
+        is_resume = session_id is not None
+        self._logger.info(f"[chat={chat_id}] {'Resume' if is_resume else 'New'} session | User: {user_text[:300]}")
 
         # Always use stream-json + verbose to capture intermediate steps for logging
         cmd = [
@@ -114,12 +116,17 @@ class ClaudeSessionManager:
 
         cmd.append(user_text)
 
+        # Log the command (mask the user prompt for brevity)
+        cmd_preview = " ".join(cmd[:-1])
+        self._logger.debug(f"[chat={chat_id}] CMD: {cmd_preview} '<user_text>'")
+
         # Clear CLAUDECODE env to avoid nested session check
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
         # In verbose mode, let stderr flow to terminal for live output
         stderr_target = None if self.verbose else asyncio.subprocess.PIPE
 
+        t0 = time.time()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -134,11 +141,15 @@ class ClaudeSessionManager:
             )
         except asyncio.TimeoutError:
             proc.kill()
-            self._logger.error(f"[chat={chat_id}] Timeout after {self.timeout}s")
+            elapsed = time.time() - t0
+            self._logger.error(f"[chat={chat_id}] Timeout after {elapsed:.1f}s (limit={self.timeout}s)")
             raise TimeoutError(f"Claude 回應超時（{self.timeout}s）")
 
+        elapsed = time.time() - t0
         raw_out = (stdout or b"").decode()
         raw_err = (stderr or b"").decode().strip()
+
+        self._logger.info(f"[chat={chat_id}] Claude finished in {elapsed:.1f}s | exit={proc.returncode} | stdout={len(raw_out)} bytes")
 
         # Parse stream-json output, log intermediate steps, extract result
         output = self._parse_output(raw_out, chat_id)
@@ -148,16 +159,20 @@ class ClaudeSessionManager:
                 self._logger.error(f"[chat={chat_id}] Claude error: {output['result'][:500]}")
                 raise RuntimeError(f"Claude 錯誤：{output['result']}")
             # Store session for future messages
-            if not session_id and output.get("session_id"):
-                self.sessions[chat_id] = output["session_id"]
-            self._logger.info(f"[chat={chat_id}] Result: {output['result'][:200]}...")
+            new_session_id = output.get("session_id")
+            if not session_id and new_session_id:
+                self.sessions[chat_id] = new_session_id
+                self._logger.info(f"[chat={chat_id}] New session created: {new_session_id}")
+            self._logger.info(f"[chat={chat_id}] Result ({len(output['result'])} chars): {output['result'][:200]}...")
             return output["result"]
 
         # Fallback: extract last assistant text from stream
         if output.get("_last_text"):
-            self._logger.warning(f"[chat={chat_id}] No result message, using last assistant text as fallback")
-            if not session_id and output.get("session_id"):
-                self.sessions[chat_id] = output["session_id"]
+            self._logger.warning(f"[chat={chat_id}] No result message, using last assistant text ({len(output['_last_text'])} chars)")
+            new_session_id = output.get("session_id")
+            if not session_id and new_session_id:
+                self.sessions[chat_id] = new_session_id
+                self._logger.info(f"[chat={chat_id}] New session created: {new_session_id}")
             return output["_last_text"]
 
         # No result found — handle as error
@@ -166,11 +181,12 @@ class ClaudeSessionManager:
             self._logger.error(f"[chat={chat_id}] Exit {proc.returncode}: {combined[-500:]}")
             # Session might have expired — retry as new session
             if session_id and ("not found" in combined.lower() or "invalid" in combined.lower()):
+                self._logger.warning(f"[chat={chat_id}] Session expired, retrying as new session")
                 self.sessions.pop(chat_id, None)
                 return await self._send(chat_id, user_text)
             raise RuntimeError(f"Claude 錯誤（exit {proc.returncode}）：{combined[-1000:]}")
 
-        self._logger.error(f"[chat={chat_id}] Empty result. raw_out length={len(raw_out)}, returncode={proc.returncode}")
+        self._logger.error(f"[chat={chat_id}] Empty result. raw_out={len(raw_out)} bytes, returncode={proc.returncode}")
         raise RuntimeError("Claude 回傳空結果")
 
     def _parse_output(self, raw: str, chat_id: int = 0) -> dict:
@@ -182,6 +198,7 @@ class ClaudeSessionManager:
         result = {}
         last_text = ""
         session_id = None
+        tool_calls = []  # track tool usage for summary
 
         for line in lines:
             try:
@@ -217,6 +234,7 @@ class ClaudeSessionManager:
                         tool_name = block.get("name", "")
                         tool_input = block.get("input", {})
                         cmd_preview = tool_input.get("command", "")[:200]
+                        tool_calls.append(tool_name)
                         self._logger.debug(f"[chat={chat_id}] Tool: {tool_name} → {cmd_preview}")
                         if self.verbose:
                             print(f"  🔧 Tool: {tool_name} → {cmd_preview[:120]}")
@@ -238,6 +256,19 @@ class ClaudeSessionManager:
                 else:
                     preview = str(content)[:300]
                 self._logger.debug(f"[chat={chat_id}] ToolResult: {preview}")
+
+        # Log tool usage summary
+        if tool_calls:
+            from collections import Counter
+            counts = Counter(tool_calls)
+            summary = ", ".join(f"{name}×{n}" for name, n in counts.most_common())
+            self._logger.info(f"[chat={chat_id}] Tool usage: {summary} (total {len(tool_calls)} calls)")
+
+        # Log token/cost info from result if available
+        cost_usd = result.get("cost_usd")
+        num_turns = result.get("num_turns")
+        if cost_usd is not None or num_turns is not None:
+            self._logger.info(f"[chat={chat_id}] Turns: {num_turns} | Cost: ${cost_usd}")
 
         if last_text and not result.get("result"):
             result["_last_text"] = last_text
