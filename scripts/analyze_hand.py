@@ -78,6 +78,119 @@ def _preflop_before_hero(preflop_actions: str, hero_position: str) -> str:
 STREET_NAMES = ["flop", "turn", "river"]
 
 
+def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str]:
+    """Detect multiway pot and simplify to heads-up if needed.
+
+    Returns (preflop_actions, adjusted_depth, simplification_note).
+    If not multiway, returns (original_preflop, original_depth, "").
+    """
+    preflop = hand["preflop_actions"]
+    streets = hand.get("streets", [])
+    parts = preflop.split("-")
+
+    # Count non-fold actions in first 8 positions
+    non_fold = [i for i in range(min(len(parts), 8)) if parts[i] not in ("F", "")]
+    if len(non_fold) <= 2:
+        return preflop, depth, ""
+
+    # Multiway — find who's on the flop
+    if not streets:
+        return preflop, depth, ""
+
+    flop_positions = []
+    seen = set()
+    for act in streets[0]["actions"]:
+        pos = act["position"]
+        if pos not in seen:
+            flop_positions.append(pos)
+            seen.add(pos)
+
+    if len(flop_positions) != 2 or hero_pos not in flop_positions:
+        return preflop, depth, ""
+
+    villain_pos = next(p for p in flop_positions if p != hero_pos)
+    hero_idx = POSITION_ORDER.index(hero_pos)
+    villain_idx = POSITION_ORDER.index(villain_pos)
+
+    # Determine open/3bet structure by preflop position order
+    if villain_idx < hero_idx:
+        first_pos, first_idx = villain_pos, villain_idx
+        second_pos, second_idx = hero_pos, hero_idx
+    else:
+        first_pos, first_idx = hero_pos, hero_idx
+        second_pos, second_idx = villain_pos, villain_idx
+
+    # Check pot type from original preflop
+    second_action = parts[second_idx] if second_idx < len(parts) else "C"
+    is_3bet = second_action.startswith("R")
+
+    # Estimate dead money from extra callers to adjust effective BB
+    open_size = 2.0  # default
+    for p in parts[:8]:
+        if p.startswith("R"):
+            try:
+                open_size = float(p[1:])
+            except ValueError:
+                pass
+            break
+    extra_callers = len(non_fold) - 2  # hero + villain = 2
+    # In 3bet pots, dead money is amplified: callers' money inflates the pot,
+    # causing larger 3bet sizing and call, roughly 3x the raw dead money
+    amplifier = 3.0 if is_3bet else 1.0
+    dead_money = extra_callers * open_size * amplifier
+    adjusted_eff = hand["effective_bb"] - dead_money
+    adjusted_depth = nearest_depth(adjusted_eff)
+
+    # Build simplified preflop via API walk-through
+    simplified = ["F"] * 8
+
+    # First actor opens
+    prefix = "-".join(simplified[:first_idx])
+    try:
+        resp = get_next_actions(gametype=gametype, depth=adjusted_depth,
+                                preflop_actions=prefix if prefix else "")
+        avail = resp["next_actions"]["available_actions"]
+        raises = [a for a in avail
+                  if a["action"]["code"].startswith("R") and not a["action"].get("allin")]
+        first_code = raises[0]["action"]["code"] if raises else "R2"
+    except Exception:
+        first_code = "R2"
+    simplified[first_idx] = first_code
+
+    if is_3bet:
+        # Second actor raised → 3bet pot
+        prefix = "-".join(simplified[:second_idx])
+        try:
+            resp = get_next_actions(gametype=gametype, depth=adjusted_depth,
+                                    preflop_actions=prefix)
+            avail = resp["next_actions"]["available_actions"]
+            second_size = float(second_action[1:])
+            second_code = find_closest_action(avail, second_size)
+        except Exception:
+            second_code = second_action
+        simplified[second_idx] = second_code
+
+        # First actor calls the 3bet
+        full = "-".join(simplified) + "-C"
+        pot_type = "3bet"
+    else:
+        # Single raised pot
+        simplified[second_idx] = "C"
+        full = "-".join(simplified)
+        pot_type = "call"
+
+    note_parts = [
+        f"⚠ 多人底池，簡化為 {first_pos} open vs {second_pos} {pot_type} 單挑分析",
+    ]
+    if adjusted_depth != depth:
+        note_parts.append(
+            f"有效籌碼調整: {hand['effective_bb']}bb → {adjusted_eff:.0f}bb"
+            f"（扣除底池死錢 ~{dead_money:.0f}bb）"
+        )
+
+    return full, adjusted_depth, "\n".join(note_parts)
+
+
 def _run_analysis(hand: dict) -> dict:
     """Core analysis: walk hand, discover bet codes, fetch spot solutions.
 
@@ -91,8 +204,17 @@ def _run_analysis(hand: dict) -> dict:
     hero_hand = normalize_hand_name(hand["hero_hand"])
     streets = hand.get("streets", [])
 
-    # Normalize preflop actions (R2 → R2.1, etc.)
+    # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
+    multiway_note = ""
+    simplified_preflop, adjusted_depth, multiway_note = _simplify_multiway(
+        hand, hero_pos, gametype, depth,
+    )
+    if multiway_note:
+        raw_preflop = simplified_preflop
+        depth = adjusted_depth
+
+    # Normalize preflop actions (R2 → R2.1, etc.)
     preflop_actions = _normalize_preflop_actions(raw_preflop, gametype, depth)
 
     # ── Phase 1: Walk hand, discover bet codes, collect hero spots ──
@@ -208,6 +330,8 @@ def _run_analysis(hand: dict) -> dict:
     results.append("=" * 50)
     results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
     results.append(f"Hero: {hero_pos} {hero_hand}")
+    if multiway_note:
+        results.append(multiway_note)
     if raw_preflop != preflop_actions:
         results.append(f"Preflop actions 校正: {raw_preflop} → {preflop_actions}")
     results.append("")

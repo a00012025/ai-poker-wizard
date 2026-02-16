@@ -29,8 +29,17 @@ PARSE_PROMPT = """\
 
 規則：
 - MTT 8-max 位置順序：UTG(0), UTG+1(1), LJ(2), HJ(3), CO(4), BTN(5), SB(6), BB(7)
-- preflop_actions：每個位置一個動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in
-  例：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
+- preflop_actions：必須列出所有 8 個位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in
+  重要：即使某些位置之後 fold 了，他們初始的 raise/call 動作仍要保留！
+  例1：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
+  例2（多人底池）：UTG+1 raise 2bb, LJ call, CO call, SB raise 10bb → F-R2-C-F-C-F-R10-F
+  例3（3bet pot）：CO raise 2.5bb, BB raise 8bb, CO call → F-F-F-F-R2.5-F-F-R8-C
+  注意例2：UTG+1 的 R2、LJ 的 C、CO 的 C 都要保留，不能省略成 F！
+  注意例3：8 個位置後面的 -C 是 CO 面對 3bet 後 call 的動作（continuation action）
+- 多人底池 + 3bet 後 continuation actions（重要！）：
+  當有人 re-raise 後，之前 call 過的人會再次行動。這些動作接在 8 個位置後面，按原始行動順序排列。
+  例：UTG+1 raise 2bb, LJ call, CO call, SB raise 10bb, UTG+1 fold, LJ fold, CO call
+  → F-R2-C-F-C-F-R10-F-F-F-C（8個位置 + UTG+1 fold + LJ fold + CO call）
 - Board 格式：Js6h5s（rank+suit: c/d/h/s）。如果用戶只說 "J65 two spade" 你要推斷出 Js6s5x 之類的（花色不確定的用最合理的猜測）
 - 翻牌後行動順序（重要！）：SB 永遠先行動，然後 BB，然後其他位置按順序，BTN 最後。
   BvB 例子：SB bet, BB call → [{"position":"SB","action":"R2","size":2},{"position":"BB","action":"C"}]（SB 先行動，不要在前面加 BB check！）
@@ -74,7 +83,8 @@ JSON 格式：
 - 如果用戶沒給某些資訊（例如花色），用最合理的猜測並在 JSON 外加一句說明
 - Raise size 如果用戶沒說具體金額，用常見的 size（preflop open 通常 2-2.5bb）
 - 只回覆 JSON（可以用 ```json ``` 包住）
-- 再次強調：翻牌後 SB 永遠第一個行動！BvB 時 SB bet → 不需要在前面加 BB check"""
+- 再次強調：翻牌後 SB 永遠第一個行動！BvB 時 SB bet → 不需要在前面加 BB check
+- 再次強調：preflop_actions 必須保留所有位置的動作！多人底池不能省略成只有兩人！"""
 
 COACH_SYSTEM = """\
 你是專業 MTT 撲克教練 AI Poker Wizard。用繁體中文回覆。
@@ -96,7 +106,8 @@ COACH_SYSTEM = """\
 
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
-- 「無 solver 數據」的街直接跳過
+- 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
+- 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
 - 需要額外數據時使用 query_gto 工具查詢
 
 分析結構：
@@ -387,8 +398,9 @@ class GeminiSessionManager:
 
             # Check for function calls in response
             candidate = response.candidates[0]
+            parts = (candidate.content and candidate.content.parts) or []
             function_calls = [
-                p for p in candidate.content.parts
+                p for p in parts
                 if p.function_call
             ]
 
