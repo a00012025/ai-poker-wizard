@@ -1,6 +1,28 @@
 #!/usr/bin/env python3
 """Convert GTO Wizard API JSON into natural language summaries."""
 
+_RANK_ORDER = "AKQJT98765432"
+
+
+def normalize_hand_name(hand: str) -> str:
+    """Convert specific combo (Qs6d) to simplified name (Q6o).
+
+    GTO Wizard uses simplified names: 66, AKs, Q6o.
+    LLM may output specific combos: 6h6s, AhKh, Qs6d.
+    """
+    if len(hand) <= 3:
+        return hand  # "66", "AKs", "Q6o" — already simplified
+    if len(hand) == 4:
+        r1, s1, r2, s2 = hand[0], hand[1], hand[2], hand[3]
+        # Higher rank first
+        if _RANK_ORDER.index(r1) > _RANK_ORDER.index(r2):
+            r1, s1, r2, s2 = r2, s2, r1, s1
+        if r1 == r2:
+            return r1 + r2  # Pair: "66"
+        suffix = "s" if s1 == s2 else "o"
+        return r1 + r2 + suffix
+    return hand
+
 
 def format_action_summary(spot_solution: dict) -> str:
     """Format overall action frequencies for the active position."""
@@ -44,6 +66,7 @@ def format_action_summary(spot_solution: dict) -> str:
 
 def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> str:
     """Format detailed strategy for a specific hand at a specific position."""
+    hand_name = normalize_hand_name(hand_name)
     # Find the player info for the position
     player_info = None
     for pi in spot_solution["players_info"]:
@@ -83,6 +106,59 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
             combos = actions_combos.get(action_code, 0)
             action_label = _action_label(action_code, spot_solution)
             lines.append(f"    {action_label}: {freq*100:.1f}%（{combos:.1f} combos）")
+
+    return "\n".join(lines)
+
+
+def format_range_overview(spot_solution: dict, position: str) -> str:
+    """Format full range breakdown for a position at a spot.
+
+    Shows all hands sorted by combos, with EV and equity.
+    Used for follow-up questions like "what does BB have on the river?"
+    """
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+
+    if not player_info:
+        return f"找不到 {position} 的資料"
+
+    shc = player_info.get("simple_hand_counters", {})
+    if not shc:
+        return f"{position} 沒有 range 資料"
+
+    game = spot_solution["game"]
+    street = game["current_street"]["type"].capitalize()
+    board = game["board"]
+
+    # Collect hands with combos > 0
+    hands = []
+    total_combos = 0
+    for hand_name, data in shc.items():
+        combos = data.get("total_combos", 0)
+        if combos < 0.01:
+            continue
+        hands.append({
+            "name": hand_name,
+            "combos": combos,
+            "freq": data.get("total_frequency", 0),
+            "ev": data.get("hand_ev", 0),
+            "eq": data.get("hand_eq", 0),
+        })
+        total_combos += combos
+
+    hands.sort(key=lambda h: -h["combos"])
+
+    lines = [f"【{position} 在 {street} {board} 的範圍】共 {total_combos:.1f} combos"]
+
+    for h in hands:
+        pct = (h["combos"] / total_combos * 100) if total_combos else 0
+        lines.append(
+            f"  {h['name']}: {h['combos']:.1f} combos（{pct:.1f}%）"
+            f" | EV {h['ev']:.2f}bb | Eq {h['eq']*100:.1f}%"
+        )
 
     return "\n".join(lines)
 

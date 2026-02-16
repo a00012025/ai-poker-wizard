@@ -32,7 +32,7 @@ from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, nearest_depth,
 )
-from gto_formatter import format_full_spot
+from gto_formatter import format_full_spot, normalize_hand_name
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
@@ -75,19 +75,20 @@ def _preflop_before_hero(preflop_actions: str, hero_position: str) -> str:
     return "-".join(before) if before else ""
 
 
-def analyze_hand(hand: dict) -> str:
-    """Run full multi-street analysis and return natural language summary.
+STREET_NAMES = ["flop", "turn", "river"]
 
-    Two-phase approach for speed:
-      Phase 1 (sequential, lightweight): Walk through actions, discover solver
-              bet codes via next-actions API. Only called for bets/raises.
-      Phase 2 (parallel): Fire all spot-solution calls simultaneously.
+
+def _run_analysis(hand: dict) -> dict:
+    """Core analysis: walk hand, discover bet codes, fetch spot solutions.
+
+    Returns structured data with both formatted text and raw solutions
+    for caching and follow-up queries.
     """
     t0 = time.time()
     gametype = hand.get("gametype", "MTTGeneral")
     depth = nearest_depth(hand["effective_bb"])
     hero_pos = hand["hero_position"]
-    hero_hand = hand["hero_hand"]
+    hero_hand = normalize_hand_name(hand["hero_hand"])
     streets = hand.get("streets", [])
 
     # Normalize preflop actions (R2 → R2.1, etc.)
@@ -100,6 +101,7 @@ def analyze_hand(hand: dict) -> str:
     # Preflop hero spot
     preflop_before = _preflop_before_hero(preflop_actions, hero_pos)
     hero_spots.append({
+        "street": "preflop",
         "header": "【Preflop】",
         "params": dict(gametype=gametype, depth=depth, preflop_actions=preflop_before),
         "action_desc": None,
@@ -110,7 +112,12 @@ def analyze_hand(hand: dict) -> str:
     turn_acts = ""
     river_acts = ""
 
+    # Track action strings at each street boundary (for hypothetical queries)
+    street_states = {}
+
     for street_idx, street in enumerate(streets):
+        street_name = STREET_NAMES[street_idx]
+
         if street_idx == 0:
             board = street["board"]
             street_header = f"【Flop: {board}】"
@@ -121,6 +128,14 @@ def analyze_hand(hand: dict) -> str:
             board += street["card"]
             street_header = f"【River: {street['card']}（Board: {board}）】"
 
+        # Snapshot state at start of this street (before actions)
+        street_states[street_name] = {
+            "board": board,
+            "flop_actions": flop_acts,
+            "turn_actions": turn_acts,
+            "river_actions": river_acts,
+        }
+
         street_first_hero = True
 
         for act in street["actions"]:
@@ -129,7 +144,6 @@ def analyze_hand(hand: dict) -> str:
             target_size = act.get("size", 0)
 
             if pos == hero_pos:
-                # Hero's decision — record for parallel analysis
                 params = dict(
                     gametype=gametype, depth=depth,
                     preflop_actions=preflop_actions, board=board,
@@ -140,20 +154,19 @@ def analyze_hand(hand: dict) -> str:
                 if action_type in ("X", "C", "F"):
                     taken_code = action_type
                 else:
-                    # Lightweight API call to discover closest solver bet code
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
                     taken_code = find_closest_action(avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
                 hero_spots.append({
+                    "street": street_name,
                     "header": street_header if street_first_hero else None,
                     "params": params,
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
                 })
                 street_first_hero = False
             else:
-                # Opponent action — skip spot-solution, just discover code if needed
                 if action_type in ("X", "C", "F"):
                     taken_code = action_type
                 else:
@@ -217,7 +230,41 @@ def analyze_hand(hand: dict) -> str:
 
     results.append(f"⏱ Discovery: {t_phase1 - t0:.1f}s | Analysis: {t_phase2 - t_phase1:.1f}s | Total: {t_phase2 - t0:.1f}s")
 
-    return "\n".join(results)
+    return {
+        "text": "\n".join(results),
+        "hand": hand,
+        "gametype": gametype,
+        "depth": depth,
+        "hero_position": hero_pos,
+        "hero_hand": hero_hand,
+        "preflop_actions": preflop_actions,
+        "street_states": street_states,
+        "final_actions": {
+            "flop_actions": flop_acts,
+            "turn_actions": turn_acts,
+            "river_actions": river_acts,
+        },
+        "hero_spots": hero_spots,
+        "solutions": solutions,
+    }
+
+
+def analyze_hand(hand: dict) -> str:
+    """Run full multi-street analysis and return natural language summary."""
+    return _run_analysis(hand)["text"]
+
+
+def analyze_hand_full(hand: dict) -> dict:
+    """Run full analysis and return structured data for caching.
+
+    Returns dict with keys:
+        text: formatted natural language summary
+        gametype, depth, hero_position, hero_hand, preflop_actions
+        street_states: {flop/turn/river: {board, flop_actions, turn_actions, river_actions}}
+        hero_spots: list of {street, params, ...} per hero decision
+        solutions: list of raw spot-solution API responses (parallel to hero_spots)
+    """
+    return _run_analysis(hand)
 
 
 def main():

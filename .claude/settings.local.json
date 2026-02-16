@@ -15,7 +15,9 @@
       "Bash(python scripts/analyze_hand.py:*)",
       "Bash(python -c:*)",
       "Bash(source:*)",
-      "Bash(:)"
+      "Bash(:)",
+      "Bash(pip show:*)",
+      "WebFetch(domain:ai.google.dev)"
     ]
   }
 }
