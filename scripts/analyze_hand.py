@@ -78,6 +78,82 @@ def _preflop_before_hero(preflop_actions: str, hero_position: str) -> str:
 STREET_NAMES = ["flop", "turn", "river"]
 
 
+def _compute_preflop_pot(preflop_actions: str, effective_bb: float) -> float:
+    """Compute the pot at the start of the flop from original preflop actions."""
+    parts = preflop_actions.split("-")
+
+    # Initial: SB posts 0.5, BB posts 1.0
+    investments = [0.0] * 8
+    investments[6] = 0.5  # SB
+    investments[7] = 1.0  # BB
+    current_bet = 1.0  # BB is the initial bet to match
+
+    for i in range(min(len(parts), 8)):
+        code = parts[i]
+        if code in ("F", ""):
+            pass
+        elif code == "C":
+            investments[i] = current_bet
+        elif code.startswith("R"):
+            try:
+                investments[i] = float(code[1:])
+                current_bet = investments[i]
+            except ValueError:
+                pass
+        elif code == "AI":
+            investments[i] = effective_bb
+            current_bet = effective_bb
+
+    # Continuation actions (re-raises after initial 8 positions)
+    if len(parts) > 8:
+        active = [i for i in range(8) if parts[i] not in ("F", "")]
+        cont_idx = 0
+        for j in range(8, len(parts)):
+            if cont_idx >= len(active):
+                cont_idx = 0
+            pos = active[cont_idx]
+            code = parts[j]
+            if code == "C":
+                investments[pos] = current_bet
+            elif code.startswith("R"):
+                try:
+                    investments[pos] = float(code[1:])
+                    current_bet = investments[pos]
+                except ValueError:
+                    pass
+            elif code == "AI":
+                investments[pos] = effective_bb
+                current_bet = effective_bb
+            cont_idx += 1
+
+    return sum(investments)
+
+
+def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot: float) -> str:
+    """Find closest action by pot percentage rather than absolute size.
+
+    Computes the hero/villain bet as a fraction of the actual pot, then
+    converts to the solver's pot context for matching.
+    """
+    target_pct = bet_size / actual_pot
+
+    # Compute solver pot from any available raise action's betsize_by_pot
+    solver_pot = None
+    for entry in available_actions:
+        action = entry["action"]
+        pct = action.get("betsize_by_pot")
+        if pct and float(pct) > 0:
+            solver_pot = float(action["betsize"]) / float(pct)
+            break
+
+    if solver_pot:
+        solver_bet = target_pct * solver_pot
+        return find_closest_action(available_actions, solver_bet)
+
+    # Fallback to absolute matching
+    return find_closest_action(available_actions, bet_size)
+
+
 def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str]:
     """Detect multiway pot and simplify to heads-up if needed.
 
@@ -124,6 +200,17 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     second_action = parts[second_idx] if second_idx < len(parts) else "C"
     is_3bet = second_action.startswith("R")
 
+    # Check for 4bet+ in continuation actions (parts[8:])
+    fourbet_size = None
+    if is_3bet:
+        for p in parts[8:]:
+            if p.startswith("R"):
+                try:
+                    fourbet_size = float(p[1:])
+                except ValueError:
+                    pass
+                break
+
     # Estimate dead money from extra callers to adjust effective BB
     open_size = 2.0  # default
     for p in parts[:8]:
@@ -134,8 +221,8 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
                 pass
             break
     extra_callers = len(non_fold) - 2  # hero + villain = 2
-    # In 3bet pots, dead money is amplified: callers' money inflates the pot,
-    # causing larger 3bet sizing and call, roughly 3x the raw dead money
+    # In 3bet/4bet pots, dead money is amplified: callers' money inflates the pot,
+    # causing larger sizing and calls, roughly 3x the raw dead money
     amplifier = 3.0 if is_3bet else 1.0
     dead_money = extra_callers * open_size * amplifier
     adjusted_eff = hand["effective_bb"] - dead_money
@@ -170,9 +257,22 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
             second_code = second_action
         simplified[second_idx] = second_code
 
-        # First actor calls the 3bet
-        full = "-".join(simplified) + "-C"
-        pot_type = "3bet"
+        if fourbet_size is not None:
+            # 4bet pot: first actor re-raises, second calls
+            base = "-".join(simplified)
+            try:
+                resp = get_next_actions(gametype=gametype, depth=adjusted_depth,
+                                        preflop_actions=base)
+                avail = resp["next_actions"]["available_actions"]
+                fourbet_code = find_closest_action(avail, fourbet_size)
+            except Exception:
+                fourbet_code = f"R{fourbet_size}"
+            full = base + f"-{fourbet_code}-C"
+            pot_type = "4bet"
+        else:
+            # 3bet pot: first actor calls
+            full = "-".join(simplified) + "-C"
+            pot_type = "3bet"
     else:
         # Single raised pot
         simplified[second_idx] = "C"
@@ -213,6 +313,10 @@ def _run_analysis(hand: dict) -> dict:
     if multiway_note:
         raw_preflop = simplified_preflop
         depth = adjusted_depth
+
+    # Compute actual pot from original preflop for pot-percentage bet matching
+    # (only needed for multiway where simplified pot differs from actual pot)
+    actual_pot = _compute_preflop_pot(hand["preflop_actions"], hand["effective_bb"]) if multiway_note else 0
 
     # Normalize preflop actions (R2 → R2.1, etc.)
     preflop_actions = _normalize_preflop_actions(raw_preflop, gametype, depth)
@@ -259,6 +363,8 @@ def _run_analysis(hand: dict) -> dict:
         }
 
         street_first_hero = True
+        outstanding_bet = 0
+        street_investments = {}
 
         for act in street["actions"]:
             pos = act["position"]
@@ -278,7 +384,10 @@ def _run_analysis(hand: dict) -> dict:
                 else:
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    taken_code = find_closest_action(avail, target_size)
+                    if actual_pot > 0:
+                        taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
+                    else:
+                        taken_code = find_closest_action(avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
                 hero_spots.append({
@@ -300,7 +409,24 @@ def _run_analysis(hand: dict) -> dict:
                     )
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    taken_code = find_closest_action(avail, target_size)
+                    if actual_pot > 0:
+                        taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
+                    else:
+                        taken_code = find_closest_action(avail, target_size)
+
+            # Track actual pot through postflop (for multiway percentage matching)
+            if actual_pot > 0:
+                if action_type in ("X", "F"):
+                    pass
+                elif action_type == "C":
+                    prev = street_investments.get(pos, 0)
+                    actual_pot += outstanding_bet - prev
+                    street_investments[pos] = outstanding_bet
+                else:  # bet/raise
+                    prev = street_investments.get(pos, 0)
+                    actual_pot += target_size - prev
+                    street_investments[pos] = target_size
+                    outstanding_bet = target_size
 
             # Advance action string
             if street_idx == 0:

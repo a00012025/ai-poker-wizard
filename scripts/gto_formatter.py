@@ -13,7 +13,12 @@ def normalize_hand_name(hand: str) -> str:
     if not hand:
         return ""
     if len(hand) <= 3:
-        return hand  # "66", "AKs", "Q6o" — already simplified
+        # Fix case: "Kk" → "KK", "Aks" → "AKs"
+        if len(hand) == 2:
+            return hand[0].upper() + hand[1].upper()
+        if len(hand) == 3:
+            return hand[0].upper() + hand[1].upper() + hand[2].lower()
+        return hand
     if len(hand) == 4:
         r1, s1, r2, s2 = hand[0], hand[1], hand[2], hand[3]
         # Higher rank first
