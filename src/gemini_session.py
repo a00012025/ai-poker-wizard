@@ -76,12 +76,15 @@ JSON 格式：
 COACH_SYSTEM = """\
 你是專業 MTT 撲克錦標賽教練，名叫 AI Poker Wizard。用繁體中文回覆。
 
-格式規則（重要！Telegram 不支援 Markdown 標題）：
-- 不要用 # ## 等標題語法
-- 用 *粗體* 標記重點詞（單星號 *text*，不要用雙星號）
-- 用數字或 • 列表
-- 簡潔有力，像教練對學生說話
+格式規則（嚴格遵守！輸出直接發送到 Telegram）：
+- 絕對不要用 # ## ### 等任何標題語法
+- 絕對不要用 * 作為列表符號（Telegram 會誤判為粗體）
+- 列表只用 1. 2. 3. 數字 或 • 符號
+- 段落標題用 *粗體*（單星號），例如 *Preflop 分析*
+- 重點詞也用 *粗體*（單星號 *text*）
+- 不要用 **雙星號**
 - 不要用表格
+- 簡潔有力，像教練對學生說話
 
 重要原則：
 - 你的分析必須完全基於提供的 GTO Solver 數據
@@ -101,11 +104,48 @@ COACH_SYSTEM = """\
 
 # ── Gemini tool schema for GTO queries ──
 
+QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
+    name="query_next_actions",
+    description=(
+        "查詢某個決策點的所有可用動作及其 code。"
+        "在建構假設情境（override actions）之前必須先呼叫此工具，以獲取正確的 action code（如 R3.6 而非猜測的 R1.2）。"
+        "回傳每個可用動作的 code、betsize 和 betsize_by_pot。"
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "street": types.Schema(
+                type=types.Type.STRING,
+                enum=["preflop", "flop", "turn", "river"],
+                description="要查詢哪條街的可用動作",
+            ),
+            "actions_so_far": types.Schema(
+                type=types.Type.STRING,
+                description="這條街到目前為止的動作序列（如果要查詢街中某個後續決策點）。例如查詢 flop 上 SB bet 後 BB 的選項，傳入 'R3.6'。留空表示查詢該街第一個行動者的選項。",
+            ),
+            "board_override": types.Schema(
+                type=types.Type.STRING,
+                description="假設不同的 board。",
+            ),
+            "flop_actions_override": types.Schema(
+                type=types.Type.STRING,
+                description="假設不同的翻牌動作（查詢 turn/river 時使用）。",
+            ),
+            "turn_actions_override": types.Schema(
+                type=types.Type.STRING,
+                description="假設不同的轉牌動作（查詢 river 時使用）。",
+            ),
+        },
+        required=["street"],
+    ),
+)
+
 QUERY_GTO_DECLARATION = types.FunctionDeclaration(
     name="query_gto",
     description=(
         "查詢 GTO solver 策略數據。可以查詢目前手牌中任何位置在任何街的完整範圍或特定手牌策略。"
-        "也可以修改 board 或 actions 來查詢假設情境（例如 hero check 後的策略、不同的 turn 牌）。"
+        "也可以修改 board 或 actions 來查詢假設情境。"
+        "重要：使用 override actions 時，必須先用 query_next_actions 取得正確的 action code。"
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -312,8 +352,11 @@ class GeminiSessionManager:
         return result
 
     async def _chat_with_tools(self, chat_id: int, user_text: str) -> str:
-        """Chat with query_gto tool for data-driven follow-up answers."""
-        tool = types.Tool(function_declarations=[QUERY_GTO_DECLARATION])
+        """Chat with GTO tools for data-driven follow-up answers."""
+        tool = types.Tool(function_declarations=[
+            QUERY_NEXT_ACTIONS_DECLARATION,
+            QUERY_GTO_DECLARATION,
+        ])
 
         # Build system prompt with hand context
         hand_summary = self._build_hand_summary(chat_id)
@@ -325,7 +368,7 @@ class GeminiSessionManager:
         ]
 
         result_text = ""
-        max_rounds = 5
+        max_rounds = 8
 
         for round_num in range(max_rounds):
             response = await self.client.aio.models.generate_content(
@@ -353,14 +396,18 @@ class GeminiSessionManager:
             messages.append(candidate.content)
 
             for fc in function_calls:
+                fn_name = fc.function_call.name
                 args = dict(fc.function_call.args) if fc.function_call.args else {}
                 self._logger.info(
                     f"[chat={chat_id}] Tool call #{round_num+1}: "
-                    f"query_gto({json.dumps(args, ensure_ascii=False)})"
+                    f"{fn_name}({json.dumps(args, ensure_ascii=False)})"
                 )
 
                 t_tool = time.time()
-                tool_result = self._execute_query_gto(chat_id, args)
+                if fn_name == "query_next_actions":
+                    tool_result = self._execute_query_next_actions(chat_id, args)
+                else:
+                    tool_result = self._execute_query_gto(chat_id, args)
                 elapsed = time.time() - t_tool
                 self._logger.debug(
                     f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"
@@ -370,7 +417,7 @@ class GeminiSessionManager:
                 messages.append(types.Content(
                     role="user",
                     parts=[types.Part.from_function_response(
-                        name="query_gto",
+                        name=fn_name,
                         response={"data": tool_result},
                     )],
                 ))
@@ -540,6 +587,70 @@ class GeminiSessionManager:
 
         return "\n".join(parts)
 
+    def _execute_query_next_actions(self, chat_id: int, args: dict) -> str:
+        """Execute a query_next_actions tool call. Returns available actions."""
+        from gto_api import get_next_actions
+
+        ctx = self.hand_contexts.get(chat_id)
+        if not ctx:
+            return "錯誤：沒有手牌 context，請先發送手牌描述。"
+
+        street = args.get("street", "flop")
+        actions_so_far = args.get("actions_so_far", "")
+        board_override = args.get("board_override")
+        flop_override = args.get("flop_actions_override")
+        turn_override = args.get("turn_actions_override")
+
+        # Build params for the target street
+        states = ctx.get("street_states", {})
+        base = states.get(street, {})
+
+        params = dict(
+            gametype=ctx["gametype"],
+            depth=ctx["depth"],
+            preflop_actions=ctx["preflop_actions"],
+        )
+
+        if street != "preflop":
+            params["board"] = board_override or base.get("board", "")
+            params["flop_actions"] = (
+                flop_override if flop_override is not None
+                else base.get("flop_actions", "")
+            )
+            params["turn_actions"] = (
+                turn_override if turn_override is not None
+                else base.get("turn_actions", "")
+            )
+            params["river_actions"] = ""
+
+        # If actions_so_far provided, set it on the target street
+        if actions_so_far:
+            key = f"{street}_actions" if street != "preflop" else "preflop_actions"
+            params[key] = actions_so_far
+
+        try:
+            resp = get_next_actions(**params)
+        except Exception as e:
+            return f"API 查詢失敗：{e}"
+
+        avail = resp.get("next_actions", {}).get("available_actions", [])
+        if not avail:
+            return "此決策點沒有可用動作。"
+
+        lines = [f"【{street} 可用動作】"]
+        for entry in avail:
+            action = entry["action"]
+            code = action["code"]
+            if code in ("X", "F", "C"):
+                lines.append(f"  {code}")
+            else:
+                betsize = action.get("betsize", "?")
+                pct = float(action.get("betsize_by_pot", 0)) * 100
+                allin = " (all-in)" if action.get("allin") else ""
+                lines.append(f"  {code} — betsize={betsize}bb（{pct:.0f}% pot）{allin}")
+
+        return "\n".join(lines)
+
     def _build_hand_summary(self, chat_id: int) -> str:
         """Build a concise hand summary for the system prompt."""
         ctx = self.hand_contexts.get(chat_id)
@@ -564,8 +675,12 @@ class GeminiSessionManager:
 
         lines.append("")
         lines.append(
-            "你可以使用 query_gto 工具查詢任何位置在任何街的 solver 數據。"
-            "也可以傳入 board_override 或 actions_override 查詢假設情境（例如不同的動作或不同的牌面）。"
+            "工具使用指南：\n"
+            "1. query_next_actions — 查詢某個決策點的所有可用動作和正確的 action code\n"
+            "2. query_gto — 查詢完整策略數據（範圍、頻率、EV）\n"
+            "\n"
+            "重要：當用戶問假設情境（例如「如果 flop 打滿池」），你必須先用 query_next_actions 查出正確的 action code（例如 R3.6），"
+            "再用 query_gto 搭配正確的 override actions 查詢。絕對不要自己猜測 action code。"
         )
 
         return "\n".join(lines)

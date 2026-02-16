@@ -148,13 +148,16 @@ def _format_for_telegram(text: str) -> str:
     """Convert LLM output to Telegram-compatible Markdown.
 
     Telegram Markdown supports: *bold*, _italic_, `code`, ```pre```, [link](url)
-    Does NOT support: **bold**, # headers, tables.
+    Does NOT support: **bold**, # headers, tables, * bullets.
     """
     import re
-    # **bold** → *bold* (must do before single * handling)
+    # * bullet points → • (must do BEFORE bold processing)
+    # Matches: "* text" or "*   text" at start of line
+    text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
+    # **bold** → *bold*
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-    # Remove # headers — keep text, add bold
-    text = re.sub(r'^#{1,3}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    # # headers → *bold*
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
     return text
 
 
