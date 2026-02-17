@@ -177,6 +177,46 @@ def test_multiway_3way_fold_on_flop():
 
 
 @test
+def test_multiway_3way_check_raise_on_flop():
+    """Multiway: 3-way pot with check-raise on flop matches correctly (not all-in)."""
+    from analyze_hand import analyze_hand_full
+    # UTG+1 raise, BTN call, BB call → 3-way
+    # Flop: BB checks, UTG+1 bets 2.5, BTN folds, BB raises 8.7, UTG+1 calls
+    # Turn: BB all-in, UTG+1 calls
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 20,
+        "hero_position": "UTG+1",
+        "hero_hand": "9h9c",
+        "preflop_actions": "F-R2-F-F-F-C-F-C",
+        "streets": [
+            {"board": "6s7h6h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "R", "size": 2.5},
+                {"position": "BTN", "action": "F"},
+                {"position": "BB", "action": "R", "size": 8.7},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+            {"card": "3c", "actions": [
+                {"position": "BB", "action": "AI"},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+        ],
+    })
+    assert_in("多人底池", result["text"])
+    # BB's raise should NOT match all-in (RAI) — 8.7bb is a raise, not an all-in
+    assert_true("solver code: RAI" not in result["text"],
+                "BB's 8.7bb raise should not match all-in")
+    # Flop and turn should both have solver data
+    flop_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
+                      if spot["street"] == "flop" and s is not None]
+    turn_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
+                      if spot["street"] == "turn" and s is not None]
+    assert_true(len(flop_solutions) > 0, "flop should have solver data")
+    assert_true(len(turn_solutions) > 0, "turn should have solver data")
+
+
+@test
 def test_multiway_2way_flop_unchanged():
     """Multiway: 3-way preflop but only 2 see flop already works without change."""
     from analyze_hand import analyze_hand_full
@@ -373,6 +413,60 @@ def test_api_no_solution_returns_none():
         board="Js6h5s",  # ICM preflop_only → flop should return 204
     )
     assert_true(sol is None, "ICM mode should return None for postflop query")
+
+
+@test
+def test_api_postflop_percentage_detection():
+    """API: find_closest_action_postflop detects percentage-based sizes."""
+    from gto_api import get_next_actions, find_closest_action_postflop
+    # UTG+1 open, BB call, flop 2h8cTc, BB checks → UTG+1 to act
+    resp = get_next_actions(
+        gametype="MTTGeneral", depth=30.125,
+        preflop_actions="F-R2.1-F-F-F-F-F-C",
+        board="2h8cTc", flop_actions="X",
+    )
+    avail = resp["next_actions"]["available_actions"]
+    # size=40 means "40% pot" from LLM — should NOT match all-in
+    code = find_closest_action_postflop(avail, 40)
+    assert_true(code != "RAI", f"size=40 should not match all-in, got {code}")
+    assert_true(code.startswith("R"), f"expected raise code, got {code}")
+    # size=27.9 is actual all-in — should still match RAI
+    code_ai = find_closest_action_postflop(avail, 27.9)
+    assert_true(code_ai == "RAI", f"actual all-in should match RAI, got {code_ai}")
+
+
+@test
+def test_chip_ev_percentage_size_analysis():
+    """ChipEV: analysis handles percentage-based bet sizes without errors."""
+    from analyze_hand import analyze_hand
+    result = analyze_hand({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "BB",
+        "hero_hand": "J9o",
+        "preflop_actions": "F-R2-F-F-F-F-F-C",
+        "streets": [
+            {"board": "2h8cTc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "R", "size": 40},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "7s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "R", "size": 50},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "9h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "X"},
+            ]},
+        ],
+    })
+    assert_in("Flop", result)
+    assert_in("Turn", result)
+    assert_in("River", result)
+    # Solver code lines should not show RAI for the 40%/50% bets
+    assert_true("solver code: RAI" not in result, f"Percentage bets should not match all-in")
 
 
 # ── Formatter Tests ──

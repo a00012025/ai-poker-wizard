@@ -58,6 +58,7 @@ PARSE_PROMPT = """\
 - streets：flop 用 "board"，turn/river 用 "card"
 - hero_hand：如果用戶說 "66" 就用 "66"，如果說 "Ah Ks" 就用 "AhKs"
 - effective_bb：取整數
+- 翻牌後 size：必須是絕對 bb 值！如果用戶說 "bet 40%" 或 "bet 1/3"，請根據底池大小估算 bb 值。例如底池 5bb，bet 40% → size: 2.0（不是 40 或 0.4）
 
 ICM 支援：
 - 如果用戶提到 ICM、bubble、final table、錦標賽階段、不同位置有不同籌碼量，加入以下欄位：
@@ -376,7 +377,7 @@ class GeminiSessionManager:
     async def _parse_hand(self, chat_id: int, user_text: str) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""
         prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_text}"
-        self._logger.debug(f"[chat={chat_id}] Parse prompt ({len(prompt)} chars):\n{prompt}")
+        self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
 
         response = await self.client.aio.models.generate_content(
             model=self.parse_model,

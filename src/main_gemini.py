@@ -1,6 +1,10 @@
 # src/main_gemini.py
 """Entry point using Gemini API (fast, no Claude CLI subprocess)."""
 import os
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from src.gemini_session import GeminiSessionManager
 from src.telegram_bot.bot import PokerWizardBot
 

@@ -14,6 +14,9 @@ import os
 import sys
 import time
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Allow imports from project
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))

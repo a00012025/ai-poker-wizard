@@ -1,5 +1,9 @@
 # src/main.py
 import os
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from src.claude_session import ClaudeSessionManager
 from src.telegram_bot.bot import PokerWizardBot
 

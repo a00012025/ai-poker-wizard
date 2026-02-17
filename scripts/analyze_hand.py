@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_spot_solution, get_next_actions,
-    find_closest_action, nearest_depth,
+    find_closest_action, find_closest_action_postflop, nearest_depth,
 )
 from gto_formatter import format_full_spot, normalize_hand_name
 
@@ -540,10 +540,11 @@ def _run_analysis(hand: dict) -> dict:
                 else:
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    if actual_pot > 0:
+                    if actual_pot > 0 and outstanding_bet == 0:
+                        # First bet of street in multiway — use pot-pct matching
                         taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
                     else:
-                        taken_code = find_closest_action(avail, target_size)
+                        taken_code = find_closest_action_postflop(avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
                 hero_spots.append({
@@ -565,10 +566,11 @@ def _run_analysis(hand: dict) -> dict:
                     )
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    if actual_pot > 0:
+                    if actual_pot > 0 and outstanding_bet == 0:
+                        # First bet of street in multiway — use pot-pct matching
                         taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
                     else:
-                        taken_code = find_closest_action(avail, target_size)
+                        taken_code = find_closest_action_postflop(avail, target_size)
 
             # Track actual pot through postflop (for multiway percentage matching)
             if actual_pot > 0:

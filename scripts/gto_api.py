@@ -148,3 +148,52 @@ def find_closest_action(available_actions: list[dict], target_size: float) -> st
             best_code = code
 
     return best_code or "X"
+
+
+def find_closest_action_postflop(available_actions: list[dict], target_size: float) -> str:
+    """Find closest postflop action, auto-detecting percentage-based sizes.
+
+    LLM parsers sometimes output pot percentages (e.g. 40 for 40% pot)
+    instead of absolute bb amounts. When the absolute match lands on
+    all-in but the target doesn't look like an all-in, try interpreting
+    it as a pot percentage and pick the better fit.
+    """
+    abs_code = find_closest_action(available_actions, target_size)
+
+    # If absolute match is NOT all-in, it's almost certainly correct
+    abs_action = next(
+        (a for a in available_actions if a["action"]["code"] == abs_code), None
+    )
+    if not abs_action or not abs_action["action"].get("allin"):
+        return abs_code
+
+    # Matched all-in — check if target_size is actually a percentage
+    # Compute solver pot from any action with betsize_by_pot
+    solver_pot = None
+    for entry in available_actions:
+        pct = entry["action"].get("betsize_by_pot")
+        if pct and float(pct) > 0:
+            solver_pot = float(entry["action"]["betsize"]) / float(pct)
+            break
+
+    if not solver_pot or target_size < 5:
+        return abs_code
+
+    # Compare pot-percentage errors:
+    # Absolute interpretation: target_size bb = what % of pot?
+    abs_pct = target_size / solver_pot * 100
+    abs_matched_pct = float(abs_action["action"].get("betsize_by_pot", 0)) * 100
+    abs_err = abs(abs_pct - abs_matched_pct)
+
+    # Percentage interpretation: target_size = X% of pot
+    pct_bb = target_size / 100 * solver_pot
+    pct_code = find_closest_action(available_actions, pct_bb)
+    pct_action = next(
+        (a for a in available_actions if a["action"]["code"] == pct_code), None
+    )
+    pct_matched_pct = float(pct_action["action"].get("betsize_by_pot", 0)) * 100 if pct_action else 0
+    pct_err = abs(target_size - pct_matched_pct)
+
+    if pct_err < abs_err:
+        return pct_code
+    return abs_code
