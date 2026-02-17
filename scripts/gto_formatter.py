@@ -316,6 +316,106 @@ def format_range_overview(spot_solution: dict, position: str) -> str:
     return "\n".join(lines)
 
 
+def _compress_range(hands: list[tuple[str, float, float]]) -> str:
+    """Compress hand list into standard poker notation.
+
+    Input: [(hand_name, freq, combos), ...]
+    Output: "22+, AXo, AXs, K3o+, K2s+, Q8o+, Q5s+, J9o+, J7s+, T9o, T8s+"
+    """
+    # Separate by type: pairs, suited, offsuit
+    pairs = {}  # rank_idx -> (freq, combos)
+    suited = {}  # (high_idx, low_idx) -> (freq, combos)
+    offsuit = {}  # (high_idx, low_idx) -> (freq, combos)
+
+    for hand_name, freq, combos in hands:
+        if len(hand_name) == 2:
+            # Pair: AA, KK, etc.
+            idx = _RANK_ORDER.index(hand_name[0])
+            pairs[idx] = (freq, combos)
+        elif hand_name.endswith("s"):
+            h, l = _RANK_ORDER.index(hand_name[0]), _RANK_ORDER.index(hand_name[1])
+            suited[(h, l)] = (freq, combos)
+        elif hand_name.endswith("o"):
+            h, l = _RANK_ORDER.index(hand_name[0]), _RANK_ORDER.index(hand_name[1])
+            offsuit[(h, l)] = (freq, combos)
+
+    parts = []
+
+    # Pairs: find consecutive runs (22+ means 22 through AA)
+    if pairs:
+        pair_ranks = sorted(pairs.keys())  # ascending by rank index (A=0, K=1, ..., 2=12)
+        pure_pairs = [r for r in pair_ranks if pairs[r][0] >= 0.995]
+        mixed_pairs = [(r, pairs[r][0]) for r in pair_ranks if pairs[r][0] < 0.995]
+
+        if pure_pairs:
+            # Check if consecutive from some rank down to 22 (index 12)
+            # In notation: "55+" means 55, 66, 77, ..., AA (from 55 upward)
+            lowest_pure = max(pure_pairs)  # highest index = lowest rank (e.g., 12=22)
+            highest_pure = min(pure_pairs)  # lowest index = highest rank (e.g., 0=AA)
+            expected = set(range(highest_pure, lowest_pure + 1))
+            if set(pure_pairs) == expected and len(pure_pairs) > 1:
+                parts.append(f"{_RANK_ORDER[lowest_pure]}{_RANK_ORDER[lowest_pure]}+")
+            elif len(pure_pairs) == 1:
+                r = pure_pairs[0]
+                parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}")
+            else:
+                for r in pure_pairs:
+                    parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}")
+
+        for r, freq in mixed_pairs:
+            parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}({freq*100:.0f}%)")
+
+    # Suited and offsuit: group by high card, find kicker ranges
+    for category, label in [(suited, "s"), (offsuit, "o")]:
+        if not category:
+            continue
+        by_high: dict[int, list] = {}
+        for (h, l), (freq, combos) in category.items():
+            if h not in by_high:
+                by_high[h] = []
+            by_high[h].append((l, freq, combos))
+
+        for h in sorted(by_high.keys()):
+            kickers = by_high[h]
+            high_rank = _RANK_ORDER[h]
+
+            pure = [(l, f, c) for l, f, c in kickers if f >= 0.995]
+            mixed = [(l, f, c) for l, f, c in kickers if f < 0.995]
+
+            if pure:
+                pure_lows = sorted([l for l, _, _ in pure])
+                # Check if "all kickers" (h+1 to 12)
+                all_kickers = list(range(h + 1, 13))
+                if set(pure_lows) == set(all_kickers):
+                    parts.append(f"{high_rank}X{label}")
+                elif len(pure) == 1:
+                    l = pure[0][0]
+                    parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}")
+                else:
+                    lowest = max(pure_lows)  # highest index = lowest rank
+                    highest = min(pure_lows)  # lowest index = highest rank
+                    expected = set(range(highest, lowest + 1))
+                    if set(pure_lows) == expected:
+                        # "+" notation only valid if range reaches the top kicker
+                        if highest == h + 1:
+                            # Range goes all the way up: "K3o+" = K3o through KQo
+                            parts.append(f"{high_rank}{_RANK_ORDER[lowest]}{label}+")
+                        else:
+                            # Range doesn't reach top: "Q2s-Q4s" not "Q2s+"
+                            parts.append(
+                                f"{high_rank}{_RANK_ORDER[lowest]}{label}"
+                                f"-{high_rank}{_RANK_ORDER[highest]}{label}"
+                            )
+                    else:
+                        for l in sorted(pure_lows):
+                            parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}")
+
+            for l, f, c in sorted(mixed, key=lambda x: x[0]):
+                parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}({f*100:.0f}%)")
+
+    return ", ".join(parts)
+
+
 def format_range_by_action(spot_solution: dict, position: str) -> str:
     """Format range grouped by action for a position.
 
@@ -378,13 +478,9 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
         group = action_groups[code]
         total = sum(x[2] for x in group)
         label = _action_label(code, spot_solution)
+        compressed = _compress_range(group)
         lines.append(f"\n{label}（{total:.0f} combos）:")
-
-        for hand_name, freq, combos in group:
-            if freq >= 0.995:
-                lines.append(f"  {hand_name}: {combos:.1f}")
-            else:
-                lines.append(f"  {hand_name}: {combos:.1f}（{freq*100:.0f}%）")
+        lines.append(f"  {compressed}")
 
     return "\n".join(lines)
 

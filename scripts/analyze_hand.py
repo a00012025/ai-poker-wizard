@@ -36,8 +36,25 @@ from gto_formatter import format_full_spot, normalize_hand_name
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
+# Position orders by table size (GTO Wizard convention)
+POSITION_ORDERS = {
+    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+    5: ["HJ", "CO", "BTN", "SB", "BB"],
+    4: ["CO", "BTN", "SB", "BB"],
+    3: ["BTN", "SB", "BB"],
+    2: ["SB", "BB"],
+}
 
-def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float) -> str:
+
+def _get_position_order(num_players: int = 8) -> list[str]:
+    """Get position order for given table size."""
+    return POSITION_ORDERS.get(num_players, POSITION_ORDER)
+
+
+def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float, stacks: str = "") -> str:
     """Validate and correct preflop action codes against the solver.
 
     LLM may output R2 but solver expects R2.1. Walk through each action,
@@ -53,7 +70,7 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
             actions_so_far = "-".join(corrected) if corrected else ""
             try:
                 resp = get_next_actions(
-                    gametype=gametype, depth=depth,
+                    gametype=gametype, depth=depth, stacks=stacks,
                     preflop_actions=actions_so_far,
                 )
                 avail = resp["next_actions"]["available_actions"]
@@ -74,7 +91,7 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
             actions_so_far = "-".join(corrected) if corrected else ""
             try:
                 resp = get_next_actions(
-                    gametype=gametype, depth=depth,
+                    gametype=gametype, depth=depth, stacks=stacks,
                     preflop_actions=actions_so_far,
                 )
                 avail = resp["next_actions"]["available_actions"]
@@ -88,10 +105,11 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
     return "-".join(corrected)
 
 
-def _preflop_before_hero(preflop_actions: str, hero_position: str) -> str:
+def _preflop_before_hero(preflop_actions: str, hero_position: str, position_order: list[str] | None = None) -> str:
     """Get preflop action string up to (but not including) hero's action."""
+    pos_order = position_order or POSITION_ORDER
     parts = preflop_actions.split("-")
-    hero_idx = POSITION_ORDER.index(hero_position)
+    hero_idx = pos_order.index(hero_position)
     before = parts[:hero_idx]
     return "-".join(before) if before else ""
 
@@ -325,52 +343,102 @@ def _run_analysis(hand: dict) -> dict:
     hero_hand = normalize_hand_name(hand["hero_hand"])
     streets = hand.get("streets", [])
 
+    # Determine position order based on number of players
+    num_players = len(hand.get("player_stacks", [])) or 8
+    pos_order = _get_position_order(num_players)
+
+    # ICM support: resolve gametype and stacks
+    icm_stacks = ""
+    icm_note = ""
+    is_icm = hand.get("tournament_type") == "icm"
+    if is_icm:
+        from icm_modes import find_icm_params
+        player_stacks = hand.get("player_stacks")
+        if player_stacks:
+            icm_params = find_icm_params(
+                player_stacks=player_stacks,
+                pko=hand.get("pko", False),
+                tournament_size=hand.get("tournament_size", 1000),
+                players_remaining=hand.get("players_remaining"),
+                phase=hand.get("phase"),
+            )
+            gametype = icm_params["gametype"]
+            depth = icm_params["depth"]
+            icm_stacks = icm_params["stacks"]
+            icm_note = icm_params["approximation_note"]
+        else:
+            # No per-position stacks — use symmetric ICM with effective_bb
+            from icm_modes import find_gametype
+            gametype = find_gametype(
+                players_at_table=num_players,
+                pko=hand.get("pko", False),
+                tournament_size=hand.get("tournament_size", 1000),
+                players_remaining=hand.get("players_remaining"),
+                phase=hand.get("phase"),
+            )
+            # Use symmetric stacks
+            eff = hand["effective_bb"]
+            depth = f"{eff + 0.125:.3f}"
+            icm_stacks = "-".join(f"{eff + 0.125:.3f}" for _ in range(num_players))
+            icm_note = f"ICM 模式: {gametype}\n對稱籌碼: {eff:.0f}bb"
+
+    # For ICM preflop_only modes, postflop falls back to chip EV
+    chipev_gametype = "MTTGeneral"
+    chipev_depth = nearest_depth(hand["effective_bb"])
+
     # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
     multiway_note = ""
     simplified_preflop, adjusted_depth, multiway_note = _simplify_multiway(
-        hand, hero_pos, gametype, depth,
+        hand, hero_pos, gametype if not is_icm else chipev_gametype,
+        depth if not is_icm else chipev_depth,
     )
     if multiway_note:
         raw_preflop = simplified_preflop
-        depth = adjusted_depth
+        if not is_icm:
+            depth = adjusted_depth
+        chipev_depth = adjusted_depth
 
     # Compute actual pot from original preflop for pot-percentage bet matching
     # (only needed for multiway where simplified pot differs from actual pot)
     actual_pot = _compute_preflop_pot(hand["preflop_actions"], hand["effective_bb"]) if multiway_note else 0
 
-    # Normalize preflop actions (R2 → R2.1, etc.)
-    preflop_actions = _normalize_preflop_actions(raw_preflop, gametype, depth)
+    # Normalize preflop actions
+    # For ICM, use ICM gametype for preflop normalization
+    preflop_actions = _normalize_preflop_actions(
+        raw_preflop, gametype, depth, stacks=icm_stacks,
+    )
 
     # ── Phase 1: Walk hand, discover bet codes, collect hero spots ──
     hero_spots = []
 
     # Preflop hero spot (initial open/fold decision)
-    preflop_before = _preflop_before_hero(preflop_actions, hero_pos)
+    preflop_before = _preflop_before_hero(preflop_actions, hero_pos, pos_order)
     hero_spots.append({
         "street": "preflop",
         "header": "【Preflop】",
-        "params": dict(gametype=gametype, depth=depth, preflop_actions=preflop_before),
+        "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
+                       preflop_actions=preflop_before),
         "action_desc": None,
     })
 
     # Check if hero faces a re-raise (needs to act again preflop)
     pf_parts = preflop_actions.split("-")
-    hero_idx = POSITION_ORDER.index(hero_pos)
+    hero_idx = pos_order.index(hero_pos)
     has_reraise = any(
         pf_parts[i].startswith("R")
-        for i in range(hero_idx + 1, min(len(pf_parts), 8))
+        for i in range(hero_idx + 1, min(len(pf_parts), num_players))
     )
     if has_reraise:
-        # Query hero's second decision at the full 8-position preflop
-        full_8 = "-".join(pf_parts[:8])
+        # Query hero's second decision at the full N-position preflop
+        full_n = "-".join(pf_parts[:num_players])
 
-        # Check if hero's continuation action is in the string (parts[8:])
+        # Check if hero's continuation action is in the string (parts[N:])
         hero_cont_desc = None
-        if len(pf_parts) > 8:
-            active = [i for i in range(8) if pf_parts[i] not in ("F", "")]
+        if len(pf_parts) > num_players:
+            active = [i for i in range(num_players) if pf_parts[i] not in ("F", "")]
             cont_idx = 0
-            for j in range(8, len(pf_parts)):
+            for j in range(num_players, len(pf_parts)):
                 if cont_idx >= len(active):
                     cont_idx = 0
                 if active[cont_idx] == hero_idx:
@@ -382,7 +450,8 @@ def _run_analysis(hand: dict) -> dict:
         hero_spots.append({
             "street": "preflop",
             "header": None,
-            "params": dict(gametype=gametype, depth=depth, preflop_actions=full_8),
+            "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
+                           preflop_actions=full_n),
             "action_desc": hero_cont_desc,
         })
 
@@ -390,6 +459,7 @@ def _run_analysis(hand: dict) -> dict:
     flop_acts = ""
     turn_acts = ""
     river_acts = ""
+    chipev_preflop = preflop_actions  # default; overridden for ICM on flop
 
     # Track action strings at each street boundary (for hypothetical queries)
     street_states = {}
@@ -419,15 +489,26 @@ def _run_analysis(hand: dict) -> dict:
         outstanding_bet = 0
         street_investments = {}
 
+        # Postflop uses chip EV for ICM modes (preflop_only)
+        post_gametype = chipev_gametype if is_icm else gametype
+        post_depth = chipev_depth if is_icm else depth
+        # Normalize preflop for chip EV context (only once on flop)
+        if is_icm and street_idx == 0:
+            chipev_preflop = _normalize_preflop_actions(
+                hand["preflop_actions"], chipev_gametype, chipev_depth,
+            )
+
         for act in street["actions"]:
             pos = act["position"]
             action_type = act["action"]
             target_size = act.get("size", 0)
 
+            post_preflop = chipev_preflop if is_icm else preflop_actions
+
             if pos == hero_pos:
                 params = dict(
-                    gametype=gametype, depth=depth,
-                    preflop_actions=preflop_actions, board=board,
+                    gametype=post_gametype, depth=post_depth,
+                    preflop_actions=post_preflop, board=board,
                     flop_actions=flop_acts, turn_actions=turn_acts,
                     river_actions=river_acts,
                 )
@@ -455,8 +536,8 @@ def _run_analysis(hand: dict) -> dict:
                     taken_code = action_type
                 else:
                     params = dict(
-                        gametype=gametype, depth=depth,
-                        preflop_actions=preflop_actions, board=board,
+                        gametype=post_gametype, depth=post_depth,
+                        preflop_actions=post_preflop, board=board,
                         flop_actions=flop_acts, turn_actions=turn_acts,
                         river_actions=river_acts,
                     )
@@ -507,8 +588,16 @@ def _run_analysis(hand: dict) -> dict:
     # ── Phase 3: Format results ──
     results = []
     results.append("=" * 50)
-    results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
-    results.append(f"Hero: {hero_pos} {hero_hand}")
+    if is_icm:
+        depth_display = depth if isinstance(depth, str) else f"{depth}"
+        results.append(f"Hero: {hero_pos} {hero_hand}")
+        if icm_note:
+            results.append(icm_note)
+        if streets:
+            results.append(f"Postflop 使用 Chip EV {chipev_depth - 0.125:.0f}bb solver（ICM 僅支援 preflop）")
+    else:
+        results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
+        results.append(f"Hero: {hero_pos} {hero_hand}")
     if multiway_note:
         results.append(multiway_note)
     if raw_preflop != preflop_actions:
@@ -520,7 +609,7 @@ def _run_analysis(hand: dict) -> dict:
         for idx, (raw_code, norm_code) in enumerate(zip(raw_parts, norm_parts)):
             if raw_code == norm_code:
                 continue
-            pos_name = POSITION_ORDER[idx] if idx < len(POSITION_ORDER) else f"pos{idx}"
+            pos_name = pos_order[idx] if idx < len(pos_order) else f"pos{idx}"
             if raw_code.startswith("AI") and raw_code != "AI":
                 size = raw_code[2:]
                 if norm_code == "RAI":
@@ -561,6 +650,8 @@ def _run_analysis(hand: dict) -> dict:
         "hand": hand,
         "gametype": gametype,
         "depth": depth,
+        "stacks": icm_stacks,
+        "is_icm": is_icm,
         "hero_position": hero_pos,
         "hero_hand": hero_hand,
         "preflop_actions": preflop_actions,

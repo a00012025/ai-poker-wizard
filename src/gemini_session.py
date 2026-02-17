@@ -30,8 +30,16 @@ PARSE_PROMPT = """\
 例如「有效 30bb, hero +1 raise, btn all in, 我 TT 該跟嗎？」→ 這是手牌描述，要提取！
 
 規則：
-- MTT 8-max 位置順序：UTG(0), UTG+1(1), LJ(2), HJ(3), CO(4), BTN(5), SB(6), BB(7)
-- preflop_actions：必須列出所有 8 個位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in, AI{size}=All-in for specific size
+- 預設 MTT 8-max 位置順序：UTG(0), UTG+1(1), LJ(2), HJ(3), CO(4), BTN(5), SB(6), BB(7)
+- 不同人數位置順序（重要！按人數調整，preflop_actions 長度必須等於人數）：
+  9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB
+  8人: UTG, UTG+1, LJ, HJ, CO, BTN, SB, BB（預設）
+  7人: UTG, LJ, HJ, CO, BTN, SB, BB
+  6人: LJ, HJ, CO, BTN, SB, BB
+  5人: HJ, CO, BTN, SB, BB
+  4人: CO, BTN, SB, BB
+  3人: BTN, SB, BB
+- preflop_actions：必須列出所有位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in, AI{size}=All-in for specific size
   如果用戶有提到 all-in 的大小（如 "all in 10bb"），必須用 AI{size} 格式（如 AI10）！只有不知道大小時才用 AI。
   重要：即使某些位置之後 fold 了，他們初始的 raise/call 動作仍要保留！
   例1：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
@@ -40,7 +48,7 @@ PARSE_PROMPT = """\
   注意例2：UTG+1 的 R2、LJ 的 C、CO 的 C 都要保留，不能省略成 F！
   注意例3：8 個位置後面的 -C 是 CO 面對 3bet 後 call 的動作（continuation action）
 - 多人底池 + 3bet 後 continuation actions（重要！）：
-  當有人 re-raise 後，之前 call 過的人會再次行動。這些動作接在 8 個位置後面，按原始行動順序排列。
+  當有人 re-raise 後，之前 call 過的人會再次行動。這些動作接在 N 個位置後面，按原始行動順序排列。
   例：UTG+1 raise 2bb, LJ call, CO call, SB raise 10bb, UTG+1 fold, LJ fold, CO call
   → F-R2-C-F-C-F-R10-F-F-F-C（8個位置 + UTG+1 fold + LJ fold + CO call）
 - Board 格式：Js6h5s（rank+suit: c/d/h/s）。如果用戶只說 "J65 two spade" 你要推斷出 Js6s5x 之類的（花色不確定的用最合理的猜測）
@@ -51,7 +59,29 @@ PARSE_PROMPT = """\
 - hero_hand：如果用戶說 "66" 就用 "66"，如果說 "Ah Ks" 就用 "AhKs"
 - effective_bb：取整數
 
-JSON 格式：
+ICM 支援：
+- 如果用戶提到 ICM、bubble、final table、錦標賽階段、不同位置有不同籌碼量，加入以下欄位：
+  "tournament_type": "icm"（預設不寫 = chip EV）
+  "pko": true/false（是否 PKO/bounty 錦標賽，預設 false）
+  "tournament_size": 1000 或 200（錦標賽人數，預設 1000）
+  "players_remaining": 數字（剩餘人數，例如 152）
+  "phase": 階段名稱（可選，如 "BUBBLE", "FT", "PCT25" 等）
+  "player_stacks": [每個位置的籌碼]（按位置順序排列，如 [50, 30, 45, 20, 35, 25, 15, 40]）
+- 用戶說「ICM bubble 50bb」且沒提到個別籌碼 → 不需要 player_stacks，只需 tournament_type + phase
+- 用戶說「6人 FT, BTN 60bb, SB 25bb...」→ player_stacks 按 6人順序（LJ, HJ, CO, BTN, SB, BB）
+- phase 對應規則：
+  early/開始 → "START"
+  75% left → "PCT75"
+  50% left → "PCT50"
+  25% left → "PCT25"
+  bubble → "BUBBLE"（泡沫）
+  10% left → "PCT10"
+  5% left → "PCT5"
+  final table/FT → "FT"
+  兩桌 → "T2"
+  三桌 → "T3"
+
+JSON 格式（Chip EV，預設）：
 ```json
 {
   "hand": {
@@ -60,24 +90,25 @@ JSON 格式：
     "hero_position": "CO",
     "hero_hand": "66",
     "preflop_actions": "F-F-F-F-R2-F-F-C",
-    "streets": [
-      {
-        "board": "Js6h5s",
-        "actions": [
-          {"position": "BB", "action": "X"},
-          {"position": "CO", "action": "R2", "size": 2.0},
-          {"position": "BB", "action": "C"}
-        ]
-      },
-      {
-        "card": "Kc",
-        "actions": [
-          {"position": "BB", "action": "X"},
-          {"position": "CO", "action": "R6.6", "size": 6.6},
-          {"position": "BB", "action": "C"}
-        ]
-      }
-    ]
+    "streets": [...]
+  }
+}
+```
+
+JSON 格式（ICM）：
+```json
+{
+  "hand": {
+    "gametype": "MTTGeneral",
+    "tournament_type": "icm",
+    "tournament_size": 1000,
+    "players_remaining": 152,
+    "phase": "BUBBLE",
+    "player_stacks": [50, 50, 50, 50, 50, 50, 50, 50],
+    "effective_bb": 50,
+    "hero_position": "SB",
+    "hero_hand": "A5s",
+    "preflop_actions": "F-F-F-F-F-F"
   }
 }
 ```
@@ -644,10 +675,12 @@ class GeminiSessionManager:
         base = states.get(street)
         preflop_actions = preflop_override or ctx["preflop_actions"]
 
+        stacks = ctx.get("stacks", "")
         if street == "preflop":
             return dict(
                 gametype=ctx["gametype"],
                 depth=ctx["depth"],
+                stacks=stacks,
                 preflop_actions=preflop_actions,
             )
 
@@ -661,6 +694,7 @@ class GeminiSessionManager:
                 return dict(
                     gametype=ctx["gametype"],
                     depth=ctx["depth"],
+                    stacks=stacks,
                     preflop_actions=preflop_actions,
                     board=board_override or flop_state["board"],
                     flop_actions=flop_override or flop_state["flop_actions"],
@@ -672,6 +706,7 @@ class GeminiSessionManager:
         return dict(
             gametype=ctx["gametype"],
             depth=ctx["depth"],
+            stacks=stacks,
             preflop_actions=preflop_actions,
             board=board_override or base["board"],
             flop_actions=flop_override if flop_override is not None else base["flop_actions"],
@@ -834,6 +869,7 @@ class GeminiSessionManager:
         params = dict(
             gametype=ctx["gametype"],
             depth=depth,
+            stacks=ctx.get("stacks", ""),
             preflop_actions=preflop_override or ctx["preflop_actions"],
         )
 
@@ -908,7 +944,7 @@ class GeminiSessionManager:
 
         lines = [
             "目前分析的手牌：",
-            f"- Hero: {ctx['hero_position']} {ctx['hero_hand']}, {ctx['depth'] - 0.125:.0f}bb depth",
+            f"- Hero: {ctx['hero_position']} {ctx['hero_hand']}, {float(ctx['depth']) - 0.125:.0f}bb depth",
             f"- Preflop: {ctx['preflop_actions']}",
         ]
 

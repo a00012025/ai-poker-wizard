@@ -50,6 +50,17 @@ python scripts/e2e_test.py "有效 50bb, co open 2bb, hero sb AcTh raise 7.5bb, 
 python scripts/e2e_test.py -i "有效 50bb, co open 2bb, hero sb AcTh raise 7.5bb ..."
 ```
 
+### Regression Tests
+```bash
+python scripts/regression_test.py          # Run all tests
+python scripts/regression_test.py -v       # Verbose (with timing)
+python scripts/regression_test.py -k icm   # Run only tests matching "icm"
+```
+
+28 tests covering: chip EV analysis, position orders, range compression, GTO API calls, formatter output, ICM mode resolution, and ICM analysis.
+
+Requires a valid GTO Wizard token (`.tokens.json`) and network access. Does NOT require `GEMINI_API_KEY`.
+
 ### GTO Token Management
 ```bash
 python scripts/gto_token.py   # Print valid access token (auto-refreshes)
@@ -70,6 +81,8 @@ ai-poker-wizard/
 │   ├── gto_formatter.py       # Solver JSON → natural language formatter
 │   ├── gto_token.py           # Token management (JWT refresh)
 │   └── e2e_test.py            # CLI E2E test script
+│   ├── icm_modes.py           # ICM game mode discovery & stack matching
+│   └── regression_test.py     # Regression test suite (28 tests)
 ├── .tokens.json               # GTO Wizard auth tokens (git-ignored)
 └── .claude/skills/            # Claude Code skill definition
 ```

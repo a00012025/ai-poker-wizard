@@ -34,6 +34,7 @@ def nearest_depth(bb: float) -> float:
 def get_next_actions(
     gametype: str = "MTTGeneral",
     depth: float = 30.125,
+    stacks: str = "",
     preflop_actions: str = "",
     board: str = "",
     flop_actions: str = "",
@@ -47,7 +48,7 @@ def get_next_actions(
         params={
             "gametype": gametype,
             "depth": depth,
-            "stacks": "",
+            "stacks": stacks,
             "preflop_actions": preflop_actions,
             "board": board,
             "flop_actions": flop_actions,
@@ -63,6 +64,7 @@ def get_next_actions(
 def get_spot_solution(
     gametype: str = "MTTGeneral",
     depth: float = 30.125,
+    stacks: str = "",
     preflop_actions: str = "",
     board: str = "",
     flop_actions: str = "",
@@ -76,7 +78,7 @@ def get_spot_solution(
         params={
             "gametype": gametype,
             "depth": depth,
-            "stacks": "",
+            "stacks": stacks,
             "preflop_actions": preflop_actions,
             "board": board,
             "flop_actions": flop_actions,
@@ -85,7 +87,7 @@ def get_spot_solution(
         },
         timeout=10,
     )
-    if r.status_code == 204:
+    if r.status_code in (204, 403):
         return None
     r.raise_for_status()
     return r.json()
