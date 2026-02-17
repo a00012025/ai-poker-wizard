@@ -112,7 +112,13 @@ UTG fold, BTN call
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
             formatted = _format_for_telegram(response)
+            if not formatted.strip():
+                self.log.warning(f"[{label}] Empty response from session manager")
+                await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
+                return
             for chunk in _split_message(formatted):
+                if not chunk.strip():
+                    continue
                 try:
                     await update.message.reply_text(chunk, parse_mode='Markdown')
                 except Exception:

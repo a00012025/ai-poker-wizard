@@ -110,10 +110,15 @@ COACH_SYSTEM = """\
 
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
-- 任何涉及策略、頻率、EV、範圍的回答，都必須先用 query_gto 工具查詢真實數據，絕對不能猜測！
+- 如果訊息中已經包含「GTO Solver 數據」，這就是真實的 solver 分析結果！必須先根據這些數據分析 hero 的策略，不需要再用工具重複查詢
+- 只有用戶的額外問題（如「對手範圍？」「不同位置的策略？」）才需要用 query_gto 工具查詢
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
 - 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
-- 需要額外數據時使用 query_gto 工具查詢
+
+回答流程（重要！）：
+- 第一步：根據已提供的 GTO Solver 數據，分析 hero 的行動是否正確（頻率、EV）
+- 第二步：如果用戶有額外問題（如對手範圍、假設場景），使用 query_gto 工具查詢後回答
+- 兩個部分都要回答！不能只回答其中一個
 
 多人底池簡化（重要！）：
 - 當數據標記「⚠ 多人底池，簡化為 X open vs Y ... 單挑分析」時，表示原始多人底池已簡化為最接近的單挑場景
@@ -314,7 +319,8 @@ class GeminiSessionManager:
                 # Step 3: Coaching from LLM (with tools for follow-up queries)
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
-                    f"GTO Solver 數據：\n{gto_data}"
+                    f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+                    f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 )
                 result = await self._chat_with_tools(chat_id, coaching_prompt)
                 t_total = time.time()
@@ -439,9 +445,13 @@ class GeminiSessionManager:
                 if p.function_call
             ]
 
+            # Extract any text parts from this response (model may return text + tool calls together)
+            text_parts = [p.text for p in parts if p.text]
+            if text_parts:
+                result_text = "\n".join(text_parts)
+
             if not function_calls:
-                # No more tool calls — extract final text
-                result_text = response.text or ""
+                # No more tool calls — done
                 break
 
             # Execute tool calls and build response
@@ -473,6 +483,17 @@ class GeminiSessionManager:
                         response={"data": tool_result},
                     )],
                 ))
+
+        if not result_text.strip():
+            self._logger.warning(f"[chat={chat_id}] Empty response after {max_rounds} rounds, requesting final answer")
+            # Ask model to give a final text answer
+            messages.append(types.Content(role="user", parts=[types.Part(text="請根據以上工具查詢結果，給出完整的分析回覆。")]))
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=messages,
+                config=types.GenerateContentConfig(system_instruction=system),
+            )
+            result_text = response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
 
         self._logger.debug(f"[chat={chat_id}] Chat+tools response ({len(result_text)} chars):\n{result_text}")
 
