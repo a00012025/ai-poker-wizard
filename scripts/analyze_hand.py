@@ -625,7 +625,6 @@ def _run_analysis(hand: dict) -> dict:
     if multiway_note:
         results.append(multiway_note)
     if raw_preflop != preflop_actions:
-        results.append(f"Preflop actions 校正: {raw_preflop} → {preflop_actions}")
         # Generate detailed approximation notes for each corrected action
         raw_parts = raw_preflop.split("-")
         norm_parts = preflop_actions.split("-")
@@ -634,7 +633,10 @@ def _run_analysis(hand: dict) -> dict:
             if raw_code == norm_code:
                 continue
             pos_name = pos_order[idx] if idx < len(pos_order) else f"pos{idx}"
-            if raw_code.startswith("AI") and raw_code != "AI":
+            if raw_code == "AI" and norm_code == "RAI":
+                # AI → RAI is the same thing (all-in), not a real correction
+                continue
+            elif raw_code.startswith("AI") and raw_code != "AI":
                 size = raw_code[2:]
                 if norm_code == "RAI":
                     corrections.append(f"{pos_name} all-in {size}bb → 近似為 solver all-in ({norm_code})")
@@ -647,6 +649,7 @@ def _run_analysis(hand: dict) -> dict:
             else:
                 corrections.append(f"{pos_name} {raw_code} → {norm_code}")
         if corrections:
+            results.append(f"Preflop actions 校正: {raw_preflop} → {preflop_actions}")
             results.append(f"⚠ 近似說明: {'; '.join(corrections)}")
             results.append("  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考")
     results.append("")
