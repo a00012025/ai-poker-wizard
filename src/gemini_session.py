@@ -274,7 +274,21 @@ class GeminiSessionManager:
                     f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
                 )
 
-                # Step 2: Run GTO analysis and cache context
+                # Step 2: Ensure GTO Wizard session is valid
+                from gto_token import ensure_session, capture_browser_token
+                if not ensure_session():
+                    self._logger.warning(f"[chat={chat_id}] Session expired, browser opened for login")
+                    # Poll for login (every 5s, up to 2 min)
+                    import asyncio
+                    for _ in range(24):
+                        await asyncio.sleep(5)
+                        if capture_browser_token():
+                            self._logger.info(f"[chat={chat_id}] Browser login captured")
+                            break
+                    else:
+                        return "GTO Wizard session 已過期，已開啟瀏覽器。請登入後重新傳送手牌。"
+
+                # Step 3: Run GTO analysis and cache context
                 from analyze_hand import analyze_hand_full
                 context = analyze_hand_full(hand_json)
                 gto_data = context["text"]
@@ -459,15 +473,18 @@ class GeminiSessionManager:
     def _build_standalone_context(self, args: dict) -> dict | None:
         """Build a minimal hand context from tool args when no cached context exists.
 
-        Requires effective_bb and preflop_actions_override at minimum.
+        Requires effective_bb at minimum. preflop_actions_override defaults to ""
+        (UTG first to act) if not provided.
         """
         from gto_api import nearest_depth as _nearest_depth
 
         effective_bb = args.get("effective_bb")
-        preflop_override = args.get("preflop_actions_override")
-
-        if not effective_bb or not preflop_override:
+        if not effective_bb:
             return None
+
+        preflop_override = args.get("preflop_actions_override")
+        if preflop_override is None:
+            preflop_override = ""
 
         return {
             "gametype": "MTTGeneral",
@@ -793,13 +810,14 @@ class GeminiSessionManager:
         if not ctx:
             return (
                 "目前沒有分析中的手牌。\n"
-                "你可以使用 query_gto 和 query_next_actions 工具查詢任何 GTO 策略，但必須同時提供：\n"
-                "• effective_bb — 有效籌碼深度（例如 30）\n"
-                "• preflop_actions_override — preflop 動作序列\n"
+                "你可以使用 query_gto 和 query_next_actions 工具查詢任何 GTO 策略，必須提供 effective_bb。\n"
                 "\n"
                 "Preflop 動作編碼：每個位置一個動作，按 UTG(0)-UTG+1(1)-LJ(2)-HJ(3)-CO(4)-BTN(5)-SB(6)-BB(7) 順序，用 - 分隔。\n"
                 "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。\n"
                 "查詢某位置的策略時，preflop_actions_override 只需包含到該位置行動前的動作。\n"
+                "UTG 是第一個行動者，不需要 preflop_actions_override（留空即可）。\n"
+                "\n"
+                "例：查詢 60bb UTG open range → effective_bb=60, street='preflop', position='UTG'（不需要 preflop_actions_override）\n"
                 "例：查詢 30bb 下 LJ open 後 SB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F', street='preflop', position='SB'\n"
                 "例：查詢 25bb 下 UTG+1 open 後 BB all-in 範圍 → effective_bb=25, preflop_actions_override='F-R2-F-F-F-F-F', street='preflop', position='BB'"
             )

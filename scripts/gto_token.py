@@ -75,6 +75,69 @@ def _browser_login() -> str | None:
     return None
 
 
+def ensure_session() -> bool:
+    """Check if GTO Wizard session can be refreshed. Opens browser if needed.
+
+    Returns True if session is valid.
+    Returns False if browser login is needed (browser has been opened).
+    """
+    tokens = _load_tokens()
+
+    # Check access token
+    access = tokens.get("access")
+    if access:
+        try:
+            if _jwt_exp(access) > time.time() + 60:
+                return True
+        except Exception:
+            pass
+
+    # Try refresh
+    refresh = tokens.get("refresh")
+    if refresh:
+        try:
+            if _jwt_exp(refresh) > time.time():
+                access = _refresh_access(refresh)
+                if access:
+                    tokens["access"] = access
+                    _save_tokens(tokens)
+                    return True
+        except Exception:
+            pass
+
+    # Refresh token expired — open browser for login
+    print("Refresh token 過期，開啟瀏覽器登入...", file=sys.stderr)
+    subprocess.run(["agent-browser", "close"], capture_output=True)
+    subprocess.run(
+        ["agent-browser", "--session-name", "gto-wizard", "--headed",
+         "open", f"{ORIGIN}/solutions"],
+        capture_output=True, timeout=30,
+    )
+    return False
+
+
+def capture_browser_token() -> bool:
+    """Try to capture refresh token from browser after user logs in.
+
+    Returns True if token was captured and session is now valid.
+    """
+    try:
+        result = subprocess.run(
+            ["agent-browser", "--session-name", "gto-wizard",
+             "eval", "localStorage.getItem('user_refresh')"],
+            capture_output=True, text=True, timeout=15,
+        )
+        token = result.stdout.strip().strip('"')
+        if token and token.startswith("eyJ"):
+            access = _refresh_access(token)
+            if access:
+                _save_tokens({"refresh": token, "access": access})
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def get_access_token() -> str:
     """Get a valid access token, refreshing or re-logging in as needed."""
     tokens = _load_tokens()
