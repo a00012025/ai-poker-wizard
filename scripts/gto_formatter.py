@@ -416,11 +416,115 @@ def _compress_range(hands: list[tuple[str, float, float]]) -> str:
     return ", ".join(parts)
 
 
+_HAND_CATEGORY_LABELS = {
+    "straight_flush": "同花順", "quads": "四條", "fullhouse": "葫蘆",
+    "flush": "同花", "straight": "順子", "set": "暗三條", "trips": "三條",
+    "two_pair": "兩對", "overpair": "超對", "top_pair": "頂對",
+    "second_pair": "中對", "underpair": "口袋對 < 牌面", "third_pair": "第三對",
+    "low_pair": "底對", "ace_high": "Ace high", "king_high": "King high",
+    "no_made_hand": "無成手牌",
+}
+_DRAW_CATEGORY_LABELS = {
+    "combo_draw": "組合聽牌", "nut_flush_draw": "堅果花聽牌",
+    "flush_draw": "花聽牌", "oesd": "兩頭順聽牌", "gutshot": "卡順聽牌",
+}
+# Display order: strongest made hand first
+_HAND_CATEGORY_ORDER = [
+    "straight_flush", "quads", "fullhouse", "flush", "straight",
+    "set", "trips", "two_pair", "overpair", "top_pair", "second_pair",
+    "underpair", "third_pair", "low_pair", "ace_high", "king_high",
+    "no_made_hand",
+]
+_DRAW_CATEGORY_ORDER = [
+    "combo_draw", "nut_flush_draw", "flush_draw", "oesd", "gutshot",
+]
+
+
+def _categorize_action_range(
+    spot_solution: dict, position: str, action_code: str,
+) -> tuple[dict[str, list], dict[str, float]]:
+    """Group hands by category for a specific action.
+
+    Returns (category_hands, draw_summary):
+      category_hands: {category_name: [(hand_name, freq, combos), ...]}
+      draw_summary: {draw_name: total_combos}
+    """
+    from collections import defaultdict
+
+    hcr = spot_solution.get("hand_categories_range")
+    dcr = spot_solution.get("draw_categories_range")
+    if not hcr or len(hcr) != 1326:
+        return {}, {}
+
+    # Find player range
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return {}, {}
+
+    range_arr = player_info["range"]
+    board_cards = _get_board_cards(spot_solution["game"]["board"])
+
+    # Find the action's strategy array
+    asol = None
+    for a in spot_solution["action_solutions"]:
+        if a["action"]["code"] == action_code:
+            asol = a
+            break
+    if not asol or "strategy" not in asol:
+        return {}, {}
+
+    # Build category name mappings (use cat["index"] as key, not list position)
+    hc_names = {cat["index"]: cat["name"] for cat in asol.get("hand_categories", [])}
+    dc_names = {cat["index"]: cat["name"] for cat in asol.get("draw_categories", [])} if dcr else {}
+
+    # Group combos by hand category
+    cat_hands_raw = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))  # cat -> hand -> [combos, freq_sum]
+    draw_combos = defaultdict(float)
+
+    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+        if c1 in board_cards or c2 in board_cards:
+            continue
+        rng = range_arr[idx]
+        if rng < 0.005:
+            continue
+        freq = asol["strategy"][idx]
+        if freq < 0.005:
+            continue
+
+        hand_name = _combo_to_hand_name(c1, c2)
+        weighted = rng * freq
+        cat_name = hc_names.get(hcr[idx], "no_made_hand")
+        cat_hands_raw[cat_name][hand_name][0] += weighted
+        cat_hands_raw[cat_name][hand_name][1] += freq  # for avg freq
+
+        if dcr and idx < len(dcr):
+            draw_name = dc_names.get(dcr[idx])
+            if draw_name and draw_name not in ("no_draw", "onecard_bdfd", "twocards_bdfd"):
+                draw_combos[draw_name] += weighted
+
+    # Convert to list format compatible with _compress_range
+    category_hands = {}
+    for cat_name, hands in cat_hands_raw.items():
+        hand_list = []
+        for hand_name, (combos, freq_sum) in hands.items():
+            # Use 1.0 as freq placeholder (pure) — mixed freq handled by _compress_range
+            hand_list.append((hand_name, 1.0, combos))
+        hand_list.sort(key=lambda x: -x[2])
+        category_hands[cat_name] = hand_list
+
+    return category_hands, dict(draw_combos)
+
+
 def format_range_by_action(spot_solution: dict, position: str) -> str:
     """Format range grouped by action for a position.
 
-    Shows which hands take each action, with mixed frequencies highlighted.
-    Used for questions like "SB all-in / 3bet range 分別有哪些牌？"
+    Shows which hands take each action, categorized by hand type (top pair,
+    draws, etc.) using the solver's pre-computed hand classifications.
+    Used for questions like "BB raise range 有哪些？"
     """
     player_info = None
     for pi in spot_solution["players_info"]:
@@ -439,16 +543,13 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
     street = game["current_street"]["type"].capitalize()
     board = game["board"]
 
-    # Group hands by action
-    action_groups: dict[str, list] = {}  # {action_code: [(hand, freq, combos)]}
-
+    # Group hands by action (for total counts and fallback)
+    action_groups: dict[str, list] = {}
     for hand_name, data in shc.items():
         actions_freq = data.get("actions_total_frequencies", {})
         actions_combos = data.get("actions_total_combos", {})
-
         if not actions_freq:
             continue
-
         for action_code, freq in actions_freq.items():
             if freq < 0.001:
                 continue
@@ -462,11 +563,9 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
     if not action_groups:
         return f"{position} 沒有動作分佈資料"
 
-    # Sort each group by combos descending
     for code in action_groups:
         action_groups[code].sort(key=lambda x: -x[2])
 
-    # Order action groups by total combos descending, but put Fold last
     def sort_key(code):
         if code == "F":
             return (1, 0)
@@ -474,13 +573,48 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
 
     lines = [f"【{position} 在 {street} {board} 的策略分佈】"]
 
+    has_categories = bool(spot_solution.get("hand_categories_range"))
+
     for code in sorted(action_groups.keys(), key=sort_key):
         group = action_groups[code]
         total = sum(x[2] for x in group)
         label = _action_label(code, spot_solution)
-        compressed = _compress_range(group)
-        lines.append(f"\n{label}（{total:.0f} combos）:")
-        lines.append(f"  {compressed}")
+
+        if has_categories and code != "F":
+            # Categorized output
+            cat_hands, draw_summary = _categorize_action_range(spot_solution, position, code)
+            lines.append(f"\n{label}（{total:.0f} combos）:")
+
+            if cat_hands:
+                for cat_name in _HAND_CATEGORY_ORDER:
+                    if cat_name not in cat_hands:
+                        continue
+                    hands = cat_hands[cat_name]
+                    cat_total = sum(h[2] for h in hands)
+                    if cat_total < 0.5:
+                        continue
+                    pct = cat_total / total * 100 if total else 0
+                    cat_label = _HAND_CATEGORY_LABELS.get(cat_name, cat_name)
+                    compressed = _compress_range(hands)
+                    lines.append(f"  {cat_label} ({cat_total:.0f} combos, {pct:.0f}%): {compressed}")
+
+                # Draw summary (one line)
+                draw_parts = []
+                for dn in _DRAW_CATEGORY_ORDER:
+                    if dn in draw_summary and draw_summary[dn] > 0.5:
+                        dl = _DRAW_CATEGORY_LABELS[dn]
+                        draw_parts.append(f"{dl} {draw_summary[dn]:.0f}")
+                if draw_parts:
+                    lines.append(f"  (聽牌: {', '.join(draw_parts)} combos)")
+            else:
+                # Fallback to flat compressed range
+                compressed = _compress_range(group)
+                lines.append(f"  {compressed}")
+        else:
+            # Fold or no categories: flat compressed range
+            compressed = _compress_range(group)
+            lines.append(f"\n{label}（{total:.0f} combos）:")
+            lines.append(f"  {compressed}")
 
     return "\n".join(lines)
 

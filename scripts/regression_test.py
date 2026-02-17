@@ -533,6 +533,23 @@ def test_formatter_range_by_action():
 
 
 @test
+def test_formatter_range_by_action_categorized():
+    """Formatter: range_by_action shows hand categories (top pair, trips, etc.)."""
+    from gto_api import get_spot_solution
+    from gto_formatter import format_range_by_action
+    sol = get_spot_solution(gametype="MTTGeneral", depth=20.125,
+        preflop_actions="F-R2-F-F-F-F-F-C",
+        board="6s7h6h", flop_actions="X-R1.8")
+    text = format_range_by_action(sol, "BB")
+    # A7s/A7o should be under 頂對 (top pair), not 聽牌
+    assert_in("頂對", text, "Should categorize top pair hands")
+    assert_in("三條", text, "Should categorize trips")
+    # Draw summary should appear
+    assert_in("聽牌", text, "Should include draw summary")
+    assert_in("花聽牌", text, "Should mention flush draws")
+
+
+@test
 def test_formatter_normalize_hand_name():
     """Formatter: normalize_hand_name handles various input formats."""
     from gto_formatter import normalize_hand_name
