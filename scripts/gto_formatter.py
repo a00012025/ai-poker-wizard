@@ -2,6 +2,146 @@
 """Convert GTO Wizard API JSON into natural language summaries."""
 
 _RANK_ORDER = "AKQJT98765432"
+_COMBO_RANKS = "23456789TJQKA"
+_COMBO_SUITS = "cdhs"
+_COMBO_CARDS = [r + s for r in _COMBO_RANKS for s in _COMBO_SUITS]
+
+# Build 1326 combo index: outer j=1..51, inner i=0..j-1, combo=(cards[j], cards[i])
+_COMBO_INDEX: list[tuple[str, str]] = []
+for _j in range(1, 52):
+    for _i in range(_j):
+        _COMBO_INDEX.append((_COMBO_CARDS[_j], _COMBO_CARDS[_i]))
+
+
+def _get_board_cards(board: str) -> set[str]:
+    """Parse board string like 'KsKhQd7h' into a set of cards."""
+    cards = set()
+    for k in range(0, len(board), 2):
+        cards.add(board[k:k + 2])
+    return cards
+
+
+def _combo_to_hand_name(c1: str, c2: str) -> str:
+    """Convert combo pair to simplified hand name (e.g. ATo, ATs, AA)."""
+    r1, s1 = c1[0], c1[1]
+    r2, s2 = c2[0], c2[1]
+    i1 = _RANK_ORDER.index(r1)
+    i2 = _RANK_ORDER.index(r2)
+    if i1 > i2:
+        r1, r2 = r2, r1
+    if r1 == r2:
+        return r1 + r2
+    suffix = "s" if s1 == s2 else "o"
+    return r1 + r2 + suffix
+
+
+def _get_combo_strategies(spot_solution: dict, hand_name: str, position: str) -> list[dict] | None:
+    """Extract per-combo strategies from the 1326-length strategy arrays.
+
+    Returns list of {combo, range, ev, actions: {code: freq}} for each
+    non-blocked combo belonging to hand_name, or None if data unavailable.
+    """
+    if "action_solutions" not in spot_solution:
+        return None
+    action_solutions = spot_solution["action_solutions"]
+    if not action_solutions or "strategy" not in action_solutions[0]:
+        return None
+
+    # Find player range array
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return None
+
+    range_arr = player_info["range"]
+    if len(range_arr) != 1326:
+        return None
+    ev_arr = player_info.get("hand_evs", [])
+    board_cards = _get_board_cards(spot_solution["game"]["board"])
+
+    results = []
+    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+        if c1 in board_cards or c2 in board_cards:
+            continue
+        if _combo_to_hand_name(c1, c2) != hand_name:
+            continue
+        rng = range_arr[idx]
+        if rng < 0.005:
+            continue
+        actions = {}
+        for asol in action_solutions:
+            freq = asol["strategy"][idx]
+            if freq > 0.005:
+                actions[asol["action"]["code"]] = freq
+        results.append({
+            "combo": c1 + c2,
+            "range": rng,
+            "ev": ev_arr[idx] if idx < len(ev_arr) else 0,
+            "actions": actions,
+        })
+    return results or None
+
+
+def _has_significant_suit_diff(combo_strats: list[dict]) -> bool:
+    """Check if combo strategies differ enough to be worth reporting.
+
+    Returns True when BOTH conditions are met:
+    1. The dominant action differs between at least two combos
+    2. Some action's frequency varies by more than 35pp across combos
+    """
+    if len(combo_strats) < 2:
+        return False
+
+    # Check if dominant action differs
+    dominants = set()
+    for cs in combo_strats:
+        if cs["actions"]:
+            dominants.add(max(cs["actions"], key=cs["actions"].get))
+    if len(dominants) <= 1:
+        return False
+
+    # Check max spread per action
+    all_codes = set()
+    for cs in combo_strats:
+        all_codes.update(cs["actions"].keys())
+
+    for code in all_codes:
+        freqs = [cs["actions"].get(code, 0) for cs in combo_strats]
+        if max(freqs) - min(freqs) > 0.35:
+            return True
+
+    return False
+
+
+def _format_combo_breakdown(combo_strats: list[dict], spot_solution: dict) -> list[str]:
+    """Format combo-level strategy lines, sorted by most aggressive first."""
+    # Determine action ordering from action_solutions (skip check/fold)
+    action_order = [asol["action"]["code"] for asol in spot_solution["action_solutions"]]
+
+    def aggression_score(cs):
+        """Higher score = more aggressive (weighted toward later actions)."""
+        score = 0
+        for i, code in enumerate(action_order):
+            score += cs["actions"].get(code, 0) * i
+        return score
+
+    combo_strats.sort(key=lambda cs: -aggression_score(cs))
+
+    lines = []
+    for cs in combo_strats:
+        parts = []
+        for code in action_order:
+            freq = cs["actions"].get(code, 0)
+            if freq < 0.005:
+                continue
+            label = _action_label(code, spot_solution)
+            parts.append(f"{label} {freq*100:.0f}%")
+        actions_str = ", ".join(parts)
+        lines.append(f"    {cs['combo']}: {actions_str}（EV {cs['ev']:.1f}bb）")
+    return lines
 
 
 def normalize_hand_name(hand: str) -> str:
@@ -113,6 +253,12 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
             combos = actions_combos.get(action_code, 0)
             action_label = _action_label(action_code, spot_solution)
             lines.append(f"    {action_label}: {freq*100:.1f}%（{combos:.1f} combos）")
+
+    # Combo-level breakdown when suits matter
+    combo_strats = _get_combo_strategies(spot_solution, hand_name, position)
+    if combo_strats and _has_significant_suit_diff(combo_strats):
+        lines.append("  花色差異:")
+        lines.extend(_format_combo_breakdown(combo_strats, spot_solution))
 
     return "\n".join(lines)
 
