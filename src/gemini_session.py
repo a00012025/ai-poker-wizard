@@ -457,6 +457,7 @@ class GeminiSessionManager:
 
         result_text = ""
         max_rounds = 8
+        tools_called = 0
 
         for round_num in range(max_rounds):
             response = await self.client.aio.models.generate_content(
@@ -482,7 +483,19 @@ class GeminiSessionManager:
                 result_text = "\n".join(text_parts)
 
             if not function_calls:
-                # No more tool calls — done
+                # Model returned no function calls
+                if round_num == 0 and not result_text.strip():
+                    # Empty on first round — retry with explicit tool hint
+                    finish = getattr(candidate, "finish_reason", "unknown")
+                    self._logger.warning(
+                        f"[chat={chat_id}] Empty response on round 0 "
+                        f"(finish_reason={finish}), retrying with tool hint"
+                    )
+                    messages.append(types.Content(role="user", parts=[types.Part(text=(
+                        "請使用 query_gto 工具查詢用戶問題所需的 GTO 策略數據。"
+                        "例如查詢某位置在某條街的範圍，用 street 和 position 參數。"
+                    ))]))
+                    continue
                 break
 
             # Execute tool calls and build response
@@ -506,6 +519,7 @@ class GeminiSessionManager:
                     f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"
                     f"{tool_result[:500]}"
                 )
+                tools_called += 1
 
                 messages.append(types.Content(
                     role="user",
@@ -516,9 +530,21 @@ class GeminiSessionManager:
                 ))
 
         if not result_text.strip():
-            self._logger.warning(f"[chat={chat_id}] Empty response after {max_rounds} rounds, requesting final answer")
-            # Ask model to give a final text answer
-            messages.append(types.Content(role="user", parts=[types.Part(text="請根據以上工具查詢結果，給出完整的分析回覆。")]))
+            self._logger.warning(
+                f"[chat={chat_id}] Empty response after {round_num + 1} rounds "
+                f"({tools_called} tool calls), requesting final answer"
+            )
+            if tools_called > 0:
+                # Tools were called — ask model to summarize the results
+                messages.append(types.Content(role="user", parts=[types.Part(text=(
+                    "請根據以上工具查詢結果，給出完整的分析回覆。"
+                ))]))
+            else:
+                # No tools were called — ask model to try answering directly
+                messages.append(types.Content(role="user", parts=[types.Part(text=(
+                    "請直接回答用戶的問題。如果需要 GTO 數據支持，"
+                    "根據系統提示中的手牌資訊描述你所知道的策略。"
+                ))]))
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 contents=messages,
