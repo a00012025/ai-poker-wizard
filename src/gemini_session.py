@@ -84,7 +84,7 @@ JSON 格式：
 
 注意：
 - 如果用戶沒給某些資訊（例如花色），用最合理的猜測並在 JSON 外加一句說明
-- Raise size 如果用戶沒說具體金額，用常見的 size（preflop open 通常 2-2.5bb）
+- Raise size 如果用戶沒說具體金額，MTT preflop open 預設用 2bb（輸出 R2）
 - 只回覆 JSON（可以用 ```json ``` 包住）
 - 再次強調：翻牌後 SB 永遠第一個行動！BvB 時 SB bet → 不需要在前面加 BB check
 - 再次強調：preflop_actions 必須保留所有位置的動作！多人底池不能省略成只有兩人！"""
@@ -311,8 +311,12 @@ class GeminiSessionManager:
                 )
                 self._logger.debug(f"[chat={chat_id}] GTO data:\n{gto_data}")
 
-                # Step 3: Coaching from LLM
-                result = await self._coach(chat_id, user_text, gto_data)
+                # Step 3: Coaching from LLM (with tools for follow-up queries)
+                coaching_prompt = (
+                    f"用戶描述：\n{user_text}\n\n"
+                    f"GTO Solver 數據：\n{gto_data}"
+                )
+                result = await self._chat_with_tools(chat_id, coaching_prompt)
                 t_total = time.time()
                 self._logger.info(
                     f"[chat={chat_id}] Done: parse={t_parse - t0:.1f}s "
