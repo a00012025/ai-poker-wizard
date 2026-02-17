@@ -46,8 +46,29 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
     parts = preflop_actions.split("-")
     corrected = []
     for i, code in enumerate(parts):
-        if code in ("F", "C", "AI"):
+        if code in ("F", "C"):
             corrected.append(code)
+        elif code == "AI" or code.startswith("AI"):
+            # AI = all-in (no size), AI10 = all-in for 10bb (treat as raise)
+            actions_so_far = "-".join(corrected) if corrected else ""
+            try:
+                resp = get_next_actions(
+                    gametype=gametype, depth=depth,
+                    preflop_actions=actions_so_far,
+                )
+                avail = resp["next_actions"]["available_actions"]
+                if code == "AI":
+                    allin_code = next(
+                        (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                        code,
+                    )
+                    corrected.append(allin_code)
+                else:
+                    target = float(code[2:])  # AI10 → 10.0
+                    correct_code = find_closest_action(avail, target)
+                    corrected.append(correct_code)
+            except Exception:
+                corrected.append(code)
         elif code.startswith("R"):
             # Raise — discover correct code from solver
             actions_so_far = "-".join(corrected) if corrected else ""
@@ -324,7 +345,7 @@ def _run_analysis(hand: dict) -> dict:
     # ── Phase 1: Walk hand, discover bet codes, collect hero spots ──
     hero_spots = []
 
-    # Preflop hero spot
+    # Preflop hero spot (initial open/fold decision)
     preflop_before = _preflop_before_hero(preflop_actions, hero_pos)
     hero_spots.append({
         "street": "preflop",
@@ -332,6 +353,38 @@ def _run_analysis(hand: dict) -> dict:
         "params": dict(gametype=gametype, depth=depth, preflop_actions=preflop_before),
         "action_desc": None,
     })
+
+    # Check if hero faces a re-raise (needs to act again preflop)
+    pf_parts = preflop_actions.split("-")
+    hero_idx = POSITION_ORDER.index(hero_pos)
+    has_reraise = any(
+        pf_parts[i].startswith("R")
+        for i in range(hero_idx + 1, min(len(pf_parts), 8))
+    )
+    if has_reraise:
+        # Query hero's second decision at the full 8-position preflop
+        full_8 = "-".join(pf_parts[:8])
+
+        # Check if hero's continuation action is in the string (parts[8:])
+        hero_cont_desc = None
+        if len(pf_parts) > 8:
+            active = [i for i in range(8) if pf_parts[i] not in ("F", "")]
+            cont_idx = 0
+            for j in range(8, len(pf_parts)):
+                if cont_idx >= len(active):
+                    cont_idx = 0
+                if active[cont_idx] == hero_idx:
+                    code = pf_parts[j]
+                    hero_cont_desc = f"  → 實際行動: {hero_pos} {code}（solver code: {code}）"
+                    break
+                cont_idx += 1
+
+        hero_spots.append({
+            "street": "preflop",
+            "header": None,
+            "params": dict(gametype=gametype, depth=depth, preflop_actions=full_8),
+            "action_desc": hero_cont_desc,
+        })
 
     board = ""
     flop_acts = ""

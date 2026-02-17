@@ -103,6 +103,7 @@ COACH_SYSTEM = """\
 - 每條街 2-4 行就夠：GTO 怎麼打 → hero 怎麼打 → 差在哪 → 為什麼（一句話）
 - 如果 hero 打得對，一句帶過就好，不用展開分析
 - 數據引用要精準但不要列出所有選項，只提最重要的 1-2 個動作頻率
+- 混合策略是重要資訊，必須標出頻率！不要說「所有口袋對都開」，要說「55+ 純開，22-44 混合（22 約 60%、33 約 75%、44 約 90%）」
 
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
@@ -625,8 +626,8 @@ class GeminiSessionManager:
             for code in parts:
                 if code in ("F", "C", ""):
                     corrected.append(code)
-                elif code == "AI":
-                    # Find actual all-in code from solver
+                elif code == "AI" or code.startswith("AI"):
+                    # AI = all-in (no size), AI10 = all-in for 10bb (treat as raise to 10)
                     try:
                         check_params = dict(
                             gametype=params["gametype"],
@@ -635,11 +636,17 @@ class GeminiSessionManager:
                         )
                         resp = get_next_actions(**check_params)
                         avail = resp["next_actions"]["available_actions"]
-                        allin_code = next(
-                            (a["action"]["code"] for a in avail if a["action"].get("allin")),
-                            code,
-                        )
-                        corrected.append(allin_code)
+                        if code == "AI":
+                            allin_code = next(
+                                (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                                code,
+                            )
+                            corrected.append(allin_code)
+                        else:
+                            # AI{size} — find closest action by size
+                            target = float(code[2:])
+                            correct_code = find_closest_action(avail, target)
+                            corrected.append(correct_code)
                     except Exception:
                         corrected.append(code)
                 elif code.startswith("R"):
@@ -675,18 +682,23 @@ class GeminiSessionManager:
             for code in parts:
                 if code in ("X", "C", "F", ""):
                     corrected.append(code)
-                elif code in ("AI", "RAI"):
-                    # Find actual all-in code from solver
+                elif code in ("AI", "RAI") or code.startswith("AI"):
+                    # AI/RAI = all-in, AI{size} = all-in for specific size (treat as raise)
                     try:
                         check_params = dict(params)
                         check_params[key] = "-".join(corrected) if corrected else ""
                         resp = get_next_actions(**check_params)
                         avail = resp["next_actions"]["available_actions"]
-                        allin_code = next(
-                            (a["action"]["code"] for a in avail if a["action"].get("allin")),
-                            code,
-                        )
-                        corrected.append(allin_code)
+                        if code in ("AI", "RAI"):
+                            allin_code = next(
+                                (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                                code,
+                            )
+                            corrected.append(allin_code)
+                        else:
+                            target = float(code[2:])
+                            correct_code = find_closest_action(avail, target)
+                            corrected.append(correct_code)
                     except Exception:
                         corrected.append(code)
                 elif code.startswith("R"):
