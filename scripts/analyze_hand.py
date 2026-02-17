@@ -74,7 +74,10 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
                     preflop_actions=actions_so_far,
                 )
                 avail = resp["next_actions"]["available_actions"]
-                if code == "AI":
+                if not avail:
+                    # No solver data (e.g. multiway) — use RAI for all-in
+                    corrected.append("RAI")
+                elif code == "AI":
                     allin_code = next(
                         (a["action"]["code"] for a in avail if a["action"].get("allin")),
                         code,
@@ -95,9 +98,12 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
                     preflop_actions=actions_so_far,
                 )
                 avail = resp["next_actions"]["available_actions"]
-                target = float(code[1:])  # R2 → 2.0, R2.1 → 2.1
-                correct_code = find_closest_action(avail, target)
-                corrected.append(correct_code)
+                if not avail:
+                    corrected.append(code)
+                else:
+                    target = float(code[1:])  # R2 → 2.0, R2.1 → 2.1
+                    correct_code = find_closest_action(avail, target)
+                    corrected.append(correct_code)
             except Exception:
                 corrected.append(code)  # fallback to original
         else:
@@ -209,27 +215,37 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     if len(non_fold) <= 2:
         return preflop, depth, "", None
 
-    # Multiway — find who remains after flop action
-    if not streets:
-        return preflop, depth, "", None
+    # Multiway — find who remains
+    if streets:
+        # Use flop actions to determine remaining players
+        flop_positions = []
+        seen = set()
+        folded_on_flop = set()
+        for act in streets[0]["actions"]:
+            pos = act["position"]
+            if pos not in seen:
+                flop_positions.append(pos)
+                seen.add(pos)
+            if act["action"] == "F":
+                folded_on_flop.add(pos)
 
-    flop_positions = []
-    seen = set()
-    folded_on_flop = set()
-    for act in streets[0]["actions"]:
-        pos = act["position"]
-        if pos not in seen:
-            flop_positions.append(pos)
-            seen.add(pos)
-        if act["action"] == "F":
-            folded_on_flop.add(pos)
+        remaining = [p for p in flop_positions if p not in folded_on_flop]
 
-    remaining = [p for p in flop_positions if p not in folded_on_flop]
+        if len(remaining) != 2 or hero_pos not in remaining:
+            return preflop, depth, "", None
 
-    if len(remaining) != 2 or hero_pos not in remaining:
-        return preflop, depth, "", None
-
-    villain_pos = next(p for p in remaining if p != hero_pos)
+        villain_pos = next(p for p in remaining if p != hero_pos)
+    else:
+        # Preflop-only: simplify to first raiser vs hero
+        pos_order = POSITION_ORDER[:min(len(parts), 8)]
+        first_raiser = None
+        for i in non_fold:
+            if i < len(parts) and parts[i].startswith("R"):
+                first_raiser = pos_order[i] if i < len(pos_order) else None
+                break
+        if not first_raiser or first_raiser == hero_pos:
+            return preflop, depth, "", None
+        villain_pos = first_raiser
     hero_idx = POSITION_ORDER.index(hero_pos)
     villain_idx = POSITION_ORDER.index(villain_pos)
 
@@ -243,7 +259,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
 
     # Check pot type from original preflop
     second_action = parts[second_idx] if second_idx < len(parts) else "C"
-    is_3bet = second_action.startswith("R")
+    is_3bet = second_action.startswith("R") or second_action.startswith("AI")
 
     # Check for 4bet+ in continuation actions (parts[8:])
     fourbet_size = None
@@ -290,14 +306,27 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     simplified[first_idx] = first_code
 
     if is_3bet:
-        # Second actor raised → 3bet pot
+        # Second actor raised/all-in → 3bet pot
         prefix = "-".join(simplified[:second_idx])
         try:
             resp = get_next_actions(gametype=gametype, depth=adjusted_depth,
                                     preflop_actions=prefix)
             avail = resp["next_actions"]["available_actions"]
-            second_size = float(second_action[1:])
-            second_code = find_closest_action(avail, second_size)
+            if second_action.startswith("AI"):
+                # All-in: find solver's all-in code, or closest raise to the size
+                allin_code = next(
+                    (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                    None,
+                )
+                if allin_code:
+                    second_code = allin_code
+                elif second_action != "AI":
+                    second_code = find_closest_action(avail, float(second_action[2:]))
+                else:
+                    second_code = find_closest_action(avail, adjusted_depth - 0.125)
+            else:
+                second_size = float(second_action[1:])
+                second_code = find_closest_action(avail, second_size)
         except Exception:
             second_code = second_action
         simplified[second_idx] = second_code
@@ -635,15 +664,12 @@ def _run_analysis(hand: dict) -> dict:
             if raw_code == norm_code:
                 continue
             pos_name = pos_order[idx] if idx < len(pos_order) else f"pos{idx}"
-            if raw_code == "AI" and norm_code == "RAI":
-                # AI → RAI is the same thing (all-in), not a real correction
+            if raw_code.startswith("AI") and norm_code == "RAI":
+                # Any all-in → solver all-in is the same thing, not a real correction
                 continue
             elif raw_code.startswith("AI") and raw_code != "AI":
                 size = raw_code[2:]
-                if norm_code == "RAI":
-                    corrections.append(f"{pos_name} all-in {size}bb → 近似為 solver all-in ({norm_code})")
-                else:
-                    corrections.append(f"{pos_name} all-in {size}bb → 近似為 raise {norm_code}")
+                corrections.append(f"{pos_name} all-in {size}bb → 近似為 raise {norm_code}")
             elif raw_code == "AI":
                 corrections.append(f"{pos_name} all-in → {norm_code}")
             elif raw_code.startswith("R") and norm_code.startswith("R"):

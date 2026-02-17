@@ -672,6 +672,25 @@ def test_icm_postflop_falls_back_to_chipev():
     assert_in("Flop", result["text"])
 
 
+@test
+def test_preflop_only_multiway_allin():
+    """Multiway preflop-only: SB all-in should simplify without false corrections."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 10,
+        "hero_position": "SB",
+        "hero_hand": "A8s",
+        "preflop_actions": "F-R2-C-F-F-F-AI10-F",
+        "streets": [],
+    })
+    text = result["text"]
+    # Should NOT contain correction notes for AI→RAI
+    assert_not_in("近似說明", text, "Should not show false correction note for AI→RAI")
+    # Should have some analysis output
+    assert_true(len(text) > 10, "Should produce analysis text")
+
+
 # ── Runner ──
 
 def run_tests():
