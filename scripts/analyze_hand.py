@@ -193,11 +193,12 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     return find_closest_action(available_actions, bet_size)
 
 
-def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str]:
+def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str, set[str] | None]:
     """Detect multiway pot and simplify to heads-up if needed.
 
-    Returns (preflop_actions, adjusted_depth, simplification_note).
-    If not multiway, returns (original_preflop, original_depth, "").
+    Returns (preflop_actions, adjusted_depth, simplification_note, active_positions).
+    active_positions is the set of 2 positions in the simplified HU, or None if no simplification.
+    If not multiway, returns (original_preflop, original_depth, "", None).
     """
     preflop = hand["preflop_actions"]
     streets = hand.get("streets", [])
@@ -206,24 +207,29 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     # Count non-fold actions in first 8 positions
     non_fold = [i for i in range(min(len(parts), 8)) if parts[i] not in ("F", "")]
     if len(non_fold) <= 2:
-        return preflop, depth, ""
+        return preflop, depth, "", None
 
-    # Multiway — find who's on the flop
+    # Multiway — find who remains after flop action
     if not streets:
-        return preflop, depth, ""
+        return preflop, depth, "", None
 
     flop_positions = []
     seen = set()
+    folded_on_flop = set()
     for act in streets[0]["actions"]:
         pos = act["position"]
         if pos not in seen:
             flop_positions.append(pos)
             seen.add(pos)
+        if act["action"] == "F":
+            folded_on_flop.add(pos)
 
-    if len(flop_positions) != 2 or hero_pos not in flop_positions:
-        return preflop, depth, ""
+    remaining = [p for p in flop_positions if p not in folded_on_flop]
 
-    villain_pos = next(p for p in flop_positions if p != hero_pos)
+    if len(remaining) != 2 or hero_pos not in remaining:
+        return preflop, depth, "", None
+
+    villain_pos = next(p for p in remaining if p != hero_pos)
     hero_idx = POSITION_ORDER.index(hero_pos)
     villain_idx = POSITION_ORDER.index(villain_pos)
 
@@ -327,7 +333,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
             f"（扣除底池死錢 ~{dead_money:.0f}bb）"
         )
 
-    return full, adjusted_depth, "\n".join(note_parts)
+    return full, adjusted_depth, "\n".join(note_parts), {first_pos, second_pos}
 
 
 def _run_analysis(hand: dict) -> dict:
@@ -389,7 +395,8 @@ def _run_analysis(hand: dict) -> dict:
     # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
     multiway_note = ""
-    simplified_preflop, adjusted_depth, multiway_note = _simplify_multiway(
+    multiway_positions = None  # set of 2 positions if multiway simplified
+    simplified_preflop, adjusted_depth, multiway_note, multiway_positions = _simplify_multiway(
         hand, hero_pos, gametype if not is_icm else chipev_gametype,
         depth if not is_icm else chipev_depth,
     )
@@ -503,6 +510,21 @@ def _run_analysis(hand: dict) -> dict:
             action_type = act["action"]
             target_size = act.get("size", 0)
 
+            # Skip actions from positions not in simplified heads-up
+            if multiway_positions and pos not in multiway_positions:
+                # Still track pot changes from folded players
+                if actual_pot > 0:
+                    if action_type == "C":
+                        prev = street_investments.get(pos, 0)
+                        actual_pot += outstanding_bet - prev
+                        street_investments[pos] = outstanding_bet
+                    elif action_type not in ("X", "F"):
+                        prev = street_investments.get(pos, 0)
+                        actual_pot += target_size - prev
+                        street_investments[pos] = target_size
+                        outstanding_bet = target_size
+                continue
+
             post_preflop = chipev_preflop if is_icm else preflop_actions
 
             if pos == hero_pos:
@@ -562,7 +584,7 @@ def _run_analysis(hand: dict) -> dict:
                     street_investments[pos] = target_size
                     outstanding_bet = target_size
 
-            # Advance action string
+            # Advance action string (only for positions in the simplified pair)
             if street_idx == 0:
                 flop_acts = f"{flop_acts}-{taken_code}" if flop_acts else taken_code
             elif street_idx == 1:

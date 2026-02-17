@@ -136,6 +136,69 @@ def test_chip_ev_depth_mapping():
     assert_eq(nearest_depth(15), 14.125)
 
 
+# ── Multiway Simplification Tests ──
+
+@test
+def test_multiway_3way_fold_on_flop():
+    """Multiway: 3-way pot where one folds on flop simplifies to heads-up."""
+    from analyze_hand import analyze_hand_full
+    # UTG raise, SB call, BB call → 3-way to flop
+    # Flop: SB checks, BB checks, UTG bets, SB folds, BB calls → heads-up
+    # Turn: BB checks, UTG bets, BB folds
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "BB",
+        "hero_hand": "ATo",
+        "preflop_actions": "R2-F-F-F-F-F-C-C",
+        "streets": [
+            {"board": "JsTc3h", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "UTG", "action": "R2", "size": 2.0},
+                {"position": "SB", "action": "F"},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "6c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG", "action": "R5", "size": 5.0},
+                {"position": "BB", "action": "F"},
+            ]},
+        ],
+    })
+    # Should have multiway simplification note
+    assert_in("多人底池", result["text"], "should note multiway simplification")
+    assert_in("UTG", result["text"])
+    # Flop and turn should have solver data (not "無 solver 數據")
+    assert_in("Flop", result["text"])
+    flop_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
+                      if spot["street"] == "flop" and s is not None]
+    assert_true(len(flop_solutions) > 0, "flop should have solver data after multiway simplification")
+
+
+@test
+def test_multiway_2way_flop_unchanged():
+    """Multiway: 3-way preflop but only 2 see flop already works without change."""
+    from analyze_hand import analyze_hand_full
+    # UTG raise, BTN call, BB fold → only UTG+BTN see flop (already 2-way)
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "BTN",
+        "hero_hand": "AQs",
+        "preflop_actions": "R2-F-F-F-F-C-F-F",
+        "streets": [
+            {"board": "As7d2c", "actions": [
+                {"position": "UTG", "action": "X"},
+                {"position": "BTN", "action": "R2", "size": 2.0},
+            ]},
+        ],
+    })
+    # This is actually heads-up (only 2 non-fold), no multiway note expected
+    # The point is this should still work and have flop data
+    assert_in("Flop", result["text"])
+
+
 # ── Position Order Tests ──
 
 @test
