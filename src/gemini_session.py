@@ -26,10 +26,13 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 PARSE_PROMPT = """\
 你是撲克手牌解析器。分析用戶訊息，如果包含手牌描述，提取為 JSON。
 如果不是手牌（例如追問、閒聊），回覆 {"hand": null}。
+重要：只要訊息包含足以構成手牌的資訊（有效籌碼、位置、手牌、preflop 動作），即使同時包含問題（如「該跟嗎？」「對手範圍？」），也要提取手牌 JSON！
+例如「有效 30bb, hero +1 raise, btn all in, 我 TT 該跟嗎？」→ 這是手牌描述，要提取！
 
 規則：
 - MTT 8-max 位置順序：UTG(0), UTG+1(1), LJ(2), HJ(3), CO(4), BTN(5), SB(6), BB(7)
-- preflop_actions：必須列出所有 8 個位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in
+- preflop_actions：必須列出所有 8 個位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in, AI{size}=All-in for specific size
+  如果用戶有提到 all-in 的大小（如 "all in 10bb"），必須用 AI{size} 格式（如 AI10）！只有不知道大小時才用 AI。
   重要：即使某些位置之後 fold 了，他們初始的 raise/call 動作仍要保留！
   例1：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
   例2（多人底池）：UTG+1 raise 2bb, LJ call, CO call, SB raise 10bb → F-R2-C-F-C-F-R10-F
@@ -107,6 +110,7 @@ COACH_SYSTEM = """\
 
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
+- 任何涉及策略、頻率、EV、範圍的回答，都必須先用 query_gto 工具查詢真實數據，絕對不能猜測！
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
 - 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
 - 需要額外數據時使用 query_gto 工具查詢
@@ -117,6 +121,11 @@ COACH_SYSTEM = """\
 - 策略頻率（check/bet/raise 比例）和 EV 仍然是有效的參考
 - 下注大小已按底池比例映射（例如實際 20% pot → solver 25% pot），直接用 solver 的百分比分析即可
 - 分析時用 solver 的百分比（如「25% pot bet」），不要糾結於絕對 bb 數字的差異
+
+近似場景分析（重要！）：
+- 當數據包含「⚠ 近似說明」時，表示實際場景無法被 solver 完全模擬，使用了最接近的替代解
+- 在分析開頭簡要說明近似方式（如「BTN all-in 10bb 被近似為 3bet 6.3bb」）以及可能的偏差
+- 強調分析結果是參考性質，但仍有參考價值
 
 分析結構：
 1. 每條街的 GTO vs Hero 對比（只講有意義的差異）
@@ -556,6 +565,40 @@ class GeminiSessionManager:
         if not solution:
             return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
 
+        # Auto-pad preflop for position mismatch:
+        # If position is specified but not found in the solution, try padding
+        # the preflop to reach the correct decision point and retry.
+        if position and street == "preflop":
+            found = any(
+                pi["player"]["position"] == position
+                for pi in solution.get("players_info", [])
+            )
+            if not found:
+                pf = params.get("preflop_actions", "")
+                pf_parts = [p for p in pf.split("-") if p] if pf else []
+                if len(pf_parts) < 8:
+                    POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+                    try:
+                        target_idx = POSITION_ORDER.index(position)
+                    except ValueError:
+                        target_idx = -1
+                    if target_idx >= 0 and len(pf_parts) <= target_idx:
+                        # Pad with F up to (but not including) the target position
+                        while len(pf_parts) < target_idx:
+                            pf_parts.append("F")
+                        params["preflop_actions"] = "-".join(pf_parts)
+                    elif len(pf_parts) < 8:
+                        # Re-raise scenario: pad remaining positions with F
+                        while len(pf_parts) < 8:
+                            pf_parts.append("F")
+                        params["preflop_actions"] = "-".join(pf_parts)
+                    try:
+                        solution = get_spot_solution(**params)
+                    except Exception as e:
+                        return f"API 查詢失敗：{e}"
+                    if not solution:
+                        return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
+
         return self._format_solution(solution, position, hand)
 
     def _find_cached_solution(self, ctx: dict, street: str) -> dict | None:
@@ -831,7 +874,11 @@ class GeminiSessionManager:
                 "\n"
                 "例：查詢 60bb UTG open range → effective_bb=60, street='preflop', position='UTG'（不需要 preflop_actions_override）\n"
                 "例：查詢 30bb 下 LJ open 後 SB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F', street='preflop', position='SB'\n"
-                "例：查詢 25bb 下 UTG+1 open 後 BB all-in 範圍 → effective_bb=25, preflop_actions_override='F-R2-F-F-F-F-F', street='preflop', position='BB'"
+                "例：查詢 25bb 下 UTG+1 open 後 BB all-in 範圍 → effective_bb=25, preflop_actions_override='F-R2-F-F-F-F-F', street='preflop', position='BB'\n"
+                "\n"
+                "重要：查詢面對 re-raise 的決策（如 UTG+1 open 後 BTN 3bet，UTG+1 要 call/fold）時，\n"
+                "preflop_actions_override 必須包含完整 8 個位置（其他位置用 F），這樣才能查到該位置的第二次決策。\n"
+                "例：UTG+1 面對 BTN 3bet SB 4bet → preflop_actions_override='F-R2-F-F-F-AI10-AI30-F', position='UTG+1'"
             )
 
         lines = [
