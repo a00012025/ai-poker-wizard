@@ -3,6 +3,7 @@
 
 Pure HTTP calls — no browser needed.
 """
+import time
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from gto_token import get_access_token
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
 AVAILABLE_DEPTHS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9, 8]
+_TIMEOUT = 15
+_MAX_RETRIES = 2
 
 # Reuse TCP connection across requests
 _session = requests.Session()
@@ -23,6 +26,18 @@ _session.headers.update({"origin": ORIGIN})
 
 def _ensure_auth():
     _session.headers["authorization"] = f"Bearer {get_access_token()}"
+
+
+def _get_with_retry(url: str, params: dict, timeout: int = _TIMEOUT) -> requests.Response:
+    """GET with automatic retry on timeout/connection errors."""
+    _ensure_auth()
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return _session.get(url, params=params, timeout=timeout)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt == _MAX_RETRIES:
+                raise
+            time.sleep(1 * (attempt + 1))
 
 
 def nearest_depth(bb: float) -> float:
@@ -42,8 +57,7 @@ def get_next_actions(
     river_actions: str = "",
 ) -> dict:
     """Get available actions for a spot."""
-    _ensure_auth()
-    r = _session.get(
+    r = _get_with_retry(
         f"{API_BASE}/v1/poker/next-actions/",
         params={
             "gametype": gametype,
@@ -55,7 +69,6 @@ def get_next_actions(
             "turn_actions": turn_actions,
             "river_actions": river_actions,
         },
-        timeout=10,
     )
     r.raise_for_status()
     return r.json()
@@ -72,8 +85,7 @@ def get_spot_solution(
     river_actions: str = "",
 ) -> dict | None:
     """Get full strategy solution for a spot. Returns None if no solution (204)."""
-    _ensure_auth()
-    r = _session.get(
+    r = _get_with_retry(
         f"{API_BASE}/v4/solutions/spot-solution/",
         params={
             "gametype": gametype,
@@ -85,7 +97,6 @@ def get_spot_solution(
             "turn_actions": turn_actions,
             "river_actions": river_actions,
         },
-        timeout=10,
     )
     if r.status_code in (204, 403):
         return None
