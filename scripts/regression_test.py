@@ -110,6 +110,32 @@ def test_chip_ev_multi_street():
 
 
 @test
+def test_chip_ev_alternate_street_keys():
+    """Chip EV: handles LLM outputting 'cards' or 'card' instead of 'board' for flop."""
+    from analyze_hand import analyze_hand_full
+    # Flop uses "cards" instead of "board", turn uses "cards" instead of "card"
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "CO",
+        "hero_hand": "AKs",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "streets": [
+            {"cards": "As7d2c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R2", "size": 2.0},
+            ]},
+            {"cards": "Tc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+        ],
+    })
+    assert_in("Flop", result["text"])
+    assert_in("Turn", result["text"])
+
+
+@test
 def test_chip_ev_preflop_reraise():
     """Chip EV: preflop re-raise creates second hero decision point."""
     from analyze_hand import analyze_hand_full

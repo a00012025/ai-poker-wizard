@@ -475,14 +475,16 @@ def _run_analysis(hand: dict) -> dict:
         street_name = STREET_NAMES[street_idx]
 
         if street_idx == 0:
-            board = street["board"]
+            board = street.get("board") or street.get("cards") or street.get("card", "")
             street_header = f"【Flop: {board}】"
         elif street_idx == 1:
-            board += street["card"]
-            street_header = f"【Turn: {street['card']}（Board: {board}）】"
+            card = street.get("card") or street.get("cards", "")
+            board += card
+            street_header = f"【Turn: {card}（Board: {board}）】"
         elif street_idx == 2:
-            board += street["card"]
-            street_header = f"【River: {street['card']}（Board: {board}）】"
+            card = street.get("card") or street.get("cards", "")
+            board += card
+            street_header = f"【River: {card}（Board: {board}）】"
 
         # Snapshot state at start of this street (before actions)
         street_states[street_name] = {
