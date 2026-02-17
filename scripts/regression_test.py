@@ -673,6 +673,36 @@ def test_icm_postflop_falls_back_to_chipev():
 
 
 @test
+def test_missing_solver_data_explains_rare_line():
+    """Missing solver data: explains hero's rare action caused solver gap."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 22,
+        "hero_position": "UTG+1",
+        "hero_hand": "9h9c",
+        "preflop_actions": "F-R2-F-F-F-C-F-C",
+        "streets": [
+            {"board": "6s7h6h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "R2.5", "size": 2.5},
+                {"position": "BB", "action": "R8.7", "size": 8.7},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+            {"card": "3c", "actions": [
+                {"position": "BB", "action": "AI", "size": 9.3},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+        ],
+    })
+    text = result["text"]
+    # Turn should explain why no solver data (hero's rare flop call)
+    assert_not_in("無 solver 數據", text, "Should explain instead of generic message")
+    assert_in("solver 未計算", text, "Should mention solver gap due to rare line")
+    assert_in("All-in", text, "Should mention GTO recommended action")
+
+
+@test
 def test_preflop_only_multiway_allin():
     """Multiway preflop-only: SB all-in should simplify without false corrections."""
     from analyze_hand import analyze_hand_full

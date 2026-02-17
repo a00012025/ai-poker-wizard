@@ -122,6 +122,97 @@ def _preflop_before_hero(preflop_actions: str, hero_position: str, position_orde
 
 STREET_NAMES = ["flop", "turn", "river"]
 
+# Action display names for explanatory messages
+_ACTION_LABELS = {
+    "X": "Check", "C": "Call", "F": "Fold", "RAI": "All-in",
+}
+
+
+def _get_hero_action_freq(solution: dict, action_code: str, hero_hand: str, hero_pos: str) -> tuple[float | None, str]:
+    """Get hero's hand-specific frequency for a given action from a solution.
+
+    Returns (frequency_0_to_1, gto_recommendation_str).
+    frequency is None if data unavailable.
+    """
+    if not solution or "action_solutions" not in solution:
+        return None, ""
+
+    from gto_formatter import _get_combo_strategies, _COMBO_INDEX, _get_board_cards, _combo_to_hand_name
+
+    action_solutions = solution["action_solutions"]
+
+    # Find the target action's index
+    target_asol = None
+    for asol in action_solutions:
+        if asol["action"]["code"] == action_code:
+            target_asol = asol
+            break
+    if not target_asol:
+        return None, ""
+
+    # Try hand-specific frequency from strategy arrays
+    player_info = None
+    for pi in solution["players_info"]:
+        if pi["player"]["position"] == hero_pos:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return target_asol.get("total_frequency"), ""
+
+    range_arr = player_info["range"]
+    if len(range_arr) != 1326:
+        return target_asol.get("total_frequency"), ""
+
+    board_cards = _get_board_cards(solution["game"]["board"])
+
+    # Compute weighted average frequency for hero's hand
+    total_weight = 0
+    weighted_freq = 0
+    action_freqs = {}  # code → weighted freq
+
+    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+        if c1 in board_cards or c2 in board_cards:
+            continue
+        if _combo_to_hand_name(c1, c2) != hero_hand:
+            continue
+        rng = range_arr[idx]
+        if rng < 0.005:
+            continue
+        total_weight += rng
+        for asol in action_solutions:
+            code = asol["action"]["code"]
+            freq = asol["strategy"][idx]
+            action_freqs[code] = action_freqs.get(code, 0) + freq * rng
+
+    if total_weight < 0.005:
+        return target_asol.get("total_frequency"), ""
+
+    # Normalize
+    for code in action_freqs:
+        action_freqs[code] /= total_weight
+
+    hero_freq = action_freqs.get(action_code, 0)
+
+    # Build GTO recommendation string (top action)
+    best_code = max(action_freqs, key=action_freqs.get)
+    best_freq = action_freqs[best_code]
+
+    # Get display label
+    best_asol = next((a for a in action_solutions if a["action"]["code"] == best_code), None)
+    if best_asol:
+        act = best_asol["action"]
+        if act.get("allin"):
+            label = "All-in"
+        elif act["code"] in _ACTION_LABELS:
+            label = _ACTION_LABELS[act["code"]]
+        else:
+            label = act.get("display_name", act["code"])
+    else:
+        label = best_code
+
+    gto_rec = f"GTO 建議 {best_freq*100:.0f}% {label}"
+    return hero_freq, gto_rec
+
 
 def _compute_preflop_pot(preflop_actions: str, effective_bb: float) -> float:
     """Compute the pot at the start of the flop from original preflop actions."""
@@ -365,6 +456,36 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     return full, adjusted_depth, "\n".join(note_parts), {first_pos, second_pos}
 
 
+def _explain_missing_solution(
+    spot_idx: int, hero_spots: list, solutions: list,
+    hero_hand: str, hero_pos: str,
+) -> str | None:
+    """Explain why a spot has no solver data by checking previous hero actions.
+
+    When the solver doesn't have a solution, it's often because a previous
+    hero action had very low GTO frequency (e.g., calling when should all-in).
+    """
+    # Search backwards for the most recent hero spot with a solution and a taken action
+    for j in range(spot_idx - 1, -1, -1):
+        prev_sol = solutions[j]
+        prev_spot = hero_spots[j]
+        taken_code = prev_spot.get("taken_code")
+        if not prev_sol or not taken_code:
+            continue
+
+        freq, gto_rec = _get_hero_action_freq(prev_sol, taken_code, hero_hand, hero_pos)
+        if freq is not None and freq < 0.10:
+            # Hero's action was rare — explain it
+            taken_label = _ACTION_LABELS.get(taken_code, taken_code)
+            street_label = prev_spot["street"].capitalize()
+            pct = freq * 100
+            return (
+                f"（{street_label} hero {taken_label} 頻率僅 {pct:.1f}%"
+                f"（{gto_rec}），此後續節點 solver 未計算）"
+            )
+    return None
+
+
 def _run_analysis(hand: dict) -> dict:
     """Core analysis: walk hand, discover bet codes, fetch spot solutions.
 
@@ -583,6 +704,7 @@ def _run_analysis(hand: dict) -> dict:
                     "header": street_header if street_first_hero else None,
                     "params": params,
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
+                    "taken_code": taken_code,
                 })
                 street_first_hero = False
             else:
@@ -682,7 +804,7 @@ def _run_analysis(hand: dict) -> dict:
             results.append("  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考")
     results.append("")
 
-    for spot, sol in zip(hero_spots, solutions):
+    for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         if spot["header"]:
             results.append("")
             results.append("=" * 50)
@@ -692,7 +814,12 @@ def _run_analysis(hand: dict) -> dict:
             spot_text = format_full_spot(sol, hero_hand, hero_pos)
             results.append(spot_text)
         else:
-            results.append("（無 solver 數據）")
+            # Check if a previous hero action explains the missing data
+            explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos)
+            if explanation:
+                results.append(explanation)
+            else:
+                results.append("（無 solver 數據）")
 
         if spot["action_desc"]:
             results.append(spot["action_desc"])
