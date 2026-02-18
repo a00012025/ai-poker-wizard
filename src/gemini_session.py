@@ -142,7 +142,9 @@ IMAGE_PARSE_PROMPT = """\
   例：UTG+1 raise 2, CO call, SB raise 10, UTG+1 fold, CO call
   → F-R2-F-F-C-F-R10-F-F-C（8位置 + UTG+1 fold + CO call）
 - effective_bb: min(hero 籌碼, 進入底池的對手中最小籌碼)
-- hero_hand: 兩張牌，rank+suit（c♣ d♦ h♥ s♠），如 "AsKc"
+- 牌面記號：rank 用單字元 2-9, T, J, Q, K, A（十=T，不是10！）
+  suit 用 c♣ d♦ h♥ s♠，如 "AsKc", "Ts4h"
+- hero_hand: 兩張牌，如 "AsKc"
 - streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"
 - 翻牌後 action: X=Check, C=Call, F=Fold, R{size}=Bet/Raise（size 為 bb 絕對值）
 - 翻牌後行動順序：靠近 SB 的位置先行動
@@ -533,6 +535,7 @@ class GeminiSessionManager:
             result = json.loads(json_str)
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+                self._normalize_cards(hand)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(
@@ -540,6 +543,16 @@ class GeminiSessionManager:
             )
 
         return None
+
+    @staticmethod
+    def _normalize_cards(hand: dict):
+        """Fix common Gemini vision mistakes in card notation (e.g. '10' → 'T')."""
+        hand["hero_hand"] = re.sub(r"10", "T", hand["hero_hand"])
+        for street in hand.get("streets", []):
+            if "board" in street:
+                street["board"] = re.sub(r"10", "T", street["board"])
+            if "card" in street:
+                street["card"] = re.sub(r"10", "T", street["card"])
 
     async def _parse_hand(self, chat_id: int, user_text: str) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""
