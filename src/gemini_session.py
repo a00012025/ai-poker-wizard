@@ -272,6 +272,27 @@ QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
                 type=types.Type.STRING,
                 description="假設不同的轉牌動作（查詢 river 時使用）。",
             ),
+            "num_players": types.Schema(
+                type=types.Type.INTEGER,
+                description="桌上人數（6-9）。ICM 查詢時必須指定。",
+            ),
+            "icm_phase": types.Schema(
+                type=types.Type.STRING,
+                enum=["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
+                      "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"],
+                description=(
+                    "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip EV。"
+                    "常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, FT=決賽桌。"
+                ),
+            ),
+            "player_stacks": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "ICM 各位置籌碼（bb），用逗號分隔，按座位順序（UTG 到 BB）。"
+                    "例如 8 人桌全部 20bb: '20,20,20,20,20,20,20,20'。"
+                    "不指定則預設所有人相同籌碼（= effective_bb）。"
+                ),
+            ),
         },
         required=["street"],
     ),
@@ -334,6 +355,27 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             "river_actions_override": types.Schema(
                 type=types.Type.STRING,
                 description="假設不同的河牌動作序列。",
+            ),
+            "num_players": types.Schema(
+                type=types.Type.INTEGER,
+                description="桌上人數（6-9）。ICM 查詢時必須指定。",
+            ),
+            "icm_phase": types.Schema(
+                type=types.Type.STRING,
+                enum=["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
+                      "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"],
+                description=(
+                    "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip EV。"
+                    "常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, FT=決賽桌。"
+                ),
+            ),
+            "player_stacks": types.Schema(
+                type=types.Type.STRING,
+                description=(
+                    "ICM 各位置籌碼（bb），用逗號分隔，按座位順序（UTG 到 BB）。"
+                    "例如 8 人桌全部 20bb: '20,20,20,20,20,20,20,20'。"
+                    "不指定則預設所有人相同籌碼（= effective_bb）。"
+                ),
             ),
         },
         required=["street"],
@@ -759,9 +801,37 @@ class GeminiSessionManager:
         if preflop_override is None:
             preflop_override = ""
 
+        # ICM support
+        icm_phase = args.get("icm_phase")
+        if icm_phase:
+            from icm_modes import find_icm_params
+            num_players = args.get("num_players", 8)
+            stacks_str = args.get("player_stacks", "")
+            if stacks_str:
+                player_stacks = [float(s.strip()) for s in stacks_str.split(",")]
+            else:
+                player_stacks = [float(effective_bb)] * num_players
+            icm = find_icm_params(
+                player_stacks=player_stacks,
+                phase=icm_phase,
+            )
+            return {
+                "gametype": icm["gametype"],
+                "depth": icm["depth"],
+                "stacks": icm["stacks"],
+                "preflop_actions": preflop_override,
+                "hero_position": "",
+                "hero_hand": "",
+                "hero_spots": [],
+                "solutions": [],
+                "street_states": {},
+                "final_actions": {},
+            }
+
         return {
             "gametype": "MTTGeneral",
             "depth": _nearest_depth(effective_bb),
+            "stacks": "",
             "preflop_actions": preflop_override,
             "hero_position": "",
             "hero_hand": "",
@@ -778,11 +848,17 @@ class GeminiSessionManager:
 
         from gto_api import nearest_depth as _nearest_depth
 
-        ctx = self.hand_contexts.get(chat_id)
-        if not ctx:
+        # ICM args force standalone context (don't use cached chip EV context)
+        if args.get("icm_phase"):
             ctx = self._build_standalone_context(args)
             if not ctx:
-                return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
+                return "錯誤：ICM 查詢需要提供 effective_bb。"
+        else:
+            ctx = self.hand_contexts.get(chat_id)
+            if not ctx:
+                ctx = self._build_standalone_context(args)
+                if not ctx:
+                    return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
 
         street = args.get("street", "flop")
         position = args.get("position")
@@ -794,8 +870,8 @@ class GeminiSessionManager:
         turn_override = args.get("turn_actions_override")
         river_override = args.get("river_actions_override")
 
-        # Override depth if effective_bb specified
-        depth_override = _nearest_depth(effective_bb) if effective_bb else None
+        # Override depth if effective_bb specified (only for non-ICM; ICM depth already set)
+        depth_override = _nearest_depth(effective_bb) if effective_bb and not args.get("icm_phase") else None
 
         has_override = any([preflop_override, board_override, flop_override, turn_override, river_override, depth_override])
 
@@ -1053,11 +1129,17 @@ class GeminiSessionManager:
         """Execute a query_next_actions tool call. Returns available actions."""
         from gto_api import get_next_actions, nearest_depth as _nearest_depth
 
-        ctx = self.hand_contexts.get(chat_id)
-        if not ctx:
+        # ICM args force standalone context
+        if args.get("icm_phase"):
             ctx = self._build_standalone_context(args)
             if not ctx:
-                return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
+                return "錯誤：ICM 查詢需要提供 effective_bb。"
+        else:
+            ctx = self.hand_contexts.get(chat_id)
+            if not ctx:
+                ctx = self._build_standalone_context(args)
+                if not ctx:
+                    return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
 
         street = args.get("street", "flop")
         effective_bb = args.get("effective_bb")
@@ -1067,7 +1149,8 @@ class GeminiSessionManager:
         flop_override = args.get("flop_actions_override")
         turn_override = args.get("turn_actions_override")
 
-        depth = _nearest_depth(effective_bb) if effective_bb else ctx["depth"]
+        # For ICM, depth is already set correctly in ctx
+        depth = ctx["depth"] if args.get("icm_phase") else (_nearest_depth(effective_bb) if effective_bb else ctx["depth"])
 
         # Build params for the target street
         states = ctx.get("street_states", {})
@@ -1146,7 +1229,12 @@ class GeminiSessionManager:
                 "\n"
                 "重要：查詢面對 re-raise 的決策（如 UTG+1 open 後 BTN 3bet，UTG+1 要 call/fold）時，\n"
                 "preflop_actions_override 必須包含完整 8 個位置（其他位置用 F），這樣才能查到該位置的第二次決策。\n"
-                "例：UTG+1 面對 BTN 3bet SB 4bet → preflop_actions_override='F-R2-F-F-F-AI10-AI30-F', position='UTG+1'"
+                "例：UTG+1 面對 BTN 3bet SB 4bet → preflop_actions_override='F-R2-F-F-F-AI10-AI30-F', position='UTG+1'\n"
+                "\n"
+                "ICM 查詢：用戶提到 ICM / 錦標賽壓力 / 泡沫期 / 決賽桌 / 剩多少%人 時，必須使用 icm_phase 參數。\n"
+                "同時指定 num_players（桌上人數）和 effective_bb。\n"
+                "例：ICM 25% 8人桌 20bb → icm_phase='PCT25', num_players=8, effective_bb=20\n"
+                "例：決賽桌 6人 30bb → icm_phase='FT', num_players=6, effective_bb=30"
             )
 
         lines = [
@@ -1180,7 +1268,10 @@ class GeminiSessionManager:
             "F=Fold, C=Call, RX=Raise to X, AI=All-in。\n"
             "查詢某位置的策略時，preflop_actions_override 只需包含到該位置行動前的動作。\n"
             "例：查詢 30bb 下 LJ open 後 BB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F-F'\n"
-            "例：查詢 UTG+1 open 後 BTN 3bet 範圍 → preflop_actions_override='F-R2-F-F-F'"
+            "例：查詢 UTG+1 open 後 BTN 3bet 範圍 → preflop_actions_override='F-R2-F-F-F'\n"
+            "\n"
+            "ICM 查詢：用戶提到 ICM / 錦標賽壓力 / 泡沫期 / 決賽桌 時，使用 icm_phase 參數。\n"
+            "例：ICM 25% 8人桌 20bb → icm_phase='PCT25', num_players=8, effective_bb=20"
         )
 
         return "\n".join(lines)
