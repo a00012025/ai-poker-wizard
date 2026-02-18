@@ -121,6 +121,63 @@ JSON 格式（ICM）：
 - 再次強調：翻牌後 SB 永遠第一個行動！BvB 時 SB bet → 不需要在前面加 BB check
 - 再次強調：preflop_actions 必須保留所有位置的動作！多人底池不能省略成只有兩人！"""
 
+IMAGE_PARSE_PROMPT = """\
+你是撲克截圖解析器。從上傳的撲克手牌回放截圖中提取手牌資訊為 JSON。
+
+截圖閱讀方式：
+1. Hero = 畫面底部中央的玩家，手牌朝上展示（或有 WIN/LOSE 標記）
+2. 底部面板分 Pre-Flop / Flop / Turn / River 欄位，每欄從上到下是行動順序
+3. 每個玩家有位置標籤（UTG、CO、BTN、SB、BB 等）和籌碼量（XX BB）
+4. 桌面中央是公共牌
+
+提取規則：
+- gametype: 固定 "MTTGeneral"
+- 位置順序（按人數）：
+  9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB
+  8人: UTG, UTG+1, LJ, HJ, CO, BTN, SB, BB（預設）
+  6人: LJ, HJ, CO, BTN, SB, BB
+- preflop_actions: 按位置順序列出所有動作，用 - 分隔
+  F=Fold, C=Call, RX=Raise to Xbb, AIX=All-in Xbb
+  3bet/4bet 後的 continuation actions 接在第一輪後面
+  例：UTG+1 raise 2, CO call, SB raise 10, UTG+1 fold, CO call
+  → F-R2-F-F-C-F-R10-F-F-C（8位置 + UTG+1 fold + CO call）
+- effective_bb: min(hero 籌碼, 進入底池的對手中最小籌碼)
+- hero_hand: 兩張牌，rank+suit（c♣ d♦ h♥ s♠），如 "AsKc"
+- streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"
+- 翻牌後 action: X=Check, C=Call, F=Fold, R{size}=Bet/Raise（size 為 bb 絕對值）
+- 翻牌後行動順序：靠近 SB 的位置先行動
+
+JSON 格式：
+```json
+{
+  "hand": {
+    "gametype": "MTTGeneral",
+    "effective_bb": 16,
+    "hero_position": "LJ",
+    "hero_hand": "AsKc",
+    "preflop_actions": "F-F-R2-F-C-F-F-F",
+    "streets": [
+      {"board": "6cQs9d", "actions": [
+        {"position": "LJ", "action": "X"},
+        {"position": "CO", "action": "R1.9", "size": 1.9},
+        {"position": "LJ", "action": "C"}
+      ]},
+      {"card": "4s", "actions": [
+        {"position": "LJ", "action": "X"},
+        {"position": "CO", "action": "X"}
+      ]},
+      {"card": "4h", "actions": [
+        {"position": "LJ", "action": "R3", "size": 3},
+        {"position": "CO", "action": "F"}
+      ]}
+    ]
+  }
+}
+```
+
+只回覆 JSON。如果截圖不是撲克手牌，回覆 {"hand": null}。
+如果截圖不清楚某些資訊，用最合理的猜測。"""
+
 COACH_SYSTEM = """\
 你是專業 MTT 撲克教練 AI Poker Wizard。用繁體中文回覆。
 
@@ -373,6 +430,116 @@ class GeminiSessionManager:
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Error: {e}", exc_info=True)
             raise
+
+    async def send_image_message(self, chat_id: int, image_bytes: bytes,
+                                    mime_type: str = "image/jpeg",
+                                    user_text: str = "") -> str:
+        """Main entry for image-based hand analysis: parse screenshot → GTO → coaching."""
+        t0 = time.time()
+        self._logger.info(
+            f"[chat={chat_id}] Image message ({len(image_bytes)} bytes), "
+            f"caption: {user_text[:200]}"
+        )
+
+        try:
+            # Step 1: Parse hand from screenshot
+            hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type)
+            t_parse = time.time()
+
+            if not hand_json:
+                self._logger.info(f"[chat={chat_id}] No hand found in image")
+                if user_text.strip():
+                    return await self._chat(chat_id, user_text)
+                return "無法從截圖中辨識出撲克手牌。請確認截圖是手牌回放畫面（包含底部動作面板）。"
+
+            self._logger.info(
+                f"[chat={chat_id}] Parsed image hand in {t_parse - t0:.1f}s: "
+                f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
+            )
+
+            # Step 2: Ensure GTO Wizard session
+            from gto_token import ensure_session
+            if not ensure_session():
+                return "GTO Wizard session 已過期，請管理員更新 token。"
+
+            # Step 3: GTO analysis
+            from analyze_hand import analyze_hand_full
+            context = analyze_hand_full(hand_json)
+            gto_data = context["text"]
+            self.hand_contexts[chat_id] = context
+
+            t_analyze = time.time()
+            self._logger.info(
+                f"[chat={chat_id}] Image GTO analysis in {t_analyze - t_parse:.1f}s"
+            )
+
+            # Step 4: Coaching with user's caption/question
+            hand_desc = (
+                f"Hero {hand_json['hero_position']} {hand_json['hero_hand']} "
+                f"({hand_json['effective_bb']:.0f}bb)\n"
+                f"Preflop: {hand_json['preflop_actions']}"
+            )
+            if hand_json.get("streets"):
+                for s in hand_json["streets"]:
+                    board = s.get("board", s.get("card", ""))
+                    acts = " ".join(
+                        f"{a['position']}:{a['action']}" for a in s["actions"]
+                    )
+                    hand_desc += f"\n{board} → {acts}"
+
+            user_q = user_text.strip() if user_text.strip() else "請分析這手牌"
+            coaching_prompt = (
+                f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
+                f"用戶留言：{user_q}\n\n"
+                f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+                f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+            )
+            result = await self._chat_with_tools(chat_id, coaching_prompt)
+
+            t_total = time.time()
+            self._logger.info(
+                f"[chat={chat_id}] Image done: parse={t_parse - t0:.1f}s "
+                f"gto={t_analyze - t_parse:.1f}s total={t_total - t0:.1f}s"
+            )
+            return result
+
+        except Exception as e:
+            self._logger.error(f"[chat={chat_id}] Image error: {e}", exc_info=True)
+            raise
+
+    async def _parse_hand_from_image(self, chat_id: int, image_bytes: bytes,
+                                       mime_type: str = "image/jpeg") -> dict | None:
+        """Parse hand from a screenshot image using Gemini vision."""
+        self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
+
+        response = await self.client.aio.models.generate_content(
+            model=self.parse_model,
+            contents=[
+                types.Content(role="user", parts=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    types.Part(text=IMAGE_PARSE_PROMPT),
+                ]),
+            ],
+            config=types.GenerateContentConfig(temperature=0),
+        )
+
+        text = response.text or ""
+        self._logger.debug(f"[chat={chat_id}] Image parse response:\n{text}")
+
+        json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        json_str = json_match.group(1) if json_match else text.strip()
+
+        try:
+            result = json.loads(json_str)
+            hand = result.get("hand")
+            if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+                return hand
+        except (json.JSONDecodeError, AttributeError) as e:
+            self._logger.warning(
+                f"[chat={chat_id}] Image JSON parse failed: {e}\nRaw: {json_str[:500]}"
+            )
+
+        return None
 
     async def _parse_hand(self, chat_id: int, user_text: str) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""

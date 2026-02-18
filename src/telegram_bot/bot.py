@@ -98,7 +98,8 @@ class PokerWizardBot:
 直接發送手牌描述，例如：
 "Hero 42bb effective, UTG+1 raise 2bb, hero SB all-in A9s"
 
-📁 **或上傳 GGPoker 手牌歷史**（.txt 或 .zip），自動比對 GTO 策略
+📸 **或上傳手牌回放截圖**，自動辨識並分析 GTO 策略
+📁 **或上傳 GGPoker 手牌歷史**（.txt 或 .zip），批次比對 GTO 策略
 
 🔄 /clear — 清除對話紀錄，開始新對話
 
@@ -285,6 +286,70 @@ UTG fold, BTN call
                 return
             self.log.error(f"[{label}] HH follow-up error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 分析 {hand_id} 時發生錯誤：{e}")
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle uploaded photos (poker screenshots for GTO analysis)."""
+        if not await self._check_user(update):
+            return
+        label = self._user_label(update)
+        caption = update.message.caption or ""
+
+        self.log.info(f"[{label}] Photo received, caption: {caption[:200]}")
+
+        # Get the largest photo resolution
+        photo = update.message.photo[-1]
+
+        status_msg = await update.message.reply_text("🔍 正在辨識截圖中的手牌...")
+
+        t0 = time.time()
+        try:
+            # Download photo
+            tg_file = await photo.get_file()
+            image_bytes = bytes(await tg_file.download_as_bytearray())
+
+            await status_msg.edit_text("📊 手牌辨識中，正在查詢 GTO 策略...")
+
+            response = await self.session_manager.send_image_message(
+                chat_id=update.effective_chat.id,
+                image_bytes=image_bytes,
+                mime_type="image/jpeg",
+                user_text=caption,
+            )
+
+            elapsed = time.time() - t0
+            self.log.info(f"[{label}] Photo response OK ({elapsed:.1f}s)")
+
+            await status_msg.delete()
+
+            formatted = _format_for_telegram(response)
+            if not formatted.strip():
+                await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
+                return
+            for chunk in _split_message(formatted):
+                if not chunk.strip():
+                    continue
+                try:
+                    await update.message.reply_text(chunk, parse_mode='Markdown')
+                except Exception:
+                    self.log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
+                    await update.message.reply_text(chunk)
+
+        except Exception as e:
+            elapsed = time.time() - t0
+            from gto_token import TokenExpiredError
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during photo analysis")
+                try:
+                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
+                except Exception:
+                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
+                await self._notify_admin(f"GTO Wizard token 過期！{label} 發送截圖時觸發。")
+                return
+            self.log.error(f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True)
+            try:
+                await status_msg.edit_text(f"❌ 分析截圖時發生錯誤：{e}")
+            except Exception:
+                await update.message.reply_text(f"❌ 分析截圖時發生錯誤：{e}")
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
@@ -500,6 +565,7 @@ UTG fold, BTN call
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("clear", self.clear_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
 
         return self.application
