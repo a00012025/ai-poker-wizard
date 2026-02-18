@@ -42,6 +42,8 @@ class PokerWizardBot:
         self.session_manager = session_manager or ClaudeSessionManager()
         self.application = None
         self.log = _setup_logger()
+        # Store uploaded HH hands per chat for follow-up queries
+        self.hh_hands: dict[int, list[dict]] = {}  # chat_id -> parsed hands
 
     def _user_label(self, update: Update) -> str:
         u = update.effective_user
@@ -104,6 +106,28 @@ UTG fold, BTN call
         self.session_manager.clear_session(chat_id)
         await update.message.reply_text("🔄 對話紀錄已清除，開始新的對話！")
 
+    def _find_hh_hand(self, chat_id: int, text: str) -> dict | None:
+        """Try to find a referenced hand from uploaded HH by hand_id suffix."""
+        import re
+        hands = self.hh_hands.get(chat_id, [])
+        if not hands:
+            return None
+        # Match TM followed by digits, or just last 4+ digits of a hand_id
+        m = re.search(r'(TM\d+)', text)
+        if m:
+            full_id = m.group(1)
+            for h in hands:
+                if h.get("hand_id") == full_id:
+                    return h
+        # Match short id (last 4 digits) like "9272"
+        m = re.search(r'\b(\d{4,})\b', text)
+        if m:
+            suffix = m.group(1)
+            for h in hands:
+                if h.get("hand_id", "").endswith(suffix):
+                    return h
+        return None
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all text messages via Claude session"""
         chat_id = update.effective_chat.id
@@ -111,6 +135,14 @@ UTG fold, BTN call
         label = self._user_label(update)
 
         self.log.info(f"[{label}] Message: {user_text[:300]}")
+
+        # Check if user is referencing a hand from uploaded HH
+        hh_hand = self._find_hh_hand(chat_id, user_text)
+        if hh_hand:
+            self.log.info(f"[{label}] HH follow-up: {hh_hand['hand_id']} "
+                          f"{hh_hand['hero_position']} {hh_hand['hero_hand']}")
+            await self._analyze_hh_hand(update, hh_hand, user_text)
+            return
 
         await update.message.chat.send_action(action="typing")
 
@@ -138,6 +170,77 @@ UTG fold, BTN call
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
             error_msg = f"❌ 分析時發生錯誤：{str(e)}\n\n請稍後再試，或使用 /clear 重新開始。"
             await update.message.reply_text(error_msg)
+
+    async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
+        """Run full GTO analysis on a specific HH hand and coach via LLM."""
+        chat_id = update.effective_chat.id
+        label = self._user_label(update)
+        hand_id = hand["hand_id"]
+
+        await update.message.chat.send_action(action="typing")
+
+        t0 = time.time()
+        try:
+            # Build analyze_hand_full input from parsed HH hand
+            analysis_input = {
+                "gametype": hand.get("gametype", "MTTGeneral"),
+                "effective_bb": hand["effective_bb"],
+                "hero_position": hand["hero_position"],
+                "hero_hand": hand["hero_hand"],
+                "preflop_actions": hand["preflop_actions"],
+            }
+            if hand.get("streets"):
+                analysis_input["streets"] = hand["streets"]
+
+            from analyze_hand import analyze_hand_full
+            context = analyze_hand_full(analysis_input)
+            gto_data = context["text"]
+            self.session_manager.hand_contexts[chat_id] = context
+
+            t_analyze = time.time()
+            self.log.info(
+                f"[{label}] HH hand {hand_id} analyzed in {t_analyze - t0:.1f}s"
+            )
+
+            # Coach with LLM
+            hand_desc = (
+                f"Hand ID: {hand_id}\n"
+                f"Hero {hand['hero_position']} {hand['hero_hand']} "
+                f"({hand['effective_bb']:.0f}bb, {hand.get('num_players', 8)}人)\n"
+                f"Preflop: {hand['preflop_actions']}"
+            )
+            if hand.get("streets"):
+                for s in hand["streets"]:
+                    board = s.get("board", s.get("card", ""))
+                    acts = " ".join(
+                        f"{a['position']}:{a['action']}" for a in s["actions"]
+                    )
+                    hand_desc += f"\n{board} → {acts}"
+
+            coaching_prompt = (
+                f"用戶上傳了手牌歷史檔案，想分析這手牌：\n{hand_desc}\n\n"
+                f"用戶問題：{user_text}\n\n"
+                f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+                f"請根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+            )
+            response = await self.session_manager._chat_with_tools(chat_id, coaching_prompt)
+
+            elapsed = time.time() - t0
+            self.log.info(f"[{label}] HH follow-up done ({elapsed:.1f}s)")
+
+            formatted = _format_for_telegram(response)
+            for chunk in _split_message(formatted):
+                if not chunk.strip():
+                    continue
+                try:
+                    await update.message.reply_text(chunk, parse_mode='Markdown')
+                except Exception:
+                    await update.message.reply_text(chunk)
+
+        except Exception as e:
+            elapsed = time.time() - t0
+            self.log.error(f"[{label}] HH follow-up error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 分析 {hand_id} 時發生錯誤：{e}")
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
@@ -284,8 +387,13 @@ UTG fold, BTN call
                     f"[{label}] HH analysis done: {len(all_hands)} hands in {elapsed:.1f}s"
                 )
 
+                # Store hands for follow-up queries
+                chat_id = update.effective_chat.id
+                self.hh_hands[chat_id] = all_hands
+
                 # Format report
                 report = format_deviation_report(results)
+                report += f"\n\n💬 回覆 hand ID（如 `9272`）可查看該手詳細 GTO 分析"
                 report += f"\n⏱ 分析耗時 {elapsed:.0f} 秒"
 
                 # Send report

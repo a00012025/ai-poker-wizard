@@ -149,9 +149,11 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
 
     def _format_entry(e: dict) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
+        # Short hand_id: last 4 digits
+        short_id = e["hand_id"][-4:] if len(e["hand_id"]) > 4 else e["hand_id"]
         parts = []
         parts.append(
-            f"• {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
+            f"• `{short_id}` {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
             f" — {e['hero_action']} ({freq_str})"
             f" → 應 {e['gto_action']} ({e['gto_freq']:.0%})"
         )
