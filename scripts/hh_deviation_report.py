@@ -161,14 +161,13 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
 
     def _format_entry(e: dict, show_ev: bool = False) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
-        # Short hand_id: last 4 digits
-        short_id = e["hand_id"][-4:] if len(e["hand_id"]) > 4 else e["hand_id"]
+        hand_id = e["hand_id"]
         parts = []
         ev_note = ""
         if show_ev and e.get("hero_ev") is not None:
             ev_note = f" (EV {e['hero_ev']:.2f}bb)"
         parts.append(
-            f"• `{short_id}` {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
+            f"• `{hand_id}` {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
             f" — {e['hero_action']} ({freq_str})"
             f" → 應 {e['gto_action']} ({e['gto_freq']:.0%}){ev_note}"
         )

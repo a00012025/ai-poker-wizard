@@ -540,7 +540,7 @@ UTG fold, BTN call
 
                 # Format report
                 report = format_deviation_report(results)
-                report += f"\n\n💬 回覆 hand ID（如 `9272`）可查看該手詳細 GTO 分析"
+                report += "\n\n💬 回覆 hand ID（如 `TM5600279272`）可查看該手詳細 GTO 分析"
                 report += f"\n⏱ 分析耗時 {elapsed:.0f} 秒"
 
                 # Send report
