@@ -182,13 +182,24 @@ UTG fold, BTN call
             await self._analyze_hh_hand(update, hh_hand, user_text)
             return
 
-        await update.message.chat.send_action(action="typing")
+        status_msg = await update.message.reply_text("🔍 分析中...")
+
+        async def _on_status(msg: str):
+            try:
+                await status_msg.edit_text(f"⏳ {msg}")
+            except Exception:
+                pass  # message already deleted or unchanged
 
         t0 = time.time()
         try:
-            response = await self.session_manager.send_message(chat_id, user_text)
+            response = await self.session_manager.send_message(
+                chat_id, user_text, on_status=_on_status,
+            )
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
+
+            await status_msg.delete()
+
             formatted = _format_for_telegram(response)
             if not formatted.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
@@ -206,8 +217,19 @@ UTG fold, BTN call
         except Exception as e:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
-            error_msg = f"❌ 分析時發生錯誤：{str(e)}\n\n請稍後再試，或使用 /clear 重新開始。"
-            await update.message.reply_text(error_msg)
+            from gto_token import TokenExpiredError
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during message handling")
+                try:
+                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
+                except Exception:
+                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
+                await self._notify_admin(f"GTO Wizard token 過期！{label} 發送訊息時觸發。")
+                return
+            try:
+                await status_msg.edit_text(f"❌ {str(e)}")
+            except Exception:
+                await update.message.reply_text(f"❌ 分析時發生錯誤：{str(e)}\n\n請稍後再試，或使用 /clear 重新開始。")
 
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""

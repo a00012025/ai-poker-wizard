@@ -4,6 +4,7 @@
 Flow: user message → parse hand (Flash) → analyze_hand_full() → coaching (Pro)
 Follow-ups: user message → parse (null) → Pro chat WITH query_gto tool → real data
 """
+import asyncio
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Callable, Dict, List
 
 from google import genai
 from google.genai import types
@@ -405,14 +406,28 @@ class GeminiSessionManager:
             self._logger.addHandler(handler)
             self._logger.setLevel(logging.DEBUG)
 
-    async def send_message(self, chat_id: int, user_text: str) -> str:
-        """Main entry: parse hand → GTO analysis → coaching, or chat with tools."""
+    async def send_message(self, chat_id: int, user_text: str,
+                           on_status: Callable[[str], Any] | None = None) -> str:
+        """Main entry: parse hand → GTO analysis → coaching, or chat with tools.
+
+        Args:
+            on_status: optional async/sync callback(status_msg) for progress updates
+        """
         t0 = time.time()
         self._logger.info(f"[chat={chat_id}] User: {user_text[:300]}")
 
+        async def _status(msg: str):
+            if on_status:
+                r = on_status(msg)
+                if asyncio.iscoroutine(r):
+                    await r
+
         try:
             # Step 1: Parse hand from user message (Flash — fast)
-            hand_json = await self._parse_hand(chat_id, user_text)
+            await _status("解析手牌中...")
+            hand_json = await asyncio.wait_for(
+                self._parse_hand(chat_id, user_text), timeout=60,
+            )
             t_parse = time.time()
 
             if hand_json:
@@ -426,10 +441,9 @@ class GeminiSessionManager:
                 from gto_token import ensure_session, capture_browser_token
                 if not ensure_session():
                     self._logger.warning(f"[chat={chat_id}] Session expired, browser opened for login")
-                    # Poll for login (every 5s, up to 2 min)
-                    import asyncio
+                    import asyncio as _aio
                     for _ in range(24):
-                        await asyncio.sleep(5)
+                        await _aio.sleep(5)
                         if capture_browser_token():
                             self._logger.info(f"[chat={chat_id}] Browser login captured")
                             break
@@ -437,6 +451,7 @@ class GeminiSessionManager:
                         return "GTO Wizard session 已過期，已開啟瀏覽器。請登入後重新傳送手牌。"
 
                 # Step 3: Run GTO analysis and cache context
+                await _status("查詢 GTO 策略中...")
                 from analyze_hand import analyze_hand_full
                 context = analyze_hand_full(hand_json)
                 gto_data = context["text"]
@@ -449,13 +464,14 @@ class GeminiSessionManager:
                 )
                 self._logger.debug(f"[chat={chat_id}] GTO data:\n{gto_data}")
 
-                # Step 3: Coaching from LLM (with tools for follow-up queries)
+                # Step 4: Coaching from LLM (with tools for follow-up queries)
+                await _status("分析回覆中...")
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
                     f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 )
-                result = await self._chat_with_tools(chat_id, coaching_prompt)
+                result = await self._chat_with_tools(chat_id, coaching_prompt, on_status=on_status)
                 t_total = time.time()
                 self._logger.info(
                     f"[chat={chat_id}] Done: parse={t_parse - t0:.1f}s "
@@ -466,11 +482,15 @@ class GeminiSessionManager:
                 return result
             else:
                 # Not a hand — chat (with tools if hand context exists)
-                result = await self._chat(chat_id, user_text)
+                await _status("查詢中...")
+                result = await self._chat(chat_id, user_text, on_status=on_status)
                 elapsed = time.time() - t0
                 self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
                 return result
 
+        except asyncio.TimeoutError:
+            self._logger.error(f"[chat={chat_id}] Gemini API timeout")
+            raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Error: {e}", exc_info=True)
             raise
@@ -547,6 +567,9 @@ class GeminiSessionManager:
             )
             return result
 
+        except asyncio.TimeoutError:
+            self._logger.error(f"[chat={chat_id}] Image Gemini API timeout")
+            raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Image error: {e}", exc_info=True)
             raise
@@ -556,15 +579,18 @@ class GeminiSessionManager:
         """Parse hand from a screenshot image using Gemini vision."""
         self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
 
-        response = await self.client.aio.models.generate_content(
-            model=self.parse_model,
-            contents=[
-                types.Content(role="user", parts=[
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                    types.Part(text=IMAGE_PARSE_PROMPT),
-                ]),
-            ],
-            config=types.GenerateContentConfig(temperature=0),
+        response = await asyncio.wait_for(
+            self.client.aio.models.generate_content(
+                model=self.parse_model,
+                contents=[
+                    types.Content(role="user", parts=[
+                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                        types.Part(text=IMAGE_PARSE_PROMPT),
+                    ]),
+                ],
+                config=types.GenerateContentConfig(temperature=0),
+            ),
+            timeout=60,
         )
 
         text = response.text or ""
@@ -601,10 +627,13 @@ class GeminiSessionManager:
         prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_text}"
         self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
 
-        response = await self.client.aio.models.generate_content(
-            model=self.parse_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0),
+        response = await asyncio.wait_for(
+            self.client.aio.models.generate_content(
+                model=self.parse_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0),
+            ),
+            timeout=60,
         )
 
         text = response.text or ""
@@ -639,12 +668,15 @@ class GeminiSessionManager:
             types.Content(role="user", parts=[types.Part(text=coaching_prompt)]),
         ]
 
-        response = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=messages,
-            config=types.GenerateContentConfig(
-                system_instruction=COACH_SYSTEM,
+        response = await asyncio.wait_for(
+            self.client.aio.models.generate_content(
+                model=self.model,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    system_instruction=COACH_SYSTEM,
+                ),
             ),
+            timeout=120,
         )
 
         result = response.text or ""
@@ -657,12 +689,14 @@ class GeminiSessionManager:
 
         return result
 
-    async def _chat(self, chat_id: int, user_text: str) -> str:
+    async def _chat(self, chat_id: int, user_text: str,
+                     on_status: Callable[[str], Any] | None = None) -> str:
         """Chat with GTO tool access — always provides tools so model can query solver."""
         self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
-        return await self._chat_with_tools(chat_id, user_text)
+        return await self._chat_with_tools(chat_id, user_text, on_status=on_status)
 
-    async def _chat_with_tools(self, chat_id: int, user_text: str) -> str:
+    async def _chat_with_tools(self, chat_id: int, user_text: str,
+                                on_status: Callable[[str], Any] | None = None) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
         tool = types.Tool(function_declarations=[
             QUERY_NEXT_ACTIONS_DECLARATION,
@@ -682,14 +716,23 @@ class GeminiSessionManager:
         max_rounds = 8
         tools_called = 0
 
+        async def _status(msg: str):
+            if on_status:
+                r = on_status(msg)
+                if asyncio.iscoroutine(r):
+                    await r
+
         for round_num in range(max_rounds):
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    tools=[tool],
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=messages,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        tools=[tool],
+                    ),
                 ),
+                timeout=120,
             )
 
             # Check for function calls in response
@@ -732,6 +775,15 @@ class GeminiSessionManager:
                     f"{fn_name}({json.dumps(args, ensure_ascii=False)})"
                 )
 
+                # Status update for tool calls
+                pos = args.get("position", "")
+                street = args.get("street", "")
+                icm = args.get("icm_phase", "")
+                tool_desc = f"查詢 {pos} {street}" if pos else f"查詢 {street} 策略"
+                if icm:
+                    tool_desc += f" (ICM {icm})"
+                await _status(tool_desc + "...")
+
                 t_tool = time.time()
                 if fn_name == "query_next_actions":
                     tool_result = self._execute_query_next_actions(chat_id, args)
@@ -768,10 +820,14 @@ class GeminiSessionManager:
                     "請直接回答用戶的問題。如果需要 GTO 數據支持，"
                     "根據系統提示中的手牌資訊描述你所知道的策略。"
                 ))]))
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=messages,
-                config=types.GenerateContentConfig(system_instruction=system),
+            await _status("生成回覆中...")
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=messages,
+                    config=types.GenerateContentConfig(system_instruction=system),
+                ),
+                timeout=120,
             )
             result_text = response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
 
@@ -869,6 +925,26 @@ class GeminiSessionManager:
         flop_override = args.get("flop_actions_override")
         turn_override = args.get("turn_actions_override")
         river_override = args.get("river_actions_override")
+
+        # Truncate preflop_override to target position's decision point
+        # LLM often pads with trailing F's (e.g. F-R2-F-F-F-F-F-F for LJ's spot)
+        # which means everyone folded = no solution. Strip to just before target position.
+        if preflop_override and position and street == "preflop":
+            POSITION_ORDER_8 = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+            try:
+                target_idx = POSITION_ORDER_8.index(position)
+                pf_parts = preflop_override.split("-")
+                if len(pf_parts) > target_idx:
+                    # Check if everything after target_idx is F (all folded past target)
+                    tail = pf_parts[target_idx:]
+                    if all(t == "F" for t in tail):
+                        preflop_override = "-".join(pf_parts[:target_idx]) if target_idx > 0 else ""
+                        self._logger.debug(
+                            f"[chat={chat_id}] Truncated preflop to position {position}: "
+                            f"{args.get('preflop_actions_override')} → {preflop_override or '(empty)'}"
+                        )
+            except ValueError:
+                pass
 
         # Override depth if effective_bb specified (only for non-ICM; ICM depth already set)
         depth_override = _nearest_depth(effective_bb) if effective_bb and not args.get("icm_phase") else None
@@ -1018,6 +1094,7 @@ class GeminiSessionManager:
                         check_params = dict(
                             gametype=params["gametype"],
                             depth=params["depth"],
+                            stacks=params.get("stacks", ""),
                             preflop_actions="-".join(corrected) if corrected else "",
                         )
                         resp = get_next_actions(**check_params)
@@ -1040,6 +1117,7 @@ class GeminiSessionManager:
                         check_params = dict(
                             gametype=params["gametype"],
                             depth=params["depth"],
+                            stacks=params.get("stacks", ""),
                             preflop_actions="-".join(corrected) if corrected else "",
                         )
                         resp = get_next_actions(**check_params)
