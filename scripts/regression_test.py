@@ -1083,6 +1083,97 @@ def test_hh_check_hand_correct_play():
 
 
 @test
+def test_deviation_report_marginal_ev():
+    """Report: low EV deviations classified as marginal."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM1", "hero_position": "BB", "hero_hand": "9s3s",
+        "hero_hand_normalized": "93s", "effective_bb": 42, "num_players": 7,
+        "preflop_actions": "R2.0-F-F-F-F-R4.8-F-C", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "F", "hero_action_label": "Fold",
+            "hero_freq": 0, "gto_action": "C", "gto_action_label": "Call",
+            "gto_freq": 1.0, "all_freqs": {"C": 1.0},
+            "hero_ev": 0.3,
+        }],
+    }]
+    report = format_deviation_report(results, ev_threshold=1.0)
+    # Should NOT be in severe (even though hero_freq == 0) because EV is low
+    assert_not_in("嚴重偏差", report)
+    # Should be in marginal
+    assert_in("微小偏差", report)
+    assert_in("EV 0.30bb", report)
+
+
+@test
+def test_deviation_report_high_ev_stays_severe():
+    """Report: high EV deviations remain in severe category."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM1", "hero_position": "CO", "hero_hand": "AcKc",
+        "hero_hand_normalized": "AKs", "effective_bb": 30, "num_players": 6,
+        "preflop_actions": "F-F-F-F-F-F", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "F", "hero_action_label": "Fold",
+            "hero_freq": 0, "gto_action": "R2.1", "gto_action_label": "RAISE",
+            "gto_freq": 1.0, "all_freqs": {"R2.1": 1.0},
+            "hero_ev": 3.5,
+        }],
+    }]
+    report = format_deviation_report(results, ev_threshold=1.0)
+    # AKs with EV 3.5bb should be severe, not marginal
+    assert_in("嚴重偏差", report)
+    assert_not_in("微小偏差", report)
+
+
+@test
+def test_deviation_report_no_ev_stays_categorized():
+    """Report: deviations without EV data use frequency-based categories."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM1", "hero_position": "BB", "hero_hand": "8s6d",
+        "hero_hand_normalized": "86o", "effective_bb": 10, "num_players": 6,
+        "preflop_actions": "F-R2-F-C-F-C", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "C", "hero_action_label": "Call",
+            "hero_freq": 0, "gto_action": "F", "gto_action_label": "Fold",
+            "gto_freq": 1.0, "all_freqs": {"F": 1.0},
+            # No hero_ev field
+        }],
+    }]
+    report = format_deviation_report(results, ev_threshold=1.0)
+    # Without EV data, should fall back to frequency-based categorization
+    assert_in("嚴重偏差", report)
+    assert_not_in("微小偏差", report)
+
+
+@test
+def test_check_hand_includes_ev():
+    """HH Check: check_hand returns hero_ev in deviation dicts."""
+    from hh_deviation_check import check_hand
+    hand = {
+        "hand_id": "TEST_EV",
+        "hero_position": "LJ",
+        "hero_hand": "AcKc",
+        "effective_bb": 24,
+        "num_players": 6,
+        "table_size": 8,
+        "preflop_actions": "R2.0-F-F-F-F-F",
+    }
+    devs = check_hand(hand)
+    assert_true(len(devs) >= 1, "should have at least 1 spot")
+    # hero_ev should be present (not None) for a premium hand
+    assert_true("hero_ev" in devs[0], "deviation should include hero_ev key")
+    # AKs at LJ should have positive EV
+    if devs[0]["hero_ev"] is not None:
+        assert_true(devs[0]["hero_ev"] > 0,
+                    f"AKs open EV should be positive, got {devs[0]['hero_ev']}")
+
+
+@test
 def test_hh_e2e_parse_check_report():
     """HH E2E: parse hand → check deviations → format report."""
     from hh_parser import parse_hand

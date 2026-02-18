@@ -79,12 +79,14 @@ def analyze_hands(
     return results
 
 
-def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> str:
+def format_deviation_report(results: list[dict], threshold_pct: float = 10,
+                            ev_threshold: float = 1.0) -> str:
     """Format deviation results into a Telegram-friendly text report.
 
     Args:
         results: list of result dicts from analyze_hands()
         threshold_pct: minimum deviation % to report (default 10 = flag if hero_freq < 90%)
+        ev_threshold: EV below this (in bb) is considered marginal (default 1.0bb)
 
     Returns formatted report string.
     """
@@ -96,6 +98,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
     severe = []   # hero_freq == 0 (GTO never does this)
     major = []    # hero_freq < 25%
     moderate = [] # hero_freq < threshold cutoff
+    marginal = [] # EV below threshold — deviation barely matters
 
     cutoff = (100 - threshold_pct) / 100  # e.g., 0.9
 
@@ -106,6 +109,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
             if d["hero_freq"] >= cutoff:
                 continue
 
+            hero_ev = d.get("hero_ev")
             entry = {
                 "hand_id": r["hand_id"],
                 "pos": r["hero_position"],
@@ -121,9 +125,13 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
                 "gto_action": d["gto_action_label"],
                 "gto_freq": d["gto_freq"],
                 "all_freqs": d["all_freqs"],
+                "hero_ev": hero_ev,
             }
 
-            if d["hero_freq"] < 0.005:
+            # If EV is available and below threshold, classify as marginal
+            if hero_ev is not None and abs(hero_ev) < ev_threshold:
+                marginal.append(entry)
+            elif d["hero_freq"] < 0.005:
                 severe.append(entry)
             elif d["hero_freq"] < 0.25:
                 major.append(entry)
@@ -133,29 +141,36 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
     severe.sort(key=lambda x: x["hero_freq"])
     major.sort(key=lambda x: x["hero_freq"])
     moderate.sort(key=lambda x: x["hero_freq"])
+    marginal.sort(key=lambda x: abs(x.get("hero_ev") or 0))
 
     total_devs = len(severe) + len(major) + len(moderate)
 
     lines = []
     lines.append("*GTO 偏差分析報告*")
-    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{total_devs} 處偏差")
+    devs_label = f"{total_devs} 處偏差"
+    if marginal:
+        devs_label += f"，{len(marginal)} 處微小偏差"
+    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{devs_label}")
     if errors:
         lines.append(f"({errors} 手分析失敗)")
     lines.append("")
 
-    if not total_devs:
+    if not total_devs and not marginal:
         lines.append("沒有發現顯著偏差，打得不錯！")
         return "\n".join(lines)
 
-    def _format_entry(e: dict) -> str:
+    def _format_entry(e: dict, show_ev: bool = False) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
         # Short hand_id: last 4 digits
         short_id = e["hand_id"][-4:] if len(e["hand_id"]) > 4 else e["hand_id"]
         parts = []
+        ev_note = ""
+        if show_ev and e.get("hero_ev") is not None:
+            ev_note = f" (EV {e['hero_ev']:.2f}bb)"
         parts.append(
             f"• `{short_id}` {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
             f" — {e['hero_action']} ({freq_str})"
-            f" → 應 {e['gto_action']} ({e['gto_freq']:.0%})"
+            f" → 應 {e['gto_action']} ({e['gto_freq']:.0%}){ev_note}"
         )
         # Action line
         if e["street"] == "preflop":
@@ -181,5 +196,15 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
         for e in moderate:
             lines.append(_format_entry(e))
         lines.append("")
+
+    if marginal:
+        lines.append(f"*微小偏差（EV < {ev_threshold:.0f}bb）— {len(marginal)} 處*")
+        lines.append("以下偏差 EV 影響極小，可忽略：")
+        for e in marginal:
+            lines.append(_format_entry(e, show_ev=True))
+        lines.append("")
+
+    if not total_devs and marginal:
+        lines.insert(4, "沒有顯著偏差，只有微小 EV 差異。")
 
     return "\n".join(lines)
