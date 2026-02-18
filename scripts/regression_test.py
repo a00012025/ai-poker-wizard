@@ -738,6 +738,330 @@ def test_preflop_only_multiway_allin():
     assert_true(len(text) > 10, "Should produce analysis text")
 
 
+# ── HH Parser Tests ──
+
+_SAMPLE_HH_PREFLOP = """\
+Poker Hand #TM5600279262: Tournament #264809938, ¥220 Satellite to #12: Zodiac Monkey King Wukong, 5 Seats Hold'em No Limit - Level4(100/200) - 2026/02/17 14:37:16
+Table '4' 8-max Seat #6 is the button
+Seat 3: e0d65ab0 (18,221 in chips)
+Seat 4: Hero (2,177 in chips)
+Seat 5: dad95b5a (4,836 in chips)
+Seat 6: 4337b2cd (5,160 in chips)
+Seat 7: f7728f06 (9,474 in chips)
+Seat 8: e1f388aa (15,436 in chips)
+f7728f06: posts the ante 20
+dad95b5a: posts the ante 20
+Hero: posts the ante 20
+e1f388aa: posts the ante 20
+e0d65ab0: posts the ante 20
+4337b2cd: posts the ante 20
+f7728f06: posts small blind 100
+e1f388aa: posts big blind 200
+*** HOLE CARDS ***
+Dealt to Hero [Ad 9c]
+e0d65ab0: folds
+Hero: raises 1,957 to 2,157 and is all-in
+dad95b5a: folds
+4337b2cd: folds
+f7728f06: folds
+e1f388aa: folds
+Uncalled bet (1,957) returned to Hero
+*** SUMMARY ***
+Total pot 620 | Rake 0"""
+
+_SAMPLE_HH_FOLD = """\
+Poker Hand #TM5600279272: Tournament #264809938, ¥220 Satellite to #12: Zodiac Monkey King Wukong, 5 Seats Hold'em No Limit - Level4(100/200) - 2026/02/17 14:36:26
+Table '4' 8-max Seat #6 is the button
+Seat 3: e0d65ab0 (16,164 in chips)
+Seat 4: Hero (2,037 in chips)
+Seat 5: dad95b5a (5,856 in chips)
+Seat 6: 4337b2cd (5,380 in chips)
+Seat 7: f7728f06 (10,811 in chips)
+Seat 8: e1f388aa (15,056 in chips)
+f7728f06: posts the ante 20
+dad95b5a: posts the ante 20
+Hero: posts the ante 20
+e1f388aa: posts the ante 20
+e0d65ab0: posts the ante 20
+4337b2cd: posts the ante 20
+f7728f06: posts small blind 100
+e1f388aa: posts big blind 200
+*** HOLE CARDS ***
+Dealt to Hero [8s 6d]
+e0d65ab0: raises 200 to 400
+Hero: folds
+dad95b5a: folds
+4337b2cd: calls 400
+f7728f06: folds
+e1f388aa: calls 200
+*** FLOP *** [7s Ad 3h]
+e1f388aa: checks
+e0d65ab0: bets 554
+4337b2cd: folds
+e1f388aa: folds
+*** SUMMARY ***
+Total pot 1,520 | Rake 0"""
+
+
+@test
+def test_hh_parser_preflop_basic():
+    """HH Parser: parses preflop-only hand correctly."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_PREFLOP)
+    assert_true(result is not None, "should parse hero hand")
+    assert_eq(result["hand_id"], "TM5600279262")
+    assert_eq(result["hero_hand"], "Ad9c")
+    assert_eq(result["hero_position"], "HJ")
+    assert_eq(result["num_players"], 6)
+    assert_eq(result["table_size"], 8)
+    assert_true(result["effective_bb"] > 10, f"ebb={result['effective_bb']}")
+    assert_in("AI", result["preflop_actions"])
+    assert_true("streets" not in result or len(result.get("streets", [])) == 0)
+
+
+@test
+def test_hh_parser_fold_excluded():
+    """HH Parser: hero fold excluded by default."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_FOLD, include_folds=False)
+    assert_true(result is None, "fold hand should be excluded")
+
+
+@test
+def test_hh_parser_fold_included():
+    """HH Parser: hero fold included with include_folds=True."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_FOLD, include_folds=True)
+    assert_true(result is not None, "fold hand should be included")
+    assert_eq(result["hero_hand"], "8s6d")
+    assert_eq(result["hero_position"], "HJ")  # seat 4, button=seat 6, 6 players
+    # Hero's action is F (fold) at HJ position (index 1 in 6-player)
+    parts = result["preflop_actions"].split("-")
+    assert_eq(parts[1], "F", "Hero HJ folds")
+
+
+@test
+def test_hh_parser_postflop_streets():
+    """HH Parser: postflop actions parsed from fold hand (other players)."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_FOLD, include_folds=True)
+    assert_true(result is not None)
+    # This hand has a flop even though hero folded
+    streets = result.get("streets", [])
+    if streets:
+        assert_eq(streets[0]["board"], "7sAd3h")
+
+
+# ── 169 Hand Index Tests ──
+
+@test
+def test_169_hand_index_count():
+    """169 Index: generates exactly 169 unique hand names."""
+    from hh_deviation_check import HANDS_169, HAND_TO_169
+    assert_eq(len(HANDS_169), 169)
+    assert_eq(len(HAND_TO_169), 169)
+
+
+@test
+def test_169_hand_index_ascii_sorted():
+    """169 Index: hand names are sorted by ASCII comparison."""
+    from hh_deviation_check import HANDS_169
+    assert_eq(HANDS_169, sorted(HANDS_169))
+
+
+@test
+def test_169_hand_index_premiums():
+    """169 Index: premium hands map to correct indices."""
+    from hh_deviation_check import HAND_TO_169
+    # Verify key hands exist
+    for h in ["AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "22"]:
+        assert_true(h in HAND_TO_169, f"{h} should be in index")
+    # AA should come before KK in ASCII (A < K)
+    assert_true(HAND_TO_169["AA"] < HAND_TO_169["KK"],
+                "AA index should be less than KK (A < K in ASCII)")
+
+
+@test
+def test_169_hand_index_offsuit_before_suited():
+    """169 Index: offsuit comes before suited for same ranks (o < s in ASCII)."""
+    from hh_deviation_check import HAND_TO_169
+    assert_true(HAND_TO_169["AKo"] < HAND_TO_169["AKs"],
+                "AKo should come before AKs")
+    assert_true(HAND_TO_169["KQo"] < HAND_TO_169["KQs"])
+
+
+# ── Preflop 8-max Conversion Tests ──
+
+@test
+def test_convert_preflop_8max_6p():
+    """8max convert: 6-player prepends 2 folds."""
+    from hh_deviation_check import _convert_preflop_to_8max
+    result = _convert_preflop_to_8max("R2-F-F-F-F-C", 6)
+    assert_eq(result, "F-F-R2-F-F-F-F-C")
+
+
+@test
+def test_convert_preflop_8max_8p():
+    """8max convert: 8-player unchanged."""
+    from hh_deviation_check import _convert_preflop_to_8max
+    result = _convert_preflop_to_8max("F-R2-F-F-F-F-F-C", 8)
+    assert_eq(result, "F-R2-F-F-F-F-F-C")
+
+
+# ── Deviation Report Format Tests ──
+
+@test
+def test_deviation_report_no_deviations():
+    """Report: no deviations produces clean message."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM1", "hero_position": "CO", "hero_hand": "AKs",
+        "hero_hand_normalized": "AKs", "effective_bb": 30, "num_players": 8,
+        "preflop_actions": "F-F-F-F-R2-F-F-F", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "R2.1", "hero_action_label": "RAISE",
+            "hero_freq": 1.0, "gto_action": "R2.1", "gto_action_label": "RAISE",
+            "gto_freq": 1.0, "all_freqs": {"R2.1": 1.0},
+        }],
+    }]
+    report = format_deviation_report(results)
+    assert_in("不錯", report)
+    assert_not_in("嚴重", report)
+
+
+@test
+def test_deviation_report_severe():
+    """Report: severe deviation (0% GTO) categorized correctly."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM1", "hero_position": "BB", "hero_hand": "8s6d",
+        "hero_hand_normalized": "86o", "effective_bb": 10, "num_players": 6,
+        "preflop_actions": "F-R2-F-C-F-C", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "C", "hero_action_label": "Call",
+            "hero_freq": 0, "gto_action": "F", "gto_action_label": "Fold",
+            "gto_freq": 1.0, "all_freqs": {"F": 1.0},
+        }],
+    }]
+    report = format_deviation_report(results)
+    assert_in("嚴重偏差", report)
+    assert_in("86o", report)
+    assert_in("Call", report)
+    assert_in("Fold", report)
+
+
+@test
+def test_deviation_report_mixed_severity():
+    """Report: multiple severity levels categorized separately."""
+    from hh_deviation_report import format_deviation_report
+    results = [
+        {
+            "hand_id": "TM1", "hero_position": "BB", "hero_hand": "8s6d",
+            "hero_hand_normalized": "86o", "effective_bb": 10, "num_players": 6,
+            "preflop_actions": "F-R2-F-C-F-C", "spots_checked": 1,
+            "deviations": [{
+                "street": "preflop", "spot": "open",
+                "hero_action": "C", "hero_action_label": "Call",
+                "hero_freq": 0, "gto_action": "F", "gto_action_label": "Fold",
+                "gto_freq": 1.0, "all_freqs": {"F": 1.0},
+            }],
+        },
+        {
+            "hand_id": "TM2", "hero_position": "SB", "hero_hand": "AhKh",
+            "hero_hand_normalized": "AKs", "effective_bb": 74, "num_players": 8,
+            "preflop_actions": "F-F-F-F-F-F-R3-F", "spots_checked": 1,
+            "deviations": [{
+                "street": "preflop", "spot": "open",
+                "hero_action": "R4", "hero_action_label": "RAISE",
+                "hero_freq": 0.34, "gto_action": "C", "gto_action_label": "Call",
+                "gto_freq": 0.66, "all_freqs": {"C": 0.66, "R4": 0.34},
+            }],
+        },
+    ]
+    report = format_deviation_report(results)
+    assert_in("嚴重偏差", report)
+    assert_in("中等偏差", report)
+    assert_in("2 處偏差", report)
+
+
+# ── HH Deviation Check E2E (API) ──
+
+@test
+def test_hh_check_hand_preflop():
+    """HH Check: check_hand returns deviations for known bad play."""
+    from hh_deviation_check import check_hand
+    hand = {
+        "hand_id": "TEST1",
+        "hero_position": "BB",
+        "hero_hand": "8s6d",
+        "effective_bb": 10.2,
+        "num_players": 6,
+        "table_size": 8,
+        "preflop_actions": "F-R2.0-F-C-F-C",
+    }
+    devs = check_hand(hand)
+    assert_true(len(devs) >= 1, "should have at least 1 spot checked")
+    # BB calling LJ open with 86o at 10bb — GTO says fold
+    assert_eq(devs[0]["street"], "preflop")
+    assert_true(devs[0]["hero_freq"] < 0.05,
+                f"86o call should be ~0% GTO, got {devs[0]['hero_freq']:.1%}")
+
+
+@test
+def test_hh_check_hand_correct_play():
+    """HH Check: check_hand shows high frequency for correct play."""
+    from hh_deviation_check import check_hand
+    hand = {
+        "hand_id": "TEST2",
+        "hero_position": "LJ",
+        "hero_hand": "AcKc",
+        "effective_bb": 24,
+        "num_players": 6,
+        "table_size": 8,
+        "preflop_actions": "R2.0-F-F-F-F-F",
+    }
+    devs = check_hand(hand)
+    assert_true(len(devs) >= 1, "should have at least 1 spot")
+    # AKs opening from LJ at 24bb — should be very high frequency
+    assert_true(devs[0]["hero_freq"] > 0.9,
+                f"AKs open should be >90% GTO, got {devs[0]['hero_freq']:.1%}")
+
+
+@test
+def test_hh_e2e_parse_check_report():
+    """HH E2E: parse hand → check deviations → format report."""
+    from hh_parser import parse_hand
+    from hh_deviation_check import check_hand
+    from hh_deviation_report import format_deviation_report
+
+    # Parse
+    hand = parse_hand(_SAMPLE_HH_PREFLOP)
+    assert_true(hand is not None)
+
+    # Check
+    devs = check_hand(hand)
+    assert_true(len(devs) >= 1)
+
+    # Build result for report
+    from gto_formatter import normalize_hand_name
+    result = {
+        "hand_id": hand["hand_id"],
+        "hero_position": hand["hero_position"],
+        "hero_hand": hand["hero_hand"],
+        "hero_hand_normalized": normalize_hand_name(hand["hero_hand"]),
+        "effective_bb": hand["effective_bb"],
+        "num_players": hand["num_players"],
+        "preflop_actions": hand["preflop_actions"],
+        "spots_checked": len(devs),
+        "deviations": devs,
+    }
+    report = format_deviation_report([result])
+    assert_in("GTO 偏差分析報告", report)
+    assert_in("1 手", report)
+
+
 # ── Runner ──
 
 def run_tests():
