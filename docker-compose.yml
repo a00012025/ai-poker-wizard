@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs
+      - ./.tokens.json:/app/.tokens.json
+      - ./.game_modes_cache.json:/app/.game_modes_cache.json
+    restart: unless-stopped
+    stop_grace_period: 5m

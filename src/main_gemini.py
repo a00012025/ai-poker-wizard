@@ -1,32 +1,55 @@
 # src/main_gemini.py
 """Entry point using Gemini API (fast, no Claude CLI subprocess)."""
+import logging
 import os
 
 from dotenv import load_dotenv
 load_dotenv()
 
+from src.database import Database
 from src.gemini_session import GeminiSessionManager
 from src.telegram_bot.bot import PokerWizardBot
 
+logger = logging.getLogger("poker_bot")
+
+db = Database()
+
+
+async def post_init(application):
+    """Called after Application.initialize() — connect DB, seed users."""
+    dsn = os.getenv("SUPABASE_CONN")
+    if dsn:
+        await db.connect(dsn)
+        await db.check_tables()
+        await db.seed_users()
+        logger.info("Database ready")
+    else:
+        logger.warning("SUPABASE_CONN not set — running without database")
+
+
+async def post_shutdown(application):
+    """Called after Application.shutdown() — close DB pool."""
+    await db.close()
+
 
 def main():
-    print("🃏 AI Poker Wizard (Gemini) 正在啟動...")
+    print("AI Poker Wizard (Gemini) starting...")
 
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
-        print("❌ 錯誤：未設置 BOT_TOKEN 環境變數")
+        print("ERROR: BOT_TOKEN not set")
         return
 
     if not os.getenv("GEMINI_API_KEY"):
-        print("❌ 錯誤：未設置 GEMINI_API_KEY 環境變數")
+        print("ERROR: GEMINI_API_KEY not set")
         return
 
     session_manager = GeminiSessionManager()
-    bot = PokerWizardBot(token=bot_token, session_manager=session_manager)
+    bot = PokerWizardBot(token=bot_token, session_manager=session_manager, db=db)
 
-    print(f"✅ 系統就緒！模型：{session_manager.model}")
-    print("🚀 正在啟動 Telegram Bot...")
-    bot.run()
+    print(f"Model: {session_manager.model}")
+    print("Starting Telegram Bot...")
+    bot.run(post_init=post_init, post_shutdown=post_shutdown)
 
 
 if __name__ == "__main__":

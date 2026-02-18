@@ -11,6 +11,9 @@ pydantic>=2.0.0
 # Web automation
 selenium>=4.15.0
 
+# Database
+asyncpg>=0.29.0
+
 # Utilities
 python-dotenv>=1.0.0
 PyYAML>=6.0

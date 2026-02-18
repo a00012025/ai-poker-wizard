@@ -1,4 +1,6 @@
 # src/telegram_bot/bot.py
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -7,13 +9,21 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from src.claude_session import ClaudeSessionManager
 
+if TYPE_CHECKING:
+    from src.database import Database
+
 # Allow importing from scripts/
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
+
+# Upload analysis timeout (seconds)
+ANALYSIS_TIMEOUT = 600
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
@@ -37,19 +47,41 @@ def _setup_logger() -> logging.Logger:
 
 
 class PokerWizardBot:
-    def __init__(self, token: str = None, session_manager: ClaudeSessionManager = None):
+    def __init__(self, token: str = None, session_manager: ClaudeSessionManager = None,
+                 db: Database | None = None):
         self.token = token or os.getenv('BOT_TOKEN')
         self.session_manager = session_manager or ClaudeSessionManager()
+        self.db = db
         self.application = None
         self.log = _setup_logger()
         # Store uploaded HH hands per chat for follow-up queries
         self.hh_hands: dict[int, list[dict]] = {}  # chat_id -> parsed hands
+        self.admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
 
     def _user_label(self, update: Update) -> str:
         u = update.effective_user
         chat = update.effective_chat
         name = u.username or u.first_name or str(u.id) if u else "?"
         return f"user=@{name} chat={chat.id}"
+
+    async def _check_user(self, update: Update) -> bool:
+        """Check if user is allowed. Returns True if allowed, False if rejected."""
+        if not self.db:
+            return True  # No DB = no whitelist enforcement
+        user_id = update.effective_user.id
+        if await self.db.is_user_allowed(user_id):
+            return True
+        self.log.warning(f"[{self._user_label(update)}] Rejected — not in whitelist")
+        await update.message.reply_text("Sorry, access is restricted.")
+        return False
+
+    async def _notify_admin(self, text: str):
+        """Send a notification to the admin chat if configured."""
+        if self.admin_chat_id and self.application:
+            try:
+                await self.application.bot.send_message(self.admin_chat_id, text)
+            except Exception as e:
+                self.log.error(f"Failed to notify admin: {e}")
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -101,17 +133,18 @@ UTG fold, BTN call
 
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /clear command — reset Claude session"""
+        if not await self._check_user(update):
+            return
         chat_id = update.effective_chat.id
         self.log.info(f"[{self._user_label(update)}] /clear")
         self.session_manager.clear_session(chat_id)
         await update.message.reply_text("🔄 對話紀錄已清除，開始新的對話！")
 
-    def _find_hh_hand(self, chat_id: int, text: str) -> dict | None:
+    async def _find_hh_hand(self, chat_id: int, text: str) -> dict | None:
         """Try to find a referenced hand from uploaded HH by hand_id suffix."""
         import re
+        # Check in-memory cache first
         hands = self.hh_hands.get(chat_id, [])
-        if not hands:
-            return None
         # Match TM followed by digits, or just last 4+ digits of a hand_id
         m = re.search(r'(TM\d+)', text)
         if m:
@@ -119,17 +152,21 @@ UTG fold, BTN call
             for h in hands:
                 if h.get("hand_id") == full_id:
                     return h
-        # Match short id (last 4 digits) like "9272"
         m = re.search(r'\b(\d{4,})\b', text)
         if m:
             suffix = m.group(1)
             for h in hands:
                 if h.get("hand_id", "").endswith(suffix):
                     return h
+            # Fall back to DB
+            if self.db:
+                return await self.db.find_hand(chat_id, suffix)
         return None
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all text messages via Claude session"""
+        if not await self._check_user(update):
+            return
         chat_id = update.effective_chat.id
         user_text = update.message.text
         label = self._user_label(update)
@@ -137,7 +174,7 @@ UTG fold, BTN call
         self.log.info(f"[{label}] Message: {user_text[:300]}")
 
         # Check if user is referencing a hand from uploaded HH
-        hh_hand = self._find_hh_hand(chat_id, user_text)
+        hh_hand = await self._find_hh_hand(chat_id, user_text)
         if hh_hand:
             self.log.info(f"[{label}] HH follow-up: {hh_hand['hand_id']} "
                           f"{hh_hand['hero_position']} {hh_hand['hero_hand']}")
@@ -239,11 +276,20 @@ UTG fold, BTN call
 
         except Exception as e:
             elapsed = time.time() - t0
+            # Handle token expiry gracefully
+            from gto_token import TokenExpiredError
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during HH follow-up")
+                await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
+                await self._notify_admin(f"GTO Wizard token 過期！{label} 查詢 {hand_id} 時觸發。")
+                return
             self.log.error(f"[{label}] HH follow-up error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 分析 {hand_id} 時發生錯誤：{e}")
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
+        if not await self._check_user(update):
+            return
         label = self._user_label(update)
         doc = update.message.document
 
@@ -318,21 +364,17 @@ UTG fold, BTN call
                 )
 
                 # Ensure GTO Wizard session
-                from gto_token import ensure_session, capture_browser_token
+                from gto_token import ensure_session, TokenExpiredError
                 if not ensure_session():
                     self.log.warning(f"[{label}] GTO session expired for HH upload")
                     await status_msg.edit_text(
-                        "GTO Wizard session 已過期，正在等待登入..."
+                        "GTO Wizard session 過期，請管理員更新 token。"
                     )
-                    for _ in range(24):
-                        await asyncio.sleep(5)
-                        if capture_browser_token():
-                            break
-                    else:
-                        await status_msg.edit_text(
-                            "GTO Wizard session 過期，請登入後重新上傳。"
-                        )
-                        return
+                    await self._notify_admin(
+                        f"GTO Wizard token 過期！用戶 {label} 上傳 HH 時觸發。\n"
+                        f"請更新 .tokens.json"
+                    )
+                    return
 
                 # Run deviation analysis in thread to not block event loop
                 last_update_time = [time.time()]
@@ -374,13 +416,26 @@ UTG fold, BTN call
                     )
                     return results
 
-                # Run analysis with periodic progress drain
+                # Run analysis with periodic progress drain + overall timeout
                 analysis_task = asyncio.create_task(run_analysis())
-                while not analysis_task.done():
-                    await asyncio.sleep(2)
+                try:
+                    deadline = time.time() + ANALYSIS_TIMEOUT
+                    while not analysis_task.done():
+                        remaining = deadline - time.time()
+                        if remaining <= 0:
+                            analysis_task.cancel()
+                            raise asyncio.TimeoutError()
+                        await asyncio.sleep(min(2, remaining))
+                        await drain_progress()
                     await drain_progress()
-                await drain_progress()
-                results = await analysis_task
+                    results = await analysis_task
+                except asyncio.TimeoutError:
+                    await drain_progress()
+                    self.log.warning(f"[{label}] HH analysis timed out after {ANALYSIS_TIMEOUT}s")
+                    await status_msg.edit_text(
+                        f"分析超時（{ANALYSIS_TIMEOUT // 60} 分鐘），請減少手牌數量後重試。"
+                    )
+                    return
 
                 elapsed = time.time() - t0
                 self.log.info(
@@ -390,6 +445,11 @@ UTG fold, BTN call
                 # Store hands for follow-up queries
                 chat_id = update.effective_chat.id
                 self.hh_hands[chat_id] = all_hands
+                if self.db:
+                    try:
+                        await self.db.save_hands(chat_id, all_hands)
+                    except Exception as e:
+                        self.log.error(f"[{label}] Failed to save hands to DB: {e}")
 
                 # Format report
                 report = format_deviation_report(results)
@@ -410,16 +470,31 @@ UTG fold, BTN call
 
         except Exception as e:
             elapsed = time.time() - t0
+            # Handle token expiry gracefully
+            from gto_token import TokenExpiredError
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during HH upload")
+                try:
+                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
+                except Exception:
+                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
+                await self._notify_admin(f"GTO Wizard token 過期！{label} 上傳 HH 時觸發。")
+                return
             self.log.error(f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True)
             try:
                 await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
             except Exception:
                 await update.message.reply_text(f"❌ 分析時發生錯誤：{e}")
 
-    def setup_handlers(self):
+    def setup_handlers(self, post_init=None, post_shutdown=None):
         """Setup bot handlers"""
         if not self.application:
-            self.application = Application.builder().token(self.token).build()
+            builder = Application.builder().token(self.token)
+            if post_init:
+                builder = builder.post_init(post_init)
+            if post_shutdown:
+                builder = builder.post_shutdown(post_shutdown)
+            self.application = builder.build()
 
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
@@ -429,9 +504,9 @@ UTG fold, BTN call
 
         return self.application
 
-    def run(self):
+    def run(self, post_init=None, post_shutdown=None):
         """Run the bot (blocking — manages its own event loop)."""
-        app = self.setup_handlers()
+        app = self.setup_handlers(post_init=post_init, post_shutdown=post_shutdown)
         self.log.info(f"Bot starting — model={self.session_manager.model}, max_turns={self.session_manager.max_turns}")
         app.run_polling(drop_pending_updates=True)
 

@@ -1,0 +1,12 @@
+.env
+__pycache__
+*.pyc
+logs/
+venv/
+.venv/
+.git/
+.gitignore
+*.zip
+2026-*/
+hh_batch_results.*
+.claude/

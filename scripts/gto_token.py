@@ -19,6 +19,11 @@ API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
 
 
+class TokenExpiredError(Exception):
+    """Raised when GTO Wizard tokens are expired and cannot be refreshed automatically."""
+    pass
+
+
 def _load_tokens() -> dict:
     if _TOKEN_FILE.exists():
         return json.loads(_TOKEN_FILE.read_text())
@@ -105,14 +110,7 @@ def ensure_session() -> bool:
         except Exception:
             pass
 
-    # Refresh token expired — open browser for login
-    print("Refresh token 過期，開啟瀏覽器登入...", file=sys.stderr)
-    subprocess.run(["agent-browser", "close"], capture_output=True)
-    subprocess.run(
-        ["agent-browser", "--session-name", "gto-wizard", "--headed",
-         "open", f"{ORIGIN}/solutions"],
-        capture_output=True, timeout=30,
-    )
+    # Refresh token expired
     return False
 
 
@@ -167,19 +165,10 @@ def get_access_token() -> str:
             _save_tokens(tokens)
             return access
 
-    # Refresh failed — need browser login
-    refresh = _browser_login()
-    if not refresh:
-        print("登入失敗", file=sys.stderr)
-        sys.exit(1)
-
-    access = _refresh_access(refresh)
-    if not access:
-        print("Token refresh 失敗", file=sys.stderr)
-        sys.exit(1)
-
-    _save_tokens({"refresh": refresh, "access": access})
-    return access
+    # Refresh failed — raise error instead of browser login (container-safe)
+    raise TokenExpiredError(
+        "GTO Wizard token 過期，無法自動刷新。請手動更新 .tokens.json"
+    )
 
 
 if __name__ == "__main__":
