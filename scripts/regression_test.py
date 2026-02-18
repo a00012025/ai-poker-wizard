@@ -852,6 +852,59 @@ def test_hh_parser_postflop_streets():
         assert_eq(streets[0]["board"], "7sAd3h")
 
 
+# SB 26bb all-in vs BB 10bb — effective should be 10bb (min of involved stacks)
+# 8-max, button=seat 1 → seat 2=SB, seat 3=BB
+_SAMPLE_HH_EFF_STACK = """\
+Poker Hand #TM5600280421: Tournament #264809938, ¥220 Hold'em No Limit - Level8(200/400) - 2026/02/17 15:00:00
+Table '2' 8-max Seat #1 is the button
+Seat 1: a1234567 (12,000 in chips)
+Seat 2: Hero (10,400 in chips)
+Seat 3: c3456789 (4,000 in chips)
+Seat 4: d4567890 (15,000 in chips)
+Seat 5: e5678901 (9,000 in chips)
+Seat 6: f6789012 (7,000 in chips)
+Seat 7: g7890123 (8,000 in chips)
+Seat 8: h8901234 (6,000 in chips)
+Hero: posts the ante 40
+c3456789: posts the ante 40
+a1234567: posts the ante 40
+d4567890: posts the ante 40
+e5678901: posts the ante 40
+f6789012: posts the ante 40
+g7890123: posts the ante 40
+h8901234: posts the ante 40
+Hero: posts small blind 200
+c3456789: posts big blind 400
+*** HOLE CARDS ***
+Dealt to Hero [Qd Tc]
+d4567890: folds
+e5678901: folds
+f6789012: folds
+g7890123: folds
+h8901234: folds
+a1234567: folds
+Hero: raises 9,960 to 10,160 and is all-in
+c3456789: folds
+Uncalled bet (9,760) returned to Hero
+*** SUMMARY ***
+Total pot 1,120 | Rake 0"""
+
+
+@test
+def test_hh_parser_effective_stack_min():
+    """HH Parser: effective_bb is min of hero and opponent stacks in pot."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_EFF_STACK)
+    assert_true(result is not None, "should parse hand")
+    assert_eq(result["hero_position"], "SB")
+    # Hero SB = 10400 chips = 26bb, but BB = 4000 chips = 10bb
+    # Effective stack should be 10bb (min of the two)
+    assert_true(result["effective_bb"] <= 10.0,
+                f"effective_bb should be <=10 (BB has 10bb), got {result['effective_bb']}")
+    assert_true(result["effective_bb"] >= 9.5,
+                f"effective_bb should be ~10, got {result['effective_bb']}")
+
+
 # ── 169 Hand Index Tests ──
 
 @test

@@ -125,7 +125,11 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
 
     hero_position = seat_to_pos[hero_seat]
     hero_chips = seats[hero_seat]["chips"]
-    effective_bb = hero_chips / bb_size
+
+    # position -> chips mapping (for effective stack calculation)
+    pos_to_chips = {}
+    for seat, info in seats.items():
+        pos_to_chips[seat_to_pos[seat]] = info["chips"]
 
     # name -> position mapping
     name_to_pos = {}
@@ -229,6 +233,27 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
                 has_more = True
 
     preflop_actions = "-".join(preflop_parts)
+
+    # ── Effective BB = min stack among players in the pot when hero acts ──
+    # Players who folded BEFORE hero acted are out; players who act after hero
+    # (or called/raised before) are still in the pot at hero's decision point.
+    hero_preflop_idx = positions.index(hero_position)
+    opponent_chips = []
+    for i, pos in enumerate(positions):
+        if pos == hero_position:
+            continue
+        if i < hero_preflop_idx:
+            # Acted before hero — only in pot if they didn't fold
+            if i < len(preflop_parts) and preflop_parts[i] != "F":
+                opponent_chips.append(pos_to_chips[pos])
+        else:
+            # Acts after hero — still in the pot (hasn't folded yet)
+            opponent_chips.append(pos_to_chips[pos])
+    if opponent_chips:
+        effective_bb = min(hero_chips, min(opponent_chips)) / bb_size
+    else:
+        # Everyone folded to hero (walk) — use hero's own stack
+        effective_bb = hero_chips / bb_size
 
     # ── Check if hero folded preflop ──
     hero_preflop_idx = positions.index(hero_position)
