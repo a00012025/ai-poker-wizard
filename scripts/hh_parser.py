@@ -234,23 +234,32 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
 
     preflop_actions = "-".join(preflop_parts)
 
-    # ── Effective BB = min stack among players in the pot when hero acts ──
-    # Players who folded BEFORE hero acted are out; players who act after hero
-    # (or called/raised before) are still in the pot at hero's decision point.
-    hero_preflop_idx = positions.index(hero_position)
-    opponent_chips = []
-    for i, pos in enumerate(positions):
-        if pos == hero_position:
-            continue
-        if i < hero_preflop_idx:
-            # Acted before hero — only in pot if they didn't fold
-            if i < len(preflop_parts) and preflop_parts[i] != "F":
-                opponent_chips.append(pos_to_chips[pos])
-        else:
-            # Acts after hero — still in the pot (hasn't folded yet)
-            opponent_chips.append(pos_to_chips[pos])
-    if opponent_chips:
-        effective_bb = min(hero_chips, min(opponent_chips)) / bb_size
+    # ── Effective BB ──
+    if board_flop:
+        # Hand went postflop: effective stack is between pot participants.
+        # Use preflop_actions_ordered to exclude everyone who folded (including
+        # players who open-raised then folded to a 3bet in continuation rounds).
+        active_positions = set(positions)
+        for pos, code in preflop_actions_ordered:
+            if code == "F":
+                active_positions.discard(pos)
+        in_pot_chips = [pos_to_chips[pos] for pos in active_positions if pos != hero_position]
+    else:
+        # Preflop only: include opponents who haven't folded before hero
+        # plus those who act after hero (haven't decided yet).
+        hero_preflop_idx = positions.index(hero_position)
+        in_pot_chips = []
+        for i, pos in enumerate(positions):
+            if pos == hero_position:
+                continue
+            if i < hero_preflop_idx:
+                if i < len(preflop_parts) and preflop_parts[i] != "F":
+                    in_pot_chips.append(pos_to_chips[pos])
+            else:
+                in_pot_chips.append(pos_to_chips[pos])
+
+    if in_pot_chips:
+        effective_bb = min(hero_chips, min(in_pot_chips)) / bb_size
     else:
         # Everyone folded to hero (walk) — use hero's own stack
         effective_bb = hero_chips / bb_size

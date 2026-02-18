@@ -406,6 +406,7 @@ def check_hand(hand: dict) -> list[dict]:
     board = ""
     flop_acts = ""
     turn_acts = ""
+    river_acts = ""
 
     for street_idx, street in enumerate(streets):
         street_name = ["flop", "turn", "river"][street_idx]
@@ -427,11 +428,8 @@ def check_hand(hand: dict) -> list[dict]:
                     gametype=gametype, depth=depth,
                     preflop_actions=full_preflop_norm, board=board,
                     flop_actions=flop_acts, turn_actions=turn_acts,
-                    river_actions="",
+                    river_actions=river_acts,
                 )
-                if street_idx == 2:
-                    # For river, we need turn_acts set properly
-                    pass
 
                 # Determine hero's taken action code
                 if action_type in ("X", "C", "F"):
@@ -479,7 +477,7 @@ def check_hand(hand: dict) -> list[dict]:
                         gametype=gametype, depth=depth,
                         preflop_actions=full_preflop_norm, board=board,
                         flop_actions=flop_acts, turn_actions=turn_acts,
-                        river_actions="",
+                        river_actions=river_acts,
                     )
                     next_resp = get_next_actions(**params_adv)
                     avail = next_resp["next_actions"]["available_actions"]
@@ -491,7 +489,8 @@ def check_hand(hand: dict) -> list[dict]:
                 flop_acts = f"{flop_acts}-{taken}" if flop_acts else taken
             elif street_idx == 1:
                 turn_acts = f"{turn_acts}-{taken}" if turn_acts else taken
-            # river_actions not needed (no further queries)
+            elif street_idx == 2:
+                river_acts = f"{river_acts}-{taken}" if river_acts else taken
 
     return deviations
 
