@@ -321,7 +321,7 @@ UTG fold, BTN call
         # Get the largest photo resolution
         photo = update.message.photo[-1]
 
-        status_msg = await update.message.reply_text("🔍 正在辨識截圖中的手牌...")
+        status_msg = await update.message.reply_text("🔍 正在下載圖片...")
 
         t0 = time.time()
         try:
@@ -329,13 +329,12 @@ UTG fold, BTN call
             tg_file = await photo.get_file()
             image_bytes = bytes(await tg_file.download_as_bytearray())
 
-            await status_msg.edit_text("📊 手牌辨識中，正在查詢 GTO 策略...")
-
             response = await self.session_manager.send_image_message(
                 chat_id=update.effective_chat.id,
                 image_bytes=image_bytes,
                 mime_type="image/jpeg",
                 user_text=caption,
+                status_callback=status_msg.edit_text,
             )
 
             elapsed = time.time() - t0

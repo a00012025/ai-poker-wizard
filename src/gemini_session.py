@@ -498,16 +498,28 @@ class GeminiSessionManager:
 
     async def send_image_message(self, chat_id: int, image_bytes: bytes,
                                     mime_type: str = "image/jpeg",
-                                    user_text: str = "") -> str:
-        """Main entry for image-based hand analysis: parse screenshot → GTO → coaching."""
+                                    user_text: str = "",
+                                    status_callback=None) -> str:
+        """Main entry for image-based hand analysis: parse screenshot → GTO → coaching.
+
+        status_callback: optional async callable(str) to update user-facing status.
+        """
         t0 = time.time()
         self._logger.info(
             f"[chat={chat_id}] Image message ({len(image_bytes)} bytes), "
             f"caption: {user_text[:200]}"
         )
 
+        async def _update_status(text: str):
+            if status_callback:
+                try:
+                    await status_callback(text)
+                except Exception:
+                    pass
+
         try:
             # Step 1: Parse hand from screenshot
+            await _update_status("🔍 正在辨識截圖中的手牌...")
             hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type)
             t_parse = time.time()
 
@@ -523,6 +535,10 @@ class GeminiSessionManager:
             )
 
             # Step 2: Ensure GTO Wizard session
+            await _update_status(
+                f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
+                f"({hand_json['effective_bb']:.0f}bb)，正在查詢 GTO 策略..."
+            )
             from gto_token import ensure_session
             if not ensure_session():
                 return "GTO Wizard session 已過期，請管理員更新 token。"
