@@ -393,6 +393,7 @@ class GeminiSessionManager:
         self.client = genai.Client(api_key=api_key)
         self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
+        self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-3-pro-preview")
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
@@ -581,16 +582,19 @@ class GeminiSessionManager:
 
         response = await asyncio.wait_for(
             self.client.aio.models.generate_content(
-                model=self.parse_model,
+                model=self.image_parse_model,
                 contents=[
                     types.Content(role="user", parts=[
                         types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                         types.Part(text=IMAGE_PARSE_PROMPT),
                     ]),
                 ],
-                config=types.GenerateContentConfig(temperature=0),
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    thinking_config=types.ThinkingConfig(thinking_budget=8192),
+                ),
             ),
-            timeout=60,
+            timeout=120,
         )
 
         text = response.text or ""
