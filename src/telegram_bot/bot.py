@@ -57,6 +57,14 @@ class PokerWizardBot:
         # Store uploaded HH hands per chat for follow-up queries
         self.hh_hands: dict[int, list[dict]] = {}  # chat_id -> parsed hands
         self.admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
+        # Per-user lock to serialize messages from the same user
+        self._user_locks: dict[int, asyncio.Lock] = {}
+
+    def _user_lock(self, chat_id: int) -> asyncio.Lock:
+        """Get or create a per-user lock to serialize message handling."""
+        if chat_id not in self._user_locks:
+            self._user_locks[chat_id] = asyncio.Lock()
+        return self._user_locks[chat_id]
 
     def _user_label(self, update: Update) -> str:
         u = update.effective_user
@@ -168,6 +176,11 @@ UTG fold, BTN call
         """Handle all text messages via Claude session"""
         if not await self._check_user(update):
             return
+        chat_id = update.effective_chat.id
+        async with self._user_lock(chat_id):
+            await self._handle_message_inner(update, context)
+
+    async def _handle_message_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         user_text = update.message.text
         label = self._user_label(update)
@@ -313,6 +326,11 @@ UTG fold, BTN call
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
         if not await self._check_user(update):
             return
+        chat_id = update.effective_chat.id
+        async with self._user_lock(chat_id):
+            await self._handle_photo_inner(update, context)
+
+    async def _handle_photo_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = self._user_label(update)
         caption = update.message.caption or ""
 
@@ -376,6 +394,11 @@ UTG fold, BTN call
         """Handle uploaded hand history files (.txt or .zip)."""
         if not await self._check_user(update):
             return
+        chat_id = update.effective_chat.id
+        async with self._user_lock(chat_id):
+            await self._handle_document_inner(update, context)
+
+    async def _handle_document_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = self._user_label(update)
         doc = update.message.document
 
