@@ -133,6 +133,7 @@ IMAGE_PARSE_PROMPT = """\
 
 提取規則：
 - gametype: 固定 "MTTGeneral"
+- players_at_table: 桌上有幾個玩家座位（數截圖中的座位數，通常是 6 或 8 或 9）
 - 位置順序（按人數）：
   9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB
   8人: UTG, UTG+1, LJ, HJ, CO, BTN, SB, BB（預設）
@@ -158,6 +159,7 @@ JSON 格式：
 {
   "hand": {
     "gametype": "MTTGeneral",
+    "players_at_table": 8,
     "effective_bb": 16,
     "hero_position": "LJ",
     "hero_hand": "AsKc",
@@ -613,7 +615,7 @@ class GeminiSessionManager:
                     thinking_config=types.ThinkingConfig(thinking_budget=8192),
                 ),
             ),
-            timeout=120,
+            timeout=180,
         )
 
         text = response.text or ""

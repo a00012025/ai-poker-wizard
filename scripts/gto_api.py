@@ -179,6 +179,11 @@ def find_closest_action_postflop(available_actions: list[dict], target_size: flo
         return abs_code
 
     # Matched all-in — check if target_size is actually a percentage
+    # But if target is close to the all-in size, it's clearly an absolute amount
+    allin_size = float(abs_action["action"]["betsize"])
+    if allin_size > 0 and abs(allin_size - target_size) / max(target_size, 1) < 0.15:
+        return abs_code
+
     # Compute solver pot from any action with betsize_by_pot
     solver_pot = None
     for entry in available_actions:

@@ -500,7 +500,29 @@ def _run_analysis(hand: dict) -> dict:
     streets = hand.get("streets", [])
 
     # Determine position order based on number of players
-    num_players = len(hand.get("player_stacks", [])) or 8
+    num_players = len(hand.get("player_stacks", []))
+    if not num_players:
+        num_players = hand.get("players_at_table", 0)
+    if not num_players:
+        # Infer from preflop actions: each player acts once in the first round,
+        # each additional raise adds one extra action (original raiser responds)
+        parts = hand["preflop_actions"].split("-")
+        num_raises = sum(1 for p in parts if p.startswith("R") or p.startswith("AI"))
+        num_players = len(parts) - max(0, num_raises - 1)
+        num_players = max(2, min(9, num_players))
+
+    # GTO Wizard's MTTGeneral API always expects 8 positions.
+    # For tables < 8 players, pad preflop actions with folds for missing positions.
+    if gametype == "MTTGeneral" and num_players < 8:
+        pad_count = 8 - num_players
+        padding = "-".join(["F"] * pad_count)
+        hand = dict(hand)  # shallow copy to avoid mutating original
+        hand["preflop_actions"] = padding + "-" + hand["preflop_actions"]
+        if hand.get("player_stacks"):
+            # Pad player_stacks too (shouldn't happen often for image-parsed hands)
+            hand["player_stacks"] = [0] * pad_count + hand["player_stacks"]
+        num_players = 8
+
     pos_order = _get_position_order(num_players)
 
     # ICM support: resolve gametype and stacks

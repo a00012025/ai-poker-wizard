@@ -1206,6 +1206,96 @@ def test_hh_e2e_parse_check_report():
     assert_in("1 手", report)
 
 
+# ── Table size inference + padding tests ──
+
+@test
+def test_num_players_inferred_from_preflop():
+    """Table size: 6-player inferred from 6 preflop actions (no player_stacks)."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "BB",
+        "hero_hand": "AKs",
+        "preflop_actions": "F-F-F-R2-F-C",  # 6 actions = 6-player
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Should recognize BTN raised (not HJ which would be 8-player mapping)
+    assert_in("BTN", text)
+    # Should find BB's data (not "找不到 BB")
+    assert_in("BB", text)
+    assert_true("找不到 BB" not in text, "Should find BB preflop data with 6-player padding")
+
+
+@test
+def test_num_players_8p_no_padding():
+    """Table size: 8-player hand needs no padding."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "BB",
+        "hero_hand": "AKs",
+        "preflop_actions": "F-F-F-F-F-R2-F-C",  # 8 actions = 8-player
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    assert_in("BTN", text)
+    assert_true("找不到 BB" not in text, "Should find BB preflop data for 8-player")
+
+
+@test
+def test_num_players_from_players_at_table():
+    """Table size: players_at_table field takes priority over preflop count."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "players_at_table": 6,
+        "hero_position": "BB",
+        "hero_hand": "AKs",
+        "preflop_actions": "F-F-F-R2-F-C",
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    assert_in("BTN", text)
+    assert_true("找不到 BB" not in text, "Should find BB data with players_at_table=6")
+
+
+@test
+def test_postflop_allin_action_matching():
+    """Action matching: near-all-in bet matches RAI, not Call."""
+    from gto_api import find_closest_action_postflop
+    # Simulate available actions: F, C(3bb), R6.8, RAI(12bb)
+    available = [
+        {"action": {"code": "F", "betsize": "0", "allin": False}},
+        {"action": {"code": "C", "betsize": "3.0", "allin": False}},
+        {"action": {"code": "R6.8", "betsize": "6.8", "allin": False, "betsize_by_pot": "0.33"}},
+        {"action": {"code": "RAI", "betsize": "12.0", "allin": True, "betsize_by_pot": "0.78"}},
+    ]
+    # 11.8 is very close to all-in (12.0), should match RAI not C
+    result = find_closest_action_postflop(available, 11.8)
+    assert_eq(result, "RAI")
+
+
+@test
+def test_postflop_pct_bet_still_detected():
+    """Action matching: percentage-based bet still detected when far from all-in."""
+    from gto_api import find_closest_action_postflop
+    # Simulate: pot ~20bb, actions include R6.6 (33%), R10 (50%), RAI(40bb)
+    available = [
+        {"action": {"code": "X", "betsize": "0", "allin": False}},
+        {"action": {"code": "R6.6", "betsize": "6.6", "allin": False, "betsize_by_pot": "0.33"}},
+        {"action": {"code": "R10", "betsize": "10.0", "allin": False, "betsize_by_pot": "0.50"}},
+        {"action": {"code": "RAI", "betsize": "40.0", "allin": True, "betsize_by_pot": "2.0"}},
+    ]
+    # 33 could be "33% pot" → 6.6bb. Without fix this matches RAI(40bb).
+    # With fix: |40-33|/33 = 21% > 30% threshold, so pct detection kicks in
+    result = find_closest_action_postflop(available, 33)
+    assert_eq(result, "R6.6")
+
+
 # ── Runner ──
 
 def run_tests():
