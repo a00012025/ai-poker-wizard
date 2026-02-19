@@ -833,12 +833,15 @@ class GeminiSessionManager:
                 # Tools were called — ask model to summarize the results
                 messages.append(types.Content(role="user", parts=[types.Part(text=(
                     "請根據以上工具查詢結果，給出完整的分析回覆。"
+                    "不要包含任何 JSON 或原始數據，只用自然語言回覆。"
                 ))]))
             else:
                 # No tools were called — ask model to try answering directly
                 messages.append(types.Content(role="user", parts=[types.Part(text=(
                     "請直接回答用戶的問題。如果需要 GTO 數據支持，"
-                    "根據系統提示中的手牌資訊描述你所知道的策略。"
+                    "根據系統提示中的手牌資訊描述你所知道的策略。\n"
+                    "重要：不要模擬工具呼叫、不要輸出 JSON、不要包含原始數據。"
+                    "只用自然語言簡潔回覆。"
                 ))]))
             await _status("生成回覆中...")
             response = await asyncio.wait_for(
