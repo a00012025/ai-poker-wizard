@@ -142,7 +142,10 @@ IMAGE_PARSE_PROMPT = """\
   3bet/4bet 後的 continuation actions 接在第一輪後面
   例：UTG+1 raise 2, CO call, SB raise 10, UTG+1 fold, CO call
   → F-R2-F-F-C-F-R10-F-F-C（8位置 + UTG+1 fold + CO call）
-- effective_bb: min(hero 籌碼, 進入底池的對手中最小籌碼)
+- effective_bb: min(hero 開局籌碼, 進入底池的對手開局籌碼中最小值)
+  重要：截圖顯示的 BB 數量是這局結束時的剩餘籌碼（還沒拿回底池），不是開局籌碼！
+  計算開局籌碼 = 目前顯示的籌碼 + 這局投入底池的所有籌碼（包含 call、raise、bet 金額）
+  例：顯示 11.1 BB，但 preflop call 1bb + flop call 2.7bb + turn call 8.2bb = 投入 11.9bb，開局 = 11.1 + 11.9 = 23bb
 - 牌面記號：rank 用單字元 2-9, T, J, Q, K, A（十=T，不是10！）
   suit 用 c♣ d♦ h♥ s♠，如 "AsKc", "Ts4h"
 - hero_hand: 兩張牌，如 "AsKc"
