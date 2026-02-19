@@ -193,7 +193,7 @@ def find_closest_action_postflop(available_actions: list[dict], target_size: flo
     # Compare pot-percentage errors:
     # Absolute interpretation: target_size bb = what % of pot?
     abs_pct = target_size / solver_pot * 100
-    abs_matched_pct = float(abs_action["action"].get("betsize_by_pot", 0)) * 100
+    abs_matched_pct = float(abs_action["action"].get("betsize_by_pot") or 0) * 100
     abs_err = abs(abs_pct - abs_matched_pct)
 
     # Percentage interpretation: target_size = X% of pot
@@ -202,7 +202,7 @@ def find_closest_action_postflop(available_actions: list[dict], target_size: flo
     pct_action = next(
         (a for a in available_actions if a["action"]["code"] == pct_code), None
     )
-    pct_matched_pct = float(pct_action["action"].get("betsize_by_pot", 0)) * 100 if pct_action else 0
+    pct_matched_pct = float(pct_action["action"].get("betsize_by_pot") or 0) * 100 if pct_action else 0
     pct_err = abs(target_size - pct_matched_pct)
 
     if pct_err < abs_err:
