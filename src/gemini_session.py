@@ -612,10 +612,10 @@ class GeminiSessionManager:
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0,
-                    thinking_config=types.ThinkingConfig(thinking_budget=8192),
+                    thinking_config=types.ThinkingConfig(thinking_budget=4096),
                 ),
             ),
-            timeout=180,
+            timeout=300,
         )
 
         text = response.text or ""

@@ -265,6 +265,37 @@ def test_multiway_2way_flop_unchanged():
     assert_in("Flop", result["text"])
 
 
+@test
+def test_multiway_all_fold_to_hero_raise():
+    """Multiway: 3-way pot where everyone folds to hero's flop raise simplifies to HU."""
+    from analyze_hand import analyze_hand_full
+    # HJ raise, SB call, BB call → 3-way
+    # Flop T44: SB x, BB x, HJ bet, SB raise, BB fold, HJ fold
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "SB",
+        "hero_hand": "AcTc",
+        "preflop_actions": "F-F-F-R2-F-F-C-C",
+        "streets": [
+            {"board": "Td4h4c", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "R2", "size": 2.0},
+                {"position": "SB", "action": "R6", "size": 6.0},
+                {"position": "BB", "action": "F"},
+                {"position": "HJ", "action": "F"},
+            ]},
+        ],
+    })
+    assert_in("多人底池", result["text"], "should note multiway simplification")
+    assert_in("HJ", result["text"])
+    # Flop should have solver data for SB's check and facing-bet decisions
+    flop_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
+                      if spot["street"] == "flop" and s is not None]
+    assert_true(len(flop_solutions) > 0, "flop should have solver data when villain folds to hero raise")
+
+
 # ── Position Order Tests ──
 
 @test

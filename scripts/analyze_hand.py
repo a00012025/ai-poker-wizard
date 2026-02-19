@@ -322,10 +322,19 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
 
         remaining = [p for p in flop_positions if p not in folded_on_flop]
 
-        if len(remaining) != 2 or hero_pos not in remaining:
+        if len(remaining) == 2 and hero_pos in remaining:
+            villain_pos = next(p for p in remaining if p != hero_pos)
+        elif len(remaining) == 1 and remaining[0] == hero_pos:
+            # Everyone folded to hero — find the last non-hero bettor as villain
+            villain_pos = None
+            for act in reversed(streets[0]["actions"]):
+                if act["position"] != hero_pos and act["action"] not in ("X", "F"):
+                    villain_pos = act["position"]
+                    break
+            if not villain_pos:
+                return preflop, depth, "", None
+        else:
             return preflop, depth, "", None
-
-        villain_pos = next(p for p in remaining if p != hero_pos)
     else:
         # Preflop-only: simplify to first raiser vs hero
         pos_order = POSITION_ORDER[:min(len(parts), 8)]
