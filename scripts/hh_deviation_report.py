@@ -98,7 +98,6 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     severe = []   # hero_freq == 0 (GTO never does this)
     major = []    # hero_freq < 25%
     moderate = [] # hero_freq < threshold cutoff
-    marginal = [] # EV below threshold — deviation barely matters
 
     cutoff = (100 - threshold_pct) / 100  # e.g., 0.9
 
@@ -110,6 +109,10 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
                 continue
 
             hero_ev = d.get("hero_ev")
+            # Skip marginal deviations (EV below threshold)
+            if hero_ev is not None and abs(hero_ev) < ev_threshold:
+                continue
+
             entry = {
                 "hand_id": r["hand_id"],
                 "pos": r["hero_position"],
@@ -125,13 +128,9 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
                 "gto_action": d["gto_action_label"],
                 "gto_freq": d["gto_freq"],
                 "all_freqs": d["all_freqs"],
-                "hero_ev": hero_ev,
             }
 
-            # If EV is available and below threshold, classify as marginal
-            if hero_ev is not None and abs(hero_ev) < ev_threshold:
-                marginal.append(entry)
-            elif d["hero_freq"] < 0.005:
+            if d["hero_freq"] < 0.005:
                 severe.append(entry)
             elif d["hero_freq"] < 0.25:
                 major.append(entry)
@@ -141,21 +140,17 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     severe.sort(key=lambda x: x["hero_freq"])
     major.sort(key=lambda x: x["hero_freq"])
     moderate.sort(key=lambda x: x["hero_freq"])
-    marginal.sort(key=lambda x: abs(x.get("hero_ev") or 0))
 
     total_devs = len(severe) + len(major) + len(moderate)
 
     lines = []
     lines.append("*GTO 偏差分析報告*")
-    devs_label = f"{total_devs} 處偏差"
-    if marginal:
-        devs_label += f"，{len(marginal)} 處微小偏差"
-    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{devs_label}")
+    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{total_devs} 處偏差")
     if errors:
         lines.append(f"({errors} 手分析失敗)")
     lines.append("")
 
-    if not total_devs and not marginal:
+    if not total_devs:
         lines.append("沒有發現顯著偏差，打得不錯！")
         return "\n".join(lines)
 
@@ -164,21 +159,18 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
         s = f"{v:.3f}".rstrip("0").rstrip(".")
         return s
 
-    def _format_entry(e: dict, show_ev: bool = False) -> str:
+    def _format_entry(e: dict) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
         hand_id = e["hand_id"]
         street_name = e["street"].capitalize()
         ebb = _fmt_num(e["ebb"])
         parts = []
-        ev_note = ""
-        if show_ev and e.get("hero_ev") is not None:
-            ev_note = f" (EV {_fmt_num(e['hero_ev'])}bb)"
         parts.append(
             f"• `{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
             f" — {street_name} {e['hero_action']} ({freq_str})"
         )
         parts.append(
-            f"    建議：應 {e['gto_action']} ({e['gto_freq']:.0%}){ev_note}"
+            f"    建議：應 {e['gto_action']} ({e['gto_freq']:.0%})"
         )
         # Action line
         if e["street"] == "preflop":
@@ -204,15 +196,5 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
         for e in moderate:
             lines.append(_format_entry(e))
         lines.append("")
-
-    if marginal:
-        lines.append(f"*微小偏差（EV < {ev_threshold:.0f}bb）— {len(marginal)} 處*")
-        lines.append("以下偏差 EV 影響極小，可忽略：")
-        for e in marginal:
-            lines.append(_format_entry(e, show_ev=True))
-        lines.append("")
-
-    if not total_devs and marginal:
-        lines.insert(4, "沒有顯著偏差，只有微小 EV 差異。")
 
     return "\n".join(lines)

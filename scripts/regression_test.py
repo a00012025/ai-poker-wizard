@@ -1114,8 +1114,8 @@ def test_hh_check_hand_correct_play():
 
 
 @test
-def test_deviation_report_marginal_ev():
-    """Report: low EV deviations classified as marginal."""
+def test_deviation_report_low_ev_skipped():
+    """Report: low EV deviations are skipped entirely."""
     from hh_deviation_report import format_deviation_report
     results = [{
         "hand_id": "TM1", "hero_position": "BB", "hero_hand": "9s3s",
@@ -1130,11 +1130,10 @@ def test_deviation_report_marginal_ev():
         }],
     }]
     report = format_deviation_report(results, ev_threshold=1.0)
-    # Should NOT be in severe (even though hero_freq == 0) because EV is low
+    # Low EV deviation should be skipped — report shows no deviations
     assert_not_in("嚴重偏差", report)
-    # Should be in marginal
-    assert_in("微小偏差", report)
-    assert_in("EV 0.3bb", report)
+    assert_not_in("93s", report)
+    assert_in("不錯", report)
 
 
 @test
@@ -1154,31 +1153,7 @@ def test_deviation_report_high_ev_stays_severe():
         }],
     }]
     report = format_deviation_report(results, ev_threshold=1.0)
-    # AKs with EV 3.5bb should be severe, not marginal
     assert_in("嚴重偏差", report)
-    assert_not_in("微小偏差", report)
-
-
-@test
-def test_deviation_report_no_ev_stays_categorized():
-    """Report: deviations without EV data use frequency-based categories."""
-    from hh_deviation_report import format_deviation_report
-    results = [{
-        "hand_id": "TM1", "hero_position": "BB", "hero_hand": "8s6d",
-        "hero_hand_normalized": "86o", "effective_bb": 10, "num_players": 6,
-        "preflop_actions": "F-R2-F-C-F-C", "spots_checked": 1,
-        "deviations": [{
-            "street": "preflop", "spot": "open",
-            "hero_action": "C", "hero_action_label": "Call",
-            "hero_freq": 0, "gto_action": "F", "gto_action_label": "Fold",
-            "gto_freq": 1.0, "all_freqs": {"F": 1.0},
-            # No hero_ev field
-        }],
-    }]
-    report = format_deviation_report(results, ev_threshold=1.0)
-    # Without EV data, should fall back to frequency-based categorization
-    assert_in("嚴重偏差", report)
-    assert_not_in("微小偏差", report)
 
 
 @test
