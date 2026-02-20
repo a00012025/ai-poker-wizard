@@ -345,9 +345,8 @@ UTG fold, BTN call
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
             from gto_token import TokenExpiredError
-            if isinstance(e, TokenExpiredError) and refresh_token:
-                # Per-user token expired — tell the user to re-bind
-                self.log.warning(f"[{label}] User token expired during message handling")
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during message handling")
                 try:
                     await status_msg.edit_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
@@ -356,14 +355,6 @@ UTG fold, BTN call
                     await update.message.reply_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                     )
-                return
-            if isinstance(e, TokenExpiredError):
-                self.log.warning(f"[{label}] Global token expired during message handling")
-                try:
-                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
-                except Exception:
-                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
-                await self._notify_admin(f"GTO Wizard token 過期！{label} 發送訊息時觸發。")
                 return
             try:
                 await status_msg.edit_text(f"❌ {str(e)}")
@@ -379,8 +370,11 @@ UTG fold, BTN call
 
         await update.message.chat.send_action(action="typing")
 
-        # Look up user's GTO token
+        # Require user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
+        if not refresh_token:
+            await update.message.reply_text("請先使用 /login 綁定你的 GTO Wizard 帳號。")
+            return
 
         t0 = time.time()
         try:
@@ -396,14 +390,12 @@ UTG fold, BTN call
                 analysis_input["streets"] = hand["streets"]
 
             # Set user token for GTO API calls
-            if refresh_token:
-                self._setup_user_token(user_id, refresh_token)
+            self._setup_user_token(user_id, refresh_token)
             try:
                 from analyze_hand import analyze_hand_full
                 context = analyze_hand_full(analysis_input)
             finally:
-                if refresh_token:
-                    self._clear_user_token()
+                self._clear_user_token()
             gto_data = context["text"]
             self.session_manager.hand_contexts[chat_id] = context
 
@@ -452,18 +444,12 @@ UTG fold, BTN call
 
         except Exception as e:
             elapsed = time.time() - t0
-            # Handle token expiry gracefully
             from gto_token import TokenExpiredError
-            if isinstance(e, TokenExpiredError) and refresh_token:
-                self.log.warning(f"[{label}] User token expired during HH follow-up")
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during HH follow-up")
                 await update.message.reply_text(
                     "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                 )
-                return
-            if isinstance(e, TokenExpiredError):
-                self.log.warning(f"[{label}] Global token expired during HH follow-up")
-                await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
-                await self._notify_admin(f"GTO Wizard token 過期！{label} 查詢 {hand_id} 時觸發。")
                 return
             self.log.error(f"[{label}] HH follow-up error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 分析 {hand_id} 時發生錯誤：{e}")
@@ -528,8 +514,8 @@ UTG fold, BTN call
         except Exception as e:
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
-            if isinstance(e, TokenExpiredError) and refresh_token:
-                self.log.warning(f"[{label}] User token expired during photo analysis")
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during photo analysis")
                 try:
                     await status_msg.edit_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
@@ -538,14 +524,6 @@ UTG fold, BTN call
                     await update.message.reply_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                     )
-                return
-            if isinstance(e, TokenExpiredError):
-                self.log.warning(f"[{label}] Global token expired during photo analysis")
-                try:
-                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
-                except Exception:
-                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
-                await self._notify_admin(f"GTO Wizard token 過期！{label} 發送截圖時觸發。")
                 return
             self.log.error(f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True)
             try:
@@ -637,22 +615,11 @@ UTG fold, BTN call
                     f"🔍 解析到 {len(all_hands)} 手，開始 GTO 分析..."
                 )
 
-                # Look up user's GTO token
+                # Require user's GTO token
                 refresh_token = await self._get_user_refresh_token(user_id)
-
-                # Ensure GTO Wizard session (user token or global)
                 if not refresh_token:
-                    from gto_token import ensure_session, TokenExpiredError
-                    if not ensure_session():
-                        self.log.warning(f"[{label}] GTO session expired for HH upload")
-                        await status_msg.edit_text(
-                            "GTO Wizard session 過期，請管理員更新 token。"
-                        )
-                        await self._notify_admin(
-                            f"GTO Wizard token 過期！用戶 {label} 上傳 HH 時觸發。\n"
-                            f"請更新 .tokens.json"
-                        )
-                        return
+                    await status_msg.edit_text("請先使用 /login 綁定你的 GTO Wizard 帳號。")
+                    return
 
                 # Run deviation analysis in thread to not block event loop
                 last_update_time = [time.time()]
@@ -695,13 +662,11 @@ UTG fold, BTN call
                 _clear = self._clear_user_token
 
                 def _run_in_thread():
-                    if _refresh_token:
-                        _setup(_user_id, _refresh_token)
+                    _setup(_user_id, _refresh_token)
                     try:
                         return analyze_hands(all_hands, delay=0.3, on_progress=sync_progress)
                     finally:
-                        if _refresh_token:
-                            _clear()
+                        _clear()
 
                 async def run_analysis():
                     return await loop.run_in_executor(None, _run_in_thread)
@@ -762,8 +727,8 @@ UTG fold, BTN call
             elapsed = time.time() - t0
             # Handle token expiry gracefully
             from gto_token import TokenExpiredError
-            if isinstance(e, TokenExpiredError) and refresh_token:
-                self.log.warning(f"[{label}] User token expired during HH upload")
+            if isinstance(e, TokenExpiredError):
+                self.log.warning(f"[{label}] Token expired during HH upload")
                 try:
                     await status_msg.edit_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
@@ -772,14 +737,6 @@ UTG fold, BTN call
                     await update.message.reply_text(
                         "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                     )
-                return
-            if isinstance(e, TokenExpiredError):
-                self.log.warning(f"[{label}] Global token expired during HH upload")
-                try:
-                    await status_msg.edit_text("GTO Wizard token 過期，請管理員更新 token。")
-                except Exception:
-                    await update.message.reply_text("GTO Wizard token 過期，請管理員更新 token。")
-                await self._notify_admin(f"GTO Wizard token 過期！{label} 上傳 HH 時觸發。")
                 return
             self.log.error(f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True)
             try:

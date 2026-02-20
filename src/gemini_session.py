@@ -461,30 +461,18 @@ class GeminiSessionManager:
                     f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
                 )
 
-                # Step 2: Ensure GTO Wizard session is valid
+                # Step 2: Require user token
                 if not refresh_token:
-                    from gto_token import ensure_session, capture_browser_token
-                    if not ensure_session():
-                        self._logger.warning(f"[chat={chat_id}] Session expired, browser opened for login")
-                        import asyncio as _aio
-                        for _ in range(24):
-                            await _aio.sleep(5)
-                            if capture_browser_token():
-                                self._logger.info(f"[chat={chat_id}] Browser login captured")
-                                break
-                        else:
-                            return "GTO Wizard session 已過期，已開啟瀏覽器。請登入後重新傳送手牌。"
+                    return "請先使用 /login 綁定你的 GTO Wizard 帳號。"
 
                 # Step 3: Run GTO analysis and cache context
                 await _status("查詢 GTO 策略中...")
-                if refresh_token:
-                    self._setup_user_token(user_id, refresh_token)
+                self._setup_user_token(user_id, refresh_token)
                 try:
                     from analyze_hand import analyze_hand_full
                     context = analyze_hand_full(hand_json)
                 finally:
-                    if refresh_token:
-                        self._clear_user_token()
+                    self._clear_user_token()
                 gto_data = context["text"]
                 self.hand_contexts[chat_id] = context
 
@@ -573,25 +561,21 @@ class GeminiSessionManager:
                 f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
             )
 
-            # Step 2: Ensure GTO Wizard session
+            # Step 2: Require user token
             await _update_status(
                 f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
                 f"({hand_json['effective_bb']:.0f}bb)，正在查詢 GTO 策略..."
             )
             if not refresh_token:
-                from gto_token import ensure_session
-                if not ensure_session():
-                    return "GTO Wizard session 已過期，請管理員更新 token。"
+                return "請先使用 /login 綁定你的 GTO Wizard 帳號。"
 
             # Step 3: GTO analysis
-            if refresh_token:
-                self._setup_user_token(user_id, refresh_token)
+            self._setup_user_token(user_id, refresh_token)
             try:
                 from analyze_hand import analyze_hand_full
                 context = analyze_hand_full(hand_json)
             finally:
-                if refresh_token:
-                    self._clear_user_token()
+                self._clear_user_token()
             gto_data = context["text"]
             self.hand_contexts[chat_id] = context
 
