@@ -229,7 +229,11 @@ def _get_action_label(action_solutions: list[dict], code: str) -> str:
             act = asol["action"]
             if act.get("allin"):
                 return f"All-in {_fmt_betsize(act.get('betsize', 0))}bb"
-            return act.get("display_name", code)
+            name = act.get("display_name", code)
+            betsize = act.get("betsize")
+            if betsize and name.upper() in ("RAISE", "BET"):
+                return f"{name} {_fmt_betsize(betsize)}bb"
+            return name
     return code
 
 
