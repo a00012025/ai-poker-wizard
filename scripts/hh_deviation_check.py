@@ -214,6 +214,11 @@ def _get_postflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str) -> d
     return {k: v for k, v in action_freqs.items() if v > 0.005} or None
 
 
+def _fmt_betsize(v) -> str:
+    """Format betsize, stripping unnecessary trailing zeros."""
+    return f"{float(v):.3f}".rstrip("0").rstrip(".")
+
+
 def _get_action_label(action_solutions: list[dict], code: str) -> str:
     """Get human-readable label for an action code."""
     labels = {"X": "Check", "C": "Call", "F": "Fold"}
@@ -223,7 +228,7 @@ def _get_action_label(action_solutions: list[dict], code: str) -> str:
         if asol["action"]["code"] == code:
             act = asol["action"]
             if act.get("allin"):
-                return f"All-in {act.get('betsize', '')}bb"
+                return f"All-in {_fmt_betsize(act.get('betsize', 0))}bb"
             return act.get("display_name", code)
     return code
 

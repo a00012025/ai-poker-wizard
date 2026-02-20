@@ -159,23 +159,32 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
         lines.append("沒有發現顯著偏差，打得不錯！")
         return "\n".join(lines)
 
+    def _fmt_num(v: float) -> str:
+        """Format number, stripping unnecessary trailing zeros."""
+        s = f"{v:.3f}".rstrip("0").rstrip(".")
+        return s
+
     def _format_entry(e: dict, show_ev: bool = False) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
         hand_id = e["hand_id"]
+        street_name = e["street"].capitalize()
+        ebb = _fmt_num(e["ebb"])
         parts = []
         ev_note = ""
         if show_ev and e.get("hero_ev") is not None:
-            ev_note = f" (EV {e['hero_ev']:.2f}bb)"
+            ev_note = f" (EV {_fmt_num(e['hero_ev'])}bb)"
         parts.append(
-            f"• `{hand_id}` {e['pos']} {e['hand']} {e['ebb']:.0f}bb"
-            f" — {e['hero_action']} ({freq_str})"
-            f" → 應 {e['gto_action']} ({e['gto_freq']:.0%}){ev_note}"
+            f"• `{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
+            f" — {street_name} {e['hero_action']} ({freq_str})"
+        )
+        parts.append(
+            f"    建議：應 {e['gto_action']} ({e['gto_freq']:.0%}){ev_note}"
         )
         # Action line
         if e["street"] == "preflop":
-            parts.append(f"  preflop: {e['pf']}")
+            parts.append(f"    preflop: {e['pf']}")
         else:
-            parts.append(f"  {e['spot']} | preflop: {e['pf']}")
+            parts.append(f"    {e['spot']} | preflop: {e['pf']}")
         return "\n".join(parts)
 
     if severe:

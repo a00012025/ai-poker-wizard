@@ -1134,7 +1134,7 @@ def test_deviation_report_marginal_ev():
     assert_not_in("嚴重偏差", report)
     # Should be in marginal
     assert_in("微小偏差", report)
-    assert_in("EV 0.30bb", report)
+    assert_in("EV 0.3bb", report)
 
 
 @test
@@ -1179,6 +1179,33 @@ def test_deviation_report_no_ev_stays_categorized():
     # Without EV data, should fall back to frequency-based categorization
     assert_in("嚴重偏差", report)
     assert_not_in("微小偏差", report)
+
+
+@test
+def test_deviation_report_format_structure():
+    """Report: new format has street name, 建議 on new line, clean numbers."""
+    from hh_deviation_report import format_deviation_report
+    results = [{
+        "hand_id": "TM5608762330", "hero_position": "CO", "hero_hand": "As8s",
+        "hero_hand_normalized": "A8s", "effective_bb": 12.0, "num_players": 6,
+        "preflop_actions": "F-R2.0-C-F-C", "spots_checked": 1,
+        "deviations": [{
+            "street": "preflop", "spot": "open",
+            "hero_action": "R2.0", "hero_action_label": "RAISE",
+            "hero_freq": 0, "gto_action": "RAI", "gto_action_label": "All-in 12bb",
+            "gto_freq": 0.78, "all_freqs": {"RAI": 0.78, "F": 0.22},
+        }],
+    }]
+    report = format_deviation_report(results)
+    # Street name before hero action
+    assert_in("Preflop RAISE", report)
+    # Recommendation on new line with 建議 prefix
+    assert_in("建議：應 All-in 12bb", report)
+    # No trailing .0 on effective_bb
+    assert_in("12bb", report)
+    assert_not_in("12.0bb", report)
+    # Inline "→ 應" should NOT exist (moved to new line)
+    assert_not_in("→ 應", report)
 
 
 @test
