@@ -171,6 +171,37 @@ def get_access_token() -> str:
     )
 
 
+# ── Per-user token management ──
+
+_user_token_cache: dict[int, tuple[str, float]] = {}  # user_id -> (access_token, expiry_ts)
+
+
+def get_user_access_token(user_id: int, refresh_token: str) -> str:
+    """Get a valid access token for a specific user, refreshing if needed.
+
+    Raises TokenExpiredError if the refresh token is invalid/expired.
+    """
+    cached = _user_token_cache.get(user_id)
+    if cached and cached[1] > time.time() + 60:
+        return cached[0]
+
+    access = _refresh_access(refresh_token)
+    if not access:
+        # Evict stale cache entry
+        _user_token_cache.pop(user_id, None)
+        raise TokenExpiredError(
+            "GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
+        )
+
+    _user_token_cache[user_id] = (access, _jwt_exp(access))
+    return access
+
+
+def invalidate_user_token(user_id: int):
+    """Remove cached access token for a user (e.g. on logout)."""
+    _user_token_cache.pop(user_id, None)
+
+
 if __name__ == "__main__":
     token = get_access_token()
     print(token)

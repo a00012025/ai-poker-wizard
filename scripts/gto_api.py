@@ -3,6 +3,7 @@
 
 Pure HTTP calls — no browser needed.
 """
+import threading
 import time
 import sys
 from pathlib import Path
@@ -23,17 +24,40 @@ _MAX_RETRIES = 2
 _session = requests.Session()
 _session.headers.update({"origin": ORIGIN})
 
+# Thread-local storage for per-user token override
+_thread_local = threading.local()
+
+
+def set_user_token(token: str):
+    """Set a per-user access token for the current thread."""
+    _thread_local.access_token = token
+
+
+def clear_user_token():
+    """Clear the per-user access token for the current thread."""
+    _thread_local.access_token = None
+
 
 def _ensure_auth():
     _session.headers["authorization"] = f"Bearer {get_access_token()}"
 
 
 def _get_with_retry(url: str, params: dict, timeout: int = _TIMEOUT) -> requests.Response:
-    """GET with automatic retry on timeout/connection errors."""
-    _ensure_auth()
+    """GET with automatic retry on timeout/connection errors.
+
+    Uses per-user token from thread-local if set, otherwise falls back to
+    global session token.
+    """
+    user_token = getattr(_thread_local, "access_token", None)
+    if user_token:
+        headers = {"authorization": f"Bearer {user_token}"}
+    else:
+        _ensure_auth()
+        headers = None  # use session defaults
+
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return _session.get(url, params=params, timeout=timeout)
+            return _session.get(url, params=params, timeout=timeout, headers=headers)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt == _MAX_RETRIES:
                 raise

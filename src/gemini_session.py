@@ -412,12 +412,30 @@ class GeminiSessionManager:
             self._logger.addHandler(handler)
             self._logger.setLevel(logging.DEBUG)
 
+    def _setup_user_token(self, user_id: int | None, refresh_token: str | None):
+        """Set thread-local GTO token if user has one."""
+        if user_id and refresh_token:
+            from gto_token import get_user_access_token
+            from gto_api import set_user_token
+            access = get_user_access_token(user_id, refresh_token)
+            set_user_token(access)
+
+    @staticmethod
+    def _clear_user_token():
+        """Clear thread-local GTO token."""
+        from gto_api import clear_user_token
+        clear_user_token()
+
     async def send_message(self, chat_id: int, user_text: str,
-                           on_status: Callable[[str], Any] | None = None) -> str:
+                           on_status: Callable[[str], Any] | None = None,
+                           user_id: int | None = None,
+                           refresh_token: str | None = None) -> str:
         """Main entry: parse hand → GTO analysis → coaching, or chat with tools.
 
         Args:
             on_status: optional async/sync callback(status_msg) for progress updates
+            user_id: Telegram user ID for per-user token lookup
+            refresh_token: user's GTO Wizard refresh token (if any)
         """
         t0 = time.time()
         self._logger.info(f"[chat={chat_id}] User: {user_text[:300]}")
@@ -444,22 +462,29 @@ class GeminiSessionManager:
                 )
 
                 # Step 2: Ensure GTO Wizard session is valid
-                from gto_token import ensure_session, capture_browser_token
-                if not ensure_session():
-                    self._logger.warning(f"[chat={chat_id}] Session expired, browser opened for login")
-                    import asyncio as _aio
-                    for _ in range(24):
-                        await _aio.sleep(5)
-                        if capture_browser_token():
-                            self._logger.info(f"[chat={chat_id}] Browser login captured")
-                            break
-                    else:
-                        return "GTO Wizard session 已過期，已開啟瀏覽器。請登入後重新傳送手牌。"
+                if not refresh_token:
+                    from gto_token import ensure_session, capture_browser_token
+                    if not ensure_session():
+                        self._logger.warning(f"[chat={chat_id}] Session expired, browser opened for login")
+                        import asyncio as _aio
+                        for _ in range(24):
+                            await _aio.sleep(5)
+                            if capture_browser_token():
+                                self._logger.info(f"[chat={chat_id}] Browser login captured")
+                                break
+                        else:
+                            return "GTO Wizard session 已過期，已開啟瀏覽器。請登入後重新傳送手牌。"
 
                 # Step 3: Run GTO analysis and cache context
                 await _status("查詢 GTO 策略中...")
-                from analyze_hand import analyze_hand_full
-                context = analyze_hand_full(hand_json)
+                if refresh_token:
+                    self._setup_user_token(user_id, refresh_token)
+                try:
+                    from analyze_hand import analyze_hand_full
+                    context = analyze_hand_full(hand_json)
+                finally:
+                    if refresh_token:
+                        self._clear_user_token()
                 gto_data = context["text"]
                 self.hand_contexts[chat_id] = context
 
@@ -477,7 +502,10 @@ class GeminiSessionManager:
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
                     f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 )
-                result = await self._chat_with_tools(chat_id, coaching_prompt, on_status=on_status)
+                result = await self._chat_with_tools(
+                    chat_id, coaching_prompt, on_status=on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                )
                 t_total = time.time()
                 self._logger.info(
                     f"[chat={chat_id}] Done: parse={t_parse - t0:.1f}s "
@@ -489,7 +517,8 @@ class GeminiSessionManager:
             else:
                 # Not a hand — chat (with tools if hand context exists)
                 await _status("查詢中...")
-                result = await self._chat(chat_id, user_text, on_status=on_status)
+                result = await self._chat(chat_id, user_text, on_status=on_status,
+                                          user_id=user_id, refresh_token=refresh_token)
                 elapsed = time.time() - t0
                 self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
                 return result
@@ -504,10 +533,14 @@ class GeminiSessionManager:
     async def send_image_message(self, chat_id: int, image_bytes: bytes,
                                     mime_type: str = "image/jpeg",
                                     user_text: str = "",
-                                    status_callback=None) -> str:
+                                    status_callback=None,
+                                    user_id: int | None = None,
+                                    refresh_token: str | None = None) -> str:
         """Main entry for image-based hand analysis: parse screenshot → GTO → coaching.
 
         status_callback: optional async callable(str) to update user-facing status.
+        user_id: Telegram user ID for per-user token lookup.
+        refresh_token: user's GTO Wizard refresh token (if any).
         """
         t0 = time.time()
         self._logger.info(
@@ -531,7 +564,8 @@ class GeminiSessionManager:
             if not hand_json:
                 self._logger.info(f"[chat={chat_id}] No hand found in image")
                 if user_text.strip():
-                    return await self._chat(chat_id, user_text)
+                    return await self._chat(chat_id, user_text,
+                                            user_id=user_id, refresh_token=refresh_token)
                 return "無法從截圖中辨識出撲克手牌。請確認截圖是手牌回放畫面（包含底部動作面板）。"
 
             self._logger.info(
@@ -544,13 +578,20 @@ class GeminiSessionManager:
                 f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
                 f"({hand_json['effective_bb']:.0f}bb)，正在查詢 GTO 策略..."
             )
-            from gto_token import ensure_session
-            if not ensure_session():
-                return "GTO Wizard session 已過期，請管理員更新 token。"
+            if not refresh_token:
+                from gto_token import ensure_session
+                if not ensure_session():
+                    return "GTO Wizard session 已過期，請管理員更新 token。"
 
             # Step 3: GTO analysis
-            from analyze_hand import analyze_hand_full
-            context = analyze_hand_full(hand_json)
+            if refresh_token:
+                self._setup_user_token(user_id, refresh_token)
+            try:
+                from analyze_hand import analyze_hand_full
+                context = analyze_hand_full(hand_json)
+            finally:
+                if refresh_token:
+                    self._clear_user_token()
             gto_data = context["text"]
             self.hand_contexts[chat_id] = context
 
@@ -580,7 +621,10 @@ class GeminiSessionManager:
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
                 f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
             )
-            result = await self._chat_with_tools(chat_id, coaching_prompt)
+            result = await self._chat_with_tools(
+                chat_id, coaching_prompt,
+                user_id=user_id, refresh_token=refresh_token,
+            )
 
             t_total = time.time()
             self._logger.info(
@@ -715,13 +759,18 @@ class GeminiSessionManager:
         return result
 
     async def _chat(self, chat_id: int, user_text: str,
-                     on_status: Callable[[str], Any] | None = None) -> str:
+                     on_status: Callable[[str], Any] | None = None,
+                     user_id: int | None = None,
+                     refresh_token: str | None = None) -> str:
         """Chat with GTO tool access — always provides tools so model can query solver."""
         self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
-        return await self._chat_with_tools(chat_id, user_text, on_status=on_status)
+        return await self._chat_with_tools(chat_id, user_text, on_status=on_status,
+                                           user_id=user_id, refresh_token=refresh_token)
 
     async def _chat_with_tools(self, chat_id: int, user_text: str,
-                                on_status: Callable[[str], Any] | None = None) -> str:
+                                on_status: Callable[[str], Any] | None = None,
+                                user_id: int | None = None,
+                                refresh_token: str | None = None) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
         tool = types.Tool(function_declarations=[
             QUERY_NEXT_ACTIONS_DECLARATION,
@@ -810,10 +859,16 @@ class GeminiSessionManager:
                 await _status(tool_desc + "...")
 
                 t_tool = time.time()
-                if fn_name == "query_next_actions":
-                    tool_result = self._execute_query_next_actions(chat_id, args)
-                else:
-                    tool_result = self._execute_query_gto(chat_id, args)
+                if refresh_token:
+                    self._setup_user_token(user_id, refresh_token)
+                try:
+                    if fn_name == "query_next_actions":
+                        tool_result = self._execute_query_next_actions(chat_id, args)
+                    else:
+                        tool_result = self._execute_query_gto(chat_id, args)
+                finally:
+                    if refresh_token:
+                        self._clear_user_token()
                 elapsed = time.time() - t_tool
                 self._logger.debug(
                     f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"

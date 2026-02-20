@@ -101,6 +101,35 @@ class Database:
             )
         return [json.loads(row["hand_data"]) for row in rows]
 
+    async def get_user_gto_token(self, user_id: int) -> str | None:
+        """Get user's GTO Wizard refresh token."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT gto_refresh_token FROM users WHERE user_id = $1",
+                user_id,
+            )
+
+    async def save_user_gto_token(self, user_id: int, refresh_token: str):
+        """Store user's GTO Wizard refresh token."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE users SET gto_refresh_token = $2
+                WHERE user_id = $1
+                """,
+                user_id, refresh_token,
+            )
+        logger.info(f"Saved GTO token for user {user_id}")
+
+    async def delete_user_gto_token(self, user_id: int):
+        """Remove user's GTO Wizard refresh token."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET gto_refresh_token = NULL WHERE user_id = $1",
+                user_id,
+            )
+        logger.info(f"Deleted GTO token for user {user_id}")
+
     async def find_hand(self, chat_id: int, hand_id_suffix: str) -> dict | None:
         """Find a hand by hand_id suffix (LIKE '%suffix')."""
         async with self.pool.acquire() as conn:
