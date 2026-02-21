@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "GTO Wizard Token",
+  "version": "1.0",
+  "description": "Copy GTO Wizard token for AI Poker Wizard Telegram bot",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Copy GTO Token"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
