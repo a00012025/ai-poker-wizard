@@ -13,6 +13,7 @@ import requests
 # Allow importing gto_token from same directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_token import get_access_token
+from gto_cache import get as cache_get, put as cache_put, SENTINEL
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
@@ -81,21 +82,23 @@ def get_next_actions(
     river_actions: str = "",
 ) -> dict:
     """Get available actions for a spot."""
+    params = {
+        "gametype": gametype, "depth": depth, "stacks": stacks,
+        "preflop_actions": preflop_actions, "board": board,
+        "flop_actions": flop_actions, "turn_actions": turn_actions,
+        "river_actions": river_actions,
+    }
+    cached = cache_get("next_actions", params)
+    if cached is not SENTINEL:
+        return cached
     r = _get_with_retry(
         f"{API_BASE}/v1/poker/next-actions/",
-        params={
-            "gametype": gametype,
-            "depth": depth,
-            "stacks": stacks,
-            "preflop_actions": preflop_actions,
-            "board": board,
-            "flop_actions": flop_actions,
-            "turn_actions": turn_actions,
-            "river_actions": river_actions,
-        },
+        params=params,
     )
     r.raise_for_status()
-    return r.json()
+    result = r.json()
+    cache_put("next_actions", params, result)
+    return result
 
 
 def get_spot_solution(
@@ -109,23 +112,26 @@ def get_spot_solution(
     river_actions: str = "",
 ) -> dict | None:
     """Get full strategy solution for a spot. Returns None if no solution (204)."""
+    params = {
+        "gametype": gametype, "depth": depth, "stacks": stacks,
+        "preflop_actions": preflop_actions, "board": board,
+        "flop_actions": flop_actions, "turn_actions": turn_actions,
+        "river_actions": river_actions,
+    }
+    cached = cache_get("spot_solution", params)
+    if cached is not SENTINEL:
+        return cached
     r = _get_with_retry(
         f"{API_BASE}/v4/solutions/spot-solution/",
-        params={
-            "gametype": gametype,
-            "depth": depth,
-            "stacks": stacks,
-            "preflop_actions": preflop_actions,
-            "board": board,
-            "flop_actions": flop_actions,
-            "turn_actions": turn_actions,
-            "river_actions": river_actions,
-        },
+        params=params,
     )
     if r.status_code in (204, 403):
+        cache_put("spot_solution", params, None)
         return None
     r.raise_for_status()
-    return r.json()
+    result = r.json()
+    cache_put("spot_solution", params, result)
+    return result
 
 
 def find_closest_action_from_solutions(action_solutions: list[dict], target_size: float) -> str:

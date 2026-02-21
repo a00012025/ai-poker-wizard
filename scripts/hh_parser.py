@@ -339,6 +339,7 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
         "preflop_actions": preflop_actions,
         "stacks_bb": stacks_bb,
         "avg_stack_chips": round(avg_stack_chips, 1),
+        "hero_chips": hero_chips,
     }
 
     if streets:

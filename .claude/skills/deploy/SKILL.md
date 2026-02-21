@@ -98,6 +98,10 @@ set -a && source .env && set +a
 supabase migration list
 ```
 
+### NEVER use psql directly
+
+Do NOT run `psql "$SUPABASE_CONN" -f migration.sql` to apply migrations. This bypasses Supabase's migration tracking and `supabase db push` will fail or re-apply. Always use `supabase db push` — it tracks which migrations have been applied.
+
 ### Important: adding tables
 
 If you add a new table, also add its name to `_REQUIRED_TABLES` in `src/database.py` so the startup check catches missing migrations.

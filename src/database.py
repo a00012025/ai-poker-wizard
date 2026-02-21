@@ -8,7 +8,7 @@ import asyncpg
 
 logger = logging.getLogger("poker_bot")
 
-_REQUIRED_TABLES = ["users", "hand_histories"]
+_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache"]
 
 
 class Database:
