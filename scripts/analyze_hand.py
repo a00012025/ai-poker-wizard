@@ -781,10 +781,23 @@ def _run_analysis(hand: dict) -> dict:
     t_phase1 = time.time()
 
     # ── Phase 2: Fetch all spot solutions in parallel ──
+    # Propagate thread-local user token into executor threads
+    from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
+    _parent_token = getattr(_gto_tl, "access_token", None)
+
+    def _fetch_with_token(params):
+        if _parent_token:
+            set_user_token(_parent_token)
+        try:
+            return get_spot_solution(**params)
+        finally:
+            if _parent_token:
+                clear_user_token()
+
     solutions = [None] * len(hero_spots)
     with ThreadPoolExecutor(max_workers=len(hero_spots)) as executor:
         future_to_idx = {
-            executor.submit(get_spot_solution, **spot["params"]): i
+            executor.submit(_fetch_with_token, spot["params"]): i
             for i, spot in enumerate(hero_spots)
         }
         for future in as_completed(future_to_idx):
