@@ -25,7 +25,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
 # Upload analysis timeout (seconds)
-ANALYSIS_TIMEOUT = 600
+ANALYSIS_TIMEOUT = 1800
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
@@ -554,7 +554,8 @@ UTG fold, BTN call
         caption = update.message.caption or ""
         self.log.info(f"[{label}] Document: {fname} ({fsize} bytes), caption: {caption[:100]}")
 
-        # Parse ICM params from caption (e.g., "10000" or "10000 200")
+        # Parse optional ICM override from caption (e.g., "10000" or "10000 200")
+        # When starting_stack=0, analyze_hands auto-detects from first hand's hero chips
         starting_stack = 0
         tournament_size = 1000
         caption_numbers = re.findall(r'\d+', caption)
@@ -625,9 +626,8 @@ UTG fold, BTN call
                     )
                     return
 
-                icm_label = f"（ICM 起始{starting_stack}籌碼）" if starting_stack > 0 else ""
                 await status_msg.edit_text(
-                    f"🔍 解析到 {len(all_hands)} 手，開始 GTO 分析...{icm_label}"
+                    f"🔍 解析到 {len(all_hands)} 手，開始 GTO 分析（含 ICM）..."
                 )
 
                 # Require user's GTO token
