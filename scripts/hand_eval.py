@@ -192,11 +192,13 @@ def _evaluate_made_hand(hole: list[tuple[int, str]], board: list[tuple[int, str]
     board_sorted = sorted(set(board_ranks), reverse=True)
 
     if len(pair_list) >= 2:
-        # Two pair (use best two)
-        top_two = pair_list[:2]
-        # Check if hero contributes to at least one pair
-        label = f"兩對 ({_RANK_NAMES[top_two[0]]}, {_RANK_NAMES[top_two[1]]})"
-        return "two_pair", label
+        # Only count pairs hero contributes to (board-only pairs are shared by all)
+        hero_pairs = [pr for pr in pair_list if any(r == pr for r in hole_ranks)]
+        if len(hero_pairs) >= 2:
+            label = f"兩對 ({_RANK_NAMES[hero_pairs[0]]}, {_RANK_NAMES[hero_pairs[1]]})"
+            return "two_pair", label
+        # Board pair present — classify by the pair(s) hero contributes to
+        pair_list = hero_pairs
 
     if len(pair_list) == 1:
         pair_rank = pair_list[0]
