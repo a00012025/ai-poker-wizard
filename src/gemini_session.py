@@ -205,6 +205,11 @@ COACH_SYSTEM = """\
 - 數據引用要精準但不要列出所有選項，只提最重要的 1-2 個動作頻率
 - 混合策略是重要資訊，必須標出頻率！不要說「所有口袋對都開」，要說「55+ 純開，22-44 混合（22 約 60%、33 約 75%、44 約 90%）」
 
+牌型判斷規則（嚴格遵守！）：
+- Hero 的手牌牌型已在分析數據中標明（「Hero XX 牌型: ...」），直接引用即可
+- 討論其他手牌的牌型時，必須使用 evaluate_hand 工具確認，絕對不要自行推算
+- 常見錯誤：把卡順聽牌說成兩頭順聽牌、把一對說成兩對、把無成手牌說成有成手牌
+
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
 - 如果訊息中已經包含「GTO Solver 數據」，這就是真實的 solver 分析結果！必須先根據這些數據分析 hero 的策略，不需要再用工具重複查詢
@@ -385,6 +390,29 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             ),
         },
         required=["street"],
+    ),
+)
+
+EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
+    name="evaluate_hand",
+    description=(
+        "判斷手牌在牌面上的確切牌型（成手牌 + 聽牌）。"
+        "牌型判斷是 100% 確定性的，必須用此工具驗證，絕對不要自行推算。"
+        "board 可省略，會自動使用當前最新牌面。"
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "hand": types.Schema(
+                type=types.Type.STRING,
+                description="手牌 (如 KQo, AhKh, T7s, 66)",
+            ),
+            "board": types.Schema(
+                type=types.Type.STRING,
+                description="牌面 (如 8hTc2sAc)，省略則用當前最新牌面",
+            ),
+        },
+        required=["hand"],
     ),
 )
 
@@ -759,6 +787,7 @@ class GeminiSessionManager:
         tool = types.Tool(function_declarations=[
             QUERY_NEXT_ACTIONS_DECLARATION,
             QUERY_GTO_DECLARATION,
+            EVALUATE_HAND_DECLARATION,
         ])
 
         # Build system prompt with hand context
@@ -833,26 +862,32 @@ class GeminiSessionManager:
                     f"{fn_name}({json.dumps(args, ensure_ascii=False)})"
                 )
 
-                # Status update for tool calls
-                pos = args.get("position", "")
-                street = args.get("street", "")
-                icm = args.get("icm_phase", "")
-                tool_desc = f"查詢 {pos} {street}" if pos else f"查詢 {street} 策略"
-                if icm:
-                    tool_desc += f" (ICM {icm})"
-                await _status(tool_desc + "...")
-
                 t_tool = time.time()
-                if refresh_token:
-                    self._setup_user_token(user_id, refresh_token)
-                try:
-                    if fn_name == "query_next_actions":
-                        tool_result = self._execute_query_next_actions(chat_id, args)
-                    else:
-                        tool_result = self._execute_query_gto(chat_id, args)
-                finally:
+
+                if fn_name == "evaluate_hand":
+                    # Local deterministic eval — no API call needed
+                    await _status("判斷牌型...")
+                    tool_result = self._execute_evaluate_hand(chat_id, args)
+                else:
+                    # GTO API tools — need status + token
+                    pos = args.get("position", "")
+                    street = args.get("street", "")
+                    icm = args.get("icm_phase", "")
+                    tool_desc = f"查詢 {pos} {street}" if pos else f"查詢 {street} 策略"
+                    if icm:
+                        tool_desc += f" (ICM {icm})"
+                    await _status(tool_desc + "...")
+
                     if refresh_token:
-                        self._clear_user_token()
+                        self._setup_user_token(user_id, refresh_token)
+                    try:
+                        if fn_name == "query_next_actions":
+                            tool_result = self._execute_query_next_actions(chat_id, args)
+                        else:
+                            tool_result = self._execute_query_gto(chat_id, args)
+                    finally:
+                        if refresh_token:
+                            self._clear_user_token()
                 elapsed = time.time() - t_tool
                 self._logger.debug(
                     f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"
@@ -963,6 +998,29 @@ class GeminiSessionManager:
             "street_states": {},
             "final_actions": {},
         }
+
+    def _execute_evaluate_hand(self, chat_id: int, args: dict) -> str:
+        """Execute evaluate_hand tool call. Returns deterministic hand type."""
+        from hand_eval import evaluate as eval_hand
+
+        hand = args.get("hand", "")
+        board = args.get("board", "")
+
+        # Auto-fill board from cached context if not provided
+        if not board:
+            ctx = self.hand_contexts.get(chat_id)
+            if ctx:
+                for street in ("river", "turn", "flop"):
+                    if street in ctx.get("street_states", {}):
+                        board = ctx["street_states"][street].get("board", "")
+                        if board:
+                            break
+
+        if not board:
+            return f"無法判斷牌型：沒有指定牌面，且當前沒有手牌 context。請提供 board 參數。"
+
+        result = eval_hand(hand, board)
+        return f"{hand} 在 {board}: {result['full_label']}"
 
     def _execute_query_gto(self, chat_id: int, args: dict) -> str:
         """Execute a query_gto tool call. Returns formatted solver data."""

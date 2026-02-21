@@ -1365,6 +1365,100 @@ def test_postflop_pct_bet_still_detected():
     assert_eq(result, "R6.6")
 
 
+# ── Hand Eval Tests ──
+
+@test
+def test_hand_eval_two_pair():
+    """Hand eval: T8o on 8-T-2-A board = two pair."""
+    from hand_eval import evaluate
+    r = evaluate("T8o", "8hTc2sAc")
+    assert_eq(r["made_hand"], "two_pair")
+    assert_in("兩對", r["made_hand_label"])
+    assert_in("T", r["made_hand_label"])
+    assert_in("8", r["made_hand_label"])
+
+
+@test
+def test_hand_eval_gutshot():
+    """Hand eval: KQo on 8-T-2-A needs J for straight = gutshot."""
+    from hand_eval import evaluate
+    r = evaluate("KQo", "8hTc2sAc")
+    assert_in("gutshot", r["draws"])
+    assert_eq(r["made_hand"], "king_high")
+
+
+@test
+def test_hand_eval_straight():
+    """Hand eval: T7s on 8-9-4-J = straight (7-8-9-T-J)."""
+    from hand_eval import evaluate
+    r = evaluate("T7s", "8c9d4hJc")
+    assert_eq(r["made_hand"], "straight")
+    assert_in("順子", r["made_hand_label"])
+
+
+@test
+def test_hand_eval_flush_draw():
+    """Hand eval: AhKh on 8h3hTc = nut flush draw (4 hearts)."""
+    from hand_eval import evaluate
+    r = evaluate("AhKh", "8h3hTc")
+    assert_in("nut_flush_draw", r["draws"])
+    assert_eq(r["made_hand"], "ace_high")
+
+
+@test
+def test_hand_eval_no_draw_on_river():
+    """Hand eval: no draws on river (5 board cards)."""
+    from hand_eval import evaluate
+    r = evaluate("KQo", "8hTc2sAcJd")
+    assert_eq(r["draws"], [])
+    assert_eq(r["made_hand"], "straight")
+
+
+@test
+def test_hand_eval_overpair():
+    """Hand eval: AA on K-5-2 board = overpair."""
+    from hand_eval import evaluate
+    r = evaluate("AA", "Kh5d2c")
+    assert_eq(r["made_hand"], "overpair")
+    assert_in("超對", r["made_hand_label"])
+
+
+@test
+def test_hand_eval_set():
+    """Hand eval: pocket 6s on K-6-2 board = set."""
+    from hand_eval import evaluate
+    r = evaluate("66", "Kh6d2c")
+    assert_eq(r["made_hand"], "set")
+    assert_in("暗三條", r["made_hand_label"])
+
+
+@test
+def test_hand_eval_oesd():
+    """Hand eval: 9-8 on 7-T-2 = OESD (needs 6 or J)."""
+    from hand_eval import evaluate
+    r = evaluate("9h8c", "7hTc2s")
+    assert_in("oesd", r["draws"])
+
+
+@test
+def test_hand_eval_top_pair():
+    """Hand eval: AhKh on Ah3hTc = top pair + nut flush draw."""
+    from hand_eval import evaluate
+    r = evaluate("AhKh", "Ah3hTc")
+    assert_eq(r["made_hand"], "top_pair")
+    assert_in("nut_flush_draw", r["draws"])
+
+
+@test
+def test_hand_eval_preflop_empty():
+    """Hand eval: no board = empty result."""
+    from hand_eval import evaluate
+    r = evaluate("AKo", "")
+    assert_eq(r["made_hand"], "")
+    assert_eq(r["draws"], [])
+    assert_eq(r["full_label"], "")
+
+
 # ── Runner ──
 
 def run_tests():

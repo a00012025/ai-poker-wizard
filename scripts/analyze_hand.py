@@ -336,16 +336,8 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
         else:
             return preflop, depth, "", None
     else:
-        # Preflop-only: simplify to first raiser vs hero
-        pos_order = POSITION_ORDER[:min(len(parts), 8)]
-        first_raiser = None
-        for i in non_fold:
-            if i < len(parts) and parts[i].startswith("R"):
-                first_raiser = pos_order[i] if i < len(pos_order) else None
-                break
-        if not first_raiser or first_raiser == hero_pos:
-            return preflop, depth, "", None
-        villain_pos = first_raiser
+        # Preflop-only: solver handles multiway preflop natively, no simplification needed
+        return preflop, depth, "", None
     hero_idx = POSITION_ORDER.index(hero_pos)
     villain_idx = POSITION_ORDER.index(villain_pos)
 
@@ -848,11 +840,22 @@ def _run_analysis(hand: dict) -> dict:
             results.append("  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考")
     results.append("")
 
+    from hand_eval import evaluate as _eval_hand
+
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         if spot["header"]:
             results.append("")
             results.append("=" * 50)
             results.append(spot["header"])
+
+            # Add deterministic hand type label for postflop streets
+            spot_street = spot["street"]
+            if spot_street != "preflop" and spot_street in street_states:
+                spot_board = street_states[spot_street].get("board", "")
+                if spot_board:
+                    eval_result = _eval_hand(hero_hand, spot_board)
+                    if eval_result["full_label"]:
+                        results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
 
         if sol:
             spot_text = format_full_spot(sol, hero_hand, hero_pos)
