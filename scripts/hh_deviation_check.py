@@ -464,6 +464,14 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                 # Determine hero's taken action code
                 if action_type in ("X", "C", "F"):
                     taken_code = action_type
+                elif action_type == "AI":
+                    try:
+                        next_resp = get_next_actions(**params)
+                        avail = next_resp["next_actions"]["available_actions"]
+                        allin = next((a["action"]["code"] for a in avail if a["action"].get("allin")), None)
+                        taken_code = allin or find_closest_action_postflop(avail, target_size)
+                    except Exception:
+                        taken_code = action_type
                 else:
                     try:
                         next_resp = get_next_actions(**params)
@@ -478,6 +486,22 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                     sol_post = None
 
                 if sol_post:
+                    # Remap "C" → all-in when solver has no Call but has all-in
+                    # (happens when hero calls an all-in and is effectively all-in)
+                    if taken_code == "C":
+                        has_call = any(
+                            a["action"]["code"] == "C"
+                            for a in sol_post["action_solutions"]
+                        )
+                        if not has_call:
+                            allin_code = next(
+                                (a["action"]["code"] for a in sol_post["action_solutions"]
+                                 if a["action"].get("allin")),
+                                None,
+                            )
+                            if allin_code:
+                                taken_code = allin_code
+
                     freqs_post = _get_postflop_hand_freqs(sol_post, hero_hand, hero_pos)
                     if freqs_post:
                         hero_freq_post = freqs_post.get(taken_code, 0)
@@ -501,6 +525,20 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
             # Advance action strings
             if action_type in ("X", "C", "F"):
                 taken = action_type
+            elif action_type == "AI":
+                try:
+                    params_adv = dict(
+                        gametype=gametype, depth=depth,
+                        preflop_actions=full_preflop_norm, board=board,
+                        flop_actions=flop_acts, turn_actions=turn_acts,
+                        river_actions=river_acts,
+                    )
+                    next_resp = get_next_actions(**params_adv)
+                    avail = next_resp["next_actions"]["available_actions"]
+                    allin = next((a["action"]["code"] for a in avail if a["action"].get("allin")), None)
+                    taken = allin or find_closest_action_postflop(avail, target_size)
+                except Exception:
+                    taken = action_type
             else:
                 try:
                     params_adv = dict(
