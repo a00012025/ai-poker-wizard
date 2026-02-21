@@ -721,6 +721,42 @@ def test_icm_postflop_falls_back_to_chipev():
 
 
 @test
+def test_icm_hh_deviation_differs_from_chipev():
+    """ICM HH: bubble ICM flags T9s UTG raise as deviation (chip EV says raise 100%)."""
+    from hh_deviation_check import check_hand
+    from icm_modes import find_icm_params
+
+    # T9s UTG 20bb: chip EV = Raise 100%, ICM bubble = Fold 100%
+    hand = {
+        "hand_id": "TEST_ICM_HH",
+        "tournament_id": "999",
+        "table_size": 8,
+        "num_players": 8,
+        "gametype": "MTTGeneral",
+        "effective_bb": 20,
+        "hero_position": "UTG",
+        "hero_hand": "Ts9s",
+        "preflop_actions": "R2-F-F-F-F-F-F-F",
+        "stacks_bb": [20, 20, 20, 20, 20, 20, 20, 20],
+        "avg_stack_chips": 20000,
+    }
+
+    # Without ICM: hero raising T9s should be the dominant action (100% raise)
+    devs_chipev = check_hand(hand, icm_params=None)
+    assert_true(len(devs_chipev) > 0, "chip EV should have a preflop spot")
+    assert_eq(devs_chipev[0]["hero_action"], devs_chipev[0]["gto_action"],
+              "chip EV: T9s UTG raise should match GTO dominant action (raise)")
+
+    # With ICM bubble: hero raising T9s should be flagged as deviation (GTO = fold)
+    icm = find_icm_params(player_stacks=[20]*8, phase="BUBBLE")
+    devs_icm = check_hand(hand, icm_params=icm)
+    assert_true(len(devs_icm) > 0, "ICM should have a preflop spot")
+    assert_true(devs_icm[0]["hero_action"] != devs_icm[0]["gto_action"],
+                "ICM bubble: T9s UTG raise should NOT match GTO (GTO = fold)")
+    assert_eq(devs_icm[0]["gto_action"], "F", "ICM bubble GTO action should be Fold")
+
+
+@test
 def test_missing_solver_data_explains_rare_line():
     """Missing solver data: explains hero's rare action caused solver gap."""
     from analyze_hand import analyze_hand_full

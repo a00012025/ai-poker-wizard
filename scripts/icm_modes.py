@@ -294,6 +294,66 @@ def find_icm_params(
     }
 
 
+def infer_icm_phase(
+    avg_stack_chips: float,
+    starting_stack_chips: float,
+    players_at_table: int = 8,
+    pko: bool = False,
+    tournament_size: int = 1000,
+) -> dict:
+    """Infer ICM params from avg stack at table vs starting stack.
+
+    The ratio avg_stack/starting_stack approximates total_players/players_remaining.
+    This lets us estimate the tournament phase without knowing exact players_remaining.
+
+    Args:
+        avg_stack_chips: Average chip stack at the table
+        starting_stack_chips: Tournament starting stack in chips
+        players_at_table: Number of players at the table
+        pko: PKO tournament?
+        tournament_size: 1000 or 200
+
+    Returns:
+        Dict with keys: gametype, depth, stacks, approximation_note, phase_info
+    """
+    if starting_stack_chips <= 0:
+        return {"gametype": "MTTGeneral", "depth": None, "stacks": "",
+                "approximation_note": "無效的起始籌碼", "phase_info": "chip_ev"}
+
+    ratio = avg_stack_chips / starting_stack_chips
+    estimated_remaining = tournament_size / ratio
+    # Can't have fewer remaining than players at the table
+    estimated_remaining = max(players_at_table, estimated_remaining)
+    estimated_remaining = min(tournament_size, estimated_remaining)
+
+    gametype = find_gametype(
+        players_at_table=players_at_table,
+        pko=pko,
+        tournament_size=tournament_size,
+        players_remaining=int(round(estimated_remaining)),
+    )
+
+    if gametype == "MTTGeneral":
+        from gto_api import nearest_depth
+        return {
+            "gametype": "MTTGeneral",
+            "depth": None,
+            "stacks": "",
+            "approximation_note": "找不到匹配的 ICM 模式，使用 Chip EV",
+            "phase_info": "chip_ev",
+        }
+
+    # Extract phase from gametype name for logging
+    phase_info = f"ratio={ratio:.1f}x, est_remaining={int(round(estimated_remaining))}"
+
+    return {
+        "gametype": gametype,
+        "estimated_remaining": int(round(estimated_remaining)),
+        "ratio": round(ratio, 2),
+        "phase_info": phase_info,
+    }
+
+
 if __name__ == "__main__":
     # Quick test
     import argparse

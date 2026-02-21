@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -550,7 +551,19 @@ UTG fold, BTN call
 
         fname = doc.file_name or ""
         fsize = doc.file_size or 0
-        self.log.info(f"[{label}] Document: {fname} ({fsize} bytes)")
+        caption = update.message.caption or ""
+        self.log.info(f"[{label}] Document: {fname} ({fsize} bytes), caption: {caption[:100]}")
+
+        # Parse ICM params from caption (e.g., "10000" or "10000 200")
+        starting_stack = 0
+        tournament_size = 1000
+        caption_numbers = re.findall(r'\d+', caption)
+        if caption_numbers:
+            starting_stack = int(caption_numbers[0])
+            if len(caption_numbers) >= 2:
+                ts = int(caption_numbers[1])
+                if ts in (200, 1000):
+                    tournament_size = ts
 
         # Validate file type
         fname_lower = fname.lower()
@@ -612,8 +625,9 @@ UTG fold, BTN call
                     )
                     return
 
+                icm_label = f"（ICM 起始{starting_stack}籌碼）" if starting_stack > 0 else ""
                 await status_msg.edit_text(
-                    f"🔍 解析到 {len(all_hands)} 手，開始 GTO 分析..."
+                    f"🔍 解析到 {len(all_hands)} 手，開始 GTO 分析...{icm_label}"
                 )
 
                 # Require user's GTO token
@@ -662,10 +676,15 @@ UTG fold, BTN call
                 _setup = self._setup_user_token
                 _clear = self._clear_user_token
 
+                _starting_stack = starting_stack
+                _tournament_size = tournament_size
+
                 def _run_in_thread():
                     _setup(_user_id, _refresh_token)
                     try:
-                        return analyze_hands(all_hands, delay=0.3, on_progress=sync_progress)
+                        return analyze_hands(all_hands, delay=0.3, on_progress=sync_progress,
+                                             starting_stack=_starting_stack,
+                                             tournament_size=_tournament_size)
                     finally:
                         _clear()
 

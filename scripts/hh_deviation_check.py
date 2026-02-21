@@ -238,13 +238,13 @@ def _get_action_label(action_solutions: list[dict], code: str) -> str:
 
 
 def _normalize_preflop_action(code: str, gametype: str, depth: float,
-                               preflop_so_far: str) -> str:
+                               preflop_so_far: str, stacks: str = "") -> str:
     """Map a raw preflop action code to the solver's action code."""
     if code in ("F", "C", "X"):
         return code
     try:
         resp = get_next_actions(gametype=gametype, depth=depth,
-                                preflop_actions=preflop_so_far)
+                                stacks=stacks, preflop_actions=preflop_so_far)
         avail = resp["next_actions"]["available_actions"]
         if not avail:
             return code
@@ -262,19 +262,34 @@ def _normalize_preflop_action(code: str, gametype: str, depth: float,
     return code
 
 
-def check_hand(hand: dict) -> list[dict]:
+def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
     """Check a single hand for GTO deviations.
+
+    Args:
+        hand: parsed hand dict from hh_parser
+        icm_params: optional ICM params dict with gametype, depth, stacks
+                    (from icm_modes.find_icm_params). None = chip EV only.
 
     Returns list of deviation dicts, each containing:
         street, hero_action, hero_freq, gto_action, gto_freq, actions_detail
     """
     gametype = "MTTGeneral"
+    icm_gametype = None
+    icm_depth = None
+    icm_stacks = None
+
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
     hero_hand = normalize_hand_name(hero_hand_raw)
     num_players = hand.get("num_players", hand.get("table_size", 8))
     depth = nearest_depth(hand["effective_bb"])
     streets = hand.get("streets", [])
+
+    # Use provided ICM params for preflop
+    if icm_params and icm_params.get("gametype", "MTTGeneral") != "MTTGeneral":
+        icm_gametype = icm_params["gametype"]
+        icm_depth = icm_params["depth"]
+        icm_stacks = icm_params.get("stacks", "")
 
     # Convert to 8-max
     pf_8max = _convert_preflop_to_8max(hand["preflop_actions"], num_players)
@@ -291,12 +306,17 @@ def check_hand(hand: dict) -> list[dict]:
     pf_parts_8 = pf_8max.split("-")
     pf_before_hero = "-".join(pf_parts_8[:hero_idx_8]) if hero_idx_8 > 0 else ""
 
+    # Choose preflop gametype/depth/stacks (ICM if available, else chip EV)
+    pf_gametype = icm_gametype or gametype
+    pf_depth = icm_depth or depth
+    pf_stacks = icm_stacks or ""
+
     # Normalize preflop actions up to hero
     normalized_parts = []
     for i in range(hero_idx_8):
         code = pf_parts_8[i]
         so_far = "-".join(normalized_parts) if normalized_parts else ""
-        norm_code = _normalize_preflop_action(code, gametype, depth, so_far)
+        norm_code = _normalize_preflop_action(code, pf_gametype, pf_depth, so_far, pf_stacks)
         normalized_parts.append(norm_code)
     pf_before_hero_norm = "-".join(normalized_parts) if normalized_parts else ""
 
@@ -309,13 +329,13 @@ def check_hand(hand: dict) -> list[dict]:
 
     # Normalize hero's action too
     hero_pf_action = _normalize_preflop_action(
-        hero_pf_action_raw, gametype, depth, pf_before_hero_norm
+        hero_pf_action_raw, pf_gametype, pf_depth, pf_before_hero_norm, pf_stacks
     )
 
     # Query solver for preflop
     try:
-        sol = get_spot_solution(gametype=gametype, depth=depth,
-                                preflop_actions=pf_before_hero_norm)
+        sol = get_spot_solution(gametype=pf_gametype, depth=pf_depth,
+                                stacks=pf_stacks, preflop_actions=pf_before_hero_norm)
     except Exception:
         sol = None
 
@@ -354,7 +374,7 @@ def check_hand(hand: dict) -> list[dict]:
         for i in range(min(len(pf_parts_8), 8)):
             code = pf_parts_8[i]
             so_far = "-".join(full_first_round) if full_first_round else ""
-            norm_code = _normalize_preflop_action(code, gametype, depth, so_far)
+            norm_code = _normalize_preflop_action(code, pf_gametype, pf_depth, so_far, pf_stacks)
             full_first_round.append(norm_code)
         full_first_pf = "-".join(full_first_round)
 
@@ -371,10 +391,11 @@ def check_hand(hand: dict) -> list[dict]:
             cont_idx += 1
 
         if hero_cont_raw:
-            hero_cont = _normalize_preflop_action(hero_cont_raw, gametype, depth, full_first_pf)
+            hero_cont = _normalize_preflop_action(hero_cont_raw, pf_gametype, pf_depth,
+                                                   full_first_pf, pf_stacks)
             try:
-                sol2 = get_spot_solution(gametype=gametype, depth=depth,
-                                          preflop_actions=full_first_pf)
+                sol2 = get_spot_solution(gametype=pf_gametype, depth=pf_depth,
+                                          stacks=pf_stacks, preflop_actions=full_first_pf)
             except Exception:
                 sol2 = None
 
@@ -517,6 +538,10 @@ def main():
                        help="Output JSON file")
     parser.add_argument("--delay", "-d", type=float, default=0.3,
                        help="Delay between hands in seconds")
+    parser.add_argument("--starting-stack", "-s", type=int, default=0,
+                       help="Starting stack in chips (enables ICM analysis)")
+    parser.add_argument("--tournament-size", type=int, default=1000,
+                       help="Tournament size: 1000 or 200 (default: 1000)")
     args = parser.parse_args()
 
     path = Path(args.path)
@@ -530,8 +555,12 @@ def main():
     if args.limit:
         hands = hands[:args.limit]
 
+    if args.starting_stack > 0:
+        print(f"ICM mode: starting_stack={args.starting_stack}, tournament_size={args.tournament_size}\n")
+
     all_results = []
     all_deviations = []
+    max_ratio_by_tournament: dict[str, float] = {}
 
     for i, hand in enumerate(hands):
         hand_id = hand.get("hand_id", "?")
@@ -540,12 +569,40 @@ def main():
         eff_bb = hand["effective_bb"]
         num_streets = len(hand.get("streets", []))
 
+        # Compute ICM params
+        icm_params = None
+        if args.starting_stack > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
+            from icm_modes import find_icm_params
+            raw_ratio = hand["avg_stack_chips"] / args.starting_stack
+            tid = hand.get("tournament_id", "")
+            if tid:
+                prev_max = max_ratio_by_tournament.get(tid, 0)
+                ratio = max(raw_ratio, prev_max)
+                max_ratio_by_tournament[tid] = ratio
+            else:
+                ratio = raw_ratio
+            table_size = hand.get("table_size", 8)
+            est_remaining = max(table_size, min(args.tournament_size, args.tournament_size / ratio))
+            # Pad stacks if short-handed
+            stacks = list(hand["stacks_bb"])
+            if len(stacks) < table_size:
+                avg_bb = sum(stacks) / len(stacks) if stacks else 20
+                stacks.extend([avg_bb] * (table_size - len(stacks)))
+            icm_result = find_icm_params(
+                player_stacks=stacks,
+                tournament_size=args.tournament_size,
+                players_remaining=int(round(est_remaining)),
+            )
+            if icm_result["gametype"] != "MTTGeneral":
+                icm_params = icm_result
+
+        icm_tag = f" ICM={icm_params['gametype'].split('PT')[-1]}" if icm_params else ""
         print(f"[{i+1}/{len(hands)}] {hand_id}: {hero_pos} {hero_hand} ({eff_bb:.1f}bb) "
-              f"streets={num_streets}", end=" ... ", flush=True)
+              f"streets={num_streets}{icm_tag}", end=" ... ", flush=True)
 
         t0 = time.time()
         try:
-            devs = check_hand(hand)
+            devs = check_hand(hand, icm_params=icm_params)
             elapsed = time.time() - t0
 
             # Identify significant deviations:

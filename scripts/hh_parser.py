@@ -70,6 +70,9 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
     hand_id_m = re.search(r"#(TM\d+)", header)
     hand_id = hand_id_m.group(1) if hand_id_m else "unknown"
 
+    tournament_id_m = re.search(r"Tournament #(\d+)", header)
+    tournament_id = tournament_id_m.group(1) if tournament_id_m else ""
+
     level_m = re.search(r"Level\d+\(([\d,]+)/([\d,]+)\)", header)
     if not level_m:
         return None
@@ -317,9 +320,16 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
             street_dict["card"] = cards_value
         streets.append(street_dict)
 
+    # ── Stacks in position order (for ICM) ──
+    stacks_bb = []
+    avg_stack_chips = sum(info["chips"] for info in seats.values()) / num_players
+    for pos in positions:
+        stacks_bb.append(round(pos_to_chips[pos] / bb_size, 1))
+
     # ── Build result ──
     result = {
         "hand_id": hand_id,
+        "tournament_id": tournament_id,
         "table_size": max_seats,
         "num_players": num_players,
         "gametype": "MTTGeneral",
@@ -327,6 +337,8 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
         "hero_position": hero_position,
         "hero_hand": hero_hand,
         "preflop_actions": preflop_actions,
+        "stacks_bb": stacks_bb,
+        "avg_stack_chips": round(avg_stack_chips, 1),
     }
 
     if streets:

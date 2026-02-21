@@ -11,10 +11,41 @@ from hh_deviation_check import check_hand
 from gto_formatter import normalize_hand_name
 
 
+_PHASE_LABELS = {
+    "START": "起始",
+    "PCT75": "75%",
+    "PCT50": "50%",
+    "PCT37": "37%",
+    "PCT25": "25%",
+    "PCT10": "10%",
+    "PCT5": "5%",
+    "BUBBLEEARLY": "泡沫前期",
+    "BUBBLEMID": "泡沫中期",
+    "BUBBLELATE": "泡沫後期",
+    "FT": "決賽桌",
+    "T2": "兩桌",
+    "T3": "三桌",
+}
+
+
+def _extract_icm_phase_label(gametype: str) -> str:
+    """Extract human-readable ICM phase from gametype like 'MTTGeneral_ICM8m1000PTPCT25'."""
+    import re
+    m = re.search(r"PT(.+)$", gametype)
+    if not m:
+        return "ICM"
+    raw = m.group(1)
+    # Handle bubble variants like "BUBBLE152PT" → "BUBBLELATE"
+    # The raw value after PT is the phase code
+    return _PHASE_LABELS.get(raw, raw)
+
+
 def analyze_hands(
     hands: list[dict],
     delay: float = 0.3,
     on_progress: Callable[[int, int, str], None] | None = None,
+    starting_stack: int = 0,
+    tournament_size: int = 1000,
 ) -> list[dict]:
     """Run GTO deviation check on a list of parsed hands.
 
@@ -22,12 +53,18 @@ def analyze_hands(
         hands: list of parsed hand dicts from hh_parser
         delay: seconds between API calls
         on_progress: callback(current, total, status_msg) for progress updates
+        starting_stack: tournament starting stack in chips (0 = chip EV only)
+        tournament_size: 1000 or 200
 
     Returns list of result dicts, each with:
         hand_id, hero_position, hero_hand, hero_hand_normalized, effective_bb,
         num_players, preflop_actions, spots_checked, deviations, elapsed_s
     """
     results = []
+
+    # Track max ratio per tournament for monotonicity
+    # (ratio only increases as tournament progresses → fewer players remain)
+    max_ratio_by_tournament: dict[str, float] = {}
 
     for i, hand in enumerate(hands):
         hand_id = hand.get("hand_id", "?")
@@ -38,9 +75,52 @@ def analyze_hands(
         if on_progress:
             on_progress(i + 1, len(hands), f"{hero_pos} {hero_hand} ({eff_bb:.0f}bb)")
 
+        # Compute ICM params with monotonicity enforcement
+        icm_params = None
+        if starting_stack > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
+            from icm_modes import infer_icm_phase, find_icm_params
+
+            raw_ratio = hand["avg_stack_chips"] / starting_stack
+            tid = hand.get("tournament_id", "")
+
+            # Enforce monotonicity: ratio can only increase (remaining decreases)
+            if tid:
+                prev_max = max_ratio_by_tournament.get(tid, 0)
+                ratio = max(raw_ratio, prev_max)
+                max_ratio_by_tournament[tid] = ratio
+            else:
+                ratio = raw_ratio
+
+            # Use table_size (8) for ICM lookup during mid-tournament;
+            # actual num_players only matters at final table.
+            table_size = hand.get("table_size", 8)
+            num_players = hand.get("num_players", table_size)
+            estimated_remaining = tournament_size / ratio
+            estimated_remaining = max(table_size, estimated_remaining)
+            estimated_remaining = min(tournament_size, estimated_remaining)
+
+            # Pad stacks to table_size if short-handed (mid-tournament reseating)
+            stacks = list(hand["stacks_bb"])
+            if len(stacks) < table_size:
+                avg_bb = sum(stacks) / len(stacks) if stacks else 20
+                stacks.extend([avg_bb] * (table_size - len(stacks)))
+
+            icm_result = find_icm_params(
+                player_stacks=stacks,
+                tournament_size=tournament_size,
+                players_remaining=int(round(estimated_remaining)),
+            )
+            if icm_result["gametype"] != "MTTGeneral":
+                icm_params = icm_result
+
+        # Extract ICM phase label for reporting
+        icm_phase_label = ""
+        if icm_params:
+            icm_phase_label = _extract_icm_phase_label(icm_params["gametype"])
+
         t0 = time.time()
         try:
-            devs = check_hand(hand)
+            devs = check_hand(hand, icm_params=icm_params)
             elapsed = time.time() - t0
 
             results.append({
@@ -52,6 +132,7 @@ def analyze_hands(
                 "effective_bb": eff_bb,
                 "num_players": hand.get("num_players", 8),
                 "preflop_actions": hand["preflop_actions"],
+                "icm_phase": icm_phase_label,
                 "spots_checked": len(devs),
                 "deviations": devs,
                 "elapsed_s": round(elapsed, 1),
@@ -121,6 +202,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
                 "ebb": r["effective_bb"],
                 "np": r["num_players"],
                 "pf": r["preflop_actions"],
+                "icm_phase": r.get("icm_phase", ""),
                 "street": d["street"],
                 "spot": d["spot"],
                 "hero_action": d["hero_action_label"],
@@ -143,9 +225,21 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
 
     total_devs = len(severe) + len(major) + len(moderate)
 
+    # Check if ICM mode was used
+    icm_count = sum(1 for r in results if r.get("icm_phase"))
+    icm_mode_str = ""
+    if icm_count > 0:
+        # Show the most common phase
+        from collections import Counter
+        phases = Counter(r.get("icm_phase", "") for r in results if r.get("icm_phase"))
+        phase_summary = "、".join(f"{p}({c}手)" for p, c in phases.most_common(3))
+        icm_mode_str = f"\n📊 ICM 模式：{phase_summary}"
+
     lines = []
     lines.append("*GTO 偏差分析報告*")
     lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{total_devs} 處偏差")
+    if icm_mode_str:
+        lines.append(icm_mode_str)
     if errors:
         lines.append(f"({errors} 手分析失敗)")
     lines.append("")
@@ -164,10 +258,11 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
         hand_id = e["hand_id"]
         street_name = e["street"].capitalize()
         ebb = _fmt_num(e["ebb"])
+        icm_tag = f" [{e['icm_phase']}]" if e.get("icm_phase") and e["street"] == "preflop" else ""
         parts = []
         parts.append(
             f"• `{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
-            f" — {street_name} {e['hero_action']} ({freq_str})"
+            f" — {street_name}{icm_tag} {e['hero_action']} ({freq_str})"
         )
         parts.append(
             f"    建議：應 {e['gto_action']} ({e['gto_freq']:.0%})"
