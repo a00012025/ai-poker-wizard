@@ -552,10 +552,25 @@ def main():
 
     print(f"Parsed {len(hands)} hero hands (including preflop folds)\n")
 
+    # Auto-detect starting_stack per tournament from earliest hand's hero chips
+    # BEFORE applying --limit, so we see the full file
+    # GGPoker HH files list newest first, so the last hand per tournament is the earliest
+    starting_stack_by_tournament: dict[str, int] = {}
+    if args.starting_stack == 0:
+        for hand in reversed(hands):
+            tid = hand.get("tournament_id", "")
+            if tid and tid not in starting_stack_by_tournament and "hero_chips" in hand:
+                starting_stack_by_tournament[tid] = hand["hero_chips"]
+
     if args.limit:
         hands = hands[:args.limit]
 
-    if args.starting_stack > 0:
+    if starting_stack_by_tournament:
+        print("ICM mode (auto-detect starting stacks):")
+        for tid, ss in starting_stack_by_tournament.items():
+            print(f"  Tournament #{tid}: starting_stack={ss}")
+        print()
+    elif args.starting_stack > 0:
         print(f"ICM mode: starting_stack={args.starting_stack}, tournament_size={args.tournament_size}\n")
 
     all_results = []
@@ -571,10 +586,11 @@ def main():
 
         # Compute ICM params
         icm_params = None
-        if args.starting_stack > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
+        tid = hand.get("tournament_id", "")
+        effective_ss = args.starting_stack or starting_stack_by_tournament.get(tid, 0)
+        if effective_ss > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
             from icm_modes import find_icm_params
-            raw_ratio = hand["avg_stack_chips"] / args.starting_stack
-            tid = hand.get("tournament_id", "")
+            raw_ratio = hand["avg_stack_chips"] / effective_ss
             if tid:
                 prev_max = max_ratio_by_tournament.get(tid, 0)
                 ratio = max(raw_ratio, prev_max)
