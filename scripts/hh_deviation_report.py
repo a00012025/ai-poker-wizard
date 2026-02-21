@@ -62,6 +62,15 @@ def analyze_hands(
     """
     results = []
 
+    # Auto-detect starting_stack per tournament from earliest hand's hero chips
+    # GGPoker HH files list newest first, so the last hand per tournament is the earliest
+    starting_stack_by_tournament: dict[str, int] = {}
+    if starting_stack == 0:
+        for hand in reversed(hands):
+            tid = hand.get("tournament_id", "")
+            if tid and tid not in starting_stack_by_tournament and "hero_chips" in hand:
+                starting_stack_by_tournament[tid] = hand["hero_chips"]
+
     # Track max ratio per tournament for monotonicity
     # (ratio only increases as tournament progresses → fewer players remain)
     max_ratio_by_tournament: dict[str, float] = {}
@@ -77,11 +86,12 @@ def analyze_hands(
 
         # Compute ICM params with monotonicity enforcement
         icm_params = None
-        if starting_stack > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
+        tid = hand.get("tournament_id", "")
+        effective_starting_stack = starting_stack or starting_stack_by_tournament.get(tid, 0)
+        if effective_starting_stack > 0 and "avg_stack_chips" in hand and "stacks_bb" in hand:
             from icm_modes import infer_icm_phase, find_icm_params
 
-            raw_ratio = hand["avg_stack_chips"] / starting_stack
-            tid = hand.get("tournament_id", "")
+            raw_ratio = hand["avg_stack_chips"] / effective_starting_stack
 
             # Enforce monotonicity: ratio can only increase (remaining decreases)
             if tid:
@@ -125,6 +135,7 @@ def analyze_hands(
 
             results.append({
                 "hand_id": hand_id,
+                "tournament_id": hand.get("tournament_id", ""),
                 "file": hand.get("file", ""),
                 "hero_position": hero_pos,
                 "hero_hand": hero_hand,
@@ -141,6 +152,7 @@ def analyze_hands(
             elapsed = time.time() - t0
             results.append({
                 "hand_id": hand_id,
+                "tournament_id": hand.get("tournament_id", ""),
                 "file": hand.get("file", ""),
                 "hero_position": hero_pos,
                 "hero_hand": hero_hand,
@@ -171,9 +183,27 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
 
     Returns formatted report string.
     """
+    import re as _re
+    from collections import Counter
+
     total_hands = len(results)
     hands_with_action = sum(1 for r in results if r["spots_checked"] > 0)
     errors = sum(1 for r in results if "error" in r)
+
+    # Build tournament ID → short label mapping
+    tournament_map: dict[str, str] = {}  # tid -> display name
+    tid_short: dict[str, str] = {}       # tid -> short label like T1, T2
+    for r in results:
+        tid = r.get("tournament_id", "")
+        if tid and tid not in tournament_map:
+            fname = r.get("file", "")
+            # Extract name after "GG... - " prefix, strip .txt
+            m = _re.search(r" - (.+?)\.txt$", fname)
+            tournament_map[tid] = m.group(1) if m else fname
+
+    # Assign short labels (T1, T2, ...) in order of appearance
+    for idx, tid in enumerate(tournament_map, 1):
+        tid_short[tid] = f"T{idx}"
 
     # Collect significant deviations
     severe = []   # hero_freq == 0 (GTO never does this)
@@ -196,6 +226,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
 
             entry = {
                 "hand_id": r["hand_id"],
+                "tid_label": tid_short.get(r.get("tournament_id", ""), ""),
                 "pos": r["hero_position"],
                 "hand": r["hero_hand_normalized"],
                 "raw_hand": r["hero_hand"],
@@ -230,7 +261,6 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     icm_mode_str = ""
     if icm_count > 0:
         # Show the most common phase
-        from collections import Counter
         phases = Counter(r.get("icm_phase", "") for r in results if r.get("icm_phase"))
         phase_summary = "、".join(f"{p}({c}手)" for p, c in phases.most_common(3))
         icm_mode_str = f"\n📊 ICM 模式：{phase_summary}"
@@ -242,6 +272,16 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
         lines.append(icm_mode_str)
     if errors:
         lines.append(f"({errors} 手分析失敗)")
+
+    # Tournament legend
+    if len(tournament_map) > 1:
+        lines.append("")
+        for tid, name in tournament_map.items():
+            lines.append(f"{tid_short[tid]}: {name}")
+    elif len(tournament_map) == 1:
+        tid, name = next(iter(tournament_map.items()))
+        lines.append(f"錦標賽：{name}")
+
     lines.append("")
 
     if not total_devs:
@@ -256,12 +296,14 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     def _format_entry(e: dict) -> str:
         freq_str = f"{e['hero_freq']:.0%}" if e['hero_freq'] >= 0.005 else "0%"
         hand_id = e["hand_id"]
+        tid_label = e.get("tid_label", "")
+        tid_prefix = f"[{tid_label}] " if tid_label and len(tournament_map) > 1 else ""
         street_name = e["street"].capitalize()
         ebb = _fmt_num(e["ebb"])
         icm_tag = f" [{e['icm_phase']}]" if e.get("icm_phase") and e["street"] == "preflop" else ""
         parts = []
         parts.append(
-            f"• `{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
+            f"• {tid_prefix}`{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
             f" — {street_name}{icm_tag} {e['hero_action']} ({freq_str})"
         )
         parts.append(
