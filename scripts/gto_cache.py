@@ -1,4 +1,4 @@
-"""GTO API cache — L1 in-memory dict + L2 PostgreSQL.
+"""GTO API cache — L1 in-memory dict + L2 PostgreSQL + L3 local files.
 
 Sync interface (psycopg2) because gto_api.py is synchronous.
 """
@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+from pathlib import Path
 
 import psycopg2
 
@@ -20,6 +21,9 @@ _mem: dict[str, dict | None] = {}
 # L2: DB connection (lazy, thread-safe)
 _db_conn = None
 _db_lock = threading.Lock()
+
+# L3: local file cache
+_CACHE_DIR = Path(__file__).resolve().parent.parent / ".gto_cache"
 
 _PARAM_KEYS = [
     "gametype", "depth", "stacks", "preflop_actions",
@@ -66,52 +70,72 @@ def get(function: str, params: dict):
     # L2
     with _db_lock:
         conn = _get_conn()
-        if conn is None:
-            return SENTINEL
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT response, is_null FROM gto_api_cache WHERE cache_key = %s",
-                (key,),
-            )
-            row = cur.fetchone()
-            cur.close()
-        except Exception as e:
-            logger.warning(f"gto_cache: DB read failed: {e}")
-            return SENTINEL
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT response, is_null FROM gto_api_cache WHERE cache_key = %s",
+                    (key,),
+                )
+                row = cur.fetchone()
+                cur.close()
+                if row is not None:
+                    response, is_null = row
+                    result = None if is_null else response
+                    _mem[key] = result
+                    return result
+            except Exception as e:
+                logger.warning(f"gto_cache: DB read failed: {e}")
 
-    if row is None:
-        return SENTINEL
+    # L3: file cache
+    cache_file = _CACHE_DIR / f"{key}.json"
+    try:
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text())
+            result = None if data["is_null"] else data["response"]
+            _mem[key] = result
+            return result
+    except Exception as e:
+        logger.warning(f"gto_cache: file read failed: {e}")
 
-    response, is_null = row
-    result = None if is_null else response
-    _mem[key] = result
-    return result
+    return SENTINEL
 
 
 def put(function: str, params: dict, response: dict | None):
-    """Store result in L1 + L2."""
+    """Store result in L1 + L2 + L3."""
     key = _cache_key(function, params)
     _mem[key] = response
 
+    # L2: PostgreSQL
     with _db_lock:
         conn = _get_conn()
-        if conn is None:
-            return
-        try:
-            cur = conn.cursor()
-            if response is None:
-                cur.execute(
-                    "INSERT INTO gto_api_cache (cache_key, response, is_null) "
-                    "VALUES (%s, NULL, TRUE) ON CONFLICT DO NOTHING",
-                    (key,),
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO gto_api_cache (cache_key, response, is_null) "
-                    "VALUES (%s, %s, FALSE) ON CONFLICT DO NOTHING",
-                    (key, json.dumps(response)),
-                )
-            cur.close()
-        except Exception as e:
-            logger.warning(f"gto_cache: DB write failed: {e}")
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                if response is None:
+                    cur.execute(
+                        "INSERT INTO gto_api_cache (cache_key, response, is_null) "
+                        "VALUES (%s, NULL, TRUE) ON CONFLICT DO NOTHING",
+                        (key,),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO gto_api_cache (cache_key, response, is_null) "
+                        "VALUES (%s, %s, FALSE) ON CONFLICT DO NOTHING",
+                        (key, json.dumps(response)),
+                    )
+                cur.close()
+            except Exception as e:
+                logger.warning(f"gto_cache: DB write failed: {e}")
+
+    # L3: file cache
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        cache_file = _CACHE_DIR / f"{key}.json"
+        if response is None:
+            data = {"is_null": True}
+        else:
+            data = {"is_null": False, "response": response}
+        cache_file.write_text(json.dumps(data))
+    except Exception as e:
+        logger.warning(f"gto_cache: file write failed: {e}")
