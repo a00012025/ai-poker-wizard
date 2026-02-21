@@ -31,6 +31,7 @@ PARSE_PROMPT = """\
 例如「有效 30bb, hero +1 raise, btn all in, 我 TT 該跟嗎？」→ 這是手牌描述，要提取！
 
 規則：
+- players_at_table: 幾人桌（預設 8）。必須從用戶描述的位置推斷：提到 UTG+1 → 8人；只提到 LJ 以後 → 可能 6人
 - 預設 MTT 8-max 位置順序：UTG(0), UTG+1(1), LJ(2), HJ(3), CO(4), BTN(5), SB(6), BB(7)
 - 不同人數位置順序（重要！按人數調整，preflop_actions 長度必須等於人數）：
   9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB
@@ -88,6 +89,7 @@ JSON 格式（Chip EV，預設）：
 {
   "hand": {
     "gametype": "MTTGeneral",
+    "players_at_table": 8,
     "effective_bb": 32,
     "hero_position": "CO",
     "hero_hand": "66",
@@ -200,6 +202,7 @@ COACH_SYSTEM = """\
 風格：
 - 精簡直接，像教練用最少的話點出重點
 - 不要廢話、不要重複已知資訊、不要客套開場
+- 撲克術語直接用英文即可（如 squeeze, 3bet, open），不要中英對照翻譯（不要寫「squeeze（擠壓）」這種）
 - 每條街 2-4 行就夠：GTO 怎麼打 → hero 怎麼打 → 差在哪 → 為什麼（一句話）
 - 如果 hero 打得對，一句帶過就好，不用展開分析
 - 數據引用要精準但不要列出所有選項，只提最重要的 1-2 個動作頻率

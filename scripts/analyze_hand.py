@@ -505,12 +505,17 @@ def _run_analysis(hand: dict) -> dict:
     if not num_players:
         num_players = hand.get("players_at_table", 0)
     if not num_players:
-        # Infer from preflop actions: each player acts once in the first round,
-        # each additional raise adds one extra action (original raiser responds)
-        parts = hand["preflop_actions"].split("-")
-        num_raises = sum(1 for p in parts if p.startswith("R") or p.startswith("AI"))
-        num_players = len(parts) - max(0, num_raises - 1)
-        num_players = max(2, min(9, num_players))
+        # MTTGeneral always uses 8 positions in GTO Wizard API. Default to 8
+        # to avoid position misalignment when preflop_actions are incomplete
+        # (e.g. hero SB hasn't acted → only 6 actions for an 8-max table).
+        # Genuine smaller tables should specify players_at_table explicitly.
+        if gametype == "MTTGeneral":
+            num_players = 8
+        else:
+            parts = hand["preflop_actions"].split("-")
+            num_raises = sum(1 for p in parts if p.startswith("R") or p.startswith("AI"))
+            num_players = len(parts) - max(0, num_raises - 1)
+            num_players = max(2, min(9, num_players))
 
     # GTO Wizard's MTTGeneral API always expects 8 positions.
     # For tables < 8 players, pad preflop actions with folds for missing positions.

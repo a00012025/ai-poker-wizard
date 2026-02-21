@@ -1279,10 +1279,11 @@ def test_hh_e2e_parse_check_report():
 
 @test
 def test_num_players_inferred_from_preflop():
-    """Table size: 6-player inferred from 6 preflop actions (no player_stacks)."""
+    """Table size: 6-player with players_at_table=6 pads correctly."""
     from analyze_hand import analyze_hand_full
     hand = {
         "gametype": "MTTGeneral",
+        "players_at_table": 6,
         "effective_bb": 30,
         "hero_position": "BB",
         "hero_hand": "AKs",
@@ -1295,6 +1296,23 @@ def test_num_players_inferred_from_preflop():
     # Should find BB's data (not "找不到 BB")
     assert_in("BB", text)
     assert_true("找不到 BB" not in text, "Should find BB preflop data with 6-player padding")
+
+
+@test
+def test_multiway_preflop_default_8max():
+    """Table size: incomplete preflop actions default to 8-max for MTTGeneral."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 25,
+        "hero_position": "SB",
+        "hero_hand": "88",
+        "preflop_actions": "F-R2-F-F-C-F",  # 6 actions, hero SB hasn't acted
+    })
+    text = result["text"]
+    # Should map UTG+1 as raiser (not HJ from wrong 6-max padding)
+    assert_in("UTG+1", text, "Should identify UTG+1 as raiser in 8-max")
+    assert_true("HJ" not in text, "Should NOT map raiser to HJ (wrong 6-max padding)")
 
 
 @test
