@@ -755,21 +755,21 @@ class PokerWizardBot:
         try:
             m = await self.db.get_analytics_metrics()
             text = (
-                "📊 *Daily Report*\n"
+                "📊 *每日報告*\n"
                 "\n"
-                f"*Users*: {m['users_total']} total, "
-                f"{m['users_with_token']} with token\n"
-                f"  New: {m['users_new_today']} today, "
-                f"{m['users_new_week']} this week\n"
+                f"*用戶*：共 {m['users_total']} 人，"
+                f"{m['users_with_token']} 人已綁定 token\n"
+                f"  新增：今日 {m['users_new_today']}，"
+                f"本週 {m['users_new_week']}\n"
                 "\n"
-                f"*Active*: {m['active_today']} today, "
-                f"{m['active_week']} this week\n"
+                f"*活躍*：今日 {m['active_today']}，"
+                f"本週 {m['active_week']}\n"
                 "\n"
-                f"*Hands*: {m['hands_today']} today, "
-                f"{m['hands_week']} this week, "
-                f"{m['hands_total']} total\n"
+                f"*手牌*：今日 {m['hands_today']}，"
+                f"本週 {m['hands_week']}，"
+                f"累計 {m['hands_total']}\n"
                 "\n"
-                f"*Cache*: {m['cache_total']} entries"
+                f"*快取*：{m['cache_total']} 筆"
             )
             await context.bot.send_message(
                 self.admin_chat_id, text, parse_mode="Markdown"
