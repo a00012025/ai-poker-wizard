@@ -16,12 +16,11 @@ db = Database()
 
 
 async def post_init(application):
-    """Called after Application.initialize() — connect DB, seed users."""
+    """Called after Application.initialize() — connect DB."""
     dsn = os.getenv("SUPABASE_CONN")
     if dsn:
         await db.connect(dsn)
         await db.check_tables()
-        await db.seed_users()
         logger.info("Database ready")
     else:
         logger.warning("SUPABASE_CONN not set — running without database")

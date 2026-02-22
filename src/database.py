@@ -45,31 +45,6 @@ class Database:
                     )
         logger.info("Database tables verified")
 
-    async def is_user_allowed(self, user_id: int) -> bool:
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT is_active FROM users WHERE user_id = $1", user_id
-            )
-            return row is not None and row["is_active"]
-
-    async def seed_users(self, user_ids_str: str | None = None):
-        """Seed allowed users from comma-separated string (ALLOWED_USERS env var)."""
-        raw = user_ids_str or os.getenv("ALLOWED_USERS", "")
-        if not raw.strip():
-            return
-        user_ids = [int(uid.strip()) for uid in raw.split(",") if uid.strip()]
-        async with self.pool.acquire() as conn:
-            for uid in user_ids:
-                await conn.execute(
-                    """
-                    INSERT INTO users (user_id, is_active)
-                    VALUES ($1, TRUE)
-                    ON CONFLICT (user_id) DO UPDATE SET is_active = TRUE
-                    """,
-                    uid,
-                )
-        logger.info(f"Seeded {len(user_ids)} allowed users")
-
     async def save_hands(self, chat_id: int, hands: list[dict]):
         """Batch-insert parsed hands for a chat."""
         if not hands:
@@ -110,12 +85,13 @@ class Database:
             )
 
     async def save_user_gto_token(self, user_id: int, refresh_token: str):
-        """Store user's GTO Wizard refresh token."""
+        """Store user's GTO Wizard refresh token (creates user row if needed)."""
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                UPDATE users SET gto_refresh_token = $2
-                WHERE user_id = $1
+                INSERT INTO users (user_id, gto_refresh_token, is_active)
+                VALUES ($1, $2, TRUE)
+                ON CONFLICT (user_id) DO UPDATE SET gto_refresh_token = $2
                 """,
                 user_id, refresh_token,
             )

@@ -74,16 +74,23 @@ class PokerWizardBot:
         name = u.username or u.first_name or str(u.id) if u else "?"
         return f"user=@{name} chat={chat.id}"
 
-    async def _check_user(self, update: Update) -> bool:
-        """Check if user is allowed. Returns True if allowed, False if rejected."""
+    async def _has_gto_token(self, user_id: int) -> bool:
+        """Check if user has a GTO Wizard token stored."""
         if not self.db:
-            return True  # No DB = no whitelist enforcement
-        user_id = update.effective_user.id
-        if await self.db.is_user_allowed(user_id):
-            return True
-        self.log.warning(f"[{self._user_label(update)}] Rejected — not in whitelist")
-        await update.message.reply_text("Sorry, access is restricted.")
-        return False
+            return False
+        token = await self.db.get_user_gto_token(user_id)
+        return token is not None
+
+    async def _send_token_gate(self, update: Update):
+        """Reply with setup instructions when user has no GTO token."""
+        msg = (
+            "請先綁定 GTO Wizard 帳號才能使用。\n\n"
+            "安裝 Extension 自動取得 token：\n"
+            "→ github.com/a00012025/ai-poker-wizard/releases\n\n"
+            "或手動：登入 app.gtowizard.com → F12 Console → "
+            "copy(localStorage.getItem('user_refresh')) → /settoken <貼上>"
+        )
+        await update.message.reply_text(msg)
 
     async def _notify_admin(self, text: str):
         """Send a notification to the admin chat if configured."""
@@ -96,26 +103,26 @@ class PokerWizardBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         self.log.info(f"[{self._user_label(update)}] /start")
-        welcome_msg = """🃏 **歡迎使用 AI Poker Wizard！**
-
-我是你的專業撲克教練，可以幫你：
-• 分析手牌歷史
-• 提供 GTO 策略建議
-• 復盤錦標賽手牌
-• 改進決策技巧
-
-📝 **使用方法：**
-直接發送手牌描述，例如：
-"Hero 42bb effective, UTG+1 raise 2bb, hero SB all-in A9s"
-
-📸 **或上傳手牌回放截圖**，自動辨識並分析 GTO 策略
-📁 **或上傳 GGPoker 手牌歷史**（.txt 或 .zip），批次比對 GTO 策略
-
-🔄 /clear — 清除對話紀錄，開始新對話
-
-讓我們開始提升你的撲克技巧！💪"""
-
-        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+        welcome_msg = (
+            "🃏 歡迎使用 AI Poker Wizard！\n\n"
+            "GTO 撲克教練，可以幫你分析手牌、比對 GTO 策略。\n\n"
+            "⚡ 開始前，請先綁定 GTO Wizard 帳號：\n\n"
+            "方法一：安裝 Chrome Extension（推薦）\n"
+            "→ github.com/a00012025/ai-poker-wizard/releases\n"
+            "安裝後登入 GTO Wizard，自動複製 token\n\n"
+            "方法二：手動取得\n"
+            "1. 登入 app.gtowizard.com\n"
+            "2. F12 開啟 Console\n"
+            "3. 貼上: copy(localStorage.getItem('user_refresh'))\n"
+            "4. 回到這裡輸入: /settoken <貼上>\n\n"
+            "📝 使用方式：\n"
+            "• 發送手牌描述或截圖，自動 GTO 分析\n"
+            "• 上傳 GGPoker .txt/.zip，批次比對偏差\n\n"
+            "/settoken — 綁定 token\n"
+            "/logout — 解除綁定\n"
+            "/clear — 清除對話紀錄"
+        )
+        await update.message.reply_text(welcome_msg)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
@@ -144,47 +151,13 @@ UTG fold, BTN call
 
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /clear command — reset Claude session"""
-        if not await self._check_user(update):
-            return
         chat_id = update.effective_chat.id
         self.log.info(f"[{self._user_label(update)}] /clear")
         self.session_manager.clear_session(chat_id)
         await update.message.reply_text("🔄 對話紀錄已清除，開始新的對話！")
 
-    async def login_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /login — send bookmarklet setup instructions."""
-        if not await self._check_user(update):
-            return
-        self.log.info(f"[{self._user_label(update)}] /login")
-
-        bookmarklet = (
-            "javascript:void(navigator.clipboard.writeText("
-            "'/settoken '+localStorage.getItem('user_refresh'))"
-            ".then(()=>alert('已複製！請回 Telegram 貼上')))"
-        )
-
-        msg = (
-            "*綁定 GTO Wizard 帳號*\n\n"
-            "*一次性設定（建立書籤工具）：*\n"
-            "1. 在瀏覽器新增一個書籤（任意網頁按 Ctrl+D）\n"
-            "2. 編輯書籤，名稱改為 `GTO Token`\n"
-            "3. 網址欄貼上以下代碼：\n\n"
-            f"`{bookmarklet}`\n\n"
-            "*每次綁定 token：*\n"
-            "1. 登入 app.gtowizard.com\n"
-            "2. 點擊書籤工具 → 自動複製指令\n"
-            "3. 回到 Telegram 貼上即可\n\n"
-            "綁定後，你的查詢會使用自己的 GTO Wizard 帳號。"
-        )
-        try:
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception:
-            await update.message.reply_text(msg)
-
     async def settoken_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /settoken <token> — validate and store user's GTO Wizard token."""
-        if not await self._check_user(update):
-            return
         label = self._user_label(update)
         user_id = update.effective_user.id
         self.log.info(f"[{label}] /settoken")
@@ -226,8 +199,6 @@ UTG fold, BTN call
 
     async def logout_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /logout — remove user's GTO Wizard token."""
-        if not await self._check_user(update):
-            return
         label = self._user_label(update)
         user_id = update.effective_user.id
         self.log.info(f"[{label}] /logout")
@@ -238,7 +209,7 @@ UTG fold, BTN call
         from gto_token import invalidate_user_token
         invalidate_user_token(user_id)
 
-        await update.message.reply_text("已解除 GTO Wizard 帳號綁定。將使用共用帳號。")
+        await update.message.reply_text("已解除 GTO Wizard 帳號綁定。")
 
     async def _get_user_refresh_token(self, user_id: int) -> str | None:
         """Look up user's GTO Wizard refresh token from DB."""
@@ -289,7 +260,9 @@ UTG fold, BTN call
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all text messages via Claude session"""
-        if not await self._check_user(update):
+        user_id = update.effective_user.id
+        if not await self._has_gto_token(user_id):
+            await self._send_token_gate(update)
             return
         chat_id = update.effective_chat.id
         async with self._user_lock(chat_id):
@@ -379,7 +352,7 @@ UTG fold, BTN call
         # Require user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
         if not refresh_token:
-            await update.message.reply_text("請先使用 /login 綁定你的 GTO Wizard 帳號。")
+            await update.message.reply_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
             return
 
         t0 = time.time()
@@ -462,7 +435,9 @@ UTG fold, BTN call
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
-        if not await self._check_user(update):
+        user_id = update.effective_user.id
+        if not await self._has_gto_token(user_id):
+            await self._send_token_gate(update)
             return
         chat_id = update.effective_chat.id
         async with self._user_lock(chat_id):
@@ -539,7 +514,9 @@ UTG fold, BTN call
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
-        if not await self._check_user(update):
+        user_id = update.effective_user.id
+        if not await self._has_gto_token(user_id):
+            await self._send_token_gate(update)
             return
         chat_id = update.effective_chat.id
         async with self._user_lock(chat_id):
@@ -637,7 +614,7 @@ UTG fold, BTN call
                 # Require user's GTO token
                 refresh_token = await self._get_user_refresh_token(user_id)
                 if not refresh_token:
-                    await status_msg.edit_text("請先使用 /login 綁定你的 GTO Wizard 帳號。")
+                    await status_msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
                     return
 
                 # Run deviation analysis in thread to not block event loop
@@ -782,7 +759,6 @@ UTG fold, BTN call
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("clear", self.clear_command))
-        self.application.add_handler(CommandHandler("login", self.login_command))
         self.application.add_handler(CommandHandler("settoken", self.settoken_command))
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
