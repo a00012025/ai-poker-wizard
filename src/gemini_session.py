@@ -85,7 +85,15 @@ ICM 支援：
   兩桌 → "T2"
   三桌 → "T3"
 
-JSON 格式（Chip EV，預設）：
+遊戲格式（game_format）：
+- 預設為 MTT（不需要 game_format 欄位）
+- 如果用戶提到 cash game、現金桌、cash、NLH cash、6-max cash、ring game、常規桌，設置：
+  "game_format": "cash"
+- Cash game 預設 players_at_table: 6（除非明確說了幾人桌）
+- Cash game 不需要 gametype 欄位（系統自動設定）
+- 沒有明確說 cash 的情況下，預設都是 MTT
+
+JSON 格式（MTT Chip EV，預設）：
 ```json
 {
   "hand": {
@@ -96,6 +104,20 @@ JSON 格式（Chip EV，預設）：
     "hero_hand": "66",
     "preflop_actions": "F-F-F-F-R2-F-F-C",
     "streets": [...]
+  }
+}
+```
+
+JSON 格式（Cash Game）：
+```json
+{
+  "hand": {
+    "game_format": "cash",
+    "players_at_table": 6,
+    "effective_bb": 100,
+    "hero_position": "BTN",
+    "hero_hand": "AKs",
+    "preflop_actions": "F-F-R2.5-F-R8-F"
   }
 }
 ```
@@ -135,7 +157,7 @@ IMAGE_PARSE_PROMPT = """\
 4. 桌面中央是公共牌
 
 提取規則：
-- gametype: 固定 "MTTGeneral"
+- gametype: 固定 "MTTGeneral"（MTT 截圖）。如果截圖明確顯示 cash game / 現金桌 / ring game，加入 "game_format": "cash" 並省略 gametype
 - players_at_table: 桌上有幾個玩家座位（數截圖中的座位數，通常是 6 或 8 或 9）
 - 位置順序（按人數）：
   9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB

@@ -118,6 +118,10 @@ class PokerWizardBot:
             "📝 使用方式：\n"
             "• 發送手牌描述或截圖，自動 GTO 分析\n"
             "• 上傳 GGPoker .txt/.zip，批次比對偏差\n\n"
+            "🎯 遊戲格式判斷：\n"
+            "• 預設 = MTT（錦標賽）\n"
+            "• 提到「cash」「現金桌」「ring game」= 現金桌分析\n"
+            "• 例：cash 6max 100bb, CO raise 2.5bb, BTN 3bet 8bb AKs\n\n"
             "/settoken — 綁定 token\n"
             "/logout — 解除綁定\n"
             "/clear — 清除對話紀錄"
@@ -135,15 +139,14 @@ class PokerWizardBot:
 /clear - 清除對話紀錄
 
 **手牌分析：**
-直接描述你的手牌情況，我會提供專業 GTO 分析和教練建議。
-支援多輪對話 — 你可以追問細節或討論不同打法。
+直接描述手牌情況，自動 GTO 分析。支援多輪追問。
 
-**範例格式：**
-```
-Hero 17bb effective
-UTG raise 2bb, BTN call, Hero SB all-in A9s
-UTG fold, BTN call
-```
+**MTT（預設）：**
+`Hero 17bb, UTG raise, Hero SB all-in A9s`
+
+**現金桌：**
+`cash 6max 100bb, CO raise 2.5bb, BTN 3bet 8bb AKs`
+提到「cash」「現金桌」「ring game」會自動切換
 
 有問題隨時問我！"""
 

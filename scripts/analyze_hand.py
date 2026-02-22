@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, find_closest_action_postflop, nearest_depth,
+    nearest_cash_depth,
 )
 from gto_formatter import format_full_spot, normalize_hand_name
 
@@ -46,6 +47,17 @@ POSITION_ORDERS = {
     4: ["CO", "BTN", "SB", "BB"],
     3: ["BTN", "SB", "BB"],
     2: ["SB", "BB"],
+}
+
+CASH_GAMETYPES = {
+    2: "CashHuGeneral_NL100R2",
+    3: "Cash3mGeneral_3mGGAIorFoldcEV",
+    4: "Cash4mGeneral_4mAnte075NL100R2",
+    5: "Cash5mGeneral_5mWMXAIorFoldcEV",
+    6: "Cash6mGeneral_6mNL100R2",
+    7: "Cash7mGeneral_7mAnte01NL25R2",
+    8: "Cash8mLiveGeneral_8mLIVER2",
+    9: "Cash9mGGAnteGeneral_9mGGANTEcEVR2",
 }
 
 
@@ -517,6 +529,12 @@ def _run_analysis(hand: dict) -> dict:
             num_players = len(parts) - max(0, num_raises - 1)
             num_players = max(2, min(9, num_players))
 
+    # Cash game support: resolve gametype and depth
+    is_cash = hand.get("game_format") == "cash"
+    if is_cash:
+        gametype = CASH_GAMETYPES.get(num_players, "Cash6mGeneral_6mNL100R2")
+        depth = nearest_cash_depth(hand["effective_bb"])
+
     # GTO Wizard's MTTGeneral API always expects 8 positions.
     # For tables < 8 players, pad preflop actions with folds for missing positions.
     if gametype == "MTTGeneral" and num_players < 8:
@@ -567,8 +585,13 @@ def _run_analysis(hand: dict) -> dict:
             icm_note = f"ICM 模式: {gametype}\n對稱籌碼: {eff:.0f}bb"
 
     # For ICM preflop_only modes, postflop falls back to chip EV
-    chipev_gametype = "MTTGeneral"
-    chipev_depth = nearest_depth(hand["effective_bb"])
+    # For cash, use the same cash gametype throughout
+    if is_cash:
+        chipev_gametype = gametype
+        chipev_depth = depth
+    else:
+        chipev_gametype = "MTTGeneral"
+        chipev_depth = nearest_depth(hand["effective_bb"])
 
     # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
@@ -813,6 +836,10 @@ def _run_analysis(hand: dict) -> dict:
             results.append(icm_note)
         if streets:
             results.append(f"Postflop 使用 Chip EV {chipev_depth - 0.125:.0f}bb solver（ICM 僅支援 preflop）")
+    elif is_cash:
+        results.append(f"Cash Game {num_players}-max")
+        results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth:.0f}bb solver）")
+        results.append(f"Hero: {hero_pos} {hero_hand}")
     else:
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
         results.append(f"Hero: {hero_pos} {hero_hand}")

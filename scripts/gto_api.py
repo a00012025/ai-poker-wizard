@@ -18,6 +18,7 @@ from gto_cache import get as cache_get, put as cache_put, SENTINEL
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
 AVAILABLE_DEPTHS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9, 8]
+AVAILABLE_CASH_DEPTHS = [300, 200, 100, 60, 50, 40, 30, 25, 20]
 _TIMEOUT = 15
 _MAX_RETRIES = 2
 
@@ -69,6 +70,12 @@ def nearest_depth(bb: float) -> float:
     """Find the nearest available depth and return as depth.125 format."""
     best = min(AVAILABLE_DEPTHS, key=lambda d: abs(d - bb))
     return best + 0.125
+
+
+def nearest_cash_depth(bb: float) -> float:
+    """Find the nearest available cash game depth (no .125 suffix)."""
+    best = min(AVAILABLE_CASH_DEPTHS, key=lambda d: abs(d - bb))
+    return float(best)
 
 
 def get_next_actions(
