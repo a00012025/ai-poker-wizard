@@ -766,14 +766,19 @@ class PokerWizardBot:
             except Exception:
                 await update.message.reply_text(f"❌ 分析時發生錯誤：{e}")
 
-    async def send_daily_report(self, context: ContextTypes.DEFAULT_TYPE):
-        """Job callback: send daily analytics report to admin."""
-        if not self.db or not self.admin_chat_id:
+    async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /report — admin-only analytics report."""
+        user_id = update.effective_user.id
+        if not self.admin_chat_id or user_id != self.admin_chat_id:
+            return
+        self.log.info(f"[{self._user_label(update)}] /report")
+        if not self.db:
+            await update.message.reply_text("Database not connected.")
             return
         try:
             m = await self.db.get_analytics_metrics()
             text = (
-                "📊 *每日報告*\n"
+                "📊 *數據報告*\n"
                 "\n"
                 f"*用戶*：共 {m['users_total']} 人，"
                 f"{m['users_with_token']} 人已綁定 token\n"
@@ -793,12 +798,10 @@ class PokerWizardBot:
                 "\n"
                 f"*快取*：{m['cache_total']} 筆"
             )
-            await context.bot.send_message(
-                self.admin_chat_id, text, parse_mode="Markdown"
-            )
-            self.log.info("Daily report sent to admin")
+            await update.message.reply_text(text, parse_mode="Markdown")
         except Exception as e:
-            self.log.error(f"Failed to send daily report: {e}", exc_info=True)
+            self.log.error(f"Failed to generate report: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 報告產生失敗：{e}")
 
     def setup_handlers(self, post_init=None, post_shutdown=None):
         """Setup bot handlers"""
@@ -816,6 +819,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("clear", self.clear_command))
         self.application.add_handler(CommandHandler("settoken", self.settoken_command))
         self.application.add_handler(CommandHandler("logout", self.logout_command))
+        self.application.add_handler(CommandHandler("report", self.report_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
