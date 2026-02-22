@@ -106,6 +106,67 @@ class Database:
             )
         logger.info(f"Deleted GTO token for user {user_id}")
 
+    async def get_analytics_metrics(self) -> dict:
+        """Get daily analytics metrics for admin report."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Users
+                users_total = await conn.fetchval("SELECT COUNT(*) FROM users")
+                users_with_token = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE gto_refresh_token IS NOT NULL"
+                )
+                users_new_today = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users "
+                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                users_new_week = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users "
+                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+
+                # Active users (distinct chat_id in hand_histories as proxy)
+                active_today = await conn.fetchval(
+                    "SELECT COUNT(DISTINCT chat_id) FROM hand_histories "
+                    "WHERE uploaded_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                active_week = await conn.fetchval(
+                    "SELECT COUNT(DISTINCT chat_id) FROM hand_histories "
+                    "WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+
+                # Hands
+                hands_today = await conn.fetchval(
+                    "SELECT COUNT(*) FROM hand_histories "
+                    "WHERE uploaded_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                hands_week = await conn.fetchval(
+                    "SELECT COUNT(*) FROM hand_histories "
+                    "WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                hands_total = await conn.fetchval("SELECT COUNT(*) FROM hand_histories")
+
+                # Cache
+                cache_total = await conn.fetchval("SELECT COUNT(*) FROM gto_api_cache")
+
+        return {
+            "users_total": users_total,
+            "users_with_token": users_with_token,
+            "users_new_today": users_new_today,
+            "users_new_week": users_new_week,
+            "active_today": active_today,
+            "active_week": active_week,
+            "hands_today": hands_today,
+            "hands_week": hands_week,
+            "hands_total": hands_total,
+            "cache_total": cache_total,
+        }
+
     async def find_hand(self, chat_id: int, hand_id_suffix: str) -> dict | None:
         """Find a hand by hand_id suffix (LIKE '%suffix')."""
         async with self.pool.acquire() as conn:

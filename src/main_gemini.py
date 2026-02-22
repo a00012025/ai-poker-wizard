@@ -1,7 +1,9 @@
 # src/main_gemini.py
 """Entry point using Gemini API (fast, no Claude CLI subprocess)."""
+import datetime
 import logging
 import os
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,7 +18,7 @@ db = Database()
 
 
 async def post_init(application):
-    """Called after Application.initialize() — connect DB."""
+    """Called after Application.initialize() — connect DB and schedule jobs."""
     dsn = os.getenv("SUPABASE_CONN")
     if dsn:
         await db.connect(dsn)
@@ -24,6 +26,18 @@ async def post_init(application):
         logger.info("Database ready")
     else:
         logger.warning("SUPABASE_CONN not set — running without database")
+
+    # Schedule daily analytics report at 09:00 Asia/Taipei
+    tz = ZoneInfo("Asia/Taipei")
+    application.job_queue.run_daily(
+        bot.send_daily_report,
+        time=datetime.time(hour=9, tzinfo=tz),
+        name="daily_report",
+    )
+    logger.info("Scheduled daily report at 09:00 Asia/Taipei")
+
+    # One-time test — remove after verifying
+    application.job_queue.run_once(bot.send_daily_report, when=5)
 
 
 async def post_shutdown(application):

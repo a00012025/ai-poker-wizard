@@ -748,6 +748,36 @@ class PokerWizardBot:
             except Exception:
                 await update.message.reply_text(f"❌ 分析時發生錯誤：{e}")
 
+    async def send_daily_report(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job callback: send daily analytics report to admin."""
+        if not self.db or not self.admin_chat_id:
+            return
+        try:
+            m = await self.db.get_analytics_metrics()
+            text = (
+                "📊 *Daily Report*\n"
+                "\n"
+                f"*Users*: {m['users_total']} total, "
+                f"{m['users_with_token']} with token\n"
+                f"  New: {m['users_new_today']} today, "
+                f"{m['users_new_week']} this week\n"
+                "\n"
+                f"*Active*: {m['active_today']} today, "
+                f"{m['active_week']} this week\n"
+                "\n"
+                f"*Hands*: {m['hands_today']} today, "
+                f"{m['hands_week']} this week, "
+                f"{m['hands_total']} total\n"
+                "\n"
+                f"*Cache*: {m['cache_total']} entries"
+            )
+            await context.bot.send_message(
+                self.admin_chat_id, text, parse_mode="Markdown"
+            )
+            self.log.info("Daily report sent to admin")
+        except Exception as e:
+            self.log.error(f"Failed to send daily report: {e}", exc_info=True)
+
     def setup_handlers(self, post_init=None, post_shutdown=None):
         """Setup bot handlers"""
         if not self.application:
