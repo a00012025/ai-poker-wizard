@@ -272,6 +272,10 @@ UTG fold, BTN call
             for h in hands:
                 if h.get("hand_id") == full_id:
                     return h
+            # Fall back to DB
+            if self.db:
+                return await self.db.find_hand(chat_id, full_id)
+            return None
         m = re.search(r'\b(\d{4,})\b', text)
         if m:
             suffix = m.group(1)
