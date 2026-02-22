@@ -37,9 +37,6 @@ async def post_init(application):
     )
     logger.info("Scheduled daily report at 09:00 Asia/Taipei")
 
-    # One-time test — remove after verifying
-    application.job_queue.run_once(bot.send_daily_report, when=5)
-
 
 async def post_shutdown(application):
     """Called after Application.shutdown() — close DB pool."""
