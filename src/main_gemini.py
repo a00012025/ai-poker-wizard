@@ -15,6 +15,7 @@ from src.telegram_bot.bot import PokerWizardBot
 logger = logging.getLogger("poker_bot")
 
 db = Database()
+bot: PokerWizardBot | None = None
 
 
 async def post_init(application):
@@ -46,6 +47,7 @@ async def post_shutdown(application):
 
 
 def main():
+    global bot
     print("AI Poker Wizard (Gemini) starting...")
 
     bot_token = os.getenv("BOT_TOKEN")
