@@ -8,7 +8,7 @@ import asyncpg
 
 logger = logging.getLogger("poker_bot")
 
-_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache"]
+_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs"]
 
 
 class Database:
@@ -106,6 +106,14 @@ class Database:
             )
         logger.info(f"Deleted GTO token for user {user_id}")
 
+    async def log_message(self, chat_id: int, message_type: str = "text"):
+        """Log an incoming message for analytics."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO message_logs (chat_id, message_type) VALUES ($1, $2)",
+                chat_id, message_type,
+            )
+
     async def get_analytics_metrics(self) -> dict:
         """Get daily analytics metrics for admin report."""
         async with self.pool.acquire() as conn:
@@ -126,17 +134,30 @@ class Database:
                     "AT TIME ZONE 'Asia/Taipei'"
                 )
 
-                # Active users (distinct chat_id in hand_histories as proxy)
+                # Active users (distinct chat_id in message_logs)
                 active_today = await conn.fetchval(
-                    "SELECT COUNT(DISTINCT chat_id) FROM hand_histories "
-                    "WHERE uploaded_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
+                    "SELECT COUNT(DISTINCT chat_id) FROM message_logs "
+                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
                     "AT TIME ZONE 'Asia/Taipei'"
                 )
                 active_week = await conn.fetchval(
-                    "SELECT COUNT(DISTINCT chat_id) FROM hand_histories "
-                    "WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
+                    "SELECT COUNT(DISTINCT chat_id) FROM message_logs "
+                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
                     "AT TIME ZONE 'Asia/Taipei'"
                 )
+
+                # Messages
+                messages_today = await conn.fetchval(
+                    "SELECT COUNT(*) FROM message_logs "
+                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                messages_week = await conn.fetchval(
+                    "SELECT COUNT(*) FROM message_logs "
+                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
+                    "AT TIME ZONE 'Asia/Taipei'"
+                )
+                messages_total = await conn.fetchval("SELECT COUNT(*) FROM message_logs")
 
                 # Hands
                 hands_today = await conn.fetchval(
@@ -161,6 +182,9 @@ class Database:
             "users_new_week": users_new_week,
             "active_today": active_today,
             "active_week": active_week,
+            "messages_today": messages_today,
+            "messages_week": messages_week,
+            "messages_total": messages_total,
             "hands_today": hands_today,
             "hands_week": hands_week,
             "hands_total": hands_total,

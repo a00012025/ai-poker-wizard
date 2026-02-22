@@ -279,6 +279,12 @@ class PokerWizardBot:
 
         self.log.info(f"[{label}] Message: {user_text[:300]}")
 
+        if self.db:
+            try:
+                await self.db.log_message(chat_id, "text")
+            except Exception:
+                pass
+
         # Check if user is referencing a hand from uploaded HH
         hh_hand = await self._find_hh_hand(chat_id, user_text)
         if hh_hand:
@@ -453,6 +459,12 @@ class PokerWizardBot:
 
         self.log.info(f"[{label}] Photo received, caption: {caption[:200]}")
 
+        if self.db:
+            try:
+                await self.db.log_message(update.effective_chat.id, "photo")
+            except Exception:
+                pass
+
         # Get the largest photo resolution
         photo = update.message.photo[-1]
 
@@ -537,6 +549,12 @@ class PokerWizardBot:
         fsize = doc.file_size or 0
         caption = update.message.caption or ""
         self.log.info(f"[{label}] Document: {fname} ({fsize} bytes), caption: {caption[:100]}")
+
+        if self.db:
+            try:
+                await self.db.log_message(update.effective_chat.id, "document")
+            except Exception:
+                pass
 
         # Parse optional ICM override from caption (e.g., "10000" or "10000 200")
         # When starting_stack=0, analyze_hands auto-detects from first hand's hero chips
@@ -764,6 +782,10 @@ class PokerWizardBot:
                 "\n"
                 f"*活躍*：今日 {m['active_today']}，"
                 f"本週 {m['active_week']}\n"
+                "\n"
+                f"*對話*：今日 {m['messages_today']}，"
+                f"本週 {m['messages_week']}，"
+                f"累計 {m['messages_total']}\n"
                 "\n"
                 f"*手牌*：今日 {m['hands_today']}，"
                 f"本週 {m['hands_week']}，"
