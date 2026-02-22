@@ -1102,8 +1102,8 @@ def test_deviation_report_mixed_severity():
     ]
     report = format_deviation_report(results)
     assert_in("嚴重偏差", report)
-    assert_in("中等偏差", report)
-    assert_in("2 處偏差", report)
+    assert_in("1 處偏差", report)
+    assert_true("中等偏差" not in report, "moderate deviations should be excluded")
 
 
 # ── HH Deviation Check E2E (API) ──

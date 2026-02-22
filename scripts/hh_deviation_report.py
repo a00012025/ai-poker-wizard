@@ -205,10 +205,9 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     for idx, tid in enumerate(tournament_map, 1):
         tid_short[tid] = f"T{idx}"
 
-    # Collect significant deviations
+    # Collect significant deviations (skip moderate — hero_freq >= 25%)
     severe = []   # hero_freq == 0 (GTO never does this)
     major = []    # hero_freq < 25%
-    moderate = [] # hero_freq < threshold cutoff
 
     cutoff = (100 - threshold_pct) / 100  # e.g., 0.9
 
@@ -247,14 +246,11 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
                 severe.append(entry)
             elif d["hero_freq"] < 0.25:
                 major.append(entry)
-            else:
-                moderate.append(entry)
 
     severe.sort(key=lambda x: x["hero_freq"])
     major.sort(key=lambda x: x["hero_freq"])
-    moderate.sort(key=lambda x: x["hero_freq"])
 
-    total_devs = len(severe) + len(major) + len(moderate)
+    total_devs = len(severe) + len(major)
 
     # Check if ICM mode was used
     icm_count = sum(1 for r in results if r.get("icm_phase"))
@@ -325,12 +321,6 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
     if major:
         lines.append(f"*較大偏差（GTO < 25%）— {len(major)} 處*")
         for e in major:
-            lines.append(_format_entry(e))
-        lines.append("")
-
-    if moderate:
-        lines.append(f"*中等偏差 — {len(moderate)} 處*")
-        for e in moderate:
             lines.append(_format_entry(e))
         lines.append("")
 
