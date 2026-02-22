@@ -495,7 +495,7 @@ class GeminiSessionManager:
 
                 # Step 2: Require user token
                 if not refresh_token:
-                    return "請先使用 /login 綁定你的 GTO Wizard 帳號。"
+                    return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
 
                 # Step 3: Run GTO analysis and cache context
                 await _status("查詢 GTO 策略中...")
@@ -599,7 +599,7 @@ class GeminiSessionManager:
                 f"({hand_json['effective_bb']:.0f}bb)，正在查詢 GTO 策略..."
             )
             if not refresh_token:
-                return "請先使用 /login 綁定你的 GTO Wizard 帳號。"
+                return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
 
             # Step 3: GTO analysis
             self._setup_user_token(user_id, refresh_token)
@@ -882,16 +882,14 @@ class GeminiSessionManager:
                         tool_desc += f" (ICM {icm})"
                     await _status(tool_desc + "...")
 
-                    if refresh_token:
-                        self._setup_user_token(user_id, refresh_token)
+                    self._setup_user_token(user_id, refresh_token)
                     try:
                         if fn_name == "query_next_actions":
                             tool_result = self._execute_query_next_actions(chat_id, args)
                         else:
                             tool_result = self._execute_query_gto(chat_id, args)
                     finally:
-                        if refresh_token:
-                            self._clear_user_token()
+                        self._clear_user_token()
                 elapsed = time.time() - t_tool
                 self._logger.debug(
                     f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"
