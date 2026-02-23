@@ -137,81 +137,41 @@ class Database:
             )
 
     async def get_analytics_metrics(self) -> dict:
-        """Get daily analytics metrics for admin report."""
+        """Get daily analytics metrics for admin report (single query)."""
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                # Users
-                users_total = await conn.fetchval("SELECT COUNT(*) FROM users")
-                users_with_token = await conn.fetchval(
-                    "SELECT COUNT(*) FROM users WHERE gto_refresh_token IS NOT NULL"
-                )
-                users_new_today = await conn.fetchval(
-                    "SELECT COUNT(*) FROM users "
-                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                users_new_week = await conn.fetchval(
-                    "SELECT COUNT(*) FROM users "
-                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-
-                # Active users (distinct chat_id in message_logs)
-                active_today = await conn.fetchval(
-                    "SELECT COUNT(DISTINCT chat_id) FROM message_logs "
-                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                active_week = await conn.fetchval(
-                    "SELECT COUNT(DISTINCT chat_id) FROM message_logs "
-                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-
-                # Messages
-                messages_today = await conn.fetchval(
-                    "SELECT COUNT(*) FROM message_logs "
-                    "WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                messages_week = await conn.fetchval(
-                    "SELECT COUNT(*) FROM message_logs "
-                    "WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                messages_total = await conn.fetchval("SELECT COUNT(*) FROM message_logs")
-
-                # Hands
-                hands_today = await conn.fetchval(
-                    "SELECT COUNT(*) FROM hand_histories "
-                    "WHERE uploaded_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                hands_week = await conn.fetchval(
-                    "SELECT COUNT(*) FROM hand_histories "
-                    "WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6) "
-                    "AT TIME ZONE 'Asia/Taipei'"
-                )
-                hands_total = await conn.fetchval("SELECT COUNT(*) FROM hand_histories")
-
-                # Cache
-                cache_total = await conn.fetchval("SELECT COUNT(*) FROM gto_api_cache")
-
-        return {
-            "users_total": users_total,
-            "users_with_token": users_with_token,
-            "users_new_today": users_new_today,
-            "users_new_week": users_new_week,
-            "active_today": active_today,
-            "active_week": active_week,
-            "messages_today": messages_today,
-            "messages_week": messages_week,
-            "messages_total": messages_total,
-            "hands_today": hands_today,
-            "hands_week": hands_week,
-            "hands_total": hands_total,
-            "cache_total": cache_total,
-        }
+            row = await conn.fetchrow("""
+                SELECT
+                  (SELECT COUNT(*) FROM users) AS users_total,
+                  (SELECT COUNT(*) FROM users WHERE gto_refresh_token IS NOT NULL) AS users_with_token,
+                  (SELECT COUNT(*) FROM users
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS users_new_today,
+                  (SELECT COUNT(*) FROM users
+                   WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS users_new_week,
+                  (SELECT COUNT(DISTINCT chat_id) FROM message_logs
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS active_today,
+                  (SELECT COUNT(DISTINCT chat_id) FROM message_logs
+                   WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS active_week,
+                  (SELECT COUNT(*) FROM message_logs
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS messages_today,
+                  (SELECT COUNT(*) FROM message_logs
+                   WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS messages_week,
+                  (SELECT COUNT(*) FROM message_logs) AS messages_total,
+                  (SELECT COUNT(*) FROM hand_histories
+                   WHERE uploaded_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS hands_today,
+                  (SELECT COUNT(*) FROM hand_histories
+                   WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS hands_week,
+                  (SELECT COUNT(*) FROM hand_histories) AS hands_total,
+                  (SELECT COUNT(*) FROM gto_api_cache) AS cache_total
+            """)
+        return dict(row)
 
     async def find_hand(self, chat_id: int, hand_id_suffix: str) -> dict | None:
         """Find a hand by hand_id suffix (LIKE '%suffix')."""
