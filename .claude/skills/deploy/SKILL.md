@@ -15,7 +15,6 @@ Before deploying, ensure:
    - `GEMINI_API_KEY` — Gemini API key
    - `SUPABASE_CONN` — Supabase pooler connection string (transaction mode, port 6543)
    - `SUPABASE_ACCESS_TOKEN` — Supabase personal access token (for CLI migrations)
-   - `ALLOWED_USERS` — comma-separated Telegram user IDs
    - `ADMIN_CHAT_ID` — admin Telegram user ID for token expiry alerts
 
 2. **`.tokens.json`** exists at project root with valid GTO Wizard tokens:
@@ -110,8 +109,7 @@ If you add a new table, also add its name to `_REQUIRED_TABLES` in `src/database
 
 1. Bot connects to Supabase via `asyncpg` pool (transaction pooler, `statement_cache_size=0`)
 2. Verifies required tables exist (fails fast with clear error if migrations haven't been applied)
-3. `ALLOWED_USERS` are seeded into `users` table with `is_active=TRUE`
-4. Bot starts polling Telegram for updates
+3. Bot starts polling Telegram for updates (open to all users with a GTO Wizard token)
 
 ## Troubleshooting
 

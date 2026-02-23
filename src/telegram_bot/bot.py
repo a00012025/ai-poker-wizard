@@ -74,6 +74,18 @@ class PokerWizardBot:
         name = u.username or u.first_name or str(u.id) if u else "?"
         return f"user=@{name} chat={chat.id}"
 
+    async def _touch_user(self, update: Update):
+        """Upsert user row with latest username/name from Telegram."""
+        if not self.db:
+            return
+        u = update.effective_user
+        if not u:
+            return
+        try:
+            await self.db.upsert_user(u.id, u.username, u.first_name)
+        except Exception:
+            pass
+
     async def _has_gto_token(self, user_id: int) -> bool:
         """Check if user has a GTO Wizard token stored."""
         if not self.db:
@@ -102,6 +114,7 @@ class PokerWizardBot:
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
+        await self._touch_user(update)
         self.log.info(f"[{self._user_label(update)}] /start")
         welcome_msg = (
             "🃏 歡迎使用 AI Poker Wizard！\n\n"
@@ -263,6 +276,7 @@ class PokerWizardBot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle all text messages via Claude session"""
+        await self._touch_user(update)
         user_id = update.effective_user.id
         if not await self._has_gto_token(user_id):
             await self._send_token_gate(update)
@@ -444,6 +458,7 @@ class PokerWizardBot:
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
+        await self._touch_user(update)
         user_id = update.effective_user.id
         if not await self._has_gto_token(user_id):
             await self._send_token_gate(update)
@@ -529,6 +544,7 @@ class PokerWizardBot:
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
+        await self._touch_user(update)
         user_id = update.effective_user.id
         if not await self._has_gto_token(user_id):
             await self._send_token_gate(update)

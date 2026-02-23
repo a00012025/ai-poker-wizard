@@ -128,6 +128,21 @@ class Database:
             )
         logger.info(f"Deleted GTO token for user {user_id}")
 
+    async def upsert_user(self, user_id: int, username: str | None = None,
+                          name: str | None = None):
+        """Create or update user row with latest username/name."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, username, name, is_active)
+                VALUES ($1, $2, $3, TRUE)
+                ON CONFLICT (user_id) DO UPDATE
+                SET username = COALESCE($2, users.username),
+                    name = COALESCE($3, users.name)
+                """,
+                user_id, username, name,
+            )
+
     async def log_message(self, chat_id: int, message_type: str = "text"):
         """Log an incoming message for analytics."""
         async with self.pool.acquire() as conn:
