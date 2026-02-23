@@ -673,6 +673,9 @@ def _run_analysis(hand: dict) -> dict:
     street_states = {}
 
     for street_idx, street in enumerate(streets):
+        # Skip streets with no actions (e.g. preflop all-in, board dealt but no play)
+        if not street.get("actions"):
+            continue
         street_name = STREET_NAMES[street_idx]
 
         if street_idx == 0:
