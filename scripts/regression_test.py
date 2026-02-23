@@ -152,6 +152,28 @@ def test_chip_ev_preflop_reraise():
 
 
 @test
+def test_chip_ev_3way_cold_call_fallback():
+    """Chip EV: 3-way cold call preflop falls back to HU for hero's second decision."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "players_at_table": 8,
+        "effective_bb": 100,
+        "hero_position": "HJ",
+        "hero_hand": "K9s",
+        "preflop_actions": "F-F-F-R2-R6-F-F-C-C",
+        "streets": [],
+    })
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    assert_true(len(preflop_spots) >= 2, f"expected 2 preflop spots, got {len(preflop_spots)}")
+    # Second spot should have a solution (HU fallback)
+    second_sol = result["solutions"][1]
+    assert_true(second_sol is not None, "second preflop spot should have HU fallback solution")
+    # Should mention multiway approximation
+    assert_in("cold caller", result["text"].lower())
+
+
+@test
 def test_chip_ev_depth_mapping():
     """Chip EV: depth maps to nearest available solver depth."""
     from gto_api import nearest_depth

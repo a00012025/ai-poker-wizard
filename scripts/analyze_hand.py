@@ -641,6 +641,25 @@ def _run_analysis(hand: dict) -> dict:
         # Query hero's second decision at the full N-position preflop
         full_n = "-".join(pf_parts[:num_players])
 
+        # Build HU fallback: strip cold callers (keep only hero + 3bettor)
+        # Solver often lacks 3-way cold call solutions; HU is a reasonable approximation
+        reraise_idx = None
+        for i in range(hero_idx + 1, num_players):
+            if pf_parts[i].startswith("R") or pf_parts[i].startswith("AI"):
+                reraise_idx = i
+                break
+        hu_fallback_n = None
+        if reraise_idx is not None:
+            cold_callers = [
+                i for i in range(num_players)
+                if i != hero_idx and i != reraise_idx and pf_parts[i] not in ("F", "")
+            ]
+            if cold_callers:
+                hu_parts = list(pf_parts[:num_players])
+                for ci in cold_callers:
+                    hu_parts[ci] = "F"
+                hu_fallback_n = "-".join(hu_parts)
+
         # Check if hero's continuation action is in the string (parts[N:])
         hero_cont_desc = None
         if len(pf_parts) > num_players:
@@ -661,6 +680,8 @@ def _run_analysis(hand: dict) -> dict:
             "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
                            preflop_actions=full_n),
             "action_desc": hero_cont_desc,
+            "hu_fallback_params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
+                                       preflop_actions=hu_fallback_n) if hu_fallback_n else None,
         })
 
     board = ""
@@ -826,6 +847,15 @@ def _run_analysis(hand: dict) -> dict:
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             solutions[idx] = future.result()
+
+    # Retry with HU fallback for spots that returned no solution
+    for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        if sol is None and spot.get("hu_fallback_params"):
+            solutions[i] = _fetch_with_token(spot["hu_fallback_params"])
+            if solutions[i]:
+                # Add multiway approximation note
+                if not multiway_note:
+                    multiway_note = "⚠ 多人底池，cold caller 已簡化為 heads-up 分析"
 
     t_phase2 = time.time()
 
