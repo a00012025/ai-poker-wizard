@@ -575,17 +575,17 @@ class GeminiSessionManager:
 
                 # Step 4: Coaching from LLM (with tools for follow-up queries)
                 await _status("分析回覆中...")
-                hand_id_line = f"Hand ID: {hand_id}\n" if hand_id else ""
                 coaching_prompt = (
-                    f"{hand_id_line}"
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                    f"請先回覆 Hand ID（如有），然後根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                    f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 )
                 result = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,
                 )
+                if hand_id:
+                    result = f"📋 `{hand_id}`\n\n{result}"
                 t_total = time.time()
                 self._logger.info(
                     f"[chat={chat_id}] Done: parse={t_parse - t0:.1f}s "
@@ -686,7 +686,6 @@ class GeminiSessionManager:
             )
 
             # Step 4: Coaching with user's caption/question
-            hand_id_line = f"Hand ID: {hand_id}\n" if hand_id else ""
             hand_desc = (
                 f"Hero {hand_json['hero_position']} {hand_json['hero_hand']} "
                 f"({hand_json['effective_bb']:.0f}bb)\n"
@@ -702,16 +701,17 @@ class GeminiSessionManager:
 
             user_q = user_text.strip() if user_text.strip() else "請分析這手牌"
             coaching_prompt = (
-                f"{hand_id_line}"
                 f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
                 f"用戶留言：{user_q}\n\n"
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                f"請先回覆 Hand ID（如有），然後根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
             )
             result = await self._chat_with_tools(
                 chat_id, coaching_prompt,
                 user_id=user_id, refresh_token=refresh_token,
             )
+            if hand_id:
+                result = f"📋 `{hand_id}`\n\n{result}"
 
             t_total = time.time()
             self._logger.info(
