@@ -7,4 +7,4 @@ services:
       - ./.tokens.json:/app/.tokens.json
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
     restart: unless-stopped
-    stop_grace_period: 5m
+    stop_grace_period: 15m
