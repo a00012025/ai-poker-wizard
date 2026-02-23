@@ -45,22 +45,44 @@ class Database:
                     )
         logger.info("Database tables verified")
 
-    async def save_hands(self, chat_id: int, hands: list[dict]):
+    async def save_hands(self, chat_id: int, hands: list[dict],
+                         source_type: str = "file"):
         """Batch-insert parsed hands for a chat."""
         if not hands:
             return
         async with self.pool.acquire() as conn:
             await conn.executemany(
                 """
-                INSERT INTO hand_histories (chat_id, hand_id, hand_data)
-                VALUES ($1, $2, $3)
+                INSERT INTO hand_histories (chat_id, hand_id, hand_data, source_type)
+                VALUES ($1, $2, $3, $4)
                 """,
                 [
-                    (chat_id, h.get("hand_id", ""), json.dumps(h))
+                    (chat_id, h.get("hand_id", ""), json.dumps(h), source_type)
                     for h in hands
                 ],
             )
         logger.info(f"Saved {len(hands)} hands for chat {chat_id}")
+
+    async def save_hand_returning_id(self, chat_id: int, hand_data: dict,
+                                     source_type: str = "text") -> str:
+        """Insert a single hand and return generated hand_id (H{serial_id})."""
+        async with self.pool.acquire() as conn:
+            row_id = await conn.fetchval(
+                """
+                INSERT INTO hand_histories (chat_id, hand_id, hand_data, source_type)
+                VALUES ($1, '', $2, $3)
+                RETURNING id
+                """,
+                chat_id, json.dumps(hand_data), source_type,
+            )
+            hand_id = f"H{row_id}"
+            # Update the hand_id column with the generated value
+            await conn.execute(
+                "UPDATE hand_histories SET hand_id = $1 WHERE id = $2",
+                hand_id, row_id,
+            )
+        logger.info(f"Saved hand {hand_id} for chat {chat_id} (source={source_type})")
+        return hand_id
 
     async def get_hands(self, chat_id: int, limit: int = 200) -> list[dict]:
         """Get recent hands for a chat."""

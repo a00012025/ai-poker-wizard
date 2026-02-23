@@ -43,7 +43,7 @@ def main():
         print("ERROR: GEMINI_API_KEY not set")
         return
 
-    session_manager = GeminiSessionManager()
+    session_manager = GeminiSessionManager(db=db)
     bot = PokerWizardBot(token=bot_token, session_manager=session_manager, db=db)
 
     print(f"Model: {session_manager.model}")

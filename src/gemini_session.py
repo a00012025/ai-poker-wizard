@@ -426,6 +426,25 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
     ),
 )
 
+LOOKUP_HAND_DECLARATION = types.FunctionDeclaration(
+    name="lookup_hand",
+    description=(
+        "根據 Hand ID 從用戶的手牌歷史中查詢手牌資料。"
+        "用戶提到某個 Hand ID（如 H42 或 TM5600279272）時，使用此工具撈取手牌 JSON。"
+        "可用於跨對話引用之前分析過的手牌。"
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "hand_id": types.Schema(
+                type=types.Type.STRING,
+                description="手牌 ID（如 H42 或 TM5600279272）",
+            ),
+        },
+        required=["hand_id"],
+    ),
+)
+
 EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
     name="evaluate_hand",
     description=(
@@ -451,7 +470,7 @@ EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
 
 
 class GeminiSessionManager:
-    def __init__(self):
+    def __init__(self, db=None):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY 環境變數未設定")
@@ -463,6 +482,7 @@ class GeminiSessionManager:
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
+        self.db = db
 
         # Logging
         _LOG_DIR.mkdir(exist_ok=True)
@@ -522,6 +542,15 @@ class GeminiSessionManager:
                     f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
                 )
 
+                # Save parsed hand to DB and get hand_id
+                hand_id = None
+                if self.db:
+                    try:
+                        hand_id = await self.db.save_hand_returning_id(
+                            chat_id, hand_json, source_type="text")
+                    except Exception as e:
+                        self._logger.warning(f"[chat={chat_id}] Failed to save hand: {e}")
+
                 # Step 2: Require user token
                 if not refresh_token:
                     return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
@@ -546,10 +575,12 @@ class GeminiSessionManager:
 
                 # Step 4: Coaching from LLM (with tools for follow-up queries)
                 await _status("分析回覆中...")
+                hand_id_line = f"Hand ID: {hand_id}\n" if hand_id else ""
                 coaching_prompt = (
+                    f"{hand_id_line}"
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                    f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                    f"請先回覆 Hand ID（如有），然後根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 )
                 result = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
@@ -622,6 +653,15 @@ class GeminiSessionManager:
                 f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
             )
 
+            # Save parsed hand to DB and get hand_id
+            hand_id = None
+            if self.db:
+                try:
+                    hand_id = await self.db.save_hand_returning_id(
+                        chat_id, hand_json, source_type="image")
+                except Exception as e:
+                    self._logger.warning(f"[chat={chat_id}] Failed to save image hand: {e}")
+
             # Step 2: Require user token
             await _update_status(
                 f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
@@ -646,6 +686,7 @@ class GeminiSessionManager:
             )
 
             # Step 4: Coaching with user's caption/question
+            hand_id_line = f"Hand ID: {hand_id}\n" if hand_id else ""
             hand_desc = (
                 f"Hero {hand_json['hero_position']} {hand_json['hero_hand']} "
                 f"({hand_json['effective_bb']:.0f}bb)\n"
@@ -661,10 +702,11 @@ class GeminiSessionManager:
 
             user_q = user_text.strip() if user_text.strip() else "請分析這手牌"
             coaching_prompt = (
+                f"{hand_id_line}"
                 f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
                 f"用戶留言：{user_q}\n\n"
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                f"請先回覆 Hand ID（如有），然後根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
             )
             result = await self._chat_with_tools(
                 chat_id, coaching_prompt,
@@ -817,11 +859,14 @@ class GeminiSessionManager:
                                 user_id: int | None = None,
                                 refresh_token: str | None = None) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
-        tool = types.Tool(function_declarations=[
+        declarations = [
             QUERY_NEXT_ACTIONS_DECLARATION,
             QUERY_GTO_DECLARATION,
             EVALUATE_HAND_DECLARATION,
-        ])
+        ]
+        if self.db:
+            declarations.append(LOOKUP_HAND_DECLARATION)
+        tool = types.Tool(function_declarations=declarations)
 
         # Build system prompt with hand context
         hand_summary = self._build_hand_summary(chat_id)
@@ -897,7 +942,10 @@ class GeminiSessionManager:
 
                 t_tool = time.time()
 
-                if fn_name == "evaluate_hand":
+                if fn_name == "lookup_hand":
+                    await _status("查詢手牌歷史...")
+                    tool_result = await self._execute_lookup_hand(chat_id, args)
+                elif fn_name == "evaluate_hand":
                     # Local deterministic eval — no API call needed
                     await _status("判斷牌型...")
                     tool_result = self._execute_evaluate_hand(chat_id, args)
@@ -1052,6 +1100,18 @@ class GeminiSessionManager:
 
         result = eval_hand(hand, board)
         return f"{hand} 在 {board}: {result['full_label']}"
+
+    async def _execute_lookup_hand(self, chat_id: int, args: dict) -> str:
+        """Look up a hand by ID from the user's history."""
+        hand_id = args.get("hand_id", "")
+        if not hand_id:
+            return "錯誤：請提供 hand_id。"
+        if not self.db:
+            return "錯誤：資料庫未連接。"
+        hand = await self.db.find_hand(chat_id, hand_id)
+        if not hand:
+            return f"找不到 Hand ID '{hand_id}' 的手牌記錄。"
+        return json.dumps(hand, ensure_ascii=False)
 
     def _execute_query_gto(self, chat_id: int, args: dict) -> str:
         """Execute a query_gto tool call. Returns formatted solver data."""
