@@ -64,16 +64,17 @@ class Database:
         logger.info(f"Saved {len(hands)} hands for chat {chat_id}")
 
     async def save_hand_returning_id(self, chat_id: int, hand_data: dict,
-                                     source_type: str = "text") -> str:
+                                     source_type: str = "text",
+                                     user_input: str | None = None) -> str:
         """Insert a single hand and return generated hand_id (H{serial_id})."""
         async with self.pool.acquire() as conn:
             row_id = await conn.fetchval(
                 """
-                INSERT INTO hand_histories (chat_id, hand_id, hand_data, source_type)
-                VALUES ($1, '', $2, $3)
+                INSERT INTO hand_histories (chat_id, hand_id, hand_data, source_type, user_input)
+                VALUES ($1, '', $2, $3, $4)
                 RETURNING id
                 """,
-                chat_id, json.dumps(hand_data), source_type,
+                chat_id, json.dumps(hand_data), source_type, user_input,
             )
             hand_id = f"H{row_id}"
             # Update the hand_id column with the generated value

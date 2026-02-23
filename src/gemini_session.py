@@ -178,6 +178,9 @@ IMAGE_PARSE_PROMPT = """\
 - streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"
 - 翻牌後 action: X=Check, C=Call, F=Fold, R{size}=Bet/Raise（size 為 bb 絕對值）
 - 翻牌後行動順序：靠近 SB 的位置先行動
+- bet size 精確度極重要！仔細看截圖中每個下注的數字，不要猜測。
+  系統會用你給的 bb 數字去匹配最接近的 solver sizing，差一點就會走到完全不同的分析路線。
+  特別注意 turn/river 的下注金額，因為底池較大時，小誤差會導致匹配到錯誤的 sizing（例如 55% pot vs 83% pot）。
 
 JSON 格式：
 ```json
@@ -548,7 +551,8 @@ class GeminiSessionManager:
                 if self.db:
                     try:
                         hand_id = await self.db.save_hand_returning_id(
-                            chat_id, hand_json, source_type="text")
+                            chat_id, hand_json, source_type="text",
+                            user_input=user_text[:2000])
                     except Exception as e:
                         self._logger.warning(f"[chat={chat_id}] Failed to save hand: {e}")
 
@@ -659,7 +663,8 @@ class GeminiSessionManager:
             if self.db:
                 try:
                     hand_id = await self.db.save_hand_returning_id(
-                        chat_id, hand_json, source_type="image")
+                        chat_id, hand_json, source_type="image",
+                        user_input=(user_text[:2000] if user_text else "[screenshot]"))
                 except Exception as e:
                     self._logger.warning(f"[chat={chat_id}] Failed to save image hand: {e}")
 
