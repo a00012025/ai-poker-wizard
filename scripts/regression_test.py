@@ -1194,6 +1194,33 @@ def test_deviation_report_low_ev_shown():
 
 
 @test
+def test_deviation_report_tiny_ev_not_filtered():
+    """Report: very low EV hands (like K5o EV=0.01bb) still show deviations."""
+    from hh_deviation_report import format_deviation_report
+    # Mirrors real case: SB K5o facing 3-bet, hero folds but GTO says call 58%
+    results = [{
+        "hand_id": "TM5614184519", "hero_position": "SB", "hero_hand": "Kc5d",
+        "hero_hand_normalized": "K5o", "effective_bb": 19.6, "num_players": 8,
+        "preflop_actions": "F-F-F-F-F-C-R3.0-F", "spots_checked": 2,
+        "icm_phase": "25%",
+        "deviations": [
+            {
+                "street": "preflop", "spot": "facing 3bet",
+                "hero_action": "F", "hero_action_label": "Fold",
+                "hero_freq": 0, "gto_action": "C", "gto_action_label": "Call",
+                "gto_freq": 0.58, "all_freqs": {"C": 0.58, "R8.5": 0.42},
+                "hero_ev": 0.012,
+            },
+        ],
+    }]
+    report = format_deviation_report(results)
+    # Must appear despite tiny EV
+    assert_in("嚴重偏差", report)
+    assert_in("K5o", report)
+    assert_in("Call", report)
+
+
+@test
 def test_deviation_report_severe_category():
     """Report: 0% freq deviations appear in severe category."""
     from hh_deviation_report import format_deviation_report
