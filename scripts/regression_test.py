@@ -1399,6 +1399,29 @@ def test_num_players_from_players_at_table():
 
 
 @test
+def test_num_players_field_pads_correctly():
+    """Table size: num_players field (from hh_parser) triggers correct padding."""
+    from analyze_hand import analyze_hand_full
+    # 7-player table: BTN opens, SB folds, BB calls
+    # Without fix: num_players not read → defaults to 8 → no padding → CO opens instead of BTN
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 51.8,
+        "num_players": 7,
+        "hero_position": "BB",
+        "hero_hand": "AcJh",
+        "preflop_actions": "F-F-F-F-R2.0-F-C",
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Should correctly identify BTN as opener (not CO)
+    assert_in("BTN", text)
+    assert_not_in("CO raise", text)
+    # AJo should NOT be 64% all-in (that was the wrong CO-open solver node)
+    assert_not_in("64.2%", text)
+
+
+@test
 def test_postflop_allin_action_matching():
     """Action matching: near-all-in bet matches RAI, not Call."""
     from gto_api import find_closest_action_postflop
