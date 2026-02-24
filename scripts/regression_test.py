@@ -1172,8 +1172,8 @@ def test_hh_check_hand_correct_play():
 
 
 @test
-def test_deviation_report_low_ev_skipped():
-    """Report: low EV deviations are skipped entirely."""
+def test_deviation_report_low_ev_shown():
+    """Report: low EV deviations are still shown (no EV filter)."""
     from hh_deviation_report import format_deviation_report
     results = [{
         "hand_id": "TM1", "hero_position": "BB", "hero_hand": "9s3s",
@@ -1187,16 +1187,15 @@ def test_deviation_report_low_ev_skipped():
             "hero_ev": 0.3,
         }],
     }]
-    report = format_deviation_report(results, ev_threshold=1.0)
-    # Low EV deviation should be skipped — report shows no deviations
-    assert_not_in("嚴重偏差", report)
-    assert_not_in("93s", report)
-    assert_in("不錯", report)
+    report = format_deviation_report(results)
+    # Low EV deviation should still appear (EV filter removed)
+    assert_in("嚴重偏差", report)
+    assert_in("93s", report)
 
 
 @test
-def test_deviation_report_high_ev_stays_severe():
-    """Report: high EV deviations remain in severe category."""
+def test_deviation_report_severe_category():
+    """Report: 0% freq deviations appear in severe category."""
     from hh_deviation_report import format_deviation_report
     results = [{
         "hand_id": "TM1", "hero_position": "CO", "hero_hand": "AcKc",
@@ -1210,7 +1209,7 @@ def test_deviation_report_high_ev_stays_severe():
             "hero_ev": 3.5,
         }],
     }]
-    report = format_deviation_report(results, ev_threshold=1.0)
+    report = format_deviation_report(results)
     assert_in("嚴重偏差", report)
 
 

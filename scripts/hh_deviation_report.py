@@ -172,14 +172,12 @@ def analyze_hands(
     return results
 
 
-def format_deviation_report(results: list[dict], threshold_pct: float = 10,
-                            ev_threshold: float = 1.0) -> str:
+def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> str:
     """Format deviation results into a Telegram-friendly text report.
 
     Args:
         results: list of result dicts from analyze_hands()
         threshold_pct: minimum deviation % to report (default 10 = flag if hero_freq < 90%)
-        ev_threshold: EV below this (in bb) is considered marginal (default 1.0bb)
 
     Returns formatted report string.
     """
@@ -216,11 +214,6 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10,
             if d["hero_action"] == d["gto_action"]:
                 continue
             if d["hero_freq"] >= cutoff:
-                continue
-
-            hero_ev = d.get("hero_ev")
-            # Skip marginal deviations (EV below threshold)
-            if hero_ev is not None and abs(hero_ev) < ev_threshold:
                 continue
 
             entry = {
