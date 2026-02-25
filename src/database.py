@@ -8,7 +8,7 @@ import asyncpg
 
 logger = logging.getLogger("poker_bot")
 
-_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs"]
+_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs", "token_usage"]
 
 
 class Database:
@@ -152,6 +152,24 @@ class Database:
                 chat_id, message_type,
             )
 
+    async def log_token_usage(self, chat_id: int, request_type: str, model: str,
+                              prompt_tokens: int, completion_tokens: int,
+                              cached_tokens: int = 0, thinking_tokens: int = 0,
+                              total_tokens: int = 0, api_calls: int = 1,
+                              latency_ms: int | None = None):
+        """Log Gemini API token usage for cost tracking."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO token_usage
+                  (chat_id, request_type, model, prompt_tokens, completion_tokens,
+                   cached_tokens, thinking_tokens, total_tokens, api_calls, latency_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                """,
+                chat_id, request_type, model, prompt_tokens, completion_tokens,
+                cached_tokens, thinking_tokens, total_tokens, api_calls, latency_ms,
+            )
+
     async def get_analytics_metrics(self) -> dict:
         """Get daily analytics metrics for admin report (single query)."""
         async with self.pool.acquire() as conn:
@@ -185,7 +203,32 @@ class Database:
                    WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
                    AT TIME ZONE 'Asia/Taipei') AS hands_week,
                   (SELECT COUNT(*) FROM hand_histories) AS hands_total,
-                  (SELECT COUNT(*) FROM gto_api_cache) AS cache_total
+                  (SELECT COUNT(*) FROM gto_api_cache) AS cache_total,
+                  -- Token usage metrics
+                  (SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS tokens_today,
+                  (SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage
+                   WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS tokens_week,
+                  (SELECT COALESCE(SUM(api_calls), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS api_calls_today,
+                  (SELECT COALESCE(SUM(api_calls), 0) FROM token_usage
+                   WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
+                   AT TIME ZONE 'Asia/Taipei') AS api_calls_week,
+                  (SELECT COALESCE(SUM(prompt_tokens), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS prompt_tokens_today,
+                  (SELECT COALESCE(SUM(completion_tokens), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS completion_tokens_today,
+                  (SELECT COALESCE(SUM(cached_tokens), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS cached_tokens_today,
+                  (SELECT COALESCE(SUM(thinking_tokens), 0) FROM token_usage
+                   WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                   AT TIME ZONE 'Asia/Taipei') AS thinking_tokens_today
             """)
         return dict(row)
 

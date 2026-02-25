@@ -793,6 +793,14 @@ class PokerWizardBot:
             return
         try:
             m = await self.db.get_analytics_metrics()
+            def _fmt_tokens(n):
+                """Format token count: 1234567 → 1.2M, 12345 → 12.3K."""
+                if n >= 1_000_000:
+                    return f"{n / 1_000_000:.1f}M"
+                if n >= 1_000:
+                    return f"{n / 1_000:.1f}K"
+                return str(n)
+
             text = (
                 "📊 *數據報告*\n"
                 "\n"
@@ -812,7 +820,16 @@ class PokerWizardBot:
                 f"本週 {m['hands_week']}，"
                 f"累計 {m['hands_total']}\n"
                 "\n"
-                f"*快取*：{m['cache_total']} 筆"
+                f"*Gemini Token*：今日 {_fmt_tokens(m['tokens_today'])}，"
+                f"本週 {_fmt_tokens(m['tokens_week'])}\n"
+                f"  API 呼叫：今日 {m['api_calls_today']}，"
+                f"本週 {m['api_calls_week']}\n"
+                f"  輸入 {_fmt_tokens(m['prompt_tokens_today'])} / "
+                f"輸出 {_fmt_tokens(m['completion_tokens_today'])} / "
+                f"快取 {_fmt_tokens(m['cached_tokens_today'])} / "
+                f"思考 {_fmt_tokens(m['thinking_tokens_today'])}\n"
+                "\n"
+                f"*GTO 快取*：{m['cache_total']} 筆"
             )
             await update.message.reply_text(text, parse_mode="Markdown")
         except Exception as e:

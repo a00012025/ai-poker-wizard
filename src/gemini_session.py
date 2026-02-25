@@ -497,6 +497,47 @@ class GeminiSessionManager:
             self._logger.addHandler(handler)
             self._logger.setLevel(logging.DEBUG)
 
+    @staticmethod
+    def _extract_usage(response) -> dict:
+        """Extract token usage from a Gemini API response."""
+        um = getattr(response, "usage_metadata", None)
+        if not um:
+            return {}
+        return {
+            "prompt_tokens": getattr(um, "prompt_token_count", 0) or 0,
+            "completion_tokens": getattr(um, "candidates_token_count", 0) or 0,
+            "cached_tokens": getattr(um, "cached_content_token_count", 0) or 0,
+            "thinking_tokens": getattr(um, "thoughts_token_count", 0) or 0,
+            "total_tokens": getattr(um, "total_token_count", 0) or 0,
+        }
+
+    @staticmethod
+    def _accumulate_usage(acc: dict, usage: dict):
+        """Add usage dict into accumulator."""
+        for key in ("prompt_tokens", "completion_tokens", "cached_tokens",
+                     "thinking_tokens", "total_tokens"):
+            acc[key] = acc.get(key, 0) + usage.get(key, 0)
+        acc["api_calls"] = acc.get("api_calls", 0) + 1
+
+    async def _save_usage(self, chat_id: int, request_type: str, model: str,
+                           acc: dict, latency_ms: int | None = None):
+        """Save accumulated token usage to DB."""
+        if not self.db or not acc.get("api_calls"):
+            return
+        try:
+            await self.db.log_token_usage(
+                chat_id=chat_id, request_type=request_type, model=model,
+                prompt_tokens=acc.get("prompt_tokens", 0),
+                completion_tokens=acc.get("completion_tokens", 0),
+                cached_tokens=acc.get("cached_tokens", 0),
+                thinking_tokens=acc.get("thinking_tokens", 0),
+                total_tokens=acc.get("total_tokens", 0),
+                api_calls=acc.get("api_calls", 0),
+                latency_ms=latency_ms,
+            )
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] Failed to log token usage: {e}")
+
     def _setup_user_token(self, user_id: int | None, refresh_token: str | None):
         """Set thread-local GTO token if user has one."""
         if user_id and refresh_token:
@@ -524,6 +565,7 @@ class GeminiSessionManager:
         """
         t0 = time.time()
         self._logger.info(f"[chat={chat_id}] User: {user_text[:300]}")
+        usage_acc = {}
 
         async def _status(msg: str):
             if on_status:
@@ -535,7 +577,7 @@ class GeminiSessionManager:
             # Step 1: Parse hand from user message (Flash — fast)
             await _status("解析手牌中...")
             hand_json = await asyncio.wait_for(
-                self._parse_hand(chat_id, user_text), timeout=60,
+                self._parse_hand(chat_id, user_text, usage_acc=usage_acc), timeout=60,
             )
             t_parse = time.time()
 
@@ -588,6 +630,7 @@ class GeminiSessionManager:
                 result = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,
+                    usage_acc=usage_acc,
                 )
                 if hand_id:
                     result = f"📋 `{hand_id}`\n\n{result}"
@@ -598,21 +641,30 @@ class GeminiSessionManager:
                     f"coach={t_total - t_analyze:.1f}s "
                     f"total={t_total - t0:.1f}s"
                 )
+                await self._save_usage(chat_id, "hand_analysis", self.model,
+                                       usage_acc, int((t_total - t0) * 1000))
                 return result
             else:
                 # Not a hand — chat (with tools if hand context exists)
                 await _status("查詢中...")
                 result = await self._chat(chat_id, user_text, on_status=on_status,
-                                          user_id=user_id, refresh_token=refresh_token)
+                                          user_id=user_id, refresh_token=refresh_token,
+                                          usage_acc=usage_acc)
                 elapsed = time.time() - t0
                 self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
+                await self._save_usage(chat_id, "follow_up", self.model,
+                                       usage_acc, int(elapsed * 1000))
                 return result
 
         except asyncio.TimeoutError:
             self._logger.error(f"[chat={chat_id}] Gemini API timeout")
+            await self._save_usage(chat_id, "error", self.model, usage_acc,
+                                   int((time.time() - t0) * 1000))
             raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Error: {e}", exc_info=True)
+            await self._save_usage(chat_id, "error", self.model, usage_acc,
+                                   int((time.time() - t0) * 1000))
             raise
 
     async def send_image_message(self, chat_id: int, image_bytes: bytes,
@@ -632,6 +684,7 @@ class GeminiSessionManager:
             f"[chat={chat_id}] Image message ({len(image_bytes)} bytes), "
             f"caption: {user_text[:200]}"
         )
+        usage_acc = {}
 
         async def _update_status(text: str):
             if status_callback:
@@ -643,14 +696,21 @@ class GeminiSessionManager:
         try:
             # Step 1: Parse hand from screenshot
             await _update_status("🔍 正在辨識截圖中的手牌...")
-            hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type)
+            hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type,
+                                                          usage_acc=usage_acc)
             t_parse = time.time()
 
             if not hand_json:
                 self._logger.info(f"[chat={chat_id}] No hand found in image")
                 if user_text.strip():
-                    return await self._chat(chat_id, user_text,
-                                            user_id=user_id, refresh_token=refresh_token)
+                    result = await self._chat(chat_id, user_text,
+                                              user_id=user_id, refresh_token=refresh_token,
+                                              usage_acc=usage_acc)
+                    await self._save_usage(chat_id, "image_analysis", self.image_parse_model,
+                                           usage_acc, int((time.time() - t0) * 1000))
+                    return result
+                await self._save_usage(chat_id, "image_analysis", self.image_parse_model,
+                                       usage_acc, int((time.time() - t0) * 1000))
                 return "無法從截圖中辨識出撲克手牌。請確認截圖是手牌回放畫面（包含底部動作面板）。"
 
             self._logger.info(
@@ -715,6 +775,7 @@ class GeminiSessionManager:
             result = await self._chat_with_tools(
                 chat_id, coaching_prompt,
                 user_id=user_id, refresh_token=refresh_token,
+                usage_acc=usage_acc,
             )
             if hand_id:
                 result = f"📋 `{hand_id}`\n\n{result}"
@@ -724,17 +785,24 @@ class GeminiSessionManager:
                 f"[chat={chat_id}] Image done: parse={t_parse - t0:.1f}s "
                 f"gto={t_analyze - t_parse:.1f}s total={t_total - t0:.1f}s"
             )
+            await self._save_usage(chat_id, "image_analysis", self.model,
+                                   usage_acc, int((t_total - t0) * 1000))
             return result
 
         except asyncio.TimeoutError:
             self._logger.error(f"[chat={chat_id}] Image Gemini API timeout")
+            await self._save_usage(chat_id, "image_analysis", self.model, usage_acc,
+                                   int((time.time() - t0) * 1000))
             raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Image error: {e}", exc_info=True)
+            await self._save_usage(chat_id, "image_analysis", self.model, usage_acc,
+                                   int((time.time() - t0) * 1000))
             raise
 
     async def _parse_hand_from_image(self, chat_id: int, image_bytes: bytes,
-                                       mime_type: str = "image/jpeg") -> dict | None:
+                                       mime_type: str = "image/jpeg",
+                                       usage_acc: dict | None = None) -> dict | None:
         """Parse hand from a screenshot image using Gemini vision."""
         self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
 
@@ -754,6 +822,8 @@ class GeminiSessionManager:
             ),
             timeout=300,
         )
+        if usage_acc is not None:
+            self._accumulate_usage(usage_acc, self._extract_usage(response))
 
         text = response.text or ""
         self._logger.debug(f"[chat={chat_id}] Image parse response:\n{text}")
@@ -784,7 +854,8 @@ class GeminiSessionManager:
             if "card" in street:
                 street["card"] = re.sub(r"10", "T", street["card"])
 
-    async def _parse_hand(self, chat_id: int, user_text: str) -> dict | None:
+    async def _parse_hand(self, chat_id: int, user_text: str,
+                           usage_acc: dict | None = None) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""
         prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_text}"
         self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
@@ -797,6 +868,8 @@ class GeminiSessionManager:
             ),
             timeout=60,
         )
+        if usage_acc is not None:
+            self._accumulate_usage(usage_acc, self._extract_usage(response))
 
         text = response.text or ""
         self._logger.debug(f"[chat={chat_id}] Parse response:\n{text}")
@@ -854,16 +927,19 @@ class GeminiSessionManager:
     async def _chat(self, chat_id: int, user_text: str,
                      on_status: Callable[[str], Any] | None = None,
                      user_id: int | None = None,
-                     refresh_token: str | None = None) -> str:
+                     refresh_token: str | None = None,
+                     usage_acc: dict | None = None) -> str:
         """Chat with GTO tool access — always provides tools so model can query solver."""
         self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
         return await self._chat_with_tools(chat_id, user_text, on_status=on_status,
-                                           user_id=user_id, refresh_token=refresh_token)
+                                           user_id=user_id, refresh_token=refresh_token,
+                                           usage_acc=usage_acc)
 
     async def _chat_with_tools(self, chat_id: int, user_text: str,
                                 on_status: Callable[[str], Any] | None = None,
                                 user_id: int | None = None,
-                                refresh_token: str | None = None) -> str:
+                                refresh_token: str | None = None,
+                                usage_acc: dict | None = None) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
         declarations = [
             QUERY_NEXT_ACTIONS_DECLARATION,
@@ -905,6 +981,8 @@ class GeminiSessionManager:
                 ),
                 timeout=120,
             )
+            if usage_acc is not None:
+                self._accumulate_usage(usage_acc, self._extract_usage(response))
 
             # Check for function calls in response
             candidate = response.candidates[0]
@@ -1016,6 +1094,8 @@ class GeminiSessionManager:
                 ),
                 timeout=120,
             )
+            if usage_acc is not None:
+                self._accumulate_usage(usage_acc, self._extract_usage(response))
             result_text = response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
 
         self._logger.debug(f"[chat={chat_id}] Chat+tools response ({len(result_text)} chars):\n{result_text}")
