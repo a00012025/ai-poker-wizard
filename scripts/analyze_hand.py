@@ -857,6 +857,19 @@ def _run_analysis(hand: dict) -> dict:
                 if not multiway_note:
                     multiway_note = "⚠ 多人底池，cold caller 已簡化為 heads-up 分析"
 
+    # Retry ICM preflop spots with chip EV fallback (e.g. subscription insufficient)
+    icm_fallback_note = ""
+    if is_icm:
+        for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+            if sol is None and spot["street"] == "preflop" and spot["params"].get("stacks"):
+                chipev_params = dict(spot["params"])
+                chipev_params["gametype"] = chipev_gametype
+                chipev_params["depth"] = chipev_depth
+                chipev_params["stacks"] = ""
+                solutions[i] = _fetch_with_token(chipev_params)
+                if solutions[i]:
+                    icm_fallback_note = "⚠ ICM 模式不可用（可能需要更高等級的 GTO Wizard 訂閱），已自動改用 Chip EV"
+
     t_phase2 = time.time()
 
     # ── Phase 3: Format results ──
@@ -876,6 +889,8 @@ def _run_analysis(hand: dict) -> dict:
     else:
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
         results.append(f"Hero: {hero_pos} {hero_hand}")
+    if icm_fallback_note:
+        results.append(icm_fallback_note)
     if multiway_note:
         results.append(multiway_note)
     if raw_preflop != preflop_actions:

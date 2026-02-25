@@ -339,6 +339,14 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
     except Exception:
         sol = None
 
+    # ICM fallback: if ICM query returned None, retry with chip EV
+    if sol is None and icm_gametype and pf_gametype == icm_gametype:
+        try:
+            sol = get_spot_solution(gametype=gametype, depth=depth,
+                                    preflop_actions=pf_before_hero_norm)
+        except Exception:
+            sol = None
+
     if sol:
         freqs = _get_preflop_hand_freqs(sol, hero_hand, hero_pos)
         if freqs:
@@ -398,6 +406,14 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                                           stacks=pf_stacks, preflop_actions=full_first_pf)
             except Exception:
                 sol2 = None
+
+            # ICM fallback for re-raise spot
+            if sol2 is None and icm_gametype and pf_gametype == icm_gametype:
+                try:
+                    sol2 = get_spot_solution(gametype=gametype, depth=depth,
+                                              preflop_actions=full_first_pf)
+                except Exception:
+                    sol2 = None
 
             if sol2:
                 freqs2 = _get_preflop_hand_freqs(sol2, hero_hand, hero_pos)
