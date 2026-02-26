@@ -23,13 +23,37 @@ from gto_api import (
     find_closest_action, find_closest_action_postflop, nearest_depth,
 )
 from gto_formatter import (
-    normalize_hand_name, _COMBO_INDEX, _RANK_ORDER,
+    normalize_hand_name, _COMBO_INDEX, _COMBO_RANKS, _COMBO_SUITS, _RANK_ORDER,
     _get_board_cards, _combo_to_hand_name,
 )
 
 # ── 169-element preflop hand index (ASCII-sorted hand names) ──
 
 _RANKS_BY_VALUE = "23456789TJQKA"
+
+
+def _combo_index_for_hand(hero_hand_raw: str) -> int | None:
+    """Find the 1326-combo index for a specific hero hand like 'Ah6h'.
+
+    Returns index into _COMBO_INDEX, or None if hand is not a 4-char specific combo.
+    """
+    if not hero_hand_raw or len(hero_hand_raw) != 4:
+        return None
+
+    card1 = hero_hand_raw[:2]  # e.g. "Ah"
+    card2 = hero_hand_raw[2:]  # e.g. "6h"
+
+    try:
+        idx1 = _COMBO_RANKS.index(card1[0]) * 4 + _COMBO_SUITS.index(card1[1])
+        idx2 = _COMBO_RANKS.index(card2[0]) * 4 + _COMBO_SUITS.index(card2[1])
+    except (ValueError, IndexError):
+        return None
+
+    j = max(idx1, idx2)
+    i = min(idx1, idx2)
+    if j == i:
+        return None
+    return j * (j - 1) // 2 + i
 
 def _build_hands_169() -> list[str]:
     """Build 169 hand names sorted by ASCII string comparison."""
@@ -73,11 +97,12 @@ def _convert_hero_position_to_8max(hero_pos: str, num_players: int) -> str:
     return hero_pos
 
 
-def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool) -> float | None:
+def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool,
+                 combo_idx: int | None = None) -> float | None:
     """Extract EV for hero's hand from a spot solution.
 
     Uses simple_hand_counters first (pre-computed per-hand EV), then falls back
-    to the raw hand_evs array. For postflop, averages across in-range combos.
+    to the raw hand_evs array. For postflop with combo_idx, returns exact combo EV.
 
     Returns EV in bb, or None if unavailable.
     """
@@ -85,11 +110,12 @@ def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool
         if pi["player"]["position"] != hero_pos:
             continue
 
-        # Try simple_hand_counters first (has pre-computed per-hand EV)
-        shc = pi.get("simple_hand_counters", {})
-        hand_data = shc.get(hero_hand)
-        if hand_data and "hand_ev" in hand_data:
-            return hand_data["hand_ev"]
+        # For preflop or when no combo_idx, try simple_hand_counters first
+        if is_preflop or combo_idx is None:
+            shc = pi.get("simple_hand_counters", {})
+            hand_data = shc.get(hero_hand)
+            if hand_data and "hand_ev" in hand_data:
+                return hand_data["hand_ev"]
 
         # Fallback to hand_evs array
         ev_arr = pi.get("hand_evs", [])
@@ -101,6 +127,14 @@ def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool
             return None
 
         if not is_preflop and len(ev_arr) == 1326:
+            # Direct combo lookup
+            if combo_idx is not None and combo_idx < len(ev_arr):
+                range_arr = pi.get("range", [])
+                if len(range_arr) == 1326 and range_arr[combo_idx] >= 0.005:
+                    return ev_arr[combo_idx]
+                return None
+
+            # Fallback: average across all combos of the hand name
             range_arr = pi.get("range", [])
             if len(range_arr) != 1326:
                 return None
@@ -163,10 +197,12 @@ def _get_preflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str) -> di
     return freqs if freqs else None
 
 
-def _get_postflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str) -> dict[str, float] | None:
+def _get_postflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str,
+                             combo_idx: int | None = None) -> dict[str, float] | None:
     """Extract per-action frequencies for hero's hand from 1326-element postflop arrays.
 
-    Averages across all combos of the hand that are in range.
+    If combo_idx is provided, looks up the exact combo (e.g. Ah6h) directly.
+    Otherwise averages across all combos of the hand name (e.g. all A6s).
     Returns {action_code: frequency} or None if data unavailable.
     """
     if not solution or "action_solutions" not in solution:
@@ -184,8 +220,23 @@ def _get_postflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str) -> d
     if len(range_arr) != 1326:
         return None
 
-    board_cards = _get_board_cards(solution["game"]["board"])
     action_solutions = solution["action_solutions"]
+
+    # Direct combo lookup — use exact combo strategy instead of averaging
+    if combo_idx is not None and combo_idx < len(range_arr):
+        rng = range_arr[combo_idx]
+        if rng < 0.005:
+            return None
+        freqs = {}
+        for asol in action_solutions:
+            code = asol["action"]["code"]
+            freq = asol["strategy"][combo_idx]
+            if freq > 0.005:
+                freqs[code] = freq
+        return freqs if freqs else None
+
+    # Fallback: average across all combos of the hand name
+    board_cards = _get_board_cards(solution["game"]["board"])
 
     total_weight = 0
     action_freqs = {}
@@ -281,6 +332,7 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
     hero_hand = normalize_hand_name(hero_hand_raw)
+    hero_combo_idx = _combo_index_for_hand(hero_hand_raw)
     num_players = hand.get("num_players", hand.get("table_size", 8))
     depth = nearest_depth(hand["effective_bb"])
     streets = hand.get("streets", [])
@@ -518,13 +570,15 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                             if allin_code:
                                 taken_code = allin_code
 
-                    freqs_post = _get_postflop_hand_freqs(sol_post, hero_hand, hero_pos)
+                    freqs_post = _get_postflop_hand_freqs(sol_post, hero_hand, hero_pos,
+                                                          combo_idx=hero_combo_idx)
                     if freqs_post:
                         hero_freq_post = freqs_post.get(taken_code, 0)
                         best_post = max(freqs_post, key=freqs_post.get)
                         best_freq_post = freqs_post[best_post]
 
-                        hand_ev_post = _get_hand_ev(sol_post, hero_hand, hero_pos, is_preflop=False)
+                        hand_ev_post = _get_hand_ev(sol_post, hero_hand, hero_pos,
+                                                    is_preflop=False, combo_idx=hero_combo_idx)
                         deviations.append({
                             "street": street_name,
                             "spot": f"board {board}",

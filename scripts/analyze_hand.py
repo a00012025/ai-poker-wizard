@@ -140,9 +140,12 @@ _ACTION_LABELS = {
 }
 
 
-def _get_hero_action_freq(solution: dict, action_code: str, hero_hand: str, hero_pos: str) -> tuple[float | None, str]:
+def _get_hero_action_freq(solution: dict, action_code: str, hero_hand: str, hero_pos: str,
+                          combo_idx: int | None = None) -> tuple[float | None, str]:
     """Get hero's hand-specific frequency for a given action from a solution.
 
+    If combo_idx is provided, looks up the exact combo (e.g. Ah6h) directly.
+    Otherwise averages across all combos of the hand name (e.g. all A6s).
     Returns (frequency_0_to_1, gto_recommendation_str).
     frequency is None if data unavailable.
     """
@@ -175,33 +178,46 @@ def _get_hero_action_freq(solution: dict, action_code: str, hero_hand: str, hero
     if len(range_arr) != 1326:
         return target_asol.get("total_frequency"), ""
 
-    board_cards = _get_board_cards(solution["game"]["board"])
+    action_freqs = {}  # code → freq
 
-    # Compute weighted average frequency for hero's hand
-    total_weight = 0
-    weighted_freq = 0
-    action_freqs = {}  # code → weighted freq
-
-    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
-        if c1 in board_cards or c2 in board_cards:
-            continue
-        if _combo_to_hand_name(c1, c2) != hero_hand:
-            continue
-        rng = range_arr[idx]
+    # Direct combo lookup — use exact combo strategy
+    if combo_idx is not None and combo_idx < len(range_arr):
+        rng = range_arr[combo_idx]
         if rng < 0.005:
-            continue
-        total_weight += rng
+            return target_asol.get("total_frequency"), ""
         for asol in action_solutions:
             code = asol["action"]["code"]
-            freq = asol["strategy"][idx]
-            action_freqs[code] = action_freqs.get(code, 0) + freq * rng
+            freq = asol["strategy"][combo_idx]
+            if freq > 0.005:
+                action_freqs[code] = freq
+    else:
+        # Fallback: average across all combos of the hand name
+        board_cards = _get_board_cards(solution["game"]["board"])
+        total_weight = 0
 
-    if total_weight < 0.005:
+        for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+            if c1 in board_cards or c2 in board_cards:
+                continue
+            if _combo_to_hand_name(c1, c2) != hero_hand:
+                continue
+            rng = range_arr[idx]
+            if rng < 0.005:
+                continue
+            total_weight += rng
+            for asol in action_solutions:
+                code = asol["action"]["code"]
+                freq = asol["strategy"][idx]
+                action_freqs[code] = action_freqs.get(code, 0) + freq * rng
+
+        if total_weight < 0.005:
+            return target_asol.get("total_frequency"), ""
+
+        # Normalize
+        for code in action_freqs:
+            action_freqs[code] /= total_weight
+
+    if not action_freqs:
         return target_asol.get("total_frequency"), ""
-
-    # Normalize
-    for code in action_freqs:
-        action_freqs[code] /= total_weight
 
     hero_freq = action_freqs.get(action_code, 0)
 
@@ -471,7 +487,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
 
 def _explain_missing_solution(
     spot_idx: int, hero_spots: list, solutions: list,
-    hero_hand: str, hero_pos: str,
+    hero_hand: str, hero_pos: str, combo_idx: int | None = None,
 ) -> str | None:
     """Explain why a spot has no solver data by checking previous hero actions.
 
@@ -486,7 +502,8 @@ def _explain_missing_solution(
         if not prev_sol or not taken_code:
             continue
 
-        freq, gto_rec = _get_hero_action_freq(prev_sol, taken_code, hero_hand, hero_pos)
+        freq, gto_rec = _get_hero_action_freq(prev_sol, taken_code, hero_hand, hero_pos,
+                                                combo_idx=combo_idx)
         if freq is not None and freq < 0.10:
             # Hero's action was rare — explain it
             taken_label = _ACTION_LABELS.get(taken_code, taken_code)
@@ -509,7 +526,20 @@ def _run_analysis(hand: dict) -> dict:
     gametype = hand.get("gametype", "MTTGeneral")
     depth = nearest_depth(hand["effective_bb"])
     hero_pos = hand["hero_position"]
-    hero_hand = normalize_hand_name(hand["hero_hand"])
+    hero_hand_raw = hand["hero_hand"]
+    hero_hand = normalize_hand_name(hero_hand_raw)
+    # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
+    from gto_formatter import _COMBO_RANKS, _COMBO_SUITS
+    hero_combo_idx = None
+    if len(hero_hand_raw) == 4:
+        try:
+            _ci1 = _COMBO_RANKS.index(hero_hand_raw[0]) * 4 + _COMBO_SUITS.index(hero_hand_raw[1])
+            _ci2 = _COMBO_RANKS.index(hero_hand_raw[2]) * 4 + _COMBO_SUITS.index(hero_hand_raw[3])
+            _j, _i = max(_ci1, _ci2), min(_ci1, _ci2)
+            if _j != _i:
+                hero_combo_idx = _j * (_j - 1) // 2 + _i
+        except (ValueError, IndexError):
+            pass
     streets = hand.get("streets", [])
 
     # Determine position order based on number of players
@@ -942,7 +972,8 @@ def _run_analysis(hand: dict) -> dict:
             results.append(spot_text)
         else:
             # Check if a previous hero action explains the missing data
-            explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos)
+            explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos,
+                                                      combo_idx=hero_combo_idx)
             if explanation:
                 results.append(explanation)
             else:

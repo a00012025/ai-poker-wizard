@@ -1323,6 +1323,83 @@ def test_hh_e2e_parse_check_report():
     assert_in("1 手", report)
 
 
+# ── Combo index + postflop suit-specific tests ──
+
+@test
+def test_combo_index_for_hand():
+    """Combo index: _combo_index_for_hand maps specific combos to correct 1326 index."""
+    from hh_deviation_check import _combo_index_for_hand
+    from gto_formatter import _COMBO_INDEX
+
+    # Ah6h → should map to the correct index
+    idx = _combo_index_for_hand("Ah6h")
+    assert_true(idx is not None, "Ah6h should have a valid index")
+    c1, c2 = _COMBO_INDEX[idx]
+    assert_true({c1, c2} == {"Ah", "6h"}, f"index {idx} should be Ah+6h, got {c1}+{c2}")
+
+    # AcKd → different combo
+    idx2 = _combo_index_for_hand("AcKd")
+    assert_true(idx2 is not None, "AcKd should have a valid index")
+    c1, c2 = _COMBO_INDEX[idx2]
+    assert_true({c1, c2} == {"Ac", "Kd"}, f"index {idx2} should be Ac+Kd, got {c1}+{c2}")
+
+    # 6hAh (reversed) → should give same index as Ah6h
+    idx3 = _combo_index_for_hand("6hAh")
+    assert_eq(idx3, idx, "6hAh and Ah6h should map to same combo index")
+
+    # Invalid inputs
+    assert_eq(_combo_index_for_hand("A6s"), None, "simplified name should return None")
+    assert_eq(_combo_index_for_hand(""), None, "empty string should return None")
+    assert_eq(_combo_index_for_hand("AhAh"), None, "same card should return None")
+
+
+@test
+def test_postflop_combo_specific_lookup():
+    """HH Check: postflop uses exact combo (Ah6h) not aggregated A6s on flush-draw board."""
+    from hh_deviation_check import check_hand
+
+    # TM5628247517: SB Ah6h on 7hJhQd — has nut flush draw
+    # Ah6h should have high call/raise freq; other A6s combos fold
+    hand = {
+        "hand_id": "TEST_COMBO",
+        "hero_position": "SB",
+        "hero_hand": "6hAh",
+        "effective_bb": 54.6,
+        "num_players": 8,
+        "table_size": 8,
+        "preflop_actions": "F-F-F-F-F-R2.2-C-F",
+        "streets": [{
+            "board": "7hJhQd",
+            "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "R3.3", "position": "BTN", "size": 3.3},
+                {"action": "R8.7", "position": "SB", "size": 8.7},
+                {"action": "F", "position": "BTN"},
+            ],
+        }],
+    }
+    devs = check_hand(hand)
+
+    # Find the flop deviation where hero faces bet (second flop spot)
+    flop_devs = [d for d in devs if d["street"] == "flop"]
+    assert_true(len(flop_devs) >= 2, "should have 2 flop spots (check + facing bet)")
+
+    # Second flop spot: SB facing BTN's bet — this is where suit matters
+    facing_bet = flop_devs[1]
+    # Ah6h with nut flush draw should NOT have fold as GTO recommendation
+    # Solver says ~89% call for Ah6h specifically
+    assert_true(
+        facing_bet["gto_action"] != "F",
+        f"Ah6h on 7hJhQd should not be told to fold, got gto_action={facing_bet['gto_action']}"
+    )
+    # Call frequency should be high (>50%) for the flush draw combo
+    call_freq = facing_bet["all_freqs"].get("C", 0)
+    assert_true(
+        call_freq > 0.50,
+        f"Ah6h call freq should be >50% (flush draw), got {call_freq*100:.0f}%"
+    )
+
+
 # ── Table size inference + padding tests ──
 
 @test

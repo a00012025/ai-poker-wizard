@@ -290,9 +290,11 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
         street_name = e["street"].capitalize()
         ebb = _fmt_num(e["ebb"])
         icm_tag = f" [{e['icm_phase']}]" if e.get("icm_phase") and e["street"] == "preflop" else ""
+        # Show raw hand (with suits) for postflop to distinguish combos
+        display_hand = e.get("raw_hand", e["hand"]) if e["street"] != "preflop" else e["hand"]
         parts = []
         parts.append(
-            f"• {tid_prefix}`{hand_id}` {e['pos']} {e['hand']} {ebb}bb"
+            f"• {tid_prefix}`{hand_id}` {e['pos']} {display_hand} {ebb}bb"
             f" — {street_name}{icm_tag} {e['hero_action']} ({freq_str})"
         )
         parts.append(
