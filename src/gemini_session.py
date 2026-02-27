@@ -1184,7 +1184,10 @@ class GeminiSessionManager:
         if not board:
             return f"無法判斷牌型：沒有指定牌面，且當前沒有手牌 context。請提供 board 參數。"
 
-        result = eval_hand(hand, board)
+        try:
+            result = eval_hand(hand, board)
+        except (ValueError, KeyError) as e:
+            return f"無法判斷牌型：{e}。請確認 hand 格式（如 AKo, Th8c）。"
         return f"{hand} 在 {board}: {result['full_label']}"
 
     async def _execute_lookup_hand(self, chat_id: int, args: dict) -> str:

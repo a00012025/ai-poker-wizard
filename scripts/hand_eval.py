@@ -45,16 +45,22 @@ def _parse_hole_cards(hand: str) -> list[tuple[int, str]]:
         - Generic:  'AKo', 'AKs', '66' → [(14,'?'), (13,'?')]
     """
     hand = hand.strip()
+    if len(hand) < 2:
+        raise ValueError(f"Invalid hole cards: '{hand}' — expected format like 'AKo' or 'AhKs'")
     # Try specific format first (4 chars like AhKs or Th8c)
     if len(hand) == 4 and hand[1].lower() in _SUITS and hand[3].lower() in _SUITS:
         r1 = hand[0].upper()
         s1 = hand[1].lower()
         r2 = hand[2].upper()
         s2 = hand[3].lower()
+        if r1 not in _RANK_VALUES or r2 not in _RANK_VALUES:
+            raise ValueError(f"Invalid hole cards: '{hand}' — unknown rank in '{r1}' or '{r2}'")
         return [(_RANK_VALUES[r1], s1), (_RANK_VALUES[r2], s2)]
     # Generic format: AKo, AKs, 66
     r1 = hand[0].upper()
     r2 = hand[1].upper()
+    if r1 not in _RANK_VALUES or r2 not in _RANK_VALUES:
+        raise ValueError(f"Invalid hole cards: '{hand}' — unknown rank in '{r1}' or '{r2}'")
     return [(_RANK_VALUES[r1], '?'), (_RANK_VALUES[r2], '?')]
 
 
