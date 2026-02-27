@@ -354,6 +354,11 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
         "重要：使用 override actions 時，必須先用 query_next_actions 取得正確的 action code。"
         "查詢不同位置的 preflop 策略時，用 preflop_actions_override 指定到該位置行動前的動作序列。"
         "Raise size 不需要精確，系統會自動校正到最接近的 solver sizing（例如 R2 會自動校正為 R2.1）。"
+        "\n\n用戶描述獨立情境（不基於已有手牌）時，必須同時提供："
+        "effective_bb、preflop_actions_override、board_override，以及 flop/turn/river_actions_override。"
+        "Board 必須帶花色（例如 QhTd3c），如果用戶沒指定花色就用 rainbow（不同花色）。"
+        "Action 格式：X=check, C=call, F=fold, R{pot%}=bet/raise（如 R1.15 = ~33% pot bet）。"
+        "查詢 turn 時，board_override 必須包含 turn 牌（4 張牌，例如 QhTd3c3s）。"
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -390,15 +395,24 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             ),
             "board_override": types.Schema(
                 type=types.Type.STRING,
-                description="假設不同的 board（覆蓋實際 board）。例如查詢 turn 掉 Kd 而非 Kc：傳入 Js5s6hKd。",
+                description=(
+                    "指定 board 牌面（帶花色）。獨立情境查詢時必須提供。"
+                    "Flop 查詢傳 3 張（如 QhTd3c），turn 查詢傳 4 張（如 QhTd3c3s），river 查詢傳 5 張。"
+                    "也可用於覆蓋已有手牌的 board。"
+                ),
             ),
             "flop_actions_override": types.Schema(
                 type=types.Type.STRING,
-                description="假設不同的翻牌動作序列。格式：X=check, C=call, F=fold, R{size}=raise。例如 hero check through 用 X-X。",
+                description=(
+                    "翻牌動作序列。格式：X=check, C=call, F=fold, R{size}=bet/raise。"
+                    "例如 BB check, HJ bet 33% pot, BB call = X-R1.15-C。"
+                    "查詢 flop 時：填到要查詢的決策點之前的動作。"
+                    "查詢 turn 時：填完整的 flop 動作。"
+                ),
             ),
             "turn_actions_override": types.Schema(
                 type=types.Type.STRING,
-                description="假設不同的轉牌動作序列。",
+                description="轉牌動作序列。格式同上。查詢 turn 某位置策略時，填到該位置行動前。",
             ),
             "river_actions_override": types.Schema(
                 type=types.Type.STRING,
@@ -1350,6 +1364,18 @@ class GeminiSessionManager:
 
         if not base:
             # Street not in the analyzed hand — try to build from available data
+            # For standalone queries (no street_states), build from overrides
+            if board_override:
+                return dict(
+                    gametype=ctx["gametype"],
+                    depth=ctx["depth"],
+                    stacks=stacks,
+                    preflop_actions=preflop_actions,
+                    board=board_override,
+                    flop_actions=flop_override or "",
+                    turn_actions=turn_override or "",
+                    river_actions=river_override or "",
+                )
             # For hypotheticals on streets beyond what was played
             if street == "flop" and "flop" not in states:
                 return None

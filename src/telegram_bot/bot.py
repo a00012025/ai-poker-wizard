@@ -815,8 +815,14 @@ class PokerWizardBot:
     def setup_handlers(self, post_init=None, post_shutdown=None):
         """Setup bot handlers"""
         if not self.application:
-            request = HTTPXRequest(read_timeout=30, connect_timeout=15)
-            builder = Application.builder().token(self.token).request(request)
+            request = HTTPXRequest(read_timeout=30, write_timeout=30, connect_timeout=30)
+            get_updates_request = HTTPXRequest(read_timeout=60, write_timeout=30, connect_timeout=30)
+            builder = (
+                Application.builder()
+                .token(self.token)
+                .request(request)
+                .get_updates_request(get_updates_request)
+            )
             if post_init:
                 builder = builder.post_init(post_init)
             if post_shutdown:
