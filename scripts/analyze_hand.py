@@ -326,7 +326,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     If not multiway, returns (original_preflop, original_depth, "", None).
     """
     preflop = hand["preflop_actions"]
-    streets = hand.get("streets", [])
+    streets = hand.get("streets") or hand.get("postflop_actions", [])
     parts = preflop.split("-")
 
     # Count non-fold actions in first 8 positions
@@ -540,7 +540,7 @@ def _run_analysis(hand: dict) -> dict:
                 hero_combo_idx = _j * (_j - 1) // 2 + _i
         except (ValueError, IndexError):
             pass
-    streets = hand.get("streets", [])
+    streets = hand.get("streets") or hand.get("postflop_actions", [])
 
     # Determine position order based on number of players
     num_players = len(hand.get("player_stacks", []))

@@ -308,11 +308,12 @@ class PokerWizardBot:
             await self._analyze_hh_hand(update, hh_hand, user_text)
             return
 
-        status_msg = await update.message.reply_text("🔍 分析中...")
+        status_msg = await _send_status(update.message, "🔍 分析中...")
 
         async def _on_status(msg: str):
             try:
-                await status_msg.edit_text(f"⏳ {msg}")
+                await status_msg.edit_text(f"⏳ {msg}",
+                                           read_timeout=15, write_timeout=15, connect_timeout=15)
             except Exception:
                 pass  # message already deleted or unchanged
 
@@ -328,7 +329,10 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
 
-            await status_msg.delete()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
 
             if not response or not response.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
@@ -475,7 +479,7 @@ class PokerWizardBot:
         # Get the largest photo resolution
         photo = update.message.photo[-1]
 
-        status_msg = await update.message.reply_text("🔍 正在下載圖片...")
+        status_msg = await _send_status(update.message, "🔍 正在下載圖片...")
 
         # Look up user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
@@ -499,7 +503,10 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Photo response OK ({elapsed:.1f}s)")
 
-            await status_msg.delete()
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
 
             if not response or not response.strip():
                 await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
@@ -582,9 +589,7 @@ class PokerWizardBot:
             return
 
         # Send initial processing message
-        status_msg = await update.message.reply_text(
-            "📥 下載檔案中..."
-        )
+        status_msg = await _send_status(update.message, "📥 下載檔案中...")
 
         refresh_token = None  # set later inside try block
         t0 = time.time()
@@ -734,7 +739,10 @@ class PokerWizardBot:
                 report += f"\n⏱ 分析耗時 {elapsed:.0f} 秒"
 
                 # Send report
-                await status_msg.delete()
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
                 await _send_reply(update.message, report, self.log, label)
 
         except Exception as e:
@@ -893,30 +901,56 @@ def _split_message(text: str) -> list[str]:
     return chunks
 
 
+async def _send_status(message, text: str):
+    """Send a status message with retry on timeout."""
+    for attempt in range(3):
+        try:
+            return await message.reply_text(text,
+                                            read_timeout=15, write_timeout=15, connect_timeout=15)
+        except Exception:
+            if attempt < 2:
+                await asyncio.sleep(2)
+    # Last resort — try once more, let exception propagate if it fails
+    return await message.reply_text(text,
+                                    read_timeout=30, write_timeout=30, connect_timeout=30)
+
+
 async def _send_reply(message, text: str, log: logging.Logger, label: str) -> None:
     """Send a formatted reply with Markdown fallback and timeout retry.
 
     1. Try Markdown parse_mode
     2. If Markdown fails, strip formatting and send plain text
-    3. If plain text times out, retry once
+    3. If any send times out, retry up to 3 times with increasing delays
     """
     formatted = _format_for_telegram(text)
     for chunk in _split_message(formatted):
         if not chunk.strip():
             continue
+        sent = False
+        # Try Markdown first
         try:
-            await message.reply_text(chunk, parse_mode='Markdown')
+            await message.reply_text(chunk, parse_mode='Markdown',
+                                     read_timeout=30, write_timeout=30, connect_timeout=30)
+            sent = True
         except telegram.error.TimedOut:
-            log.warning(f"[{label}] Markdown send timed out, retrying plain text")
-            await message.reply_text(_strip_markdown(chunk))
+            log.warning(f"[{label}] Markdown send timed out")
         except Exception:
-            log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
-            try:
-                await message.reply_text(_strip_markdown(chunk))
-            except telegram.error.TimedOut:
-                log.warning(f"[{label}] Plain text send timed out, retrying once")
-                await asyncio.sleep(2)
-                await message.reply_text(_strip_markdown(chunk))
+            log.warning(f"[{label}] Markdown parse failed")
+        # Fallback to plain text with retries
+        if not sent:
+            plain = _strip_markdown(chunk)
+            for attempt in range(3):
+                try:
+                    await message.reply_text(plain,
+                                             read_timeout=30, write_timeout=30, connect_timeout=30)
+                    sent = True
+                    break
+                except telegram.error.TimedOut:
+                    delay = 2 * (attempt + 1)
+                    log.warning(f"[{label}] Plain text send timed out (attempt {attempt+1}/3), retry in {delay}s")
+                    await asyncio.sleep(delay)
+        if not sent:
+            log.error(f"[{label}] Failed to send message after all retries")
 
 
 def _strip_markdown(text: str) -> str:

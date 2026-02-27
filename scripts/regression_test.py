@@ -1625,6 +1625,66 @@ def test_hand_eval_preflop_empty():
     assert_eq(r["full_label"], "")
 
 
+@test
+def test_postflop_actions_key():
+    """Postflop: 'postflop_actions' key works as alias for 'streets'."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "effective_bb": 60,
+        "hero_position": "BTN",
+        "hero_hand": "J8o",
+        "preflop_actions": "F-F-F-F-F-R2-F-C",
+        "postflop_actions": [
+            {"board": "5s5h6c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "X"},
+            ]},
+            {"card": "6d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "R", "size": 2},
+                {"position": "BB", "action": "F"},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    assert_in("Flop", text)
+    assert_in("Turn", text)
+    assert_in("BTN", text)
+
+
+@test
+def test_standalone_board_override():
+    """Standalone query: board_override builds params when no street_states."""
+    from src.gemini_session import GeminiSessionManager
+    mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+    mgr.hand_contexts = {}
+    ctx = {
+        "gametype": "MTTGeneral",
+        "depth": 30.125,
+        "stacks": "",
+        "preflop_actions": "F-F-F-R2-F-F-F-C",
+        "hero_position": "",
+        "hero_hand": "",
+        "hero_spots": [],
+        "solutions": [],
+        "street_states": {},
+        "final_actions": {},
+    }
+    params = mgr._build_query_params(
+        ctx, "turn",
+        board_override="QhTd3c3s",
+        flop_override="X-R1.15-C",
+        turn_override="X",
+        river_override=None,
+        preflop_override=None,
+    )
+    assert_true(params is not None, "params should not be None for standalone query with board_override")
+    assert_eq(params["board"], "QhTd3c3s")
+    assert_eq(params["flop_actions"], "X-R1.15-C")
+    assert_eq(params["turn_actions"], "X")
+
+
 # ── Runner ──
 
 def run_tests():
