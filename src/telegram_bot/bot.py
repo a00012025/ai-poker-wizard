@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import telegram
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
@@ -329,20 +330,11 @@ class PokerWizardBot:
 
             await status_msg.delete()
 
-            formatted = _format_for_telegram(response)
-            if not formatted.strip():
+            if not response or not response.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
                 await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
-            for chunk in _split_message(formatted):
-                if not chunk.strip():
-                    continue
-                try:
-                    await update.message.reply_text(chunk, parse_mode='Markdown')
-                except Exception:
-                    # Markdown parse error — retry without parse_mode
-                    self.log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
-                    await update.message.reply_text(chunk)
+            await _send_reply(update.message, response, self.log, label)
         except Exception as e:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
@@ -509,18 +501,10 @@ class PokerWizardBot:
 
             await status_msg.delete()
 
-            formatted = _format_for_telegram(response)
-            if not formatted.strip():
+            if not response or not response.strip():
                 await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
-            for chunk in _split_message(formatted):
-                if not chunk.strip():
-                    continue
-                try:
-                    await update.message.reply_text(chunk, parse_mode='Markdown')
-                except Exception:
-                    self.log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
-                    await update.message.reply_text(chunk)
+            await _send_reply(update.message, response, self.log, label)
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -751,15 +735,7 @@ class PokerWizardBot:
 
                 # Send report
                 await status_msg.delete()
-                formatted = _format_for_telegram(report)
-                for chunk in _split_message(formatted):
-                    if not chunk.strip():
-                        continue
-                    try:
-                        await update.message.reply_text(chunk, parse_mode='Markdown')
-                    except Exception:
-                        self.log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
-                        await update.message.reply_text(chunk)
+                await _send_reply(update.message, report, self.log, label)
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -880,6 +856,15 @@ def _format_for_telegram(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     # # headers → *bold*
     text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    # Sanitize unmatched markdown markers that Telegram would reject.
+    # For each marker char, if count is odd, escape the last occurrence.
+    for ch in ('*', '_', '`'):
+        # Count occurrences outside of paired markers
+        count = text.count(ch)
+        if count % 2 == 1:
+            # Escape the last lone occurrence
+            idx = text.rfind(ch)
+            text = text[:idx] + '\\' + text[idx:]
     return text
 
 
@@ -900,3 +885,37 @@ def _split_message(text: str) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip('\n')
     return chunks
+
+
+async def _send_reply(message, text: str, log: logging.Logger, label: str) -> None:
+    """Send a formatted reply with Markdown fallback and timeout retry.
+
+    1. Try Markdown parse_mode
+    2. If Markdown fails, strip formatting and send plain text
+    3. If plain text times out, retry once
+    """
+    formatted = _format_for_telegram(text)
+    for chunk in _split_message(formatted):
+        if not chunk.strip():
+            continue
+        try:
+            await message.reply_text(chunk, parse_mode='Markdown')
+        except telegram.error.TimedOut:
+            log.warning(f"[{label}] Markdown send timed out, retrying plain text")
+            await message.reply_text(_strip_markdown(chunk))
+        except Exception:
+            log.warning(f"[{label}] Markdown parse failed, retrying as plain text")
+            try:
+                await message.reply_text(_strip_markdown(chunk))
+            except telegram.error.TimedOut:
+                log.warning(f"[{label}] Plain text send timed out, retrying once")
+                await asyncio.sleep(2)
+                await message.reply_text(_strip_markdown(chunk))
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove Markdown formatting characters for plain-text fallback."""
+    import re
+    text = re.sub(r'\\([*_`])', r'\1', text)  # unescape first
+    text = text.replace('*', '').replace('_', '').replace('`', '')
+    return text
