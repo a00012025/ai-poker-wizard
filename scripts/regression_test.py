@@ -1685,6 +1685,89 @@ def test_standalone_board_override():
     assert_eq(params["turn_actions"], "X")
 
 
+@test
+def test_collapsed_streets_4card_board():
+    """Collapsed streets: 4-card board split into flop + turn."""
+    from analyze_hand import _fix_collapsed_streets
+    streets = [{"street": "turn", "board": "5s5h6c6d", "actions": [
+        {"position": "BB", "action": "X"},
+        {"position": "BTN", "action": "R2", "size": 2.0},
+        {"position": "BB", "action": "F"},
+    ]}]
+    fixed = _fix_collapsed_streets(streets)
+    assert_eq(len(fixed), 2)
+    assert_eq(fixed[0]["board"], "5s5h6c")
+    assert_eq(fixed[0]["actions"], [])
+    assert_eq(fixed[1]["card"], "6d")
+    assert_eq(len(fixed[1]["actions"]), 3)
+
+
+@test
+def test_collapsed_streets_normal_board_unchanged():
+    """Collapsed streets: normal 3-card flop is not modified."""
+    from analyze_hand import _fix_collapsed_streets
+    streets = [{"board": "Js6h5s", "actions": [
+        {"position": "BB", "action": "X"},
+        {"position": "BTN", "action": "R2", "size": 2.0},
+    ]}]
+    fixed = _fix_collapsed_streets(streets)
+    assert_eq(len(fixed), 1)
+    assert_eq(fixed[0]["board"], "Js6h5s")
+
+
+@test
+def test_collapsed_streets_full_analysis():
+    """Collapsed streets: full analysis works with 4-card board input."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 60,
+        "hero_position": "BTN",
+        "hero_hand": "J8o",
+        "preflop_actions": "F-F-F-F-F-R2.1-F-C",
+        "streets": [{"street": "turn", "board": "5s5h6c6d", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "BTN", "action": "R2", "size": 2.0},
+            {"position": "BB", "action": "F"},
+        ]}],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Should have turn data (not "無 solver 數據")
+    assert_in("Turn", text)
+    assert_true("無 solver 數據" not in text, "Should have solver data for turn")
+    # Should show BTN's strategy on the turn
+    assert_in("BTN", text)
+
+
+@test
+def test_check_through_flop_infers_xx():
+    """Check-through: empty flop actions infer X-X when turn follows."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 60,
+        "hero_position": "BTN",
+        "hero_hand": "J8o",
+        "preflop_actions": "F-F-F-F-F-R2.1-F-C",
+        "streets": [
+            {"board": "5s5h6c", "actions": []},
+            {"card": "6d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "R2", "size": 2.0},
+                {"position": "BB", "action": "F"},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Turn should have solver data
+    assert_in("Turn", text)
+    assert_true("無 solver 數據" not in text, "Should have solver data after check-through flop")
+    # flop_actions should be X-X in the final state
+    assert_eq(result["final_actions"]["flop_actions"], "X-X")
+
+
 # ── Runner ──
 
 def run_tests():

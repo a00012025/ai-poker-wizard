@@ -516,6 +516,48 @@ def _explain_missing_solution(
     return None
 
 
+def _fix_collapsed_streets(streets: list) -> list:
+    """Fix streets where LLM collapsed a check-check flop into the turn.
+
+    Detects when the first street has a 4+ card board (e.g. "5s5h6c6d") and
+    splits it into a proper flop (first 3 cards) + turn (4th card).
+    Also handles a 5-card first street (flop+turn+river collapsed).
+    """
+    if not streets:
+        return streets
+
+    first = streets[0]
+    board = first.get("board") or first.get("cards") or first.get("card", "")
+    # Each card is 2 chars (rank+suit), so 4 cards = 8 chars, 3 cards = 6 chars
+    if len(board) <= 6:
+        return streets
+
+    result = []
+    flop_board = board[:6]  # first 3 cards
+    turn_card = board[6:8]  # 4th card
+
+    # Flop: both players checked (which is why LLM collapsed it)
+    # Empty actions list — the check-through is inferred by _run_analysis
+    result.append({"board": flop_board, "actions": []})
+
+    # Turn: original actions belong here
+    turn_entry = {"card": turn_card, "actions": first.get("actions", [])}
+    result.append(turn_entry)
+
+    # If board had 5 cards (10 chars), split river too
+    if len(board) >= 10:
+        river_card = board[8:10]
+        # The turn entry gets no actions; move actions to river
+        turn_entry["actions"] = []
+        result.append({"card": river_card, "actions": first.get("actions", [])})
+
+    # Append remaining streets (shift them forward)
+    for s in streets[1:]:
+        result.append(s)
+
+    return result
+
+
 def _run_analysis(hand: dict) -> dict:
     """Core analysis: walk hand, discover bet codes, fetch spot solutions.
 
@@ -541,6 +583,10 @@ def _run_analysis(hand: dict) -> dict:
         except (ValueError, IndexError):
             pass
     streets = hand.get("streets") or hand.get("postflop_actions", [])
+
+    # Fix malformed streets: if first street has 4+ card board, split into flop + turn
+    # (LLM sometimes collapses check-check flop into the turn entry)
+    streets = _fix_collapsed_streets(streets)
 
     # Determine position order based on number of players
     num_players = len(hand.get("player_stacks", []))
@@ -724,11 +770,9 @@ def _run_analysis(hand: dict) -> dict:
     street_states = {}
 
     for street_idx, street in enumerate(streets):
-        # Skip streets with no actions (e.g. preflop all-in, board dealt but no play)
-        if not street.get("actions"):
-            continue
         street_name = STREET_NAMES[street_idx]
 
+        # Always accumulate board cards, even for streets with no actions
         if street_idx == 0:
             board = street.get("board") or street.get("cards") or street.get("card", "")
             street_header = f"【Flop: {board}】"
@@ -740,6 +784,19 @@ def _run_analysis(hand: dict) -> dict:
             card = street.get("card") or street.get("cards", "")
             board += card
             street_header = f"【River: {card}（Board: {board}）】"
+
+        # Skip streets with no actions (e.g. preflop all-in, board dealt but no play)
+        # But if a later street has actions, infer check-through
+        if not street.get("actions"):
+            # If this is flop/turn with no actions but later streets exist,
+            # both players checked through — record X-X for the API
+            has_later = any(s.get("actions") for s in streets[street_idx + 1:])
+            if has_later:
+                if street_idx == 0:
+                    flop_acts = "X-X"
+                elif street_idx == 1:
+                    turn_acts = "X-X"
+            continue
 
         # Snapshot state at start of this street (before actions)
         street_states[street_name] = {

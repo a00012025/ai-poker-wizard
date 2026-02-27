@@ -45,8 +45,16 @@ async def main():
     session = GeminiSessionManager()
     chat_id = 99999  # fake chat id
 
+    # Load refresh token from .tokens.json for local testing
+    import json as _json
+    _tokens_file = os.path.join(os.path.dirname(__file__), "..", ".tokens.json")
+    _refresh_token = None
+    if os.path.exists(_tokens_file):
+        with open(_tokens_file) as f:
+            _refresh_token = _json.load(f).get("refresh")
+
     # First message
-    await run_message(session, chat_id, first_msg)
+    await run_message(session, chat_id, first_msg, refresh_token=_refresh_token)
 
     # Interactive follow-ups
     if interactive:
@@ -60,16 +68,20 @@ async def main():
                 continue
             if user_input.strip().lower() in ("quit", "exit", "q"):
                 break
-            await run_message(session, chat_id, user_input.strip())
+            await run_message(session, chat_id, user_input.strip(),
+                             refresh_token=_refresh_token)
 
 
-async def run_message(session: GeminiSessionManager, chat_id: int, text: str):
+async def run_message(session: GeminiSessionManager, chat_id: int, text: str,
+                      refresh_token: str | None = None):
     print(f"\n{'='*60}")
     print(f"USER: {text}")
     print(f"{'='*60}")
     t0 = time.time()
     try:
-        response = await session.send_message(chat_id, text)
+        response = await session.send_message(chat_id, text,
+                                               user_id=chat_id,
+                                               refresh_token=refresh_token)
     except Exception as e:
         print(f"\nERROR ({time.time()-t0:.1f}s): {e}", file=sys.stderr)
         import traceback
