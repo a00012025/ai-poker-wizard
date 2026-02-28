@@ -308,14 +308,11 @@ class PokerWizardBot:
             await self._analyze_hh_hand(update, hh_hand, user_text)
             return
 
-        status_msg = await _send_status(update.message, "🔍 分析中...")
+        raw_status = await _send_status(update.message, "🔍 分析中...")
+        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
         async def _on_status(msg: str):
-            try:
-                await status_msg.edit_text(f"⏳ {msg}",
-                                           read_timeout=15, write_timeout=15, connect_timeout=15)
-            except Exception:
-                pass  # message already deleted or unchanged
+            await status_msg.edit_text(f"⏳ {msg}")
 
         # Look up user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
@@ -329,10 +326,7 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
 
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
+            await status_msg.delete()
 
             if not response or not response.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
@@ -345,19 +339,11 @@ class PokerWizardBot:
             from gto_token import TokenExpiredError
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during message handling")
-                try:
-                    await status_msg.edit_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
-                except Exception:
-                    await update.message.reply_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
+                await status_msg.edit_text(
+                    "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
+                )
                 return
-            try:
-                await status_msg.edit_text(f"❌ {str(e)}")
-            except Exception:
-                await update.message.reply_text(f"❌ 分析時發生錯誤：{str(e)}\n\n請稍後再試，或使用 /clear 重新開始。")
+            await status_msg.edit_text(f"❌ {str(e)}")
 
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""
@@ -479,16 +465,36 @@ class PokerWizardBot:
         # Get the largest photo resolution
         photo = update.message.photo[-1]
 
-        status_msg = await _send_status(update.message, "🔍 正在下載圖片...")
+        raw_status = await _send_status(update.message, "🔍 正在下載圖片...")
+        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
         # Look up user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
 
         t0 = time.time()
         try:
-            # Download photo
-            tg_file = await photo.get_file()
-            image_bytes = bytes(await tg_file.download_as_bytearray())
+            # Download photo (retry on Telegram timeout)
+            image_bytes = None
+            for _dl_attempt in range(3):
+                try:
+                    tg_file = await photo.get_file(
+                        read_timeout=30, write_timeout=30, connect_timeout=30,
+                    )
+                    image_bytes = bytes(await tg_file.download_as_bytearray(
+                        read_timeout=30, write_timeout=30, connect_timeout=30,
+                    ))
+                    break
+                except telegram.error.TimedOut:
+                    delay = 3 * (_dl_attempt + 1)
+                    self.log.warning(
+                        f"[{label}] Photo download timed out (attempt {_dl_attempt+1}/3), "
+                        f"retry in {delay}s"
+                    )
+                    if _dl_attempt < 2:
+                        await asyncio.sleep(delay)
+            if image_bytes is None:
+                await status_msg.edit_text("❌ 圖片下載失敗（Telegram 超時），請稍後再試。")
+                return
 
             response = await self.session_manager.send_image_message(
                 chat_id=update.effective_chat.id,
@@ -503,10 +509,7 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Photo response OK ({elapsed:.1f}s)")
 
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
+            await status_msg.delete()
 
             if not response or not response.strip():
                 await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
@@ -518,20 +521,12 @@ class PokerWizardBot:
             from gto_token import TokenExpiredError
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during photo analysis")
-                try:
-                    await status_msg.edit_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
-                except Exception:
-                    await update.message.reply_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
+                await status_msg.edit_text(
+                    "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
+                )
                 return
             self.log.error(f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True)
-            try:
-                await status_msg.edit_text(f"❌ 分析截圖時發生錯誤：{e}")
-            except Exception:
-                await update.message.reply_text(f"❌ 分析截圖時發生錯誤：{e}")
+            await status_msg.edit_text(f"❌ 分析截圖時發生錯誤：{e}")
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
@@ -589,17 +584,29 @@ class PokerWizardBot:
             return
 
         # Send initial processing message
-        status_msg = await _send_status(update.message, "📥 下載檔案中...")
+        raw_status = await _send_status(update.message, "📥 下載檔案中...")
+        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
         refresh_token = None  # set later inside try block
         t0 = time.time()
         try:
-            # Download file
-            tg_file = await doc.get_file()
+            # Download file (retry on Telegram timeout)
+            tg_file = await _tg_retry(
+                lambda: doc.get_file(
+                    read_timeout=30, write_timeout=30, connect_timeout=30,
+                ),
+                label=label, log=self.log,
+            )
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 download_path = tmpdir_path / fname
-                await tg_file.download_to_drive(str(download_path))
+                await _tg_retry(
+                    lambda: tg_file.download_to_drive(
+                        str(download_path),
+                        read_timeout=30, write_timeout=30, connect_timeout=30,
+                    ),
+                    label=label, log=self.log,
+                )
 
                 # Extract txt files
                 txt_files = []
@@ -739,10 +746,7 @@ class PokerWizardBot:
                 report += f"\n⏱ 分析耗時 {elapsed:.0f} 秒"
 
                 # Send report
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
+                await status_msg.delete()
                 await _send_reply(update.message, report, self.log, label)
 
         except Exception as e:
@@ -751,20 +755,12 @@ class PokerWizardBot:
             from gto_token import TokenExpiredError
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during HH upload")
-                try:
-                    await status_msg.edit_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
-                except Exception:
-                    await update.message.reply_text(
-                        "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
-                    )
+                await status_msg.edit_text(
+                    "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
+                )
                 return
             self.log.error(f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True)
-            try:
-                await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
-            except Exception:
-                await update.message.reply_text(f"❌ 分析時發生錯誤：{e}")
+            await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
 
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report — admin-only analytics report."""
@@ -899,6 +895,53 @@ def _split_message(text: str) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip('\n')
     return chunks
+
+
+async def _tg_retry(coro_fn, retries=3, label="tg_retry", log=None):
+    """Retry a Telegram API call on TimedOut/NetworkError.
+
+    coro_fn: zero-arg callable returning an awaitable (called fresh each attempt).
+    """
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return await coro_fn()
+        except (telegram.error.TimedOut, telegram.error.NetworkError) as e:
+            last_exc = e
+            delay = 3 * (attempt + 1)
+            if log:
+                log.warning(f"[{label}] Telegram call failed (attempt {attempt+1}/{retries}): {e}, retry in {delay}s")
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+    raise last_exc
+
+
+class _ResilientStatus:
+    """Wraps a Telegram status message so edit_text never kills the caller."""
+
+    def __init__(self, msg, log=None, label="status"):
+        self._msg = msg
+        self._log = log
+        self._label = label
+
+    async def edit_text(self, text, **kwargs):
+        try:
+            await _tg_retry(
+                lambda: self._msg.edit_text(
+                    text, read_timeout=15, write_timeout=15, connect_timeout=15,
+                    **kwargs,
+                ),
+                retries=2, label=self._label, log=self._log,
+            )
+        except Exception:
+            if self._log:
+                self._log.debug(f"[{self._label}] Status edit failed (non-fatal): {text[:60]}")
+
+    async def delete(self):
+        try:
+            await self._msg.delete()
+        except Exception:
+            pass
 
 
 async def _send_status(message, text: str):
