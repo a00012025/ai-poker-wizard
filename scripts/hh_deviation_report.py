@@ -233,6 +233,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
                 "gto_action": d["gto_action_label"],
                 "gto_freq": d["gto_freq"],
                 "all_freqs": d["all_freqs"],
+                "ev_loss": d.get("ev_loss"),
             }
 
             if d["hero_freq"] < 0.005:
@@ -240,10 +241,11 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
             elif d["hero_freq"] < 0.25:
                 major.append(entry)
 
-    severe.sort(key=lambda x: x["hero_freq"])
-    major.sort(key=lambda x: x["hero_freq"])
+    severe.sort(key=lambda x: (-(x.get("ev_loss") or 0), x["hero_freq"]))
+    major.sort(key=lambda x: (-(x.get("ev_loss") or 0), x["hero_freq"]))
 
     total_devs = len(severe) + len(major)
+    total_ev_loss = sum(e.get("ev_loss") or 0 for e in severe + major)
 
     # Check if ICM mode was used
     icm_count = sum(1 for r in results if r.get("icm_phase"))
@@ -256,7 +258,8 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
 
     lines = []
     lines.append("*GTO 偏差分析報告*")
-    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{total_devs} 處偏差")
+    ev_loss_str = f"，累計 EV 損失 {total_ev_loss:.1f}bb" if total_ev_loss > 0.005 else ""
+    lines.append(f"解析 {total_hands} 手，{hands_with_action} 手有行動，{total_devs} 處偏差{ev_loss_str}")
     if icm_mode_str:
         lines.append(icm_mode_str)
     if errors:
@@ -290,12 +293,14 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
         street_name = e["street"].capitalize()
         ebb = _fmt_num(e["ebb"])
         icm_tag = f" [{e['icm_phase']}]" if e.get("icm_phase") and e["street"] == "preflop" else ""
+        ev_loss = e.get("ev_loss")
+        ev_loss_tag = f" [-{ev_loss:.2f}bb]" if ev_loss is not None and ev_loss > 0.005 else ""
         # Show raw hand (with suits) for postflop to distinguish combos
         display_hand = e.get("raw_hand", e["hand"]) if e["street"] != "preflop" else e["hand"]
         parts = []
         parts.append(
             f"• {tid_prefix}`{hand_id}` {e['pos']} {display_hand} {ebb}bb"
-            f" — {street_name}{icm_tag} {e['hero_action']} ({freq_str})"
+            f" — {street_name}{icm_tag} {e['hero_action']} ({freq_str}){ev_loss_tag}"
         )
         parts.append(
             f"    建議：應 {e['gto_action']} ({e['gto_freq']:.0%})"

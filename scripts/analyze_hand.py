@@ -33,7 +33,7 @@ from gto_api import (
     find_closest_action, find_closest_action_postflop, nearest_depth,
     nearest_cash_depth,
 )
-from gto_formatter import format_full_spot, normalize_hand_name
+from gto_formatter import format_full_spot, format_ev_comparison, normalize_hand_name
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
@@ -1027,6 +1027,17 @@ def _run_analysis(hand: dict) -> dict:
         if sol:
             spot_text = format_full_spot(sol, hero_hand, hero_pos)
             results.append(spot_text)
+
+            # Show EV loss if hero took a suboptimal action
+            taken_code = spot.get("taken_code")
+            if taken_code:
+                is_pf = spot["street"] == "preflop"
+                ev_note = format_ev_comparison(
+                    sol, taken_code, hero_hand, hero_pos,
+                    is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
+                )
+                if ev_note:
+                    results.append(ev_note)
         else:
             # Check if a previous hero action explains the missing data
             explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos,

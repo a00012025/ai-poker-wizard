@@ -242,9 +242,10 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
         f"  EV: {ev:.2f}bb | Equity: {eq*100:.1f}%",
     ]
 
-    # Per-action breakdown
+    # Per-action breakdown (with per-action EV if available)
     actions_freq = hand_data.get("actions_total_frequencies", {})
     actions_combos = hand_data.get("actions_total_combos", {})
+    action_evs = _get_per_action_evs(spot_solution, hand_name, position)
     if actions_freq:
         lines.append("  策略:")
         for action_code, freq in sorted(actions_freq.items(), key=lambda x: -x[1]):
@@ -252,7 +253,10 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
                 continue
             combos = actions_combos.get(action_code, 0)
             action_label = _action_label(action_code, spot_solution)
-            lines.append(f"    {action_label}: {freq*100:.1f}%（{combos:.1f} combos）")
+            ev_str = ""
+            if action_evs and action_code in action_evs:
+                ev_str = f" EV {action_evs[action_code]:.2f}bb"
+            lines.append(f"    {action_label}: {freq*100:.1f}%（{combos:.1f} combos）{ev_str}")
 
     # Combo-level breakdown when suits matter
     combo_strats = _get_combo_strategies(spot_solution, hand_name, position)
@@ -628,6 +632,107 @@ def format_full_spot(spot_solution: dict, hero_hand: str = None, hero_position: 
         parts.append(format_hand_detail(spot_solution, hero_hand, hero_position))
 
     return "\n".join(parts)
+
+
+def _get_per_action_evs(spot_solution: dict, hand_name: str, position: str) -> dict[str, float] | None:
+    """Extract per-action EVs for a hand from action_solutions[i].evs arrays.
+
+    Works for both preflop (169-element) and postflop (1326-element, averaged across combos).
+    Returns {action_code: ev} or None if EV data unavailable.
+    """
+    if "action_solutions" not in spot_solution:
+        return None
+
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return None
+
+    range_arr = player_info["range"]
+    action_solutions = spot_solution["action_solutions"]
+
+    # Preflop: 169-element arrays
+    if len(range_arr) == 169:
+        from hh_deviation_check import HAND_TO_169
+        idx = HAND_TO_169.get(hand_name)
+        if idx is None or range_arr[idx] < 0.005:
+            return None
+        evs = {}
+        for asol in action_solutions:
+            ev_arr = asol.get("evs")
+            if not ev_arr or len(ev_arr) != 169:
+                return None
+            evs[asol["action"]["code"]] = ev_arr[idx]
+        return evs if evs else None
+
+    # Postflop: 1326-element arrays, average across combos
+    if len(range_arr) == 1326:
+        board_cards = _get_board_cards(spot_solution["game"]["board"])
+        total_weight = 0.0
+        action_evs: dict[str, float] = {}
+
+        for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+            if c1 in board_cards or c2 in board_cards:
+                continue
+            if _combo_to_hand_name(c1, c2) != hand_name:
+                continue
+            rng = range_arr[idx]
+            if rng < 0.005:
+                continue
+            if total_weight == 0:
+                for asol in action_solutions:
+                    if not asol.get("evs") or len(asol["evs"]) != 1326:
+                        return None
+            total_weight += rng
+            for asol in action_solutions:
+                code = asol["action"]["code"]
+                action_evs[code] = action_evs.get(code, 0) + asol["evs"][idx] * rng
+
+        if total_weight < 0.005:
+            return None
+        for code in action_evs:
+            action_evs[code] /= total_weight
+        return action_evs if action_evs else None
+
+    return None
+
+
+def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
+                         hero_pos: str, is_preflop: bool, combo_idx: int | None = None) -> str | None:
+    """Format EV comparison between hero's action and the best action.
+
+    Returns e.g.: "⚠ EV 損失 3.71bb（All-in 7.04bb vs Raise 10.75bb）" or None if no loss or data unavailable.
+    """
+    if not spot_solution or "action_solutions" not in spot_solution:
+        return None
+
+    if is_preflop:
+        from hh_deviation_check import _get_action_evs_preflop
+        action_evs = _get_action_evs_preflop(spot_solution, hero_hand, hero_pos)
+    else:
+        from hh_deviation_check import _get_action_evs_postflop
+        action_evs = _get_action_evs_postflop(spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
+
+    if not action_evs:
+        return None
+
+    hero_ev = action_evs.get(taken_code)
+    if hero_ev is None:
+        return None
+
+    best_code = max(action_evs, key=action_evs.get)
+    best_ev = action_evs[best_code]
+    ev_loss = best_ev - hero_ev
+
+    if ev_loss < 0.005:
+        return None  # No significant loss
+
+    hero_label = _action_label(taken_code, spot_solution)
+    best_label = _action_label(best_code, spot_solution)
+    return f"⚠ EV 損失 {ev_loss:.2f}bb（{hero_label} {hero_ev:.2f}bb vs {best_label} {best_ev:.2f}bb）"
 
 
 def _action_label(code: str, spot_solution: dict) -> str:

@@ -159,6 +159,117 @@ def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool
     return None
 
 
+def _get_action_evs_preflop(solution: dict, hero_hand: str, hero_pos: str) -> dict[str, float] | None:
+    """Extract per-action EVs for hero's hand from 169-element preflop arrays.
+
+    Reads action_solutions[i].evs[idx] for each action.
+    Returns {action_code: ev_in_bb} or None if data unavailable.
+    """
+    if not solution or "action_solutions" not in solution:
+        return None
+
+    player_info = None
+    for pi in solution["players_info"]:
+        if pi["player"]["position"] == hero_pos:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return None
+
+    range_arr = player_info["range"]
+    if len(range_arr) != 169:
+        return None
+
+    idx = HAND_TO_169.get(hero_hand)
+    if idx is None:
+        return None
+
+    if range_arr[idx] < 0.005:
+        return None
+
+    evs = {}
+    for asol in solution["action_solutions"]:
+        ev_arr = asol.get("evs")
+        if not ev_arr or len(ev_arr) != 169:
+            return None  # EVs not available for this solution
+        code = asol["action"]["code"]
+        evs[code] = ev_arr[idx]
+    return evs if evs else None
+
+
+def _get_action_evs_postflop(solution: dict, hero_hand: str, hero_pos: str,
+                              combo_idx: int | None = None) -> dict[str, float] | None:
+    """Extract per-action EVs for hero's hand from 1326-element postflop arrays.
+
+    Reads action_solutions[i].evs[combo_idx] for each action.
+    Returns {action_code: ev_in_bb} or None if data unavailable.
+    """
+    if not solution or "action_solutions" not in solution:
+        return None
+
+    player_info = None
+    for pi in solution["players_info"]:
+        if pi["player"]["position"] == hero_pos:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return None
+
+    range_arr = player_info["range"]
+    if len(range_arr) != 1326:
+        return None
+
+    action_solutions = solution["action_solutions"]
+
+    # Direct combo lookup
+    if combo_idx is not None and combo_idx < len(range_arr):
+        rng = range_arr[combo_idx]
+        if rng < 0.005:
+            return None
+        evs = {}
+        for asol in action_solutions:
+            ev_arr = asol.get("evs")
+            if not ev_arr or len(ev_arr) != 1326:
+                return None
+            code = asol["action"]["code"]
+            evs[code] = ev_arr[combo_idx]
+        return evs if evs else None
+
+    # Fallback: weighted average across all combos of the hand name
+    board_cards = _get_board_cards(solution["game"]["board"])
+
+    total_weight = 0.0
+    action_evs: dict[str, float] = {}
+
+    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+        if c1 in board_cards or c2 in board_cards:
+            continue
+        if _combo_to_hand_name(c1, c2) != hero_hand:
+            continue
+        rng = range_arr[idx]
+        if rng < 0.005:
+            continue
+
+        # Check that evs arrays exist on first matching combo
+        if total_weight == 0:
+            for asol in action_solutions:
+                if not asol.get("evs") or len(asol["evs"]) != 1326:
+                    return None
+
+        total_weight += rng
+        for asol in action_solutions:
+            code = asol["action"]["code"]
+            action_evs[code] = action_evs.get(code, 0) + asol["evs"][idx] * rng
+
+    if total_weight < 0.005:
+        return None
+
+    for code in action_evs:
+        action_evs[code] /= total_weight
+
+    return action_evs if action_evs else None
+
+
 def _get_preflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str) -> dict[str, float] | None:
     """Extract per-action frequencies for hero's hand from 169-element preflop arrays.
 
@@ -407,6 +518,18 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
             best_freq = freqs[best_action]
 
             hand_ev = _get_hand_ev(sol, hero_hand, hero_pos, is_preflop=True)
+            action_evs = _get_action_evs_preflop(sol, hero_hand, hero_pos)
+            ev_entry = {}
+            if action_evs:
+                hero_act_ev = action_evs.get(hero_pf_action)
+                best_act_ev = max(action_evs.values()) if action_evs else None
+                if hero_act_ev is not None and best_act_ev is not None:
+                    ev_entry = {
+                        "hero_action_ev": hero_act_ev,
+                        "best_action_ev": best_act_ev,
+                        "ev_loss": best_act_ev - hero_act_ev,
+                        "action_evs": action_evs,
+                    }
             deviations.append({
                 "street": "preflop",
                 "spot": "open/first action",
@@ -418,6 +541,7 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                 "gto_freq": best_freq,
                 "all_freqs": freqs,
                 "hero_ev": hand_ev,
+                **ev_entry,
             })
 
     # ── Preflop: hero's second decision (if facing re-raise) ──
@@ -475,6 +599,18 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                     best_freq2 = freqs2[best2]
 
                     hand_ev2 = _get_hand_ev(sol2, hero_hand, hero_pos, is_preflop=True)
+                    action_evs2 = _get_action_evs_preflop(sol2, hero_hand, hero_pos)
+                    ev_entry2 = {}
+                    if action_evs2:
+                        hero_act_ev2 = action_evs2.get(hero_cont)
+                        best_act_ev2 = max(action_evs2.values()) if action_evs2 else None
+                        if hero_act_ev2 is not None and best_act_ev2 is not None:
+                            ev_entry2 = {
+                                "hero_action_ev": hero_act_ev2,
+                                "best_action_ev": best_act_ev2,
+                                "ev_loss": best_act_ev2 - hero_act_ev2,
+                                "action_evs": action_evs2,
+                            }
                     deviations.append({
                         "street": "preflop",
                         "spot": "facing 3bet/4bet",
@@ -486,6 +622,7 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                         "gto_freq": best_freq2,
                         "all_freqs": freqs2,
                         "hero_ev": hand_ev2,
+                        **ev_entry2,
                     })
 
     # ── Postflop streets ──
@@ -579,6 +716,19 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
 
                         hand_ev_post = _get_hand_ev(sol_post, hero_hand, hero_pos,
                                                     is_preflop=False, combo_idx=hero_combo_idx)
+                        action_evs_post = _get_action_evs_postflop(
+                            sol_post, hero_hand, hero_pos, combo_idx=hero_combo_idx)
+                        ev_entry_post = {}
+                        if action_evs_post:
+                            hero_act_ev_p = action_evs_post.get(taken_code)
+                            best_act_ev_p = max(action_evs_post.values())
+                            if hero_act_ev_p is not None and best_act_ev_p is not None:
+                                ev_entry_post = {
+                                    "hero_action_ev": hero_act_ev_p,
+                                    "best_action_ev": best_act_ev_p,
+                                    "ev_loss": best_act_ev_p - hero_act_ev_p,
+                                    "action_evs": action_evs_post,
+                                }
                         deviations.append({
                             "street": street_name,
                             "spot": f"board {board}",
@@ -590,6 +740,7 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                             "gto_freq": best_freq_post,
                             "all_freqs": freqs_post,
                             "hero_ev": hand_ev_post,
+                            **ev_entry_post,
                         })
 
             # Advance action strings
@@ -793,21 +944,29 @@ def main():
     print("GTO Deviation Report")
     print("=" * 70)
 
-    # Sort deviations by severity (lowest hero_freq first)
-    all_deviations.sort(key=lambda d: d["hero_freq"])
+    # Sort deviations by EV loss (largest first), then by hero_freq
+    all_deviations.sort(key=lambda d: (-d.get("ev_loss", 0), d["hero_freq"]))
+
+    total_ev_loss = sum(d.get("ev_loss", 0) for d in all_deviations)
 
     if not all_deviations:
         print(f"\nNo significant deviations found (threshold: {args.threshold}%)")
     else:
         print(f"\nFound {len(all_deviations)} spots where hero deviated from GTO:")
-        print(f"(threshold: hero's action had <{100 - args.threshold:.0f}% GTO frequency)\n")
+        print(f"(threshold: hero's action had <{100 - args.threshold:.0f}% GTO frequency)")
+        if total_ev_loss > 0.005:
+            print(f"Total EV lost: {total_ev_loss:.2f}bb")
+        print()
 
         for d in all_deviations:
             hero_pct = d["hero_freq"] * 100
             gto_pct = d["gto_freq"] * 100
-            ev_str = f" EV={d['hero_ev']:.2f}bb" if d.get("hero_ev") is not None else ""
+            ev_loss = d.get("ev_loss")
+            ev_loss_str = f" EV loss: {ev_loss:.2f}bb" if ev_loss is not None else ""
+            hero_ev_str = f" EV={d.get('hero_action_ev', d.get('hero_ev', 0)):.2f}bb" if d.get("hero_action_ev") is not None or d.get("hero_ev") is not None else ""
             print(f"  {d['hand_id']}: {d['hero_position']} {d['hero_hand']} "
-                  f"({d['effective_bb']:.0f}bb) [{d['street']}]{ev_str}")
+                  f"({d['effective_bb']:.0f}bb) [{d['street']}]{hero_ev_str}"
+                  f" →{ev_loss_str}")
             print(f"    Hero: {d['hero_action_label']} ({hero_pct:.0f}% GTO)")
             print(f"    GTO:  {d['gto_action_label']} ({gto_pct:.0f}%)")
             # Show all action frequencies
