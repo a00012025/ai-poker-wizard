@@ -1768,6 +1768,39 @@ def test_check_through_flop_infers_xx():
     assert_eq(result["final_actions"]["flop_actions"], "X-X")
 
 
+@test
+def test_allin_turn_skips_river_actions():
+    """All-in on turn: river actions are skipped (no 400 error from API)."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 14,
+        "hero_position": "BB",
+        "hero_hand": "AcTh",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "streets": [
+            {"board": "Qh9hAc", "actions": [
+                {"position": "BB", "action": "R4.55", "size": 4.55},
+                {"position": "CO", "action": "C"},
+            ]},
+            {"card": "7h", "actions": [
+                {"position": "BB", "action": "AI", "size": 10.0},
+                {"position": "CO", "action": "C"},
+            ]},
+            {"card": "4s", "actions": [
+                {"position": "BB", "action": "X"},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Should not crash with 400 error; river_actions should be empty
+    assert_eq(result["final_actions"]["river_actions"], "",
+              "River actions should be empty after turn all-in")
+    # Turn should still have solver data
+    assert_in("Turn", text)
+
+
 # ── Runner ──
 
 def run_tests():

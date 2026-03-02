@@ -765,6 +765,14 @@ def _run_analysis(hand: dict) -> dict:
     turn_acts = ""
     river_acts = ""
     chipev_preflop = preflop_actions  # default; overridden for ICM on flop
+    all_in_resolved = False  # True after an all-in is called — no further betting
+
+    # Check if preflop ended with all-in called
+    _raw_pf_parts = hand["preflop_actions"].split("-")
+    if len(_raw_pf_parts) >= 2 and _raw_pf_parts[-1] == "C":
+        prev = _raw_pf_parts[-2]
+        if prev == "AI" or prev.startswith("AI") and prev[2:].replace(".", "", 1).isdigit():
+            all_in_resolved = True
 
     # Track action strings at each street boundary (for hypothetical queries)
     street_states = {}
@@ -784,6 +792,10 @@ def _run_analysis(hand: dict) -> dict:
             card = street.get("card") or street.get("cards", "")
             board += card
             street_header = f"【River: {card}（Board: {board}）】"
+
+        # Skip streets after all-in is resolved (no further betting possible)
+        if all_in_resolved:
+            continue
 
         # Skip streets with no actions (e.g. preflop all-in, board dealt but no play)
         # But if a later street has actions, infer check-through
@@ -809,6 +821,7 @@ def _run_analysis(hand: dict) -> dict:
         street_first_hero = True
         outstanding_bet = 0
         street_investments = {}
+        _prev_allin = False
 
         # Postflop uses chip EV for ICM modes (preflop_only)
         post_gametype = chipev_gametype if is_icm else gametype
@@ -908,6 +921,11 @@ def _run_analysis(hand: dict) -> dict:
                 turn_acts = f"{turn_acts}-{taken_code}" if turn_acts else taken_code
             elif street_idx == 2:
                 river_acts = f"{river_acts}-{taken_code}" if river_acts else taken_code
+
+            # Detect all-in called: original action is AI and next is C (or vice versa)
+            if action_type == "C" and _prev_allin:
+                all_in_resolved = True
+            _prev_allin = action_type.startswith("AI")
 
     t_phase1 = time.time()
 
