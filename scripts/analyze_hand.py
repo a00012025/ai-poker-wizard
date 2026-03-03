@@ -922,10 +922,11 @@ def _run_analysis(hand: dict) -> dict:
             elif street_idx == 2:
                 river_acts = f"{river_acts}-{taken_code}" if river_acts else taken_code
 
-            # Detect all-in called: original action is AI and next is C (or vice versa)
-            if action_type == "C" and _prev_allin:
+            # Detect all-in called — use normalized taken_code (RAI) since
+            # the original action_type might be "R7" that got normalized to RAI
+            if taken_code == "C" and _prev_allin:
                 all_in_resolved = True
-            _prev_allin = action_type.startswith("AI")
+            _prev_allin = taken_code == "RAI" or action_type.startswith("AI")
 
     t_phase1 = time.time()
 

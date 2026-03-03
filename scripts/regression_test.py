@@ -1801,6 +1801,40 @@ def test_allin_turn_skips_river_actions():
     assert_in("Turn", text)
 
 
+@test
+def test_allin_turn_normalized_from_raise_skips_river():
+    """All-in on turn (bet normalized to RAI): river actions are skipped."""
+    from analyze_hand import analyze_hand_full
+    # Reproduces actual screenshot parse: R7 on turn gets normalized to RAI
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 13.9,
+        "hero_position": "CO",
+        "hero_hand": "QdJh",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-R2-F-F-C",
+        "streets": [
+            {"board": "Qh9hAc", "actions": [
+                {"position": "BB", "action": "R4", "size": 4},
+                {"position": "CO", "action": "C"},
+            ]},
+            {"card": "7h", "actions": [
+                {"position": "BB", "action": "R7", "size": 7},
+                {"position": "CO", "action": "C"},
+            ]},
+            {"card": "4s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R1", "size": 1},
+                {"position": "BB", "action": "C"},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    # Should not crash with 400 error; river_actions should be empty
+    assert_eq(result["final_actions"]["river_actions"], "",
+              "River actions should be empty when turn bet normalizes to RAI")
+
+
 # ── Runner ──
 
 def run_tests():
