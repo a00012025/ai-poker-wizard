@@ -510,13 +510,18 @@ def _categorize_action_range(
             if draw_name and draw_name not in ("no_draw", "onecard_bdfd", "twocards_bdfd"):
                 draw_combos[draw_name] += weighted
 
+    # Look up actual hand-level action frequencies from simple_hand_counters
+    shc = player_info.get("simple_hand_counters", {})
+
     # Convert to list format compatible with _compress_range
     category_hands = {}
     for cat_name, hands in cat_hands_raw.items():
         hand_list = []
         for hand_name, (combos, freq_sum) in hands.items():
-            # Use 1.0 as freq placeholder (pure) — mixed freq handled by _compress_range
-            hand_list.append((hand_name, 1.0, combos))
+            # Use real freq so _compress_range shows mixed hands correctly
+            # e.g. AA all-in at 5% → "AA(5%)" instead of being grouped into "TT+"
+            freq = shc.get(hand_name, {}).get("actions_total_frequencies", {}).get(action_code, 1.0)
+            hand_list.append((hand_name, freq, combos))
         hand_list.sort(key=lambda x: -x[2])
         category_hands[cat_name] = hand_list
 
