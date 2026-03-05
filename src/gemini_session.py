@@ -163,7 +163,9 @@ IMAGE_PARSE_PROMPT = """\
 - 位置順序（按人數）：
   9人: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB
   8人: UTG, UTG+1, LJ, HJ, CO, BTN, SB, BB（預設）
+  7人: UTG, LJ, HJ, CO, BTN, SB, BB
   6人: LJ, HJ, CO, BTN, SB, BB
+  注意：不要用 MP、EP 等別名！截圖上如果寫 MP 請轉換為 LJ，EP 轉換為 UTG
 - preflop_actions: 按位置順序列出所有動作，用 - 分隔
   F=Fold, C=Call, RX=Raise to Xbb, AIX=All-in Xbb
   3bet/4bet 後的 continuation actions 接在第一輪後面
@@ -250,6 +252,9 @@ COACH_SYSTEM = """\
 
 重要原則：
 - 分析必須完全基於 GTO Solver 數據，不要自行編造
+- 絕對禁止在沒有工具數據的情況下編造範圍組成、頻率數字或 EV 數字！你的撲克知識不準確，必須用工具查詢
+- 當用戶問任何關於範圍、頻率、策略的問題，你必須先呼叫 query_gto 工具獲取真實數據，然後根據工具回傳的數據回答
+- 如果工具回傳錯誤或沒有數據，直接告訴用戶「此場景沒有 solver 數據」，不要自行推測或編造
 - 如果訊息中已經包含「GTO Solver 數據」，這就是真實的 solver 分析結果！必須先根據這些數據分析 hero 的策略，不需要再用工具重複查詢
 - 只有用戶的額外問題（如「對手範圍？」「不同位置的策略？」）才需要用 query_gto 工具查詢
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
@@ -1626,7 +1631,8 @@ class GeminiSessionManager:
         if not ctx:
             return (
                 "目前沒有分析中的手牌。\n"
-                "你可以使用 query_gto 和 query_next_actions 工具查詢任何 GTO 策略，必須提供 effective_bb。\n"
+                "你必須使用 query_gto 和 query_next_actions 工具查詢 GTO 策略數據。絕對不要在沒有工具數據的情況下回答策略問題！\n"
+                "必須提供 effective_bb。\n"
                 "\n"
                 "Preflop 動作編碼：每個位置一個動作，按 UTG(0)-UTG+1(1)-LJ(2)-HJ(3)-CO(4)-BTN(5)-SB(6)-BB(7) 順序，用 - 分隔。\n"
                 "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。\n"
@@ -1636,6 +1642,11 @@ class GeminiSessionManager:
                 "例：查詢 60bb UTG open range → effective_bb=60, street='preflop', position='UTG'（不需要 preflop_actions_override）\n"
                 "例：查詢 30bb 下 LJ open 後 SB 的策略 → effective_bb=30, preflop_actions_override='F-F-R2-F-F-F', street='preflop', position='SB'\n"
                 "例：查詢 25bb 下 UTG+1 open 後 BB all-in 範圍 → effective_bb=25, preflop_actions_override='F-R2-F-F-F-F-F', street='preflop', position='BB'\n"
+                "\n"
+                "Postflop 查詢：\n"
+                "先用 preflop_actions_override 建構完整 preflop 動作（包含所有 8 個位置），再加 board_override 和 street='flop'。\n"
+                "例：40bb BTN open SB 3bet BTN call, flop Qs7h2d, SB 策略\n"
+                "  → effective_bb=40, preflop_actions_override='F-F-F-F-F-R2-R8-F-C', board_override='Qs7h2d', street='flop', position='SB'\n"
                 "\n"
                 "重要：查詢面對 re-raise 的決策（如 UTG+1 open 後 BTN 3bet，UTG+1 要 call/fold）時，\n"
                 "preflop_actions_override 必須包含完整 8 個位置（其他位置用 F），這樣才能查到該位置的第二次決策。\n"
