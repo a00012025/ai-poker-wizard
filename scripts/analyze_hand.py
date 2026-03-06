@@ -66,6 +66,49 @@ def _get_position_order(num_players: int = 8) -> list[str]:
     return POSITION_ORDERS.get(num_players, POSITION_ORDER)
 
 
+# Position alias mapping: common poker client names → GTO Wizard names
+# MP (Middle Position) maps to LJ in most table sizes
+POSITION_ALIASES = {
+    "MP": "LJ",
+    "MP1": "LJ",
+    "MP2": "HJ",
+    "EP": "UTG",
+    "EP1": "UTG",
+    "EP2": "UTG+1",
+}
+
+
+def _normalize_positions(hand: dict) -> dict:
+    """Normalize position aliases (MP, EP, etc.) to GTO Wizard names."""
+    aliases = POSITION_ALIASES
+    hero_pos = hand.get("hero_position", "")
+    if hero_pos in aliases:
+        hand = dict(hand)
+        hand["hero_position"] = aliases[hero_pos]
+    # Normalize positions in street actions
+    streets = hand.get("streets") or hand.get("postflop_actions", [])
+    needs_fix = any(
+        a.get("position") in aliases
+        for st in streets
+        for a in st.get("actions", [])
+    )
+    if needs_fix:
+        hand = dict(hand)
+        new_streets = []
+        for st in streets:
+            new_actions = []
+            for a in st.get("actions", []):
+                if a.get("position") in aliases:
+                    a = dict(a, position=aliases[a["position"]])
+                new_actions.append(a)
+            new_streets.append(dict(st, actions=new_actions))
+        if "streets" in hand:
+            hand["streets"] = new_streets
+        else:
+            hand["postflop_actions"] = new_streets
+    return hand
+
+
 def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float, stacks: str = "") -> str:
     """Validate and correct preflop action codes against the solver.
 
@@ -565,6 +608,7 @@ def _run_analysis(hand: dict) -> dict:
     for caching and follow-up queries.
     """
     t0 = time.time()
+    hand = _normalize_positions(hand)
     gametype = hand.get("gametype", "MTTGeneral")
     depth = nearest_depth(hand["effective_bb"])
     hero_pos = hand["hero_position"]
@@ -1035,11 +1079,13 @@ def _run_analysis(hand: dict) -> dict:
             results.append(spot["header"])
 
             # Add deterministic hand type label for postflop streets
+            # Use hero_hand_raw (with suits, e.g. "AcTh") so flush/flush-draw detection works
             spot_street = spot["street"]
             if spot_street != "preflop" and spot_street in street_states:
                 spot_board = street_states[spot_street].get("board", "")
                 if spot_board:
-                    eval_result = _eval_hand(hero_hand, spot_board)
+                    eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
+                    eval_result = _eval_hand(eval_input, spot_board)
                     if eval_result["full_label"]:
                         results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
 
