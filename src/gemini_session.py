@@ -380,7 +380,13 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             ),
             "hand": types.Schema(
                 type=types.Type.STRING,
-                description="查詢特定手牌的策略，例如 66, AhKs, QQ。不指定則回傳該位置的完整範圍概覽。",
+                description=(
+                    "查詢特定手牌的策略。不指定則回傳該位置的完整範圍概覽。\n"
+                    "Postflop 查詢時，如果用戶指定了花色（如 Ah8h），必須傳入完整花色（如 Ah8h 而非 A8s），"
+                    "因為不同花色在有同花/同花聽牌的牌面上策略差異極大。\n"
+                    "例如 board Jc4d3s5d: Ad8d（方塊花聽）96% bet vs Ah8h（無聽牌）97% check。\n"
+                    "Preflop 查詢用簡化格式即可：66, AKs, QTo。"
+                ),
             ),
             "effective_bb": types.Schema(
                 type=types.Type.NUMBER,

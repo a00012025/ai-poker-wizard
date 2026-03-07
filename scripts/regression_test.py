@@ -1835,6 +1835,109 @@ def test_allin_turn_normalized_from_raise_skips_river():
               "River actions should be empty when turn bet normalizes to RAI")
 
 
+@test
+def test_categorized_range_uses_real_frequencies():
+    """Formatter: categorized range shows real per-hand frequencies, not 1.0."""
+    from gto_api import get_spot_solution
+    from gto_formatter import format_range_by_action
+
+    # 40bb BTN open R2.3, SB 3bet R8.6, BB fold, BTN call. Flop 8s9s6d.
+    sol = get_spot_solution(
+        gametype="MTTGeneral", depth="40.125",
+        preflop_actions="F-F-F-F-F-R2.3-R8.6-F-C",
+        board="8s9s6d",
+    )
+    assert_true(sol is not None, "Solution should exist for this spot")
+    text = format_range_by_action(sol, "SB")
+    # AA should NOT appear as pure in the all-in range.
+    # Old bug: _categorize_action_range used freq=1.0 → "TT+" which includes AA.
+    # AA is actually ~96% check, so it should either not appear in all-in section
+    # or appear with a low percentage like AA(4%).
+    allin_section = False
+    has_ttp = False  # "TT+" in all-in
+    for line in text.split("\n"):
+        if "All-in" in line and "combos" in line:
+            allin_section = True
+        elif allin_section and line.startswith("\n"):
+            allin_section = False
+        if allin_section and "TT+" in line:
+            has_ttp = True
+    assert_true(not has_ttp,
+                "All-in range should not show TT+ (AA is ~96% check, not all-in)")
+
+
+@test
+def test_hand_eval_uses_suited_hero_hand():
+    """Hand eval: AcTh on 4-club board correctly identifies flush."""
+    from hand_eval import evaluate
+    # Without suits: misses flush
+    result_no_suit = evaluate("ATo", "Jc7cQcJs9c")
+    assert_eq(result_no_suit["made_hand"], "second_pair",
+              "ATo (no suits) should only see second pair")
+    # With suits: detects flush
+    result_suited = evaluate("AcTh", "Jc7cQcJs9c")
+    assert_eq(result_suited["made_hand"], "flush",
+              "AcTh should be flush on 4-club board")
+
+
+@test
+def test_analyze_hand_eval_uses_raw_suits():
+    """Analysis: hand type label uses raw suited hand, not normalized."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral", "effective_bb": 42,
+        "hero_position": "BB", "hero_hand": "AcTh",
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [
+            {"board": "Jc7cQc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R2.5", "size": 2.5},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "Js", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R4.8", "size": 4.8},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "9c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "X"},
+            ]},
+        ],
+    })
+    text = result["text"]
+    # River label should show flush, not just second pair
+    assert_in("同花", text, "River hand type should show flush (同花) for AcTh on 4-club board")
+    # Flop label should show flush draw
+    assert_in("堅果花聽牌", text, "Flop hand type should show nut flush draw for AcTh on 3-club board")
+
+
+@test
+def test_format_hand_detail_specific_combo():
+    """Formatter: specific combo query (Ah8h) shows that combo's strategy, not aggregated."""
+    from gto_api import get_spot_solution
+    from gto_formatter import format_hand_detail
+
+    sol = get_spot_solution(
+        gametype="MTTGeneral", depth="100.125",
+        preflop_actions="F-F-F-F-R2.3-F-F-C",
+        board="Jc4d3s5d",
+        flop_actions="X-R2-C",
+        turn_actions="X",
+    )
+    assert_true(sol is not None, "Solution should exist")
+    # Specific combo: Ah8h (no flush draw on diamond board)
+    text_specific = format_hand_detail(sol, "Ah8h", "CO")
+    assert_in("Ah8h", text_specific,
+              "Specific combo query should show Ah8h in output")
+    assert_in("A8s", text_specific,
+              "Specific combo query should reference parent hand A8s")
+    # Compare with aggregated: should be different format
+    text_agg = format_hand_detail(sol, "A8s", "CO")
+    assert_in("Range 頻率", text_agg,
+              "Aggregated query should show Range 頻率 header")
+
+
 # ── Runner ──
 
 def run_tests():

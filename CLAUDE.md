@@ -16,7 +16,7 @@ When modifying any of these core analysis files, you MUST run the regression tes
 python scripts/regression_test.py
 ```
 
-All 28 tests must pass. If a test fails, fix the issue before committing.
+All tests must pass. If a test fails, fix the issue before committing.
 
 ### What the tests cover
 
@@ -30,3 +30,5 @@ All 28 tests must pass. If a test fails, fix the issue before committing.
 ### Adding new tests
 
 When adding new features to core analysis logic, add corresponding regression tests to `scripts/regression_test.py`. Use the `@test` decorator and assertion helpers (`assert_eq`, `assert_in`, `assert_true`).
+
+**IMPORTANT: Every bug fix MUST include a regression test.** If it broke once, add a test so it can't break again. This is non-negotiable for all bug reports and fixes.

@@ -213,6 +213,7 @@ def format_action_summary(spot_solution: dict) -> str:
 
 def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> str:
     """Format detailed strategy for a specific hand at a specific position."""
+    original_hand = hand_name
     hand_name = normalize_hand_name(hand_name)
     # Find the player info for the position
     player_info = None
@@ -230,6 +231,42 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
     if not hand_data:
         return f"{position} range 中沒有 {hand_name}"
 
+    # Check if user queried a specific combo (e.g. "Ah8h" not "A8s")
+    is_specific_combo = len(original_hand) == 4 and original_hand[1] in "cdhs" and original_hand[3] in "cdhs"
+
+    combo_strats = _get_combo_strategies(spot_solution, hand_name, position)
+
+    # If specific combo requested, show that combo's strategy first
+    if is_specific_combo and combo_strats:
+        # Normalize combo string to match format in combo_strats (e.g. "Ah8h")
+        r1, s1, r2, s2 = original_hand[0].upper(), original_hand[1].lower(), original_hand[2].upper(), original_hand[3].lower()
+        target_combos = [f"{r1}{s1}{r2}{s2}", f"{r2}{s2}{r1}{s1}"]
+        target_cs = None
+        for cs in combo_strats:
+            if cs["combo"] in target_combos:
+                target_cs = cs
+                break
+
+        if target_cs:
+            action_order = [asol["action"]["code"] for asol in spot_solution["action_solutions"]]
+            lines = [f"【{position} {target_cs['combo']}（{hand_name}）】"]
+            parts = []
+            for code in action_order:
+                freq = target_cs["actions"].get(code, 0)
+                if freq < 0.005:
+                    continue
+                label = _action_label(code, spot_solution)
+                parts.append(f"{label} {freq*100:.0f}%")
+            lines.append(f"  策略: {', '.join(parts)}（EV {target_cs['ev']:.2f}bb）")
+            # Show all other combos for comparison
+            lines.append(f"  {hand_name} 其他花色:")
+            lines.extend(_format_combo_breakdown(
+                [cs for cs in combo_strats if cs["combo"] not in target_combos],
+                spot_solution,
+            ))
+            return "\n".join(lines)
+
+    # Standard aggregated output
     combos_avail = hand_data["total_combos_available"]
     combos_in_range = hand_data["total_combos"]
     freq_in_range = hand_data["total_frequency"]
@@ -258,9 +295,8 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
                 ev_str = f" EV {action_evs[action_code]:.2f}bb"
             lines.append(f"    {action_label}: {freq*100:.1f}%（{combos:.1f} combos）{ev_str}")
 
-    # Combo-level breakdown when suits matter
-    combo_strats = _get_combo_strategies(spot_solution, hand_name, position)
-    if combo_strats and _has_significant_suit_diff(combo_strats):
+    # Combo-level breakdown: always show when specific combo queried or when suits differ significantly
+    if combo_strats and (is_specific_combo or _has_significant_suit_diff(combo_strats)):
         lines.append("  花色差異:")
         lines.extend(_format_combo_breakdown(combo_strats, spot_solution))
 
