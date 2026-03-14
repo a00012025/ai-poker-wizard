@@ -15,15 +15,26 @@ class Database:
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
 
-    async def connect(self, dsn: str | None = None):
+    async def connect(self, dsn: str | None = None, retries: int = 3, delay: float = 5.0):
+        import asyncio
         dsn = dsn or os.getenv("SUPABASE_CONN")
         if not dsn:
             raise ValueError("SUPABASE_CONN environment variable not set")
-        self.pool = await asyncpg.create_pool(
-            dsn, min_size=2, max_size=10,
-            statement_cache_size=0,  # Required for Supabase transaction pooler
-        )
-        logger.info("Database pool connected")
+        for attempt in range(1, retries + 1):
+            try:
+                self.pool = await asyncpg.create_pool(
+                    dsn, min_size=2, max_size=10,
+                    statement_cache_size=0,  # Required for Supabase transaction pooler
+                )
+                logger.info("Database pool connected")
+                return
+            except (OSError, asyncpg.PostgresError, TimeoutError) as e:
+                if attempt < retries:
+                    logger.warning(f"DB connect attempt {attempt}/{retries} failed: {e}, retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"DB connect failed after {retries} attempts: {e}")
+                    raise
 
     async def close(self):
         if self.pool:
