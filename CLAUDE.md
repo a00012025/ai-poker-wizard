@@ -65,6 +65,14 @@ scripts/
   - Token column is `gto_refresh_token`, NOT `refresh_token`
 - Migrations: `supabase/migrations/` — always use `supabase db push`, never raw psql
 
+## Ad-hoc Python Scripts
+
+When running ad-hoc Python snippets for debugging/testing, write them to `scripts/_tmp.py` (gitignored) instead of inline `python -c`. This avoids repeated permission prompts.
+
+```bash
+python scripts/_tmp.py
+```
+
 ## E2E Testing
 
 ```bash

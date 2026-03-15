@@ -434,19 +434,24 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
             "flop_actions_override": types.Schema(
                 type=types.Type.STRING,
                 description=(
-                    "翻牌動作序列。格式：X=check, C=call, F=fold, R{size}=bet/raise。"
-                    "例如 BB check, HJ bet 33% pot, BB call = X-R1.15-C。"
-                    "查詢 flop 時：填到要查詢的決策點之前的動作。"
+                    "翻牌動作序列。格式：X=check, C=call, F=fold, R{size}=bet/raise。\n"
+                    "size 可以是絕對 bb 數（如 R3.7）或底池百分比（如 R50%）。系統會自動轉換百分比為正確的 bb 數。\n"
+                    "推薦使用百分比格式，避免因 ante 導致底池計算錯誤。\n"
+                    "例如 LJ bet 50% pot, BTN call = R50%-C。\n"
+                    "查詢 flop 時：填到要查詢的決策點之前的動作。\n"
                     "查詢 turn 時：填完整的 flop 動作。"
                 ),
             ),
             "turn_actions_override": types.Schema(
                 type=types.Type.STRING,
-                description="轉牌動作序列。格式同上。查詢 turn 某位置策略時，填到該位置行動前。",
+                description=(
+                    "轉牌動作序列。格式同上（支援 R50% 百分比格式）。"
+                    "查詢 turn 某位置策略時，填到該位置行動前。"
+                ),
             ),
             "river_actions_override": types.Schema(
                 type=types.Type.STRING,
-                description="假設不同的河牌動作序列。",
+                description="假設不同的河牌動作序列。格式同上（支援 R50% 百分比格式）。",
             ),
             "num_players": types.Schema(
                 type=types.Type.INTEGER,
@@ -1440,7 +1445,7 @@ class GeminiSessionManager:
                                      river_override: str | None,
                                      preflop_override: str | None = None) -> dict:
         """Normalize raise codes in overridden action strings."""
-        from gto_api import get_next_actions, find_closest_action
+        from gto_api import get_next_actions, find_closest_action, find_closest_action_by_pot_pct
 
         # Normalize preflop override (walk through each position's action)
         if preflop_override:
@@ -1533,8 +1538,15 @@ class GeminiSessionManager:
                         check_params[key] = "-".join(corrected) if corrected else ""
                         resp = get_next_actions(**check_params)
                         avail = resp["next_actions"]["available_actions"]
-                        target = float(code[1:])
-                        correct_code = find_closest_action(avail, target)
+                        raw = code[1:]
+                        if raw.endswith("%"):
+                            # Percentage-based: R50% → convert to bb using solver pot
+                            pct = float(raw[:-1]) / 100
+                            solver_pot = float(resp["next_actions"]["game"]["pot"])
+                            target = solver_pot * pct
+                        else:
+                            target = float(raw)
+                        correct_code = find_closest_action_by_pot_pct(avail, target)
                         corrected.append(correct_code)
                     except Exception:
                         corrected.append(code)
@@ -1660,6 +1672,8 @@ class GeminiSessionManager:
                 "\n"
                 "Preflop 動作編碼：每個位置一個動作，按 UTG(0)-UTG+1(1)-LJ(2)-HJ(3)-CO(4)-BTN(5)-SB(6)-BB(7) 順序，用 - 分隔。\n"
                 "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。\n"
+                "重要：MTTGeneral 每人有 0.125bb ante（8人桌 = 1bb），計算底池大小時必須加上！\n"
+                "例：LJ open 2.1bb BTN call → pot = 0.5(SB) + 1(BB) + 1(antes) + 2.1 + 2.1 = 6.7bb\n"
                 "查詢某位置的策略時，preflop_actions_override 只需包含到該位置行動前的動作。\n"
                 "UTG 是第一個行動者，不需要 preflop_actions_override（留空即可）。\n"
                 "\n"

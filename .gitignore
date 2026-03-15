@@ -38,3 +38,4 @@ bot_token.txt
 downloads/
 .browser-profile/
 .tokens.json
+scripts/_tmp.py

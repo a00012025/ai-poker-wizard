@@ -198,6 +198,45 @@ def find_closest_action(available_actions: list[dict], target_size: float) -> st
     return best_code or "X"
 
 
+def find_closest_action_by_pot_pct(available_actions: list[dict], target_size: float) -> str:
+    """Find closest action using pot-percentage matching.
+
+    More robust than absolute matching when pot size is slightly off
+    (e.g., LLM forgot antes). Computes the target's pot percentage and
+    matches against each action's known pot percentage.
+
+    Falls back to absolute matching if pot percentage can't be determined.
+    """
+    # Compute solver pot from any action with betsize_by_pot
+    solver_pot = None
+    for entry in available_actions:
+        pct = entry["action"].get("betsize_by_pot")
+        bs = entry["action"].get("betsize")
+        if pct and float(pct) > 0 and bs:
+            solver_pot = float(bs) / float(pct)
+            break
+
+    if not solver_pot or solver_pot <= 0:
+        return find_closest_action(available_actions, target_size)
+
+    target_pct = target_size / solver_pot
+
+    best_code = None
+    best_diff = float("inf")
+    for entry in available_actions:
+        action = entry["action"]
+        code = action["code"]
+        if code in ("X", "F"):
+            continue
+        action_pct = float(action.get("betsize_by_pot") or 0)
+        diff = abs(action_pct - target_pct)
+        if diff < best_diff:
+            best_diff = diff
+            best_code = code
+
+    return best_code or find_closest_action(available_actions, target_size)
+
+
 def find_closest_action_postflop(available_actions: list[dict], target_size: float) -> str:
     """Find closest postflop action, auto-detecting percentage-based sizes.
 

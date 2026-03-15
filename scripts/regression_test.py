@@ -1938,6 +1938,51 @@ def test_format_hand_detail_specific_combo():
               "Aggregated query should show Range 頻率 header")
 
 
+@test
+def test_pot_pct_action_matching():
+    """API: find_closest_action_by_pot_pct matches by pot percentage, not absolute bb."""
+    from gto_api import get_next_actions, find_closest_action, find_closest_action_by_pot_pct
+
+    na = get_next_actions(
+        gametype="MTTGeneral", depth=25.125,
+        preflop_actions="F-F-R2.1-F-F-C-F-F",
+        board="JcTs6d",
+    )
+    assert_true(na is not None, "next_actions should return data")
+    actions = na["next_actions"]["available_actions"]
+
+    # 2.85bb = 50% of 5.7bb (pot without antes) → absolute match picks R2.2 (wrong)
+    abs_result = find_closest_action(actions, 2.85)
+    assert_eq(abs_result, "R2.2", "Absolute match for 2.85bb should be R2.2")
+
+    # 3.35bb = 50% of 6.7bb (pot with antes) → should match R3.7
+    pct_result = find_closest_action_by_pot_pct(actions, 3.35)
+    assert_eq(pct_result, "R3.7", "Pot-pct match for 3.35bb should be R3.7")
+
+
+@test
+def test_normalize_pct_flop_override():
+    """Session: R50% flop override resolves to correct solver action code."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+    params = {
+        "gametype": "MTTGeneral",
+        "depth": 25.125,
+        "preflop_actions": "F-F-R2.1-F-F-C-F-F",
+        "board": "JcTs6dAh",
+    }
+    result = mgr._normalize_override_actions(
+        dict(params), "turn",
+        flop_override="R50%-C",
+        turn_override=None,
+        river_override=None,
+    )
+    assert_eq(result["flop_actions"], "R3.7-C",
+              "R50% should resolve to R3.7 (55% pot, nearest to 50%)")
+
+
 # ── Runner ──
 
 def run_tests():
