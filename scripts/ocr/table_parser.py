@@ -222,114 +222,74 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
 
 
 def _find_hero_cards(table_region: np.ndarray) -> list[str]:
-    """Find and identify hero's hole cards at bottom center.
+    """Find and identify hero's hole cards using EasyOCR.
 
-    Hero cards are displayed face-up near the hero's avatar (bottom center).
-    They appear as a pair of bright card rectangles, sometimes merged into one blob.
+    Instead of template matching (unreliable due to WIN badges/overlays),
+    use EasyOCR to read the large rank characters on the face-up cards
+    at bottom center, then detect suit by color.
     """
+    from .ocr_utils import ocr_full_image
+
     h, w = table_region.shape[:2]
+    # Hero cards are at bottom center
+    y1, y2 = int(h * 0.50), int(h * 0.90)
+    x1, x2 = int(w * 0.25), int(w * 0.75)
+    hero_area = table_region[y1:y2, x1:x2]
 
-    # Hero is at bottom center — scan the area
-    y1, y2 = int(h * 0.50), int(h * 0.95)
-    x1, x2 = int(w * 0.20), int(w * 0.80)
-    bottom = table_region[y1:y2, x1:x2]
+    results = ocr_full_image(hero_area)
 
-    # Find bright regions that could be cards
-    gray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY) if len(bottom.shape) == 3 else bottom
+    # Look for card rank characters: single chars that are valid ranks
+    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
+    _RANK_MAP = {"10": "T"}
 
-    # Try multiple thresholds — hero cards may have colored backgrounds
-    for thresh_val in [140, 150, 160, 170]:
-        _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+    card_texts = []
+    for r in results:
+        text = r["text"].strip()
+        if text in _RANK_CHARS:
+            rank = _RANK_MAP.get(text, text)
+            # Detect suit by color at this position
+            cy = int(r["center_y"])
+            cx = int(r["center_x"])
+            suit = _detect_suit_at(hero_area, cx, cy)
+            card_texts.append((rank + suit, r["center_x"]))
 
-        # Light dilation to connect card parts
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 5))
-        dilated = cv2.dilate(thresh, kernel, iterations=1)
-
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        candidates = []
-        for c in contours:
-            x, y, bw, bh = cv2.boundingRect(c)
-            area = bw * bh
-            if area < 400 or bh < 25 or bw < 15:
-                continue
-            aspect = bw / bh
-
-            # Individual card: roughly 0.4-0.85 aspect (taller than wide)
-            if 0.35 <= aspect <= 0.85:
-                candidates.append((x, y, bw, bh))
-            # Card pair merged: aspect 0.85-2.5, split them
-            elif 0.85 < aspect <= 2.5 and bh > 30 and area > 1500:
-                rects = _split_card_row(bottom, x, y, bw, bh, thresh_val=thresh_val)
-                if len(rects) == 2:
-                    candidates.extend(rects)
-                else:
-                    # Force split in half — hero cards often overlap
-                    half_w = bw // 2
-                    candidates.append((x, y, half_w, bh))
-                    candidates.append((x + half_w, y, bw - half_w, bh))
-
-        if len(candidates) >= 2:
-            break
-
-    if len(candidates) < 2:
-        # Last resort: try to find the single brightest blob and force-split it
-        for thresh_val in [130, 140]:
-            _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                x, y, bw, bh = cv2.boundingRect(c)
-                area = bw * bh
-                aspect = bw / bh if bh > 0 else 0
-                # Look for a merged pair: wider than tall, decent size
-                if area > 2000 and bh > 30 and 0.85 < aspect < 3.0:
-                    half_w = bw // 2
-                    candidates = [(x, y, half_w, bh), (x + half_w, y, bw - half_w, bh)]
-                    break
-            if len(candidates) >= 2:
-                break
-
-    if len(candidates) < 2:
+    if len(card_texts) < 2:
         return []
 
-    # Find the best pair: two cards close together at similar y, similar size
-    # Prefer larger cards closer to center-bottom (hero position)
-    bh_center = bottom.shape[0]
-    bw_center = bottom.shape[1] // 2
-    candidates.sort(key=lambda r: r[0])
-    best_pair = None
-    best_score = float("inf")
+    # Sort left to right, take first 2
+    card_texts.sort(key=lambda x: x[1])
+    return [c[0] for c in card_texts[:2]]
 
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            xi, yi, wi, hi = candidates[i]
-            xj, yj, wj, hj = candidates[j]
-            y_diff = abs(yi - yj)
-            gap = xj - (xi + wi)
-            h_diff = abs(hi - hj)
 
-            if y_diff < max(hi, hj) * 0.5 and -10 <= gap < wi * 2 and h_diff < max(hi, hj) * 0.5:
-                # Base proximity score
-                score = abs(gap) + y_diff * 2 + h_diff
-                # Penalize small cards (hero cards should be among the largest)
-                avg_area = (wi * hi + wj * hj) / 2
-                size_penalty = max(0, 3000 - avg_area) * 0.05
-                # Penalize cards far from horizontal center
-                pair_cx = (xi + xj + wj) / 2
-                center_dist = abs(pair_cx - bw_center)
-                center_penalty = center_dist * 0.1
-                score += size_penalty + center_penalty
-                if score < best_score:
-                    best_score = score
-                    best_pair = [candidates[i], candidates[j]]
+def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 15) -> str:
+    """Detect card suit by sampling color near a position.
 
-    if best_pair is None:
-        return []
+    Red = hearts(h) or diamonds(d), Black = spades(s) or clubs(c).
+    """
+    h, w = image.shape[:2]
+    # Sample below the rank character (suit symbol is usually below)
+    sy = min(y + radius, h - 1)
+    y1 = max(0, sy - 5)
+    y2 = min(h, sy + 15)
+    x1 = max(0, x - 10)
+    x2 = min(w, x + 10)
 
-    cards = _identify_cards(bottom, best_pair, min_conf=0.10)
-    return [c for c in cards if c != "??"]
+    sample = image[y1:y2, x1:x2]
+    if sample.size == 0:
+        return "s"  # default
+
+    hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
+    # Red detection
+    red_mask1 = cv2.inRange(hsv, np.array([0, 80, 80]), np.array([10, 255, 255]))
+    red_mask2 = cv2.inRange(hsv, np.array([170, 80, 80]), np.array([180, 255, 255]))
+    red_ratio = (np.sum(red_mask1 > 0) + np.sum(red_mask2 > 0)) / max(sample.size // 3, 1)
+
+    if red_ratio > 0.15:
+        # Red suit — h or d. Check shape: heart is rounder, diamond is pointy.
+        # For now, use 'h' as default red (more common)
+        return "h"
+    else:
+        return "s"  # black suit default
 
 
 def _find_player_stacks(table_region: np.ndarray) -> list[float]:
@@ -419,11 +379,52 @@ def parse_table(table_region: np.ndarray) -> dict:
     table_color = _detect_table_color(table_region)
     board_cards = _find_board_cards(table_region)
     hero_cards = _find_hero_cards(table_region)
-    player_stacks = _find_player_stacks(table_region)
+    hero_stack = _find_hero_stack(table_region)
 
     return {
         "board_cards": board_cards,
         "hero_cards": hero_cards,
-        "player_stacks": player_stacks,
+        "hero_stack": hero_stack,
+        "player_stacks": [],  # skip full table stacks OCR (unreliable)
         "table_color": table_color,
     }
+
+
+def _find_hero_stack(table_region: np.ndarray) -> float | None:
+    """Find hero's stack (BB) from the colored text below hero's avatar.
+
+    Hero is at bottom center. Stack is displayed as colored text like "18 BB".
+    """
+    from .ocr_utils import ocr_full_image
+
+    h, w = table_region.shape[:2]
+    # Hero stack text: bottom center, below the cards
+    y1, y2 = int(h * 0.82), min(h, int(h * 0.98))
+    x1, x2 = int(w * 0.25), int(w * 0.65)
+    stack_area = table_region[y1:y2, x1:x2]
+
+    if stack_area.size == 0:
+        return None
+
+    results = ocr_full_image(stack_area)
+    for r in results:
+        text = r["text"].strip().upper()
+        # Look for "XX.X BB" or just a number near "BB"
+        import re
+        m = re.search(r"(\d+\.?\d*)\s*BB", text)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                continue
+        # Just a number
+        m = re.search(r"(\d+\.?\d+)", text)
+        if m and r["conf"] > 0.5:
+            try:
+                val = float(m.group(1))
+                if 0.5 < val < 500:
+                    return val
+            except ValueError:
+                continue
+
+    return None

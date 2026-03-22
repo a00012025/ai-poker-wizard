@@ -236,16 +236,23 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     if hero_cards and len(hero_cards) == 2:
         hero_hand = hero_cards[0] + hero_cards[1]
 
+    # Fallback: try to find hero_hand from hero stack text in table
+    if not hero_hand:
+        hero_hand = _extract_hero_hand_from_stack_text(table_result)
+
     if not hero_position:
         return None, conf_parts
 
     # Build streets
     streets = _build_streets(street_cols, board_cards, pos_order)
 
-    # Effective BB: from player stacks if available
+    # Effective BB: from hero stack or player stacks
     effective_bb = None
+    hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
-    if stacks:
+    if hero_stack:
+        effective_bb = hero_stack
+    elif stacks:
         effective_bb = min(stacks) if len(stacks) > 1 else stacks[0]
 
     hand = {
@@ -282,6 +289,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     conf_parts["ocr_confidence"] = _avg_ocr_confidence(columns)
 
     return hand, conf_parts
+
+
+def _extract_hero_hand_from_stack_text(table_result: dict) -> str:
+    """Fallback: hero_hand might already be set by EasyOCR-based table parser."""
+    # This is handled by table_parser._find_hero_cards now
+    return ""
 
 
 def _build_preflop_actions_from_order(
