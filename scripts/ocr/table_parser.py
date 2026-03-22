@@ -224,41 +224,124 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
 def _find_hero_cards(table_region: np.ndarray) -> list[str]:
     """Find and identify hero's hole cards using EasyOCR.
 
-    Instead of template matching (unreliable due to WIN badges/overlays),
-    use EasyOCR to read the large rank characters on the face-up cards
-    at bottom center, then detect suit by color.
+    Uses EasyOCR to read the rank characters on hero's face-up cards
+    at bottom center, then detects suit by color sampling.
+
+    Strategy:
+    1. Crop hero card area (bottom center of table)
+    2. Upscale 2-3x for better OCR on small images
+    3. Run EasyOCR to find rank characters (A, K, Q, J, T/10, 2-9)
+    4. Filter by position: hero cards are two adjacent characters at similar Y
+    5. Detect suit by color (red = h/d, black = s/c)
     """
     from .ocr_utils import ocr_full_image
 
     h, w = table_region.shape[:2]
-    # Hero cards are at bottom center
-    y1, y2 = int(h * 0.50), int(h * 0.90)
+
+    # Hero cards: bottom center. Tight crop to avoid board cards above.
+    y1, y2 = int(h * 0.55), int(h * 0.88)
     x1, x2 = int(w * 0.25), int(w * 0.75)
     hero_area = table_region[y1:y2, x1:x2]
 
-    results = ocr_full_image(hero_area)
+    ah, aw = hero_area.shape[:2]
+    if ah < 10 or aw < 10:
+        return []
 
-    # Look for card rank characters: single chars that are valid ranks
+    # Upscale for better OCR (hero cards can be small in compressed screenshots)
+    scale = max(2, 400 // max(ah, 1))
+    scale = min(scale, 4)
+    hero_upscaled = cv2.resize(hero_area, None, fx=scale, fy=scale,
+                               interpolation=cv2.INTER_CUBIC)
+
+    results = ocr_full_image(hero_upscaled)
+
     _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
-    _RANK_MAP = {"10": "T"}
+    _RANK_MAP = {"10": "T", "1O": "T", "IO": "T", "l0": "T"}
 
     card_texts = []
     for r in results:
         text = r["text"].strip()
+        # Also try uppercased
+        text_up = text.upper()
+
+        matched_rank = None
         if text in _RANK_CHARS:
-            rank = _RANK_MAP.get(text, text)
-            # Detect suit by color at this position
-            cy = int(r["center_y"])
-            cx = int(r["center_x"])
-            suit = _detect_suit_at(hero_area, cx, cy)
-            card_texts.append((rank + suit, r["center_x"]))
+            matched_rank = text
+        elif text_up in _RANK_CHARS:
+            matched_rank = text_up
+        elif text in _RANK_MAP:
+            matched_rank = _RANK_MAP[text]
+        elif text_up in _RANK_MAP:
+            matched_rank = _RANK_MAP[text_up]
+
+        if matched_rank:
+            rank = _RANK_MAP.get(matched_rank, matched_rank)
+            # Map coordinates back to original hero_area space
+            cx_orig = int(r["center_x"] / scale)
+            cy_orig = int(r["center_y"] / scale)
+            suit = _detect_suit_at(hero_area, cx_orig, cy_orig)
+            card_texts.append((rank + suit, cx_orig, cy_orig, r["conf"]))
+
+    if len(card_texts) < 2:
+        # Fallback: try with contrast enhancement
+        gray = cv2.cvtColor(hero_upscaled, cv2.COLOR_BGR2GRAY)
+        # CLAHE for contrast enhancement
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        results2 = ocr_full_image(enhanced)
+        for r in results2:
+            text = r["text"].strip()
+            text_up = text.upper()
+            matched_rank = None
+            if text in _RANK_CHARS:
+                matched_rank = text
+            elif text_up in _RANK_CHARS:
+                matched_rank = text_up
+            elif text in _RANK_MAP:
+                matched_rank = _RANK_MAP[text]
+            elif text_up in _RANK_MAP:
+                matched_rank = _RANK_MAP[text_up]
+
+            if matched_rank:
+                rank = _RANK_MAP.get(matched_rank, matched_rank)
+                cx_orig = int(r["center_x"] / scale)
+                cy_orig = int(r["center_y"] / scale)
+                # Avoid duplicates (same position)
+                is_dup = any(abs(cx_orig - c[1]) < 15 and abs(cy_orig - c[2]) < 15
+                            for c in card_texts)
+                if not is_dup:
+                    suit = _detect_suit_at(hero_area, cx_orig, cy_orig)
+                    card_texts.append((rank + suit, cx_orig, cy_orig, r["conf"]))
 
     if len(card_texts) < 2:
         return []
 
-    # Sort left to right, take first 2
-    card_texts.sort(key=lambda x: x[1])
-    return [c[0] for c in card_texts[:2]]
+    # Pick the best 2 cards: similar Y (within 30% of card height), adjacent X
+    # Sort by confidence descending
+    card_texts.sort(key=lambda x: -x[3])
+
+    best_pair = None
+    best_score = float("inf")
+
+    for i in range(len(card_texts)):
+        for j in range(i + 1, len(card_texts)):
+            ci, cj = card_texts[i], card_texts[j]
+            y_diff = abs(ci[2] - cj[2])
+            x_gap = abs(ci[1] - cj[1])
+            # Cards should be at similar Y and close X
+            if y_diff < ah * 0.3 and x_gap < aw * 0.5:
+                score = y_diff + x_gap * 0.5
+                if score < best_score:
+                    best_score = score
+                    best_pair = (ci, cj)
+
+    if best_pair is None:
+        # Just take first 2
+        best_pair = (card_texts[0], card_texts[1])
+
+    # Sort left to right
+    pair = sorted([best_pair[0], best_pair[1]], key=lambda x: x[1])
+    return [pair[0][0], pair[1][0]]
 
 
 def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 15) -> str:
