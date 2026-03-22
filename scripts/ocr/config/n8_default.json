@@ -1,0 +1,22 @@
+{
+  "platform": "natural8",
+  "panel_header": {
+    "expected_columns": 5,
+    "column_names": ["Blinds (Ante)", "Pre-Flop", "Flop", "Turn", "River"]
+  },
+  "entry_colors": {
+    "hero_hsv": {"h_range": [15, 45], "s_min": 80, "v_min": 150},
+    "opponent_brightness_min": 180
+  },
+  "position_aliases": {
+    "MP": "LJ", "MP1": "HJ", "MP2": "HJ",
+    "EP": "UTG", "EP1": "UTG+1"
+  },
+  "confidence_weights": {
+    "pot_consistency": 0.30,
+    "player_tracking": 0.25,
+    "ocr_confidence": 0.25,
+    "card_confidence": 0.20
+  },
+  "confidence_threshold": 0.85
+}

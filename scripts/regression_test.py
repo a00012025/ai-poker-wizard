@@ -2204,6 +2204,50 @@ def test_ocr_card_matcher_identifies_card():
     assert_true(conf > 0.3, f"confidence should be > 0.3, got {conf}")
 
 
+@test
+def test_ocr_panel_column_split():
+    """OCR: panel parser splits action panel into 5 columns."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    from ocr.panel_parser import split_columns
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    regions = detect_regions(image)
+    columns = split_columns(regions["panel"])
+    assert_eq(len(columns), 5, f"should find 5 columns, got {len(columns)}")
+
+
+@test
+def test_ocr_panel_entry_detection():
+    """OCR: panel parser detects hero and opponent entries."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    from ocr.panel_parser import parse_panel
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    regions = detect_regions(image)
+    result = parse_panel(regions["panel"])
+    preflop = result["columns"][1]
+    assert_true(len(preflop["entries"]) > 0, "PreFlop should have entries")
+    hero_entries = [e for e in preflop["entries"] if e["type"] == "hero"]
+    assert_true(len(hero_entries) > 0, "should find at least one hero entry")
+
+
+@test
+def test_ocr_position_alias_mapping():
+    """OCR: MP→LJ, MP1→HJ position alias mapping."""
+    from ocr.panel_parser import normalize_position
+    assert_eq(normalize_position("MP"), "LJ")
+    assert_eq(normalize_position("MP1"), "HJ")
+    assert_eq(normalize_position("MP2"), "HJ")
+    assert_eq(normalize_position("EP"), "UTG")
+    assert_eq(normalize_position("CO"), "CO")
+
+
 # ── Runner ──
 
 def run_tests():
