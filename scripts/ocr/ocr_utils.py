@@ -6,12 +6,22 @@ _reader = None
 
 
 def _get_reader():
-    """Lazy-initialize EasyOCR reader (loads model once, reuses across calls)."""
+    """Lazy-initialize EasyOCR reader (loads model once, reuses across calls).
+
+    Auto-detects GPU availability — uses CUDA if torch.cuda is available,
+    falls back to CPU otherwise.
+    """
     global _reader
     if _reader is None:
         try:
             import easyocr
-            _reader = easyocr.Reader(["en"], gpu=True, verbose=False)
+            gpu = False
+            try:
+                import torch
+                gpu = torch.cuda.is_available()
+            except ImportError:
+                pass
+            _reader = easyocr.Reader(["en"], gpu=gpu, verbose=False)
         except ImportError:
             pass
     return _reader

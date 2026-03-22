@@ -6,6 +6,11 @@ services:
       - ./logs:/app/logs
       - ./.tokens.json:/app/.tokens.json
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
     restart: unless-stopped
     stop_grace_period: 15m
     healthcheck:
