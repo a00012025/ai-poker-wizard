@@ -171,8 +171,9 @@ IMAGE_PARSE_PROMPT = """\
   → 如果看到紫色桌面，設置 tournament_type: "icm", phase: "FT"
 - 如果用戶留言提到 FT、決賽桌、final table、bubble、ICM → 設置 tournament_type: "icm" 並對應 phase
   phase 對應：final table/FT → "FT", bubble → "BUBBLE"
-- 如果桌上只有 ≤6 人但沒有明確 FT 信號（非紫色桌面、用戶沒提到）→ 設 "possible_ft": true
+- 如果桌上只有 ≤4 人且沒有明確 FT 信號（非紫色桌面、用戶沒提到）→ 設 "possible_ft": true
   （系統會提醒用戶可以切換到決賽桌模式）
+  注意：5-6 人桌在 MTT 中很常見（6-max 桌型），不要因為人少就判斷為 FT
 - 當偵測到 ICM/FT 時，必須提取所有玩家的籌碼量到 player_stacks
 
 提取規則：
@@ -203,9 +204,15 @@ IMAGE_PARSE_PROMPT = """\
 - 牌面記號：rank 用單字元 2-9, T, J, Q, K, A（十=T，不是10！）
   suit 用 c♣ d♦ h♥ s♠，如 "AsKc", "Ts4h"
 - hero_hand: 兩張牌，如 "AsKc"
-- streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"
+- streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"。不要加 "street" key，只用 "board"/"card" + "actions"
 - 翻牌後 action: X=Check, C=Call, F=Fold, R{size}=Bet/Raise（size 為 bb 絕對值）
 - 翻牌後行動順序：靠近 SB 的位置先行動
+- Fold 追蹤（極重要！）：
+  已經在某條街 Fold 的玩家，在之後的所有街都不能再出現！
+  必須追蹤每條街結束後還有哪些玩家在手中，只列出仍在手中的玩家的行動。
+  例：Flop 時 SB check, BB check, HJ bet, SB call, BB fold
+  → Turn 只剩 SB 和 HJ，BB 不能再出現
+  → Turn actions 只有 SB 和 HJ 的行動
 - bet size 精確度極重要！仔細看截圖中每個下注的數字，不要猜測。
   系統會用你給的 bb 數字去匹配最接近的 solver sizing，差一點就會走到完全不同的分析路線。
   特別注意 turn/river 的下注金額，因為底池較大時，小誤差會導致匹配到錯誤的 sizing（例如 55% pot vs 83% pot）。
@@ -978,6 +985,10 @@ class GeminiSessionManager:
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
                 self._normalize_cards(hand)
+                self._fix_folded_players(hand)
+                # Remove extra keys the vision model sometimes adds
+                for street in hand.get("streets", []):
+                    street.pop("street", None)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(
@@ -985,6 +996,44 @@ class GeminiSessionManager:
             )
 
         return None
+
+    @staticmethod
+    def _fix_folded_players(hand: dict):
+        """Remove actions from players who folded in earlier streets."""
+        POSITION_ORDERS = {
+            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            5: ["HJ", "CO", "BTN", "SB", "BB"],
+            4: ["CO", "BTN", "SB", "BB"],
+            3: ["BTN", "SB", "BB"],
+            2: ["SB", "BB"],
+        }
+        n = hand.get("players_at_table", 8)
+        pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
+
+        # Track who folded preflop
+        folded = set()
+        preflop_parts = hand.get("preflop_actions", "").split("-")
+        for i, act in enumerate(preflop_parts[:len(pos_order)]):
+            if act.upper() == "F":
+                folded.add(pos_order[i])
+
+        # Walk through streets, removing folded players and tracking new folds
+        for street in hand.get("streets", []):
+            actions = street.get("actions", [])
+            if not isinstance(actions, list):
+                continue
+            cleaned = []
+            for a in actions:
+                pos = a.get("position", "")
+                if pos in folded:
+                    continue  # skip — this player already folded
+                cleaned.append(a)
+                if a.get("action", "").upper() == "F":
+                    folded.add(pos)
+            street["actions"] = cleaned
 
     @staticmethod
     def _normalize_cards(hand: dict):
