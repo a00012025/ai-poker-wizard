@@ -2120,6 +2120,29 @@ def test_icm_ft_image_parse_fields_flow():
     assert_true("ICM" in result["text"], "output should mention ICM")
 
 
+# ── OCR Pipeline Tests ──
+
+
+@test
+def test_ocr_preprocess_upscales_small_image():
+    """OCR: preprocess upscales images smaller than 600px wide."""
+    import numpy as np
+    from ocr.ocr_utils import preprocess_for_ocr
+    small = np.zeros((400, 300), dtype=np.uint8)
+    result = preprocess_for_ocr(small)
+    assert_true(result.shape[1] >= 600, f"should upscale width, got {result.shape[1]}")
+
+
+@test
+def test_ocr_preprocess_keeps_large_image():
+    """OCR: preprocess does not upscale images >= 600px wide."""
+    import numpy as np
+    from ocr.ocr_utils import preprocess_for_ocr
+    large = np.zeros((800, 700), dtype=np.uint8)
+    result = preprocess_for_ocr(large)
+    assert_eq(result.shape[1], 700, "should not change width of large image")
+
+
 # ── Runner ──
 
 def run_tests():
