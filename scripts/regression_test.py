@@ -2248,6 +2248,82 @@ def test_ocr_position_alias_mapping():
     assert_eq(normalize_position("CO"), "CO")
 
 
+@test
+def test_ocr_table_parser_board_cards():
+    """OCR: table parser finds board cards."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    from ocr.table_parser import parse_table
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    regions = detect_regions(image)
+    result = parse_table(regions["table"])
+    assert_true(len(result["board_cards"]) >= 3, f"should find >=3 board cards, got {len(result['board_cards'])}")
+
+
+@test
+def test_ocr_table_color_detection():
+    """OCR: table parser detects table color."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    from ocr.table_parser import parse_table
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    regions = detect_regions(image)
+    result = parse_table(regions["table"])
+    assert_true(result["table_color"] in ("green", "purple", "dark", "unknown"), f"unexpected: {result['table_color']}")
+
+
+@test
+def test_ocr_n8_parser_full_pipeline():
+    """OCR: full N8 parser produces hand JSON from screenshot."""
+    from ocr.n8_parser import parse_n8_screenshot
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    with open(img_path, "rb") as f:
+        result = parse_n8_screenshot(f.read())
+    assert_true(result["confidence"] > 0, "should have non-zero confidence")
+    if result["hand"]:
+        hand = result["hand"]
+        assert_true(hand.get("hero_position") is not None, "should have hero_position")
+        assert_true(hand.get("preflop_actions") is not None, "should have preflop_actions")
+
+
+@test
+def test_ocr_table_size_from_entry_count():
+    """OCR: table size inferred from preflop entry count."""
+    from ocr.n8_parser import _estimate_table_size
+    # 8 entries = 8 players
+    entries = [{"type": "opponent"}] * 7 + [{"type": "hero"}]
+    assert_eq(_estimate_table_size(entries), 8)
+    # 6 entries = 6 players
+    entries = [{"type": "opponent"}] * 5 + [{"type": "hero"}]
+    assert_eq(_estimate_table_size(entries), 6)
+    # 2 entries = 2 players (min)
+    entries = [{"type": "hero"}, {"type": "opponent"}]
+    assert_eq(_estimate_table_size(entries), 2)
+
+
+@test
+def test_ocr_filter_false_hero_entries():
+    """OCR: false hero entries (avatar markers) are filtered out."""
+    from ocr.n8_parser import _filter_action_entries
+    entries = [
+        {"type": "opponent", "action": "Fold"},
+        {"type": "hero", "action": ", 3"},       # false — no action word
+        {"type": "hero", "action": "Raise"},      # real action
+        {"type": "opponent", "action": "Fold"},
+    ]
+    filtered = _filter_action_entries(entries)
+    assert_eq(len(filtered), 3, f"expected 3, got {len(filtered)}")
+    assert_eq(filtered[1]["action"], "Raise")
+
+
 # ── Runner ──
 
 def run_tests():
