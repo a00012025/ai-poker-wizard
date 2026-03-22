@@ -5,12 +5,15 @@ Stores refresh token locally, auto-refreshes access tokens.
 Falls back to browser login if refresh fails.
 """
 import json
+import logging
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import requests
+
+log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _TOKEN_FILE = _PROJECT_ROOT / ".tokens.json"
@@ -53,8 +56,9 @@ def _refresh_access(refresh_token: str) -> str | None:
         )
         if r.ok:
             return r.json()["access"]
-    except Exception:
-        pass
+        log.warning("Token refresh failed: HTTP %s — %s", r.status_code, r.text[:200])
+    except Exception as e:
+        log.warning("Token refresh error: %s", e)
     return None
 
 

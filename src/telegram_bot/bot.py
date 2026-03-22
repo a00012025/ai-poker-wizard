@@ -180,8 +180,11 @@ class PokerWizardBot:
         self.log.info(f"[{label}] /settoken")
 
         # Extract token from command args
+        raw_text = update.message.text or ""
         token = " ".join(context.args) if context.args else ""
+        self.log.info(f"[{label}] /settoken raw len={len(raw_text)}, token len={len(token)}, prefix={token[:20]}...")
         if not token or not token.startswith("eyJ"):
+            self.log.warning(f"[{label}] /settoken bad format: token_empty={not token}, raw='{raw_text[:60]}'")
             await update.message.reply_text(
                 "格式錯誤。請使用書籤工具複製指令，或手動輸入：\n"
                 "`/settoken eyJhbG...`",
@@ -193,18 +196,53 @@ class PokerWizardBot:
         from gto_token import _refresh_access, _jwt_exp
         try:
             exp = _jwt_exp(token)
+            remaining = exp - time.time()
+            self.log.info(f"[{label}] /settoken JWT exp in {remaining:.0f}s")
             if exp < time.time():
+                self.log.warning(f"[{label}] /settoken token expired {-remaining:.0f}s ago")
                 await update.message.reply_text("Token 已過期，請重新登入 GTO Wizard 後再試。")
                 return
-        except Exception:
+        except Exception as e:
+            self.log.warning(f"[{label}] /settoken JWT decode failed: {e}")
             await update.message.reply_text("Token 格式無效。")
             return
 
         access = _refresh_access(token)
         if not access:
-            await update.message.reply_text(
-                "Token 無法刷新，請確認你已登入 GTO Wizard 且 token 有效。"
-            )
+            # Fetch error detail for user-facing message
+            reason = ""
+            code = ""
+            try:
+                import requests as _req
+                from gto_token import API_BASE, ORIGIN
+                r = _req.post(
+                    f"{API_BASE}/v1/token/refresh/",
+                    json={"refresh": token},
+                    headers={"origin": ORIGIN, "content-type": "application/json"},
+                    timeout=10,
+                )
+                if r.headers.get("content-type", "").startswith("application/json"):
+                    body = r.json()
+                    reason = body.get("error", "")
+                    code = body.get("code", "")
+            except Exception:
+                pass
+            self.log.warning(f"[{label}] /settoken refresh failed (token prefix: {token[:20]}...) code={code} reason={reason}")
+
+            ERROR_HINTS = {
+                "FORCED_LOGOUT": (
+                    "GTO Wizard 回報「同時登入裝置過多」，你的 token 已被強制登出。\n\n"
+                    "請在 GTO Wizard 網站重新登入，取得新的 token 後再試一次。"
+                ),
+            }
+            hint = ERROR_HINTS.get(code)
+            if hint:
+                await update.message.reply_text(hint)
+            else:
+                msg = "Token 無法刷新，請確認你已登入 GTO Wizard 且 token 有效。"
+                if reason:
+                    msg += f"\n\n原因：{reason}"
+                await update.message.reply_text(msg)
             return
 
         # Store in DB
