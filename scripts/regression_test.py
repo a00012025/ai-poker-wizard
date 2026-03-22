@@ -2143,6 +2143,33 @@ def test_ocr_preprocess_keeps_large_image():
     assert_eq(result.shape[1], 700, "should not change width of large image")
 
 
+@test
+def test_ocr_region_detection_finds_divider():
+    """OCR: region detector finds table/panel divider in N8 screenshot."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    result = detect_regions(image)
+    assert_true(result is not None, "should detect N8 regions")
+    assert_true("table" in result, "should have table region")
+    assert_true("panel" in result, "should have panel region")
+    assert_true(result["divider_y"] > image.shape[0] * 0.3, "divider should be below 30%")
+    assert_true(result["divider_y"] < image.shape[0] * 0.6, "divider should be above 60%")
+
+
+@test
+def test_ocr_region_detection_returns_none_for_non_n8():
+    """OCR: region detector returns None for non-N8 images."""
+    import numpy as np
+    from ocr.region_detector import detect_regions
+    noise = np.random.randint(0, 255, (800, 600, 3), dtype=np.uint8)
+    result = detect_regions(noise)
+    assert_true(result is None, "should return None for non-N8 image")
+
+
 # ── Runner ──
 
 def run_tests():
