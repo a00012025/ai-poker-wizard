@@ -964,7 +964,10 @@ class GeminiSessionManager:
             from ocr.n8_parser import parse_n8_screenshot
             ocr_result = parse_n8_screenshot(image_bytes)
             ocr_conf = ocr_result.get("confidence", 0.0)
-            self._logger.debug(f"[chat={chat_id}] OCR confidence: {ocr_conf:.2f}")
+            self._logger.info(
+                f"[chat={chat_id}] OCR result (conf={ocr_conf:.2f}): "
+                f"{json.dumps(ocr_result.get('hand'), ensure_ascii=False, default=str)[:500] if ocr_result.get('hand') else 'no hand'}"
+            )
 
             if ocr_conf > 0.85 and ocr_result.get("hand"):
                 hand = ocr_result["hand"]
