@@ -164,15 +164,14 @@ def _find_bright_row(region: np.ndarray, thresh_val: int = 160,
 
 def _identify_cards(region: np.ndarray, card_rects: list[tuple],
                     min_conf: float = 0.15) -> list[str]:
-    """Identify cards using EasyOCR for rank + BGR for suit.
+    """Identify cards using multi-strategy OCR for rank + BGR for suit.
+
+    Uses the same robust _ocr_card_rank pipeline as hero cards.
 
     Returns:
         List of card strings like ["Ks", "9d", "3d"].
     """
     from .ocr_utils import ocr_full_image
-
-    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
-    _RANK_MAP = {"10": "T", "1O": "T", "IO": "T", "l0": "T", "0": "T"}
 
     cards = []
     for (x, y, w, h) in card_rects:
@@ -181,34 +180,7 @@ def _identify_cards(region: np.ndarray, card_rects: list[tuple],
             cards.append("??")
             continue
 
-        # Upscale for OCR
-        scale = max(2, 80 // max(card_img.shape[0], 1))
-        scale = min(scale, 4)
-        card_up = cv2.resize(card_img, None, fx=scale, fy=scale,
-                             interpolation=cv2.INTER_CUBIC)
-
-        ocr_results = ocr_full_image(card_up)
-        rank = None
-        for r in ocr_results:
-            t = r["text"].strip()
-            tu = t.upper()
-            if t in _RANK_CHARS:
-                rank = _RANK_MAP.get(t, t)
-                break
-            elif tu in _RANK_CHARS:
-                rank = _RANK_MAP.get(tu, tu)
-                break
-            elif t in _RANK_MAP:
-                rank = _RANK_MAP[t]
-                break
-
-        # Fallback to template matcher if OCR fails
-        if not rank:
-            matcher = _get_matcher()
-            r, s, conf = matcher.match(card_img)
-            if r and conf > min_conf:
-                rank = r
-
+        rank = _ocr_card_rank(card_img, ocr_full_image)
         suit = _detect_suit_bgr(card_img)
         if rank:
             cards.append(f"{rank}{suit}")
@@ -245,6 +217,11 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
 
     if not rects:
         return []
+
+    # Filter out partial cards that are too narrow.
+    # A proper card's width/height ratio is ~0.65-0.85; reject < 0.55.
+    if len(rects) >= 3:
+        rects = [r for r in rects if r[2] / r[3] >= 0.55]
 
     # Board should have 3-5 cards
     if len(rects) > 5:
@@ -581,30 +558,27 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                 ca = cv2.contourArea(big)
                 csol = ca / ha if ha > 0 else 1.0
 
-                # Only trust center analysis if contour area is
-                # reasonable (< 4000). Tall/bad card crops produce
-                # huge contours from card artwork.
-                if ca < 4000:
-                    # Hull defects: hearts have deep concavity
-                    hull_idx = cv2.convexHull(big, returnPoints=False)
-                    max_defect = 0
-                    if len(hull_idx) > 3:
-                        defects = cv2.convexityDefects(big, hull_idx)
-                        if defects is not None:
-                            max_defect = max(d[0][3] for d in defects)
+                # Hull defects normalized by sqrt(area) for scale
+                # independence.  Hearts norm > 30, diamonds norm < 20.
+                hull_idx = cv2.convexHull(big, returnPoints=False)
+                max_defect = 0
+                if len(hull_idx) > 3:
+                    defects = cv2.convexityDefects(big, hull_idx)
+                    if defects is not None:
+                        max_defect = max(d[0][3] for d in defects)
 
-                    # Deep concavity → heart
-                    if max_defect > 1500:
-                        return "h"
-                    # No significant concavity → diamond
-                    if max_defect < 1000:
-                        return "d"
+                norm = max_defect / (ca ** 0.5) if ca > 0 else 0
 
-                    # Ambiguous defects: use solidity + green
-                    if csol >= 0.95:
-                        return "d"
-                    if csol < 0.90:
-                        return "h"
+                if norm > 30:
+                    return "h"
+                if norm < 20:
+                    return "d"
+
+                # Ambiguous: use solidity + green
+                if csol >= 0.95:
+                    return "d"
+                if csol < 0.90:
+                    return "h"
 
         if green_says_heart:
             return "h"
@@ -637,15 +611,14 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
             hull = cv2.convexHull(biggest_cs)
             hull_area = cv2.contourArea(hull)
             cont_area = cv2.contourArea(biggest_cs)
+            sol = cont_area / hull_area if hull_area > 0 else 1.0
 
-            # Only trust solidity when contour is reasonable size.
-            # Bad card crops (tall blob) produce large contours from
-            # card artwork; default to spade when unreliable.
-            if cont_area < 3800:
-                sol = cont_area / hull_area if hull_area > 0 else 1.0
-                return "s" if sol > 0.92 else "c"
+            # Solidity is the most reliable discriminator for black
+            # suits across all card sizes.  Spades ♠ are smooth
+            # (sol > 0.93); clubs ♣ have lobes (sol < 0.93).
+            return "s" if sol > 0.93 else "c"
 
-        # Large/bad contour or no contours: default spade
+        # No contours: default spade
         return "s"
 
 
