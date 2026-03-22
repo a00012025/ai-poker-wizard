@@ -192,46 +192,108 @@ def _identify_cards(region: np.ndarray, card_rects: list[tuple],
 def _find_board_cards(table_region: np.ndarray) -> list[str]:
     """Find and identify board cards in the center of the table.
 
-    Board cards are displayed as a row of 3-5 cards in the center.
-    Uses vertical projection profile to split the card row.
+    Two strategies:
+    1. Find individual card contours (works on wood/dark themes where cards are separated)
+    2. Find merged bright row and split (works on green theme where cards touch)
     """
     h, w = table_region.shape[:2]
     y1, y2 = int(h * 0.15), int(h * 0.55)
     x1, x2 = int(w * 0.15), int(w * 0.85)
     center = table_region[y1:y2, x1:x2]
 
-    # Find the bright card row
+    # Strategy 1: Find individual card contours
+    rects = _find_individual_card_contours(center)
+    if rects and len(rects) >= 3:
+        cards = _identify_cards(center, rects)
+        valid = [c for c in cards if c != "??"]
+        if len(valid) >= 3:
+            return valid
+
+    # Strategy 2: Find merged bright row and split
     row = _find_bright_row(center, thresh_val=160, min_height=30)
+    if row is None:
+        # Try lower thresholds
+        for tv in [140, 120]:
+            row = _find_bright_row(center, thresh_val=tv, min_height=30)
+            if row:
+                break
     if row is None:
         return []
 
     rx, ry, rw, rh = row
 
-    # If it looks like a single card (aspect <= 1.2), try as-is
     if rw <= rh * 1.2:
         cards = _identify_cards(center, [row])
         return [c for c in cards if c != "??"]
 
-    # Split the card row into individual cards
     rects = _split_card_row(center, rx, ry, rw, rh)
-
     if not rects:
         return []
 
-    # Filter out partial cards that are too narrow.
-    # A proper card's width/height ratio is ~0.65-0.85; reject < 0.55.
     if len(rects) >= 3:
         rects = [r for r in rects if r[2] / r[3] >= 0.55]
 
-    # Board should have 3-5 cards
     if len(rects) > 5:
-        # Keep the 5 widest
         rects.sort(key=lambda r: r[2], reverse=True)
         rects = rects[:5]
         rects.sort(key=lambda r: r[0])
 
     cards = _identify_cards(center, rects)
     return [c for c in cards if c != "??"]
+
+
+def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
+    """Find individual card rectangles in the center region.
+
+    Works when cards are visually separated (not touching).
+    Each card is a bright rectangle with aspect ratio ~0.65-0.95.
+    """
+    gray = cv2.cvtColor(center, cv2.COLOR_BGR2GRAY)
+    ch, cw = center.shape[:2]
+
+    for tv in [180, 160, 140]:
+        _, thresh = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+
+        candidates = []
+        for c in contours:
+            x, y, w, h = cv2.boundingRect(c)
+            area = w * h
+            aspect = w / h if h > 0 else 0
+            # Individual card: taller than wide, decent area, reasonable size
+            if (area > 800 and h > 25 and w > 20
+                    and 0.55 < aspect < 0.95
+                    and h < ch * 0.8):  # not taller than 80% of center region
+                candidates.append((x, y, w, h))
+
+        # Need at least 3 cards at similar Y (same row)
+        if len(candidates) >= 3:
+            # Group by Y proximity — cards should be at roughly same Y
+            candidates.sort(key=lambda r: r[1])
+            best_cluster = []
+            for i in range(len(candidates)):
+                cluster = [candidates[i]]
+                for j in range(i + 1, len(candidates)):
+                    if abs(candidates[j][1] - candidates[i][1]) < candidates[i][3] * 0.5:
+                        cluster.append(candidates[j])
+                if len(cluster) > len(best_cluster):
+                    best_cluster = cluster
+
+            if len(best_cluster) >= 3:
+                best_cluster.sort(key=lambda r: r[0])
+                # Verify cards are truly separated (gaps between them)
+                # On green theme, cards touch → this strategy shouldn't fire
+                has_gaps = True
+                for k in range(len(best_cluster) - 1):
+                    gap = best_cluster[k + 1][0] - (best_cluster[k][0] + best_cluster[k][2])
+                    if gap < 2:  # cards touching or overlapping
+                        has_gaps = False
+                        break
+                if has_gaps:
+                    return best_cluster[:5]
+
+    return []
 
 
 def _find_hero_cards(table_region: np.ndarray) -> list[str]:
@@ -584,10 +646,17 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
             return "h"
         return "d"
     else:
-        # Spades vs Clubs: analyze solidity of center suit symbol.
-        # Upscale the card 4x, crop the center area where the big suit
-        # symbol appears, and measure contour solidity.
-        # Spades are more solid (>0.88), clubs have lower solidity.
+        # Spades vs Clubs: multi-feature voting on center suit symbol.
+        # A single solidity threshold is fragile (spade hero cards can
+        # have solidity 0.93-0.95 which overlaps with clubs).
+        # Instead, use three features with weighted voting:
+        #   1. top_ratio  — width of top 25% vs middle 40% of contour.
+        #      Spade has a narrow point at top (ratio < 0.45),
+        #      club has wide lobes (ratio > 0.55).  Best discriminator.
+        #   2. solidity   — contour area / convex hull area.
+        #      Spade > 0.93, club < 0.93 (with overlap zone).
+        #   3. n_defects  — number of significant convex hull defects.
+        #      Club lobes create more defects (>= 3), spade fewer.
         scale = 4
         card_up = cv2.resize(card_img, None, fx=scale, fy=scale,
                              interpolation=cv2.INTER_CUBIC)
@@ -612,12 +681,55 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
             hull_area = cv2.contourArea(hull)
             cont_area = cv2.contourArea(biggest_cs)
             sol = cont_area / hull_area if hull_area > 0 else 1.0
+            bx, by, bw, bh = cv2.boundingRect(biggest_cs)
 
-            # Solidity is the most reliable discriminator for black
-            # suits across all card sizes.  Spades ♠ are smooth
-            # (sol > 0.95); clubs ♣ have lobes (sol < 0.95).
-            # Empirical: clubs max ~0.93, spades min ~0.97.
-            return "s" if sol > 0.95 else "c"
+            # Feature 1: top_ratio — top width vs middle width.
+            # Spade: narrow point at top -> ratio 0.27-0.44.
+            # Club: wide lobes at top -> ratio 0.56-0.66.
+            top_slice = dark_cs[by:by + max(1, int(bh * 0.25)),
+                                bx:bx + bw]
+            mid_slice = dark_cs[by + int(bh * 0.3):by + int(bh * 0.7),
+                                bx:bx + bw]
+            top_w = np.mean(np.sum(top_slice > 0, axis=1)) \
+                if top_slice.size > 0 else 0
+            mid_w = np.mean(np.sum(mid_slice > 0, axis=1)) \
+                if mid_slice.size > 0 else 0
+            top_ratio = top_w / mid_w if mid_w > 0 else 1.0
+
+            # Feature 2: solidity (already computed above).
+            # Feature 3: significant convex hull defects.
+            hull_idx = cv2.convexHull(biggest_cs, returnPoints=False)
+            n_sig_defects = 0
+            if len(hull_idx) > 3:
+                defects = cv2.convexityDefects(biggest_cs, hull_idx)
+                if defects is not None:
+                    thresh = (cont_area ** 0.5) * 5
+                    n_sig_defects = sum(
+                        1 for d in defects if d[0][3] > thresh)
+
+            # Weighted vote: positive -> spade, negative -> club.
+            # top_ratio is strongest signal (weight 3).
+            score = 0.0
+            if top_ratio < 0.45:
+                score += 3.0   # strongly spade
+            elif top_ratio > 0.55:
+                score -= 3.0   # strongly club
+
+            if sol > 0.96:
+                score += 1.5   # lean spade
+            elif sol < 0.92:
+                score -= 1.5   # lean club
+            elif sol > 0.94:
+                score += 0.5
+            elif sol < 0.94:
+                score -= 0.5
+
+            if n_sig_defects >= 3:
+                score -= 1.0   # lean club
+            elif n_sig_defects <= 1:
+                score += 1.0   # lean spade
+
+            return "s" if score >= 0 else "c"
 
         # No contours: default spade
         return "s"
