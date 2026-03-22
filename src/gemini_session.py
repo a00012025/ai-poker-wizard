@@ -1034,6 +1034,26 @@ class GeminiSessionManager:
                 # Remove extra keys the vision model sometimes adds
                 for street in hand.get("streets", []):
                     street.pop("street", None)
+
+                # Log Gemini result + diff with OCR for debugging
+                self._logger.info(
+                    f"[chat={chat_id}] Gemini result: "
+                    f"{json.dumps(hand, ensure_ascii=False, default=str)[:500]}"
+                )
+                if ocr_result and ocr_result.get("hand"):
+                    ocr_hand = ocr_result["hand"]
+                    diffs = []
+                    for key in ["hero_hand", "hero_position", "players_at_table",
+                                "preflop_actions", "effective_bb"]:
+                        ov = ocr_hand.get(key)
+                        gv = hand.get(key)
+                        if ov and gv and str(ov) != str(gv):
+                            diffs.append(f"{key}: OCR={ov} → Gemini={gv}")
+                    if diffs:
+                        self._logger.info(
+                            f"[chat={chat_id}] OCR vs Gemini diffs: {'; '.join(diffs)}"
+                        )
+
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(
