@@ -387,9 +387,9 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
             if tu in _RANK_MAP:
                 return _RANK_MAP[tu]
             # Standalone "0" or "O" → Q (EasyOCR misreads Q)
-            # Only with high confidence to avoid false positives
+            # Confidence threshold 0.7 balances Q detection vs false positives
             if allow_q_from_zero and tu in _Q_CHARS and len(t) == 1:
-                if conf > 0.8:
+                if conf > 0.7:
                     return "Q"
             # Single valid rank character
             if len(t) == 1 and tu in "23456789JQKA":
@@ -615,8 +615,9 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
 
             # Solidity is the most reliable discriminator for black
             # suits across all card sizes.  Spades ♠ are smooth
-            # (sol > 0.93); clubs ♣ have lobes (sol < 0.93).
-            return "s" if sol > 0.93 else "c"
+            # (sol > 0.95); clubs ♣ have lobes (sol < 0.95).
+            # Empirical: clubs max ~0.93, spades min ~0.97.
+            return "s" if sol > 0.95 else "c"
 
         # No contours: default spade
         return "s"
