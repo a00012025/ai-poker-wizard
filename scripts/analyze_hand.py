@@ -655,19 +655,25 @@ def _run_analysis(hand: dict) -> dict:
         gametype = CASH_GAMETYPES.get(num_players, "Cash6mGeneral_6mNL100R2")
         depth = nearest_cash_depth(hand["effective_bb"])
 
-    # GTO Wizard's MTTGeneral API always expects 8 positions.
-    # For tables < 8 players, pad preflop actions with folds for missing positions.
-    # Skip padding for ICM hands — ICM modes have their own table sizes (2-9 players).
+    # Pad preflop actions and stacks to match target table size.
+    # - MTTGeneral (chip EV): always pad to 8 positions
+    # - ICM: pad to players_at_table (e.g., 5 given stacks at 8-max FT → pad to 8)
     is_icm = hand.get("tournament_type") == "icm"
-    if gametype == "MTTGeneral" and num_players < 8 and not is_icm:
-        pad_count = 8 - num_players
+    if is_icm:
+        target_players = hand.get("players_at_table", num_players)
+    elif gametype == "MTTGeneral":
+        target_players = 8
+    else:
+        target_players = num_players
+
+    if target_players > num_players:
+        pad_count = target_players - num_players
         padding = "-".join(["F"] * pad_count)
         hand = dict(hand)  # shallow copy to avoid mutating original
         hand["preflop_actions"] = padding + "-" + hand["preflop_actions"]
         if hand.get("player_stacks"):
-            # Pad player_stacks too (shouldn't happen often for image-parsed hands)
             hand["player_stacks"] = [0] * pad_count + hand["player_stacks"]
-        num_players = 8
+        num_players = target_players
 
     pos_order = _get_position_order(num_players)
 
@@ -684,6 +690,7 @@ def _run_analysis(hand: dict) -> dict:
                 tournament_size=hand.get("tournament_size", 1000),
                 players_remaining=hand.get("players_remaining"),
                 phase=hand.get("phase"),
+                players_at_table=num_players,
             )
             gametype = icm_params["gametype"]
             depth = icm_params["depth"]
@@ -1093,6 +1100,14 @@ def _run_analysis(hand: dict) -> dict:
         if sol:
             spot_text = format_full_spot(sol, hero_hand, hero_pos)
             results.append(spot_text)
+
+            # For ICM preflop spots, include full range breakdown to prevent hallucination
+            if is_icm and spot["street"] == "preflop":
+                from gto_formatter import format_range_by_action
+                range_text = format_range_by_action(sol, hero_pos)
+                if range_text:
+                    results.append("")
+                    results.append(range_text)
 
             # Show EV loss if hero took a suboptimal action
             taken_code = spot.get("taken_code")

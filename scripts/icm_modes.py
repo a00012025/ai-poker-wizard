@@ -238,6 +238,7 @@ def find_icm_params(
     tournament_size: int = 1000,
     players_remaining: int | None = None,
     phase: str | None = None,
+    players_at_table: int | None = None,
 ) -> dict:
     """High-level: find gametype + stacks for an ICM scenario.
 
@@ -247,11 +248,22 @@ def find_icm_params(
         tournament_size: 1000 or 200
         players_remaining: Players remaining in tournament
         phase: Direct phase name
+        players_at_table: Override for table size (e.g., 8 for 8-max FT even if
+            only 5 players have stacks). Zero-stack positions are filled with
+            average of remaining stacks for better solver matching.
 
     Returns:
         Dict with keys: gametype, depth, stacks, approximation_note
     """
-    players_at_table = len(player_stacks)
+    if players_at_table is None:
+        players_at_table = len(player_stacks)
+
+    # Fill zero-stack positions with small stacks for better solver matching.
+    # This handles e.g. 5 active players at an 8-max FT (3 empty seats).
+    non_zero = [s for s in player_stacks if s > 0]
+    if non_zero and any(s == 0 for s in player_stacks):
+        fill_value = min(non_zero) * 0.5  # use half of smallest stack
+        player_stacks = [s if s > 0 else fill_value for s in player_stacks]
 
     gametype = find_gametype(
         players_at_table=players_at_table,
@@ -275,9 +287,10 @@ def find_icm_params(
     depth_str, stacks_str = find_stacks(gametype, player_stacks)
     actual_stacks = _parse_stacks(stacks_str.split("-"))
 
-    # Build approximation note
+    # Build approximation note with clear user stacks vs solver stacks comparison
     notes = []
     notes.append(f"ICM 模式: {gametype}")
+    notes.append(f"用戶籌碼: {' / '.join(f'{s:.0f}' for s in player_stacks)}")
     notes.append(f"Solver 籌碼: {' / '.join(f'{s:.0f}' for s in actual_stacks)}")
 
     # Show stack differences

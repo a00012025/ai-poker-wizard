@@ -72,8 +72,17 @@ ICM 支援：
   "players_remaining": 數字（剩餘人數，例如 152）
   "phase": 階段名稱（可選，如 "BUBBLE", "FT", "PCT25" 等）
   "player_stacks": [每個位置的籌碼]（按位置順序排列，如 [50, 30, 45, 20, 35, 25, 15, 40]）
+- 決賽桌（FT）桌位規則（重要！）：
+  決賽桌預設是 8 人桌！即使只描述了 5 個位置的籌碼，也要補齊到 8 人。
+  補齊方式：用戶沒提到的前方位置（UTG, UTG+1 等）設為 0（已淘汰的空位）。
+  例：用戶說「5人 FT, LJ 8bb, CO 23bb, BTN 10bb, SB 18bb, BB 23bb」
+  → players_at_table: 8
+  → player_stacks: [0, 0, 8, 0, 23, 10, 18, 23]（UTG=0, UTG+1=0, LJ=8, HJ=0, CO=23, BTN=10, SB=18, BB=23）
+  只有用戶明確說了「X 人桌」（如「6人桌決賽桌」）時，才用 X 人格式。
 - 用戶說「ICM bubble 50bb」且沒提到個別籌碼 → 不需要 player_stacks，只需 tournament_type + phase
-- 用戶說「6人 FT, BTN 60bb, SB 25bb...」→ player_stacks 按 6人順序（LJ, HJ, CO, BTN, SB, BB）
+- 如果用戶問某個位置的「範圍」或「策略」而沒有指定具體手牌（如「CO 的 open 範圍如何」），
+  仍然要提取手牌 JSON！hero_hand 設為 "AA"（佔位用），hero_position 設為用戶問的位置。
+  系統會自動分析該位置的完整範圍。
 - phase 對應規則：
   early/開始 → "START"
   75% left → "PCT75"
@@ -290,6 +299,11 @@ Solver 數據是 ground truth（最高原則，絕對不可違反！）：
 - 只有用戶的額外問題（如「對手範圍？」「不同位置的策略？」）才需要用 query_gto 工具查詢
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
 - 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
+
+ICM 近似解說明規則：
+- 如果數據中包含「ICM 模式」「用戶籌碼」「Solver 籌碼」，必須在回覆開頭說明使用了哪個近似解
+- 格式範例：「使用 ICM 模式 MTTGeneral_ICM8m1000PTFT 分析。Solver 近似籌碼 [11/8/6/9/13/12/14/7] 與實際 [0/0/8/0/23/10/18/23] 有差異，最大差距 16bb。」
+- 這讓用戶知道結果是近似值，可以自行判斷參考價值
 
 回答流程（重要！）：
 - 第一步：根據已提供的 GTO Solver 數據，分析 hero 的行動是否正確（頻率、EV）

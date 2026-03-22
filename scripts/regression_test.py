@@ -1987,6 +1987,46 @@ def test_normalize_pct_flop_override():
 
 
 @test
+def test_icm_ft_5player_at_8max_table():
+    """ICM FT: 5 active players at 8-max FT uses ICM8m mode."""
+    from icm_modes import find_icm_params
+    # 5 players with stacks, padded to 8 positions (3 zeros for empty seats)
+    result = find_icm_params(
+        player_stacks=[0, 0, 8, 0, 23, 10, 18, 23],
+        phase="FT",
+        players_at_table=8,
+    )
+    assert_in("ICM8m", result["gametype"],
+              f"should use ICM8m for 8-max FT, got {result['gametype']}")
+    assert_true(result["stacks"] != "", "should have stacks string")
+    # Verify all 8 solver stacks are non-zero
+    solver_stacks = result["stacks"].split("-")
+    assert_eq(len(solver_stacks), 8, "should have 8 stack values")
+
+
+@test
+def test_icm_ft_5player_at_8max_analysis():
+    """ICM FT: 5 players at 8-max FT produces ICM analysis with correct padding."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "tournament_type": "icm",
+        "phase": "FT",
+        "players_at_table": 8,
+        "player_stacks": [8, 23, 10, 18, 23],
+        "effective_bb": 23,
+        "hero_position": "CO",
+        "hero_hand": "AKs",
+        "preflop_actions": "F-R2-F-F-F",
+    })
+    assert_eq(result["is_icm"], True)
+    assert_in("ICM8m", result["gametype"],
+              f"should use ICM8m, got {result['gametype']}")
+    assert_in("用戶籌碼", result["text"])
+    assert_in("Solver 籌碼", result["text"])
+
+
+@test
 def test_icm_ft_5player_stacks():
     """ICM FT: 5-player final table with asymmetric stacks finds valid ICM mode."""
     from icm_modes import find_icm_params
