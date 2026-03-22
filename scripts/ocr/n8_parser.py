@@ -471,6 +471,7 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
                 elif opp_positions_remaining:
                     # Infer from postflop order
                     pos = opp_positions_remaining[opp_idx % len(opp_positions_remaining)]
+                    opp_idx += 1
                 else:
                     pos = ocr_pos or "?"
 

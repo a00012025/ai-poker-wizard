@@ -146,6 +146,9 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
     # Group OCR results by Y proximity (texts within ~25px = same entry)
     groups = _group_by_y(ocr_results, y_threshold=25)
 
+    # Split groups that contain multiple actions (merged entries)
+    groups = _split_multi_action_groups(groups)
+
     # Classify each group into an action entry
     entries = []
     for group in groups:
@@ -154,6 +157,72 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
             entries.append(entry)
 
     return entries
+
+
+def _split_multi_action_groups(groups: list[list[dict]]) -> list[list[dict]]:
+    """Split groups that contain multiple action keywords.
+
+    When two entries are very close vertically (gap < y_threshold), they
+    get merged into one group. Detect this by counting action matches
+    and split at the boundary between the last text of the first action
+    entry and the first text of the second.
+    """
+    result = []
+    for group in groups:
+        # Count action matches in this group
+        action_indices = []
+        for i, t in enumerate(group):
+            if _ACTION_PATTERNS.search(t["text"]):
+                action_indices.append(i)
+
+        if len(action_indices) <= 1:
+            # 0 or 1 action — no split needed
+            result.append(group)
+            continue
+
+        # Multiple actions found — split between them.
+        # Each action belongs to its own entry. Split point: midway between
+        # the last item before the next action's "name" line and that name.
+        # Heuristic: split at the largest Y-gap between consecutive items
+        # that falls between two action keywords.
+        sorted_group = sorted(group, key=lambda t: t["center_y"])
+
+        # Find split points: for each pair of consecutive actions,
+        # find the largest Y-gap between them
+        splits = []
+        for ai in range(len(action_indices) - 1):
+            # Items between action[ai] and action[ai+1]
+            act1_y = group[action_indices[ai]]["center_y"]
+            act2_y = group[action_indices[ai + 1]]["center_y"]
+
+            # Find the best split point in sorted_group between these two actions
+            best_gap = 0
+            best_split_idx = None
+            for si in range(len(sorted_group) - 1):
+                y1 = sorted_group[si]["center_y"]
+                y2 = sorted_group[si + 1]["center_y"]
+                # Only consider gaps between the two actions
+                if y1 >= act1_y and y2 <= act2_y:
+                    gap = y2 - y1
+                    if gap > best_gap:
+                        best_gap = gap
+                        best_split_idx = si + 1
+
+            if best_split_idx is not None:
+                splits.append(best_split_idx)
+
+        if not splits:
+            result.append(group)
+            continue
+
+        # Apply splits
+        prev = 0
+        for sp in splits:
+            result.append(sorted_group[prev:sp])
+            prev = sp
+        result.append(sorted_group[prev:])
+
+    return result
 
 
 def _group_by_y(ocr_results: list[dict], y_threshold: int = 50) -> list[list[dict]]:
