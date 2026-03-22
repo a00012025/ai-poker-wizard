@@ -1983,6 +1983,103 @@ def test_normalize_pct_flop_override():
               "R50% should resolve to R3.7 (55% pot, nearest to 50%)")
 
 
+# ── ICM FT Image/Stacks Tests ──
+
+
+@test
+def test_icm_ft_5player_stacks():
+    """ICM FT: 5-player final table with asymmetric stacks finds valid ICM mode."""
+    from icm_modes import find_icm_params
+    # Stacks from the N8 FT screenshot: ~109, 21, 18, 33, 16 bb
+    result = find_icm_params(
+        player_stacks=[109, 21, 18, 33, 16],
+        phase="FT",
+    )
+    assert_true(result["gametype"] != "MTTGeneral",
+                f"should find ICM FT mode, got {result['gametype']}")
+    assert_in("ICM", result["approximation_note"])
+    assert_true(result["stacks"] != "", "should have stacks string")
+    assert_true(result["depth"] != "", "should have depth string")
+
+
+@test
+def test_icm_ft_4player_stacks():
+    """ICM FT: 4-player final table finds valid ICM mode."""
+    from icm_modes import find_icm_params
+    result = find_icm_params(
+        player_stacks=[60, 45, 30, 25],
+        phase="FT",
+    )
+    assert_true(result["gametype"] != "MTTGeneral",
+                f"should find ICM FT mode for 4 players, got {result['gametype']}")
+    assert_in("ICM", result["approximation_note"])
+
+
+@test
+def test_icm_ft_7player_stacks():
+    """ICM FT: 7-player final table finds valid ICM mode."""
+    from icm_modes import find_icm_params
+    result = find_icm_params(
+        player_stacks=[80, 50, 40, 35, 30, 25, 20],
+        phase="FT",
+    )
+    assert_true(result["gametype"] != "MTTGeneral",
+                f"should find ICM FT mode for 7 players, got {result['gametype']}")
+
+
+@test
+def test_icm_ft_9player_stacks():
+    """ICM FT: 9-player final table (full ring) finds valid ICM mode."""
+    from icm_modes import find_icm_params
+    result = find_icm_params(
+        player_stacks=[60, 50, 45, 40, 35, 30, 25, 20, 15],
+        phase="FT",
+    )
+    assert_true(result["gametype"] != "MTTGeneral",
+                f"should find ICM FT mode for 9 players, got {result['gametype']}")
+
+
+@test
+def test_icm_ft_5player_analysis():
+    """ICM FT: 5-player FT hand analysis runs successfully with player_stacks."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "tournament_type": "icm",
+        "phase": "FT",
+        "player_stacks": [109, 21, 18, 33, 16],
+        "players_at_table": 5,
+        "effective_bb": 16,
+        "hero_position": "BB",
+        "hero_hand": "52o",
+        "preflop_actions": "F-R2-F-F-F",
+    })
+    assert_eq(result["is_icm"], True)
+    assert_true(result["solutions"][0] is not None, "should have preflop solution")
+    assert_in("ICM", result["text"])
+
+
+@test
+def test_icm_ft_image_parse_fields_flow():
+    """ICM FT: hand JSON with image-parsed ICM fields flows through analyze_hand_full."""
+    from analyze_hand import analyze_hand_full
+    # Simulate what IMAGE_PARSE_PROMPT would output for an N8 FT screenshot
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "tournament_type": "icm",
+        "phase": "FT",
+        "player_stacks": [109, 21, 18, 33, 16],
+        "players_at_table": 5,
+        "effective_bb": 16,
+        "hero_position": "BB",
+        "hero_hand": "5s2c",
+        "preflop_actions": "F-R2-F-F-F",
+    })
+    assert_eq(result["is_icm"], True)
+    assert_eq(result["hero_position"], "BB")
+    assert_true("ICM" in result["text"], "output should mention ICM")
+
+
 # ── Runner ──
 
 def run_tests():

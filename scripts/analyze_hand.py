@@ -657,7 +657,9 @@ def _run_analysis(hand: dict) -> dict:
 
     # GTO Wizard's MTTGeneral API always expects 8 positions.
     # For tables < 8 players, pad preflop actions with folds for missing positions.
-    if gametype == "MTTGeneral" and num_players < 8:
+    # Skip padding for ICM hands — ICM modes have their own table sizes (2-9 players).
+    is_icm = hand.get("tournament_type") == "icm"
+    if gametype == "MTTGeneral" and num_players < 8 and not is_icm:
         pad_count = 8 - num_players
         padding = "-".join(["F"] * pad_count)
         hand = dict(hand)  # shallow copy to avoid mutating original
@@ -672,7 +674,6 @@ def _run_analysis(hand: dict) -> dict:
     # ICM support: resolve gametype and stacks
     icm_stacks = ""
     icm_note = ""
-    is_icm = hand.get("tournament_type") == "icm"
     if is_icm:
         from icm_modes import find_icm_params
         player_stacks = hand.get("player_stacks")

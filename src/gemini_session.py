@@ -65,7 +65,7 @@ PARSE_PROMPT = """\
 - 翻牌後 size：必須是絕對 bb 值！如果用戶說 "bet 40%" 或 "bet 1/3"，請根據底池大小估算 bb 值。例如底池 5bb，bet 40% → size: 2.0（不是 40 或 0.4）
 
 ICM 支援：
-- 如果用戶提到 ICM、bubble、final table、錦標賽階段、不同位置有不同籌碼量，加入以下欄位：
+- 如果用戶提到 ICM、bubble、final table、決賽桌、FT、錦標賽階段、不同位置有不同籌碼量，加入以下欄位：
   "tournament_type": "icm"（預設不寫 = chip EV）
   "pko": true/false（是否 PKO/bounty 錦標賽，預設 false）
   "tournament_size": 1000 或 200（錦標賽人數，預設 1000）
@@ -157,6 +157,15 @@ IMAGE_PARSE_PROMPT = """\
 3. 每個玩家有位置標籤（UTG、CO、BTN、SB、BB 等）和籌碼量（XX BB）
 4. 桌面中央是公共牌
 
+決賽桌（Final Table）偵測：
+- Natural8 / N8 的決賽桌截圖有紫色桌面主題（一般牌桌是綠色/深色）
+  → 如果看到紫色桌面，設置 tournament_type: "icm", phase: "FT"
+- 如果用戶留言提到 FT、決賽桌、final table、bubble、ICM → 設置 tournament_type: "icm" 並對應 phase
+  phase 對應：final table/FT → "FT", bubble → "BUBBLE"
+- 如果桌上只有 ≤6 人但沒有明確 FT 信號（非紫色桌面、用戶沒提到）→ 設 "possible_ft": true
+  （系統會提醒用戶可以切換到決賽桌模式）
+- 當偵測到 ICM/FT 時，必須提取所有玩家的籌碼量到 player_stacks
+
 提取規則：
 - gametype: 固定 "MTTGeneral"（MTT 截圖）。如果截圖明確顯示 cash game / 現金桌 / ring game，加入 "game_format": "cash" 並省略 gametype
 - players_at_table: 桌上有幾個玩家座位（數截圖中的座位數，通常是 6 或 8 或 9）
@@ -165,7 +174,14 @@ IMAGE_PARSE_PROMPT = """\
   8人: UTG, UTG+1, LJ, HJ, CO, BTN, SB, BB（預設）
   7人: UTG, LJ, HJ, CO, BTN, SB, BB
   6人: LJ, HJ, CO, BTN, SB, BB
+  5人: HJ, CO, BTN, SB, BB
+  4人: CO, BTN, SB, BB
+  3人: BTN, SB, BB
   注意：不要用 MP、EP 等別名！截圖上如果寫 MP 請轉換為 LJ，EP 轉換為 UTG
+- player_stacks: 所有玩家的開局籌碼（BB），按位置順序排列
+  計算方式和 effective_bb 相同：開局籌碼 = 顯示籌碼 + 這局投入的所有籌碼
+  例：5人桌 [109, 21, 18, 33, 16]（HJ, CO, BTN, SB, BB 的開局 BB）
+  注意：即使不是 ICM 模式也盡量提取，方便後續切換
 - preflop_actions: 按位置順序列出所有動作，用 - 分隔
   F=Fold, C=Call, RX=Raise to Xbb, AIX=All-in Xbb
   3bet/4bet 後的 continuation actions 接在第一輪後面
@@ -185,7 +201,7 @@ IMAGE_PARSE_PROMPT = """\
   系統會用你給的 bb 數字去匹配最接近的 solver sizing，差一點就會走到完全不同的分析路線。
   特別注意 turn/river 的下注金額，因為底池較大時，小誤差會導致匹配到錯誤的 sizing（例如 55% pot vs 83% pot）。
 
-JSON 格式：
+JSON 格式（一般 MTT）：
 ```json
 {
   "hand": {
@@ -194,22 +210,26 @@ JSON 格式：
     "effective_bb": 16,
     "hero_position": "LJ",
     "hero_hand": "AsKc",
+    "player_stacks": [45, 32, 28, 16, 50, 22, 18, 40],
     "preflop_actions": "F-F-R2-F-C-F-F-F",
-    "streets": [
-      {"board": "6cQs9d", "actions": [
-        {"position": "LJ", "action": "X"},
-        {"position": "CO", "action": "R1.9", "size": 1.9},
-        {"position": "LJ", "action": "C"}
-      ]},
-      {"card": "4s", "actions": [
-        {"position": "LJ", "action": "X"},
-        {"position": "CO", "action": "X"}
-      ]},
-      {"card": "4h", "actions": [
-        {"position": "LJ", "action": "R3", "size": 3},
-        {"position": "CO", "action": "F"}
-      ]}
-    ]
+    "streets": [...]
+  }
+}
+```
+
+JSON 格式（決賽桌 ICM）：
+```json
+{
+  "hand": {
+    "gametype": "MTTGeneral",
+    "tournament_type": "icm",
+    "phase": "FT",
+    "players_at_table": 5,
+    "effective_bb": 16,
+    "hero_position": "BB",
+    "hero_hand": "5s2c",
+    "player_stacks": [109, 21, 18, 33, 16],
+    "preflop_actions": "F-R2-F-F-F"
   }
 }
 ```
@@ -623,6 +643,50 @@ class GeminiSessionManager:
                     await r
 
         try:
+            # Check for FT switch request on previous hand
+            ft_switch_keywords = {"決賽桌分析", "FT分析", "用ICM", "用icm", "切換決賽桌", "final table分析"}
+            stripped = user_text.strip().lower()
+            if any(kw.lower() in stripped for kw in ft_switch_keywords):
+                ctx = self.hand_contexts.get(chat_id)
+                if ctx and not ctx.get("is_icm"):
+                    prev_hand = ctx["hand"]
+                    prev_hand["tournament_type"] = "icm"
+                    prev_hand["phase"] = "FT"
+                    # player_stacks should already be present from image parse
+                    hand_json = prev_hand
+                    t_parse = time.time()
+                    self._logger.info(
+                        f"[chat={chat_id}] FT switch: re-analyzing with ICM"
+                    )
+
+                    # Re-run GTO analysis with ICM
+                    if not refresh_token:
+                        return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
+                    await _status("切換到 ICM 決賽桌模式，重新查詢 GTO 策略...")
+                    self._setup_user_token(user_id, refresh_token)
+                    try:
+                        from analyze_hand import analyze_hand_full
+                        context = analyze_hand_full(hand_json)
+                    finally:
+                        self._clear_user_token()
+                    gto_data = context["text"]
+                    self.hand_contexts[chat_id] = context
+
+                    coaching_prompt = (
+                        f"用戶要求切換到 ICM 決賽桌模式重新分析。\n\n"
+                        f"GTO Solver 數據（ICM 模式）：\n{gto_data}\n\n"
+                        f"請分析 hero 在 ICM 決賽桌下的最佳策略，並與之前的 Chip EV 分析做比較。"
+                    )
+                    result = await self._chat_with_tools(
+                        chat_id, coaching_prompt, on_status=on_status,
+                        user_id=user_id, refresh_token=refresh_token,
+                        usage_acc=usage_acc,
+                    )
+                    elapsed = time.time() - t0
+                    await self._save_usage(chat_id, "hand_analysis", self.model,
+                                           usage_acc, int(elapsed * 1000))
+                    return result
+
             # Step 1: Parse hand from user message (Flash — fast)
             await _status("解析手牌中...")
             hand_json = await asyncio.wait_for(
@@ -746,6 +810,7 @@ class GeminiSessionManager:
             # Step 1: Parse hand from screenshot
             await _update_status("🔍 正在辨識截圖中的手牌...")
             hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type,
+                                                          user_text=user_text,
                                                           usage_acc=usage_acc)
             t_parse = time.time()
 
@@ -766,6 +831,9 @@ class GeminiSessionManager:
                 f"[chat={chat_id}] Parsed image hand in {t_parse - t0:.1f}s: "
                 f"{json.dumps(hand_json, ensure_ascii=False)[:300]}"
             )
+
+            # Handle possible_ft flag — extract before saving/analysis
+            possible_ft = hand_json.pop("possible_ft", False)
 
             # Save parsed hand to DB and get hand_id
             hand_id = None
@@ -829,6 +897,12 @@ class GeminiSessionManager:
             if hand_id:
                 result = f"📋 `{hand_id}`\n\n{result}"
 
+            if possible_ft and hand_json.get("tournament_type") != "icm":
+                result += (
+                    "\n\n💡 這看起來可能是決賽桌場景。"
+                    "如果是的話，回覆「決賽桌分析」即可切換到 ICM 模式重新分析。"
+                )
+
             t_total = time.time()
             self._logger.info(
                 f"[chat={chat_id}] Image done: parse={t_parse - t0:.1f}s "
@@ -851,9 +925,14 @@ class GeminiSessionManager:
 
     async def _parse_hand_from_image(self, chat_id: int, image_bytes: bytes,
                                        mime_type: str = "image/jpeg",
+                                       user_text: str = "",
                                        usage_acc: dict | None = None) -> dict | None:
         """Parse hand from a screenshot image using Gemini vision."""
         self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
+
+        prompt_text = IMAGE_PARSE_PROMPT
+        if user_text.strip():
+            prompt_text += f"\n\n用戶留言：{user_text.strip()}"
 
         response = await asyncio.wait_for(
             self.client.aio.models.generate_content(
@@ -861,7 +940,7 @@ class GeminiSessionManager:
                 contents=[
                     types.Content(role="user", parts=[
                         types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                        types.Part(text=IMAGE_PARSE_PROMPT),
+                        types.Part(text=prompt_text),
                     ]),
                 ],
                 config=types.GenerateContentConfig(
@@ -895,13 +974,87 @@ class GeminiSessionManager:
 
     @staticmethod
     def _normalize_cards(hand: dict):
-        """Fix common Gemini vision mistakes in card notation (e.g. '10' → 'T')."""
+        """Fix common Gemini vision mistakes in card notation (e.g. '10' → 'T')
+        and convert string actions to structured format."""
         hand["hero_hand"] = re.sub(r"10", "T", hand["hero_hand"])
         for street in hand.get("streets", []):
             if "board" in street:
                 street["board"] = re.sub(r"10", "T", street["board"])
             if "card" in street:
                 street["card"] = re.sub(r"10", "T", street["card"])
+            # Fix: vision model sometimes returns actions as a flat string
+            # e.g. "X-X-R1.52-C" instead of [{position, action}, ...]
+            if isinstance(street.get("actions"), str):
+                street["actions"] = GeminiSessionManager._parse_street_actions_string(
+                    street["actions"], hand
+                )
+
+    @staticmethod
+    def _parse_street_actions_string(actions_str: str, hand: dict) -> list[dict]:
+        """Convert flat action string (e.g. 'X-X-R1.52-C') to structured actions.
+
+        Uses postflop position order: SB first, then BB, then positions in order, BTN last.
+        Only assigns positions to players still in the hand (didn't fold preflop).
+        """
+        POSITION_ORDERS = {
+            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            5: ["HJ", "CO", "BTN", "SB", "BB"],
+            4: ["CO", "BTN", "SB", "BB"],
+            3: ["BTN", "SB", "BB"],
+            2: ["SB", "BB"],
+        }
+        n = hand.get("players_at_table", 8)
+        pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
+
+        # Find who's still in the hand after preflop
+        preflop = hand.get("preflop_actions", "")
+        preflop_parts = preflop.split("-")
+        active_positions = []
+        for i, act in enumerate(preflop_parts[:len(pos_order)]):
+            if act.upper() != "F":
+                active_positions.append(pos_order[i])
+
+        # Postflop order: SB first, BB next, then others in order, BTN last
+        postflop_order = []
+        for pos in ["SB", "BB"] + [p for p in pos_order if p not in ("SB", "BB")]:
+            if pos in active_positions:
+                postflop_order.append(pos)
+
+        parts = actions_str.split("-")
+        result = []
+        pos_idx = 0
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            pos = postflop_order[pos_idx % len(postflop_order)] if postflop_order else "?"
+            action_entry = {"position": pos}
+
+            if part.upper() == "X":
+                action_entry["action"] = "X"
+            elif part.upper() == "C":
+                action_entry["action"] = "C"
+            elif part.upper() == "F":
+                action_entry["action"] = "F"
+            elif part.upper().startswith("R"):
+                try:
+                    size = float(part[1:])
+                    action_entry["action"] = part
+                    action_entry["size"] = size
+                except ValueError:
+                    action_entry["action"] = part
+            elif part.upper().startswith("AI"):
+                action_entry["action"] = part
+            else:
+                action_entry["action"] = part
+
+            result.append(action_entry)
+            pos_idx += 1
+
+        return result
 
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None) -> dict | None:
