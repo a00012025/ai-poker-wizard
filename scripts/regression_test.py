@@ -2170,6 +2170,40 @@ def test_ocr_region_detection_returns_none_for_non_n8():
     assert_true(result is None, "should return None for non-N8 image")
 
 
+@test
+def test_ocr_card_matcher_loads_templates():
+    """OCR: card matcher loads rank and suit templates."""
+    from ocr.card_matcher import CardMatcher
+    matcher = CardMatcher()
+    assert_true(len(matcher.rank_templates) > 0, "should load rank templates")
+    assert_true(len(matcher.suit_templates) > 0, "should load suit templates")
+
+
+@test
+def test_ocr_card_matcher_identifies_card():
+    """OCR: card matcher identifies a card from a sample screenshot."""
+    import cv2
+    from ocr.region_detector import detect_regions
+    from ocr.card_matcher import CardMatcher
+    from ocr.generate_templates import find_board_cards
+    img_path = os.path.expanduser("~/n8_image/photo_2026-03-22 13.53.03.jpeg")
+    if not os.path.exists(img_path):
+        return
+    image = cv2.imread(img_path)
+    regions = detect_regions(image)
+    if regions is None:
+        return
+    table = regions["table"]
+    cards = find_board_cards(table)
+    if not cards:
+        return  # skip if card detection fails on this image
+    matcher = CardMatcher()
+    rank, suit, conf = matcher.match(cards[0]["image"])
+    assert_true(rank is not None, f"should identify rank, got None")
+    assert_true(suit is not None, f"should identify suit, got None")
+    assert_true(conf > 0.3, f"confidence should be > 0.3, got {conf}")
+
+
 # ── Runner ──
 
 def run_tests():

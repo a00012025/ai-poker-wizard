@@ -39,3 +39,6 @@ downloads/
 .browser-profile/
 .tokens.json
 scripts/_tmp.py
+
+# OCR template raw crops
+scripts/ocr/templates/raw/
