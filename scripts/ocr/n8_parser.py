@@ -178,6 +178,17 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         elif name_lower in ("flop", "turn", "river"):
             street_cols.append(col)
 
+    # Fixup: if PreFlop wasn't found but the first Flop column has
+    # many entries (5+), it's likely a misidentified PreFlop column
+    # (OCR misread "PreFlop" as "Flop").
+    if preflop_col is None and street_cols:
+        first_street = street_cols[0]
+        first_entries = first_street.get("entries", [])
+        if (first_street["name"].lower() == "flop"
+                and len(first_entries) >= 5):
+            preflop_col = first_street
+            street_cols = street_cols[1:]
+
     if preflop_col is None:
         return None, conf_parts
 

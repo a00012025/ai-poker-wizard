@@ -164,17 +164,53 @@ def _find_bright_row(region: np.ndarray, thresh_val: int = 160,
 
 def _identify_cards(region: np.ndarray, card_rects: list[tuple],
                     min_conf: float = 0.15) -> list[str]:
-    """Run CardMatcher on detected card rectangles.
+    """Identify cards using EasyOCR for rank + BGR for suit.
 
     Returns:
         List of card strings like ["Ks", "9d", "3d"].
     """
-    matcher = _get_matcher()
+    from .ocr_utils import ocr_full_image
+
+    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
+    _RANK_MAP = {"10": "T", "1O": "T", "IO": "T", "l0": "T", "0": "T"}
+
     cards = []
     for (x, y, w, h) in card_rects:
         card_img = region[y:y + h, x:x + w]
-        rank, suit, conf = matcher.match(card_img)
-        if rank and suit and conf > min_conf:
+        if card_img.size == 0:
+            cards.append("??")
+            continue
+
+        # Upscale for OCR
+        scale = max(2, 80 // max(card_img.shape[0], 1))
+        scale = min(scale, 4)
+        card_up = cv2.resize(card_img, None, fx=scale, fy=scale,
+                             interpolation=cv2.INTER_CUBIC)
+
+        ocr_results = ocr_full_image(card_up)
+        rank = None
+        for r in ocr_results:
+            t = r["text"].strip()
+            tu = t.upper()
+            if t in _RANK_CHARS:
+                rank = _RANK_MAP.get(t, t)
+                break
+            elif tu in _RANK_CHARS:
+                rank = _RANK_MAP.get(tu, tu)
+                break
+            elif t in _RANK_MAP:
+                rank = _RANK_MAP[t]
+                break
+
+        # Fallback to template matcher if OCR fails
+        if not rank:
+            matcher = _get_matcher()
+            r, s, conf = matcher.match(card_img)
+            if r and conf > min_conf:
+                rank = r
+
+        suit = _detect_suit_bgr(card_img)
+        if rank:
             cards.append(f"{rank}{suit}")
         else:
             cards.append("??")
@@ -222,126 +258,395 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
 
 
 def _find_hero_cards(table_region: np.ndarray) -> list[str]:
-    """Find and identify hero's hole cards using EasyOCR.
-
-    Uses EasyOCR to read the rank characters on hero's face-up cards
-    at bottom center, then detects suit by color sampling.
+    """Find and identify hero's hole cards.
 
     Strategy:
-    1. Crop hero card area (bottom center of table)
-    2. Upscale 2-3x for better OCR on small images
-    3. Run EasyOCR to find rank characters (A, K, Q, J, T/10, 2-9)
-    4. Filter by position: hero cards are two adjacent characters at similar Y
-    5. Detect suit by color (red = h/d, black = s/c)
+    1. Crop hero area (bottom center of table)
+    2. Find the card pair blob at multiple threshold levels
+    3. If blob is too tall, retry at higher threshold for tighter fit
+    4. Split blob at ~48% mark with small overlap
+    5. OCR each card for rank (multiple attempts + template fallback)
+    6. Detect suit by BGR color + template matching
     """
     from .ocr_utils import ocr_full_image
 
     h, w = table_region.shape[:2]
-
-    # Hero cards: bottom center. Tight crop to avoid board cards above.
-    y1, y2 = int(h * 0.55), int(h * 0.88)
-    x1, x2 = int(w * 0.25), int(w * 0.75)
-    hero_area = table_region[y1:y2, x1:x2]
-
-    ah, aw = hero_area.shape[:2]
-    if ah < 10 or aw < 10:
+    hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
+    ah, aw = hero.shape[:2]
+    if ah < 20 or aw < 20:
         return []
 
-    # Upscale for better OCR (hero cards can be small in compressed screenshots)
-    scale = max(2, 400 // max(ah, 1))
-    scale = min(scale, 4)
-    hero_upscaled = cv2.resize(hero_area, None, fx=scale, fy=scale,
-                               interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(hero, cv2.COLOR_BGR2GRAY)
 
-    results = ocr_full_image(hero_upscaled)
+    # Find the card pair blob — try thresholds from high to low
+    best_blob = None
+    for tv in [200, 190, 180, 170, 160, 150, 140, 130, 120]:
+        _, thresh = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel,
+                                  iterations=2)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        for c in contours:
+            x, y, cw, ch_ = cv2.boundingRect(c)
+            area = cw * ch_
+            # Card pair: wider than tall, reasonable size
+            if (area > 1500 and ch_ > 25 and cw > 60
+                    and 1.2 < cw / ch_ < 2.8):
+                if best_blob is None or area > best_blob[4]:
+                    best_blob = (x, y, cw, ch_, area)
+        if best_blob and best_blob[4] > 2500:
+            break
 
-    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}
-    _RANK_MAP = {"10": "T", "1O": "T", "IO": "T", "l0": "T"}
+    if not best_blob:
+        # Fallback: accept wider aspect ratio range
+        for tv in [160, 150, 140, 130, 120]:
+            _, thresh = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel,
+                                      iterations=2)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                x, y, cw, ch_ = cv2.boundingRect(c)
+                area = cw * ch_
+                if area > 1500 and ch_ > 25 and 0.7 < cw / ch_ < 2.8:
+                    if best_blob is None or area > best_blob[4]:
+                        best_blob = (x, y, cw, ch_, area)
+            if best_blob and best_blob[4] > 2500:
+                break
 
-    card_texts = []
-    for r in results:
-        text = r["text"].strip()
-        # Also try uppercased
-        text_up = text.upper()
-
-        matched_rank = None
-        if text in _RANK_CHARS:
-            matched_rank = text
-        elif text_up in _RANK_CHARS:
-            matched_rank = text_up
-        elif text in _RANK_MAP:
-            matched_rank = _RANK_MAP[text]
-        elif text_up in _RANK_MAP:
-            matched_rank = _RANK_MAP[text_up]
-
-        if matched_rank:
-            rank = _RANK_MAP.get(matched_rank, matched_rank)
-            # Map coordinates back to original hero_area space
-            cx_orig = int(r["center_x"] / scale)
-            cy_orig = int(r["center_y"] / scale)
-            suit = _detect_suit_at(hero_area, cx_orig, cy_orig)
-            card_texts.append((rank + suit, cx_orig, cy_orig, r["conf"]))
-
-    if len(card_texts) < 2:
-        # Fallback: try with contrast enhancement
-        gray = cv2.cvtColor(hero_upscaled, cv2.COLOR_BGR2GRAY)
-        # CLAHE for contrast enhancement
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        results2 = ocr_full_image(enhanced)
-        for r in results2:
-            text = r["text"].strip()
-            text_up = text.upper()
-            matched_rank = None
-            if text in _RANK_CHARS:
-                matched_rank = text
-            elif text_up in _RANK_CHARS:
-                matched_rank = text_up
-            elif text in _RANK_MAP:
-                matched_rank = _RANK_MAP[text]
-            elif text_up in _RANK_MAP:
-                matched_rank = _RANK_MAP[text_up]
-
-            if matched_rank:
-                rank = _RANK_MAP.get(matched_rank, matched_rank)
-                cx_orig = int(r["center_x"] / scale)
-                cy_orig = int(r["center_y"] / scale)
-                # Avoid duplicates (same position)
-                is_dup = any(abs(cx_orig - c[1]) < 15 and abs(cy_orig - c[2]) < 15
-                            for c in card_texts)
-                if not is_dup:
-                    suit = _detect_suit_at(hero_area, cx_orig, cy_orig)
-                    card_texts.append((rank + suit, cx_orig, cy_orig, r["conf"]))
-
-    if len(card_texts) < 2:
+    if not best_blob:
         return []
 
-    # Pick the best 2 cards: similar Y (within 30% of card height), adjacent X
-    # Sort by confidence descending
-    card_texts.sort(key=lambda x: -x[3])
+    x, y, cw, ch_, _ = best_blob
+    blob_ratio = cw / ch_ if ch_ > 0 else 2.0
 
-    best_pair = None
-    best_score = float("inf")
+    # Split at 48% (left card slightly narrower due to overlap rendering)
+    split = int(cw * 0.48)
+    card1 = hero[y:y + ch_, x:x + split + 3]
+    card2 = hero[y:y + ch_, x + split - 3:x + cw]
 
-    for i in range(len(card_texts)):
-        for j in range(i + 1, len(card_texts)):
-            ci, cj = card_texts[i], card_texts[j]
-            y_diff = abs(ci[2] - cj[2])
-            x_gap = abs(ci[1] - cj[1])
-            # Cards should be at similar Y and close X
-            if y_diff < ah * 0.3 and x_gap < aw * 0.5:
-                score = y_diff + x_gap * 0.5
-                if score < best_score:
-                    best_score = score
-                    best_pair = (ci, cj)
+    # When blob ratio < 1.5 (too tall), find a tighter blob at higher
+    # threshold for suit detection — tall blobs include card artwork that
+    # confuses the center suit shape analysis.
+    suit_card1, suit_card2 = card1, card2
+    if blob_ratio < 1.5:
+        tighter = None
+        for tv in range(240, 195, -5):
+            _, thresh = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel,
+                                      iterations=2)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                xc, yc, cwc, chc = cv2.boundingRect(c)
+                ac = cwc * chc
+                rc = cwc / chc if chc > 0 else 0
+                if (ac > 1500 and chc > 25 and cwc > 60 and rc >= 1.5):
+                    if tighter is None or ac > tighter[4]:
+                        tighter = (xc, yc, cwc, chc, ac)
+            if tighter:
+                break
+        if tighter:
+            tx, ty, tcw, tch, _ = tighter
+            tsplit = int(tcw * 0.48)
+            suit_card1 = hero[ty:ty + tch, tx:tx + tsplit + 3]
+            suit_card2 = hero[ty:ty + tch, tx + tsplit - 3:tx + tcw]
 
-    if best_pair is None:
-        # Just take first 2
-        best_pair = (card_texts[0], card_texts[1])
+    results = []
+    for card, suit_card in [(card1, suit_card1), (card2, suit_card2)]:
+        rank = _ocr_card_rank(card, ocr_full_image)
+        suit = _detect_suit_bgr(suit_card)
+        results.append(f"{rank}{suit}" if rank else None)
 
-    # Sort left to right
-    pair = sorted([best_pair[0], best_pair[1]], key=lambda x: x[1])
-    return [pair[0][0], pair[1][0]]
+    # Filter out None results
+    results = [r for r in results if r is not None]
+    return results
+
+
+def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
+    """OCR a single card image for rank, with template matching fallback.
+
+    Tries multiple strategies in order:
+    1. OCR on top-left rank crop (avoids suit symbol misreads)
+    2. OCR on upscaled full card
+    3. OCR on inverted binary rank crop
+    4. OCR on 2x further upscaled rank crop
+    5. OCR on inverted binary full card
+    6. OCR on sharpened image
+    7. Template matching via CardMatcher
+    """
+    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10",
+                   "J", "Q", "K", "A"}
+    _RANK_MAP = {
+        "10": "T", "1O": "T", "IO": "T", "l0": "T", "I0": "T",
+    }
+    # Characters that EasyOCR produces for Q (standalone, not part of "10")
+    _Q_CHARS = {"0", "O"}
+
+    if card is None or card.size == 0 or card.shape[0] < 10:
+        return None
+
+    # Upscale aggressively for small cards
+    target_h = 360
+    scale = max(3, target_h // max(card.shape[0], 1))
+    scale = min(scale, 8)
+    card_up = cv2.resize(card, None, fx=scale, fy=scale,
+                         interpolation=cv2.INTER_CUBIC)
+
+    def _extract_rank(ocr_results, allow_q_from_zero=True):
+        for r in ocr_results:
+            t = r["text"].strip()
+            tu = t.upper()
+            conf = r.get("conf", 0)
+            # Check exact matches first (e.g., "10", "A", "K")
+            if t in _RANK_CHARS:
+                return _RANK_MAP.get(t, t)
+            if tu in _RANK_CHARS:
+                return _RANK_MAP.get(tu, tu)
+            # Check multi-char mappings (e.g., "IO", "I0", "1O")
+            if tu in _RANK_MAP:
+                return _RANK_MAP[tu]
+            # Standalone "0" or "O" → Q (EasyOCR misreads Q)
+            # Only with high confidence to avoid false positives
+            if allow_q_from_zero and tu in _Q_CHARS and len(t) == 1:
+                if conf > 0.8:
+                    return "Q"
+            # Single valid rank character
+            if len(t) == 1 and tu in "23456789JQKA":
+                return tu
+        return None
+
+    # Attempt 1: OCR on top-left rank crop (avoids suit symbol misreads)
+    ch, cw_up = card_up.shape[:2]
+    rh = int(ch * 0.50)
+    rw = int(cw_up * 0.60)
+    if rh > 10 and rw > 10:
+        rank_crop = card_up[0:rh, 0:rw]
+        rank = _extract_rank(ocr_full_image(rank_crop))
+        if rank:
+            return rank
+
+    # Attempt 2: OCR on upscaled full card
+    rank = _extract_rank(ocr_full_image(card_up))
+    if rank:
+        return rank
+
+    # Attempt 3: Inverted binary on rank crop
+    if rh > 10 and rw > 10:
+        gray_rc = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
+        _, bin_rc = cv2.threshold(gray_rc, 0, 255,
+                                  cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        inv_rc = cv2.bitwise_not(bin_rc)
+        rank = _extract_rank(ocr_full_image(inv_rc))
+        if rank:
+            return rank
+
+    # Attempt 4: Further 2x upscale on rank crop
+    if rh > 10 and rw > 10:
+        rank_crop_2x = cv2.resize(rank_crop, None, fx=2, fy=2,
+                                  interpolation=cv2.INTER_CUBIC)
+        rank = _extract_rank(ocr_full_image(rank_crop_2x))
+        if rank:
+            return rank
+
+    # Attempt 5: Inverted binary on full card
+    gray_card = cv2.cvtColor(card_up, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray_card, 0, 255,
+                              cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    inverted = cv2.bitwise_not(binary)
+    rank = _extract_rank(ocr_full_image(inverted))
+    if rank:
+        return rank
+
+    # Attempt 6: Sharpened image
+    sharpen_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(card_up, -1, sharpen_kernel)
+    rank = _extract_rank(ocr_full_image(sharpened))
+    if rank:
+        return rank
+
+    # Attempt 7: CLAHE enhanced
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray_card)
+    rank = _extract_rank(ocr_full_image(enhanced))
+    if rank:
+        return rank
+
+    # Attempt 8: Red-minus-blue channel isolation on rank crop.
+    # Isolates red ink (rank character) from sparkle/glow overlays
+    # which affect blue channel more than red. Uses 4x upscale
+    # for optimal OCR resolution regardless of card size.
+    # Tries two crop windows: standard (top 50%) and sparkle-skipping
+    # (25-60% height) for cards with glow effects at the top.
+    if card is not None and card.size > 0 and len(card.shape) == 3:
+        rb_up = cv2.resize(card, None, fx=4, fy=4,
+                           interpolation=cv2.INTER_CUBIC)
+        rb_uh, rb_uw = rb_up.shape[:2]
+        for (y1f, y2f, xf) in [(0.0, 0.50, 0.55),
+                                (0.25, 0.60, 0.60)]:
+            rb_y1 = int(rb_uh * y1f)
+            rb_y2 = int(rb_uh * y2f)
+            rb_xw = int(rb_uw * xf)
+            if rb_y2 - rb_y1 > 10 and rb_xw > 10:
+                rb_crop = rb_up[rb_y1:rb_y2, 0:rb_xw]
+                b_ch, _g_ch, r_ch = cv2.split(rb_crop)
+                rb_diff = cv2.subtract(r_ch, b_ch)
+                _, rb_bin = cv2.threshold(rb_diff, 20, 255,
+                                          cv2.THRESH_BINARY)
+                rb_inv = cv2.bitwise_not(rb_bin)
+                rank = _extract_rank(ocr_full_image(rb_inv))
+                if rank:
+                    return rank
+
+    # Attempt 9: Template matching as final fallback (low threshold)
+    matcher = _get_matcher()
+    r, _s, conf = matcher.match(card)
+    if r and conf > 0.05:
+        return r
+
+    return None
+
+
+def _detect_suit_bgr(card_img: np.ndarray) -> str:
+    """Detect suit by analyzing BGR color of dark (ink) pixels on the card.
+
+    Step 1: Determine red vs black from ink pixel BGR values.
+    Step 2a (red): Use convex hull defects of center suit contour — hearts
+                   have a deep concavity (top dip), diamonds are fully convex.
+                   Falls back to green channel when center crop is poor.
+    Step 2b (black): Use solidity of center suit symbol — spades are more
+                     solid (>0.88), clubs have lower solidity from lobes.
+    """
+    h, w = card_img.shape[:2]
+    # Sample top portion where rank + suit symbol are
+    sample = card_img[2:int(h * 0.75), 2:int(w * 0.6)]
+    if sample.size == 0:
+        return "s"
+
+    gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    _, dark_mask = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
+    dark_pixels = sample[dark_mask > 0]
+
+    if len(dark_pixels) < 5:
+        return "s"
+
+    avg_r = float(np.mean(dark_pixels[:, 2]))  # BGR → R is index 2
+    avg_g = float(np.mean(dark_pixels[:, 1]))
+    avg_b = float(np.mean(dark_pixels[:, 0]))
+
+    is_red = avg_r > avg_b + 20 and avg_r > avg_g + 20
+
+    if is_red:
+        # Hearts vs Diamonds: hull defects approach.
+        # Heart ♥ has a concave dip at top → convex hull defect > 1500.
+        # Diamond ♦ is fully convex → all defects < 1000.
+        # Also use green channel as secondary signal.
+        hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
+        red_mask1 = cv2.inRange(hsv, np.array([0, 50, 50]),
+                                np.array([15, 255, 255]))
+        red_mask2 = cv2.inRange(hsv, np.array([165, 50, 50]),
+                                np.array([180, 255, 255]))
+        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+        red_pixels = sample[red_mask > 0]
+
+        green_says_heart = False
+        if len(red_pixels) >= 5:
+            red_avg_g = float(np.mean(red_pixels[:, 1]))
+            green_says_heart = red_avg_g > 60
+
+        # Analyze center suit symbol shape via hull defects
+        scale_up = 4
+        card_up = cv2.resize(card_img, None, fx=scale_up, fy=scale_up,
+                             interpolation=cv2.INTER_CUBIC)
+        uh, uw = card_up.shape[:2]
+        center = card_up[int(uh * 0.45):int(uh * 0.85),
+                         int(uw * 0.15):int(uw * 0.85)]
+        if center.size > 0:
+            hsv_c = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+            rm1 = cv2.inRange(hsv_c, np.array([0, 50, 50]),
+                              np.array([15, 255, 255]))
+            rm2 = cv2.inRange(hsv_c, np.array([165, 50, 50]),
+                              np.array([180, 255, 255]))
+            rmask = cv2.bitwise_or(rm1, rm2)
+            rc, _ = cv2.findContours(rmask, cv2.RETR_EXTERNAL,
+                                     cv2.CHAIN_APPROX_SIMPLE)
+            rc = [c for c in rc if cv2.contourArea(c) > 20]
+            if rc:
+                big = max(rc, key=cv2.contourArea)
+                hll = cv2.convexHull(big)
+                ha = cv2.contourArea(hll)
+                ca = cv2.contourArea(big)
+                csol = ca / ha if ha > 0 else 1.0
+
+                # Only trust center analysis if contour area is
+                # reasonable (< 4000). Tall/bad card crops produce
+                # huge contours from card artwork.
+                if ca < 4000:
+                    # Hull defects: hearts have deep concavity
+                    hull_idx = cv2.convexHull(big, returnPoints=False)
+                    max_defect = 0
+                    if len(hull_idx) > 3:
+                        defects = cv2.convexityDefects(big, hull_idx)
+                        if defects is not None:
+                            max_defect = max(d[0][3] for d in defects)
+
+                    # Deep concavity → heart
+                    if max_defect > 1500:
+                        return "h"
+                    # No significant concavity → diamond
+                    if max_defect < 1000:
+                        return "d"
+
+                    # Ambiguous defects: use solidity + green
+                    if csol >= 0.95:
+                        return "d"
+                    if csol < 0.90:
+                        return "h"
+
+        if green_says_heart:
+            return "h"
+        return "d"
+    else:
+        # Spades vs Clubs: analyze solidity of center suit symbol.
+        # Upscale the card 4x, crop the center area where the big suit
+        # symbol appears, and measure contour solidity.
+        # Spades are more solid (>0.88), clubs have lower solidity.
+        scale = 4
+        card_up = cv2.resize(card_img, None, fx=scale, fy=scale,
+                             interpolation=cv2.INTER_CUBIC)
+        uh, uw = card_up.shape[:2]
+
+        center_suit = card_up[int(uh * 0.45):int(uh * 0.85),
+                              int(uw * 0.15):int(uw * 0.85)]
+        if center_suit.size == 0:
+            return "s"
+
+        gray_cs = cv2.cvtColor(center_suit, cv2.COLOR_BGR2GRAY)
+        _, dark_cs = cv2.threshold(gray_cs, 130, 255,
+                                   cv2.THRESH_BINARY_INV)
+        cs_contours, _ = cv2.findContours(dark_cs, cv2.RETR_EXTERNAL,
+                                          cv2.CHAIN_APPROX_SIMPLE)
+        cs_contours = [c for c in cs_contours
+                       if cv2.contourArea(c) > 20]
+
+        if cs_contours:
+            biggest_cs = max(cs_contours, key=cv2.contourArea)
+            hull = cv2.convexHull(biggest_cs)
+            hull_area = cv2.contourArea(hull)
+            cont_area = cv2.contourArea(biggest_cs)
+
+            # Only trust solidity when contour is reasonable size.
+            # Bad card crops (tall blob) produce large contours from
+            # card artwork; default to spade when unreliable.
+            if cont_area < 3800:
+                sol = cont_area / hull_area if hull_area > 0 else 1.0
+                return "s" if sol > 0.92 else "c"
+
+        # Large/bad contour or no contours: default spade
+        return "s"
 
 
 def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 20) -> str:
