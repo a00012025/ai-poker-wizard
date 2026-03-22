@@ -156,8 +156,13 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
     return entries
 
 
-def _group_by_y(ocr_results: list[dict], y_threshold: int = 25) -> list[list[dict]]:
-    """Group OCR text detections by Y proximity."""
+def _group_by_y(ocr_results: list[dict], y_threshold: int = 50) -> list[list[dict]]:
+    """Group OCR text detections by Y proximity.
+
+    Each action entry in N8 has: player name (~20px), action text (~30px below),
+    and position badge (~15px below action). Total height ~60px.
+    Use y_threshold=50 to keep all parts of one entry together.
+    """
     if not ocr_results:
         return []
 

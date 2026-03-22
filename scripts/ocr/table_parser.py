@@ -344,35 +344,65 @@ def _find_hero_cards(table_region: np.ndarray) -> list[str]:
     return [pair[0][0], pair[1][0]]
 
 
-def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 15) -> str:
-    """Detect card suit by sampling color near a position.
+def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 20) -> str:
+    """Detect card suit by sampling color near and around the rank character.
 
+    Samples the rank character itself AND the area below it (where suit symbol is).
     Red = hearts(h) or diamonds(d), Black = spades(s) or clubs(c).
+
+    N8 uses red for hearts and diamonds, black for spades and clubs.
+    The rank character itself is colored (red rank = red suit, black rank = black suit).
     """
     h, w = image.shape[:2]
-    # Sample below the rank character (suit symbol is usually below)
-    sy = min(y + radius, h - 1)
-    y1 = max(0, sy - 5)
-    y2 = min(h, sy + 15)
-    x1 = max(0, x - 10)
-    x2 = min(w, x + 10)
+
+    # Sample a larger area around the rank character
+    y1 = max(0, y - 10)
+    y2 = min(h, y + radius + 15)
+    x1 = max(0, x - 15)
+    x2 = min(w, x + 15)
 
     sample = image[y1:y2, x1:x2]
     if sample.size == 0:
-        return "s"  # default
+        return "s"
 
     hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
-    # Red detection
-    red_mask1 = cv2.inRange(hsv, np.array([0, 80, 80]), np.array([10, 255, 255]))
-    red_mask2 = cv2.inRange(hsv, np.array([170, 80, 80]), np.array([180, 255, 255]))
-    red_ratio = (np.sum(red_mask1 > 0) + np.sum(red_mask2 > 0)) / max(sample.size // 3, 1)
+    # Red detection — generous range
+    red_mask1 = cv2.inRange(hsv, np.array([0, 60, 60]), np.array([12, 255, 255]))
+    red_mask2 = cv2.inRange(hsv, np.array([168, 60, 60]), np.array([180, 255, 255]))
+    red_pixels = np.sum(red_mask1 > 0) + np.sum(red_mask2 > 0)
+    total_pixels = max(sample.shape[0] * sample.shape[1], 1)
+    red_ratio = red_pixels / total_pixels
 
-    if red_ratio > 0.15:
-        # Red suit — h or d. Check shape: heart is rounder, diamond is pointy.
-        # For now, use 'h' as default red (more common)
-        return "h"
+    if red_ratio > 0.08:
+        # Red suit: distinguish heart vs diamond by suit symbol shape
+        # Heart ♥ has a wider top, diamond ♦ is pointy
+        # Simple heuristic: check the suit symbol area below rank
+        suit_y1 = min(h, y + 10)
+        suit_y2 = min(h, y + radius + 10)
+        suit_x1 = max(0, x - 12)
+        suit_x2 = min(w, x + 12)
+        suit_area = image[suit_y1:suit_y2, suit_x1:suit_x2]
+        if suit_area.size > 0:
+            suit_hsv = cv2.cvtColor(suit_area, cv2.COLOR_BGR2HSV)
+            red_s = cv2.inRange(suit_hsv, np.array([0, 60, 60]), np.array([12, 255, 255]))
+            red_s2 = cv2.inRange(suit_hsv, np.array([168, 60, 60]), np.array([180, 255, 255]))
+            red_suit_mask = cv2.bitwise_or(red_s, red_s2)
+            # Find contour of suit symbol
+            contours, _ = cv2.findContours(red_suit_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                biggest = max(contours, key=cv2.contourArea)
+                _, _, sw, sh = cv2.boundingRect(biggest)
+                # Diamond is taller than wide, heart is wider than tall
+                if sh > 0 and sw / sh < 0.85:
+                    return "d"
+                else:
+                    return "h"
+        return "d"  # default red → diamond (more common in poker notation)
     else:
-        return "s"  # black suit default
+        # Black suit: distinguish spade vs club
+        # Spade ♠ is pointy at top, club ♣ has round lobes
+        # Simple: default to spade (more common)
+        return "s"
 
 
 def _find_player_stacks(table_region: np.ndarray) -> list[float]:

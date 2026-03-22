@@ -231,20 +231,40 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     if not preflop_actions:
         return None, conf_parts
 
-    # Build hero_hand
+    # Build hero_hand — sort by rank (higher first), standard poker notation
+    _RANK_ORDER = "23456789TJQKA"
     hero_hand = ""
     if hero_cards and len(hero_cards) == 2:
-        hero_hand = hero_cards[0] + hero_cards[1]
-
-    # Fallback: try to find hero_hand from hero stack text in table
-    if not hero_hand:
-        hero_hand = _extract_hero_hand_from_stack_text(table_result)
+        c1, c2 = hero_cards[0], hero_cards[1]
+        r1 = c1[0] if len(c1) >= 2 else ""
+        r2 = c2[0] if len(c2) >= 2 else ""
+        idx1 = _RANK_ORDER.index(r1) if r1 in _RANK_ORDER else -1
+        idx2 = _RANK_ORDER.index(r2) if r2 in _RANK_ORDER else -1
+        if idx1 >= idx2:
+            hero_hand = c1 + c2
+        else:
+            hero_hand = c2 + c1
 
     if not hero_position:
         return None, conf_parts
 
-    # Build streets
-    streets = _build_streets(street_cols, board_cards, pos_order)
+    # Determine active players after preflop (didn't fold)
+    active_positions = []
+    for i, entry in enumerate(action_entries[:players_at_table]):
+        pos = entry.get("position", pos_order[i] if i < len(pos_order) else None)
+        action = (entry.get("action") or "").lower()
+        if action != "fold" and pos:
+            active_positions.append(pos)
+    # Also check re-action entries (calls after 3bet etc.)
+    for entry in action_entries[players_at_table:]:
+        action = (entry.get("action") or "").lower()
+        pos = entry.get("position")
+        if action == "fold" and pos and pos in active_positions:
+            active_positions.remove(pos)
+
+    # Build streets with position context
+    streets = _build_streets(street_cols, board_cards, pos_order,
+                             hero_position, active_positions)
 
     # Effective BB: from hero stack or player stacks
     effective_bb = None
@@ -373,14 +393,31 @@ def _action_to_code(action: str, size: float | None) -> str | None:
 
 
 def _build_streets(street_cols: list[dict], board_cards: list[str],
-                   pos_order: list[str]) -> list[dict]:
-    """Build streets array from Flop/Turn/River columns."""
+                   pos_order: list[str], hero_position: str = "",
+                   active_positions: list[str] | None = None) -> list[dict]:
+    """Build streets array from Flop/Turn/River columns.
+
+    Uses hero_position and active_positions to correctly assign positions
+    to postflop entries. Hero entries (type=hero) get hero_position.
+    Opponent entries get their OCR-detected position, or are inferred
+    from active_positions list.
+    """
     streets = []
 
     # Map board cards to streets: first 3 = flop, 4th = turn, 5th = river
-    flop_board = " ".join(board_cards[:3]) if len(board_cards) >= 3 else ""
+    flop_board = "".join(board_cards[:3]) if len(board_cards) >= 3 else ""
     turn_card = board_cards[3] if len(board_cards) >= 4 else ""
     river_card = board_cards[4] if len(board_cards) >= 5 else ""
+
+    # Postflop action order: SB first, then BB, then other positions in order
+    postflop_order = []
+    if active_positions:
+        for pos in ["SB", "BB"] + [p for p in pos_order if p not in ("SB", "BB")]:
+            if pos in active_positions:
+                postflop_order.append(pos)
+
+    # Track who folds across streets
+    folded_in_streets = set()
 
     for col in street_cols:
         name = col["name"].lower()
@@ -398,16 +435,43 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             street["card"] = river_card
 
         actions = []
+        # Track position assignment for this street
+        opp_positions_remaining = [p for p in postflop_order
+                                   if p != hero_position and p not in folded_in_streets]
+        opp_idx = 0
+
         for entry in entries:
-            pos = entry.get("position")
-            action = entry.get("action", "").lower()
+            entry_type = entry.get("type", "opponent")
+            action_text = (entry.get("action") or "").lower()
             size = entry.get("size")
 
-            if not pos or not action:
+            if not action_text or action_text in ("unknown", "skip"):
                 continue
 
-            act_dict = {"position": pos, "action": _street_action_code(action, size)}
+            # Assign position
+            if entry_type == "hero":
+                pos = hero_position
+            else:
+                # Use OCR-detected position if available
+                ocr_pos = entry.get("position")
+                if ocr_pos and ocr_pos != "BB":
+                    # Trust OCR position if it's not the default
+                    pos = ocr_pos
+                elif opp_positions_remaining:
+                    # Infer from postflop order
+                    pos = opp_positions_remaining[opp_idx % len(opp_positions_remaining)]
+                else:
+                    pos = ocr_pos or "?"
+
+            act_code = _street_action_code(action_text, size)
+            act_dict = {"position": pos, "action": act_code}
+            if size is not None:
+                act_dict["size"] = size
             actions.append(act_dict)
+
+            # Track folds
+            if action_text == "fold":
+                folded_in_streets.add(pos)
 
         if actions:
             street["actions"] = actions
@@ -417,27 +481,25 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
 
 
 def _street_action_code(action: str, size: float | None) -> str:
-    """Convert postflop action to code for streets."""
+    """Convert postflop action to code for streets.
+
+    Matches the format expected by analyze_hand.py:
+    X=Check, C=Call, F=Fold, R{size}=Bet/Raise (absolute bb value)
+    """
     action = action.lower().strip()
     if action == "fold":
         return "F"
     elif action == "check":
         return "X"
     elif action == "call":
-        if size:
-            return f"C{size:g}"
         return "C"
-    elif action == "bet":
-        if size:
-            return f"B{size:g}"
-        return "B"
-    elif action == "raise":
+    elif action in ("bet", "raise"):
         if size:
             return f"R{size:g}"
         return "R"
-    elif action == "all-in":
+    elif "all" in action:
         if size:
-            return f"AI{size:g}"
+            return f"R{size:g}"
         return "AI"
     return action.upper()
 
