@@ -948,12 +948,52 @@ class GeminiSessionManager:
                                        mime_type: str = "image/jpeg",
                                        user_text: str = "",
                                        usage_acc: dict | None = None) -> dict | None:
-        """Parse hand from a screenshot image using Gemini vision."""
+        """Parse hand from a screenshot image.
+
+        Attempts OCR-based parsing first, falling back to Gemini vision:
+        - OCR confidence > 0.85: return OCR result directly
+        - OCR confidence 0.1-0.85: append OCR hints to Gemini prompt
+        - OCR confidence 0.0: pure Gemini (unchanged)
+        """
         self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
 
+        # Step 1: Try OCR-based parsing
+        ocr_result = None
+        ocr_hints = None
+        try:
+            from ocr.n8_parser import parse_n8_screenshot
+            ocr_result = parse_n8_screenshot(image_bytes)
+            ocr_conf = ocr_result.get("confidence", 0.0)
+            self._logger.debug(f"[chat={chat_id}] OCR confidence: {ocr_conf:.2f}")
+
+            if ocr_conf > 0.85 and ocr_result.get("hand"):
+                hand = ocr_result["hand"]
+                if hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+                    self._logger.info(f"[chat={chat_id}] Using OCR result (conf={ocr_conf:.2f})")
+                    self._normalize_cards(hand)
+                    self._fix_folded_players(hand)
+                    return hand
+
+            if 0.1 <= ocr_conf and ocr_result.get("hints"):
+                ocr_hints = ocr_result["hints"]
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] OCR failed: {e}")
+
+        # Step 2: Fall back to Gemini vision
         prompt_text = IMAGE_PARSE_PROMPT
         if user_text.strip():
             prompt_text += f"\n\n用戶留言：{user_text.strip()}"
+
+        # Append OCR hints if available
+        if ocr_hints:
+            hints_str = json.dumps(ocr_hints, ensure_ascii=False, default=str)
+            prompt_text += f"\n\nOCR 預處理提示（僅供參考，可能有誤）：{hints_str}"
+
+        # Include partial hand from OCR if available
+        if ocr_result and ocr_result.get("hand"):
+            partial = ocr_result["hand"]
+            partial_str = json.dumps(partial, ensure_ascii=False, default=str)
+            prompt_text += f"\n\nOCR 解析結果（需要你驗證和補充，特別是 hero_hand）：{partial_str}"
 
         response = await asyncio.wait_for(
             self.client.aio.models.generate_content(
