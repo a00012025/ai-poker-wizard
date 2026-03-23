@@ -614,18 +614,42 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                                      cv2.CHAIN_APPROX_SIMPLE)
             rc = [c for c in rc if cv2.contourArea(c) > 20]
             if rc:
+                ch_c, cw_c = center.shape[:2]
+                center_area = ch_c * cw_c
                 big = max(rc, key=cv2.contourArea)
-                hll = cv2.convexHull(big)
+                big_area = cv2.contourArea(big)
+
+                # On face cards (K/Q/J) the biggest contour can be
+                # the card artwork, not the suit symbol.  When that
+                # contour exceeds 25% of the center crop, look for a
+                # smaller, suit-shaped contour instead.  The
+                # replacement must be large enough to be a real suit
+                # symbol (area > 800 after 4x upscale) to avoid
+                # picking tiny noise contours.
+                target = big
+                if big_area / center_area > 0.25 and len(rc) > 1:
+                    for c in sorted(rc, key=cv2.contourArea,
+                                    reverse=True):
+                        ca_c = cv2.contourArea(c)
+                        if ca_c / center_area > 0.25:
+                            continue
+                        bx, by, bw_, bh_ = cv2.boundingRect(c)
+                        asp = bw_ / bh_ if bh_ > 0 else 0
+                        if 0.6 < asp < 1.4 and ca_c > 800:
+                            target = c
+                            break
+
+                hll = cv2.convexHull(target)
                 ha = cv2.contourArea(hll)
-                ca = cv2.contourArea(big)
+                ca = cv2.contourArea(target)
                 csol = ca / ha if ha > 0 else 1.0
 
                 # Hull defects normalized by sqrt(area) for scale
-                # independence.  Hearts norm > 30, diamonds norm < 20.
-                hull_idx = cv2.convexHull(big, returnPoints=False)
+                # independence.  Hearts norm > 30, diamonds norm < 25.
+                hull_idx = cv2.convexHull(target, returnPoints=False)
                 max_defect = 0
                 if len(hull_idx) > 3:
-                    defects = cv2.convexityDefects(big, hull_idx)
+                    defects = cv2.convexityDefects(target, hull_idx)
                     if defects is not None:
                         max_defect = max(d[0][3] for d in defects)
 
@@ -633,7 +657,7 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
 
                 if norm > 30:
                     return "h"
-                if norm < 20:
+                if norm < 25:
                     return "d"
 
                 # Ambiguous: use solidity + green
