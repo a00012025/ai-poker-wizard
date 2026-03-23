@@ -6,11 +6,14 @@ services:
       - ./logs:/app/logs
       - ./.tokens.json:/app/.tokens.json
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
+    runtime: nvidia
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
     stop_grace_period: 15m
     healthcheck:
