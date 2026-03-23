@@ -867,9 +867,11 @@ class GeminiSessionManager:
                     self._logger.warning(f"[chat={chat_id}] Failed to save image hand: {e}")
 
             # Step 2: Require user token
+            eff_bb = hand_json.get('effective_bb')
+            eff_str = f"({eff_bb:.0f}bb)" if eff_bb else ""
             await _update_status(
                 f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
-                f"({hand_json['effective_bb']:.0f}bb)，正在查詢 GTO 策略..."
+                f"{eff_str}，正在查詢 GTO 策略..."
             )
             if not refresh_token:
                 return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
@@ -890,9 +892,11 @@ class GeminiSessionManager:
             )
 
             # Step 4: Coaching with user's caption/question
+            eff_bb2 = hand_json.get('effective_bb')
+            eff_str2 = f"({eff_bb2:.0f}bb)" if eff_bb2 else ""
             hand_desc = (
                 f"Hero {hand_json['hero_position']} {hand_json['hero_hand']} "
-                f"({hand_json['effective_bb']:.0f}bb)\n"
+                f"{eff_str2}\n"
                 f"Preflop: {hand_json['preflop_actions']}"
             )
             if hand_json.get("streets"):
