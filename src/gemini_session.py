@@ -306,10 +306,16 @@ Solver 數據是 ground truth（最高原則，絕對不可違反！）：
 - 只有用戶的額外問題（如「對手範圍？」「不同位置的策略？」）才需要用 query_gto 工具查詢
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
 - 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
-- 極重要：如果 Preflop solver 數據顯示 hero 的動作是正確的（例如 open raise 100%），那就是正確的！
-  不能因為後續街沒有 solver 數據（例如多人底池）就否定 preflop 的正確性！
+- 極重要：怎麼判斷 hero 某手牌 preflop 打得對不對？
+  GTO 數據分兩段：
+  1.「【XX 在 Preflop】」= 這個位置的整體 range 策略（例如 75% fold, 25% raise）
+  2.「【XX 手牌名】」= hero 這手特定牌的策略（例如 QJo → Bet 2.2: 100%）
+  你必須看第 2 段！第 1 段是整體 range，跟 hero 這手牌無關！
+  如果第 2 段顯示 Bet/Raise 100%，那 hero 的 open/raise 就是 100% 正確的 GTO 打法！
+  絕對不能因為整體 range fold 比例高就說 hero 這手牌應該 fold！
+  「Bet X」在 preflop 的語境下就是 Raise to X（open raise）。
+- 極重要：不能因為後續街沒有 solver 數據（例如多人底池）就否定 preflop 的正確性！
   多人底池沒有 solver 數據是正常的（solver 只算 HU），但不代表 preflop 的決策是錯的。
-  例：solver 顯示 LJ open QJo = Raise 100%，即使後面的多人底池沒有數據，preflop open 仍然是 100% 正確的。
 - 極重要：注意 hero 的動作是 open raise 還是 call！
   preflop_actions 中 hero 的 R 代表 raise（可能是 open raise 或 3bet）。
   如果 hero 是第一個 raise 的人（前面都是 F），那就是 open raise，不是跟注！
