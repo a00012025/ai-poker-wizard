@@ -143,25 +143,19 @@ def _compute_effective_bb(
     hero_position: str | None,
     all_stacks: list[float] | None,
 ) -> float | None:
-    """Compute effective_bb from ALL active players' starting stacks.
+    """Compute effective_bb from active players' starting stacks.
 
-    N8 displayed stacks represent chips AFTER investments are deducted
-    (mid-hand snapshot).  For each player who entered the pot:
-        starting = displayed + chips_invested  (excluding uncalled bets)
+    In N8 replays, displayed stacks = starting - permanently_invested.
+    The pot is shown separately in the table centre, so this equation
+    holds for BOTH the winner and the loser(s).
 
-    effective_bb = min(hero_starting, min(opponent_startings))
-
-    Returns effective_bb rounded to 1 decimal, or None.
+    Uses pot-header progression to compute per-street contributions
+    and validate preflop blind inference.
     """
+    if hero_stack_displayed is None:
+        return None
 
-    hero_invested = 0.0
-    hero_folded = False
-    first_hero_preflop_action = None
-
-    # Track total investment for each opponent who entered the pot.
-    # Each element is the running total for one active opponent.
-    opponent_investments = []  # list of total invested per active opponent
-
+    # ---- Locate columns ----
     blinds_col = None
     preflop_col = None
     street_cols = []
@@ -175,8 +169,6 @@ def _compute_effective_bb(
         elif name_lower in ("flop", "turn", "river"):
             street_cols.append(col)
 
-    # If PreFlop wasn't found but first street column has many entries,
-    # it's likely misidentified PreFlop (same logic as _assemble_hand).
     if preflop_col is None and street_cols:
         first_street = street_cols[0]
         first_entries = first_street.get("entries", [])
@@ -185,10 +177,8 @@ def _compute_effective_bb(
             preflop_col = first_street
             street_cols = street_cols[1:]
 
-    # --- Determine blinds from blinds column ---
+    # ---- Determine hero blind ----
     hero_blind = 0.0
-    # Map opponent position -> blind amount
-    opponent_blinds: dict[str, float] = {}
 
     if blinds_col:
         for entry in blinds_col.get("entries", []):
@@ -199,179 +189,308 @@ def _compute_effective_bb(
                     hero_blind = 0.5
                 elif "bb" in action_text or size == 1.0:
                     hero_blind = 1.0
-            else:
-                # Opponent blind entry — detect position from action text
-                pos = None
-                if "sb" in action_text or size == 0.5:
-                    pos = "SB"
-                    opponent_blinds[pos] = 0.5
-                elif "bb" in action_text or size == 1.0:
-                    pos = "BB"
-                    opponent_blinds[pos] = 1.0
 
-    # Fallback: infer blind from hero_position if blinds column missed it
     if hero_blind == 0.0 and hero_position:
         if hero_position == "BB":
             hero_blind = 1.0
         elif hero_position == "SB":
             hero_blind = 0.5
 
-    # --- Process preflop: track hero AND opponent investments ---
-    # Track which opponent positions entered the pot (for blind matching)
-    active_opponent_positions = []
+    # ---- Collect pot headers ----
+    # Pot headers = pot at START of each street (before that street's action).
+    # preflop_pot = antes + blinds
+    # flop_pot = pot after all preflop action
+    # turn_pot = pot after all flop action
+    # river_pot = pot after all turn action
+    pot_by_street = {}
+    for col in columns:
+        if col.get("pot") is not None:
+            pot_by_street[col["name"].lower()] = col["pot"]
+
+    preflop_pot = pot_by_street.get("pre-flop") or pot_by_street.get("preflop")
+    flop_pot = pot_by_street.get("flop")
+    turn_pot = pot_by_street.get("turn")
+    river_pot = pot_by_street.get("river")
+
+    # ---- Walk preflop entries ----
+    hero_perm = 0.0
+    opp_perm = 0.0
+    opp_entered = False
+    first_hero_preflop_action = None
+
+    # Track ALL opponents who enter preflop.  The one who stays longest
+    # into postflop is the one whose starting stack determines eff_bb.
+    # After preflop, we'll use pot headers to determine the continuing
+    # opponent's preflop investment.
+    n_opp_preflop = 0   # count of opponents who enter preflop
+    hero_preflop_total = 0.0
 
     if preflop_col:
-        for entry in preflop_col.get("entries", []):
+        entries = preflop_col.get("entries", [])
+        current_bet = 1.0  # BB level
+
+        for entry in entries:
             action = (entry.get("action") or "").lower()
             size = entry.get("size") or 0.0
+            is_hero = entry.get("type") == "hero"
 
-            if entry.get("type") == "hero":
+            if action == "fold":
+                continue
+
+            if is_hero:
                 if first_hero_preflop_action is None:
                     first_hero_preflop_action = action
-                if action in ("raise", "bet", "all-in"):
-                    hero_invested += size
+                if action in ("raise", "all-in"):
+                    hero_preflop_total = size
+                    current_bet = size
                 elif action == "call":
-                    hero_invested += size
-                elif action == "fold":
-                    hero_folded = True
+                    hero_preflop_total = hero_blind + size
+                    if hero_preflop_total < current_bet:
+                        hero_preflop_total = current_bet
             else:
-                # Opponent entry
                 if action in ("call", "raise", "bet", "all-in"):
-                    opponent_investments.append(size)
-                    # Track position for blind matching
-                    opp_pos = normalize_position(
-                        entry.get("position") or ""
-                    )
-                    active_opponent_positions.append(opp_pos)
+                    opp_entered = True
+                    n_opp_preflop += 1
+                    if action in ("raise", "all-in"):
+                        current_bet = size
 
-    # Add blind if hero's first preflop action is Call, Check, or Fold.
-    # If first action is Raise/Bet, the raise amount already includes
-    # the blind (e.g., BB raises to 2.2 = 1.0 blind + 1.2 additional).
-    if hero_blind > 0 and first_hero_preflop_action not in ("raise", "bet", "all-in"):
-        hero_invested += hero_blind
+        if hero_preflop_total == 0.0 and hero_blind > 0:
+            hero_preflop_total = hero_blind
 
-    # Add opponent blinds to their investments.
-    # Opponent preflop Call/Raise sizes from the panel are the ADDITIONAL
-    # amount (on top of their blind).  E.g. SB calling a 2bb raise shows
-    # "Call 1.5" — the 0.5 blind is not included.  Add it back.
-    for i, opp_pos in enumerate(active_opponent_positions):
-        if i < len(opponent_investments):
-            blind_amt = opponent_blinds.get(opp_pos, 0.0)
-            # Fallback: infer blind from position name
-            if blind_amt == 0.0:
-                if opp_pos == "SB":
-                    blind_amt = 0.5
-                elif opp_pos == "BB":
-                    blind_amt = 1.0
-            opp_action_size = opponent_investments[i]
-            # Only add blind when the action is Call (additional amount).
-            # For Raise, the panel already shows the total raise-to size.
-            # Heuristic: if size < 2.0 and position is SB/BB, it's likely
-            # just the additional call amount.
-            if blind_amt > 0 and opp_action_size > 0:
-                opponent_investments[i] += blind_amt
+    # Use pot headers to compute the continuing opponent's preflop total.
+    # flop_pot = preflop_pot + hero_new + sum(all_opp_new)
+    # For the continuing opponent: opp_pre_total = current_bet at end of
+    # preflop (they called to this level).  This handles multi-way correctly
+    # because each active caller matched current_bet.
+    opp_preflop_total = current_bet if opp_entered else 0.0
 
-    # --- Process postflop streets: track hero AND opponent investments ---
-    # Assign postflop opponent entries to the first active opponent
-    # (works well for heads-up pots, which are most common postflop).
-    last_hero_action = first_hero_preflop_action
+    # Validate with pot headers if available
+    if flop_pot is not None and preflop_pot is not None and opp_entered:
+        hero_new = hero_preflop_total - hero_blind
+        total_opp_new = flop_pot - preflop_pot - hero_new
+        if n_opp_preflop == 1:
+            # Heads-up: opp's new chips = total_opp_new
+            opp_blind_inferred = opp_preflop_total - total_opp_new
+            # Validate: blind should be 0, 0.5, or 1.0
+            if opp_blind_inferred < -0.3:
+                # Our opp_preflop_total is too low; adjust
+                opp_preflop_total = total_opp_new
+        # For multi-way: each caller put in current_bet total.
+        # The pot confirms this indirectly.
+
+    hero_perm += hero_preflop_total
+    opp_perm += opp_preflop_total
+
+    # ---- Walk postflop streets ----
+    # Use pot-header progression where available to compute per-street
+    # contributions.  For the last street (no next header), fall back
+    # to entry-based computation.
+    #
+    # Calls are ADDITIVE: "call X" = add X more to street total.
+    # Raises are REPLACE: "raise-to X" replaces the running total.
+
+    # Build ordered pot sequence for delta computation:
+    # [flop_pot, turn_pot, river_pot]
+    pot_sequence = []
     for col in street_cols:
-        for entry in col.get("entries", []):
-            action = (entry.get("action") or "").lower()
-            size = entry.get("size") or 0.0
+        nm = col["name"].lower()
+        p = pot_by_street.get(nm)
+        pot_sequence.append(p)
 
-            if entry.get("type") == "hero":
-                if action in ("raise", "bet", "all-in"):
-                    hero_invested += size
-                elif action == "call":
-                    hero_invested += size
-                elif action == "fold":
-                    hero_folded = True
-                if action in ("raise", "bet", "all-in", "call", "fold", "check"):
-                    last_hero_action = action
-            else:
-                # Opponent postflop action
-                if action in ("call", "bet", "raise", "all-in"):
-                    if opponent_investments:
-                        opponent_investments[0] += size
-
-    if hero_stack_displayed is None:
-        return None
-
-    # --- Detect uncalled last bet ---
-    # When the last entry in the last street is a Fold, the bet/raise
-    # immediately before it was uncalled. Subtract it from the bettor's
-    # invested total so starting = displayed + invested_adj.
-    hero_uncalled = 0.0
-    opp_uncalled = 0.0
-    all_cols = ([preflop_col] if preflop_col else []) + street_cols
-    for col in reversed(all_cols):
+    for idx, col in enumerate(street_cols):
         entries = col.get("entries", [])
         if not entries:
             continue
+
+        hero_street = 0.0
+        opp_street = 0.0
+
+        for entry in entries:
+            action = (entry.get("action") or "").lower()
+            size = entry.get("size") or 0.0
+            is_hero = entry.get("type") == "hero"
+
+            if action in ("fold", "check"):
+                continue
+
+            if is_hero:
+                if action == "bet":
+                    hero_street += size
+                elif action in ("raise", "all-in"):
+                    hero_street = size  # raise-to replaces
+                elif action == "call":
+                    hero_street += size  # call is additive
+            else:
+                if action == "bet":
+                    opp_street += size
+                elif action in ("raise", "all-in"):
+                    opp_street = size  # raise-to replaces
+                elif action == "call":
+                    opp_street += size  # call is additive
+
         last_entry = entries[-1]
-        last_a = (last_entry.get("action") or "").lower()
-        if last_a == "fold":
-            # Find the bet/raise before this fold
-            for e in reversed(entries[:-1]):
-                ea = (e.get("action") or "").lower()
-                if ea in ("bet", "raise", "all-in"):
-                    uncalled_size = e.get("size") or 0.0
-                    if e.get("type") == "hero":
-                        hero_uncalled = uncalled_size
-                    else:
-                        opp_uncalled = uncalled_size
-                    break
-        break
+        last_action = (last_entry.get("action") or "").lower()
+        last_is_hero = last_entry.get("type") == "hero"
 
-    hero_invested_adj = hero_invested - hero_uncalled
-    hero_starting = hero_stack_displayed + hero_invested_adj
+        # Try to use pot delta for this street if next header exists
+        this_pot = pot_sequence[idx] if idx < len(pot_sequence) else None
+        next_pot = pot_sequence[idx + 1] if idx + 1 < len(pot_sequence) else None
 
-    # --- Compute opponent starting stacks ---
-    # Remove hero's displayed stack from the list to get non-hero stacks.
-    non_hero_stacks = list(all_stacks) if all_stacks else []
-    if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
-        non_hero_stacks.remove(hero_stack_displayed)
+        if this_pot is not None and next_pot is not None:
+            # Pot delta = total chips added this street by all players
+            delta = next_pot - this_pot
+            # Hero's matched contribution for this street
+            hero_matched = min(hero_street, opp_street) if hero_street > 0 and opp_street > 0 else hero_street
+            if last_action == "fold":
+                if last_is_hero:
+                    hero_matched = hero_street
+                else:
+                    hero_matched = min(hero_street, opp_street)
+            elif last_action == "call" and not last_is_hero:
+                hero_matched = min(hero_street, opp_street)
+            else:
+                hero_matched = hero_street
 
-    opponent_startings = []
-    for i, opp_inv in enumerate(opponent_investments):
-        opp_inv_adj = opp_inv
-        # Apply uncalled bet adjustment to first opponent only
-        if i == 0:
-            opp_inv_adj = opp_inv - opp_uncalled
+            # Derive opp's matched contribution from pot delta
+            opp_matched = delta - hero_matched
+            if opp_matched < 0:
+                opp_matched = 0.0
+            hero_perm += hero_matched
+            opp_perm += opp_matched
+        else:
+            # Last street or no pot headers — use entry-based logic
+            if last_action == "fold":
+                if last_is_hero:
+                    hero_perm += hero_street
+                    opp_perm += min(opp_street, hero_street)
+                else:
+                    opp_perm += opp_street
+                    hero_perm += min(hero_street, opp_street)
+            elif last_action == "call":
+                if last_is_hero:
+                    hero_perm += hero_street
+                    opp_perm += opp_street
+                else:
+                    opp_perm += opp_street
+                    hero_perm += min(hero_street, opp_street)
+            else:
+                hero_perm += hero_street
+                opp_perm += opp_street
+
+    # ---- Detect opponent all-in ----
+    # Case 1: Partial call — opponent's total street commitment < hero's.
+    # Case 2: Opponent raises/bets and hero folds — if a non-hero stack
+    #   matches the uncalled portion, opponent went all-in.
+    opp_went_allin = False
+    opp_allin_display = None  # display stack when opp went all-in
+
+    for col in street_cols:
+        entries = col.get("entries", [])
+        if len(entries) < 2:
+            continue
+        last_entry = entries[-1]
+        last_action = (last_entry.get("action") or "").lower()
+        last_is_hero = last_entry.get("type") == "hero"
+
+        # Compute total street commitment for each side
+        hero_total = 0.0
+        opp_total = 0.0
+        for e in entries:
+            ea = (e.get("action") or "").lower()
+            es = e.get("size") or 0.0
+            eh = e.get("type") == "hero"
+            if ea in ("fold", "check"):
+                continue
+            if eh:
+                if ea in ("raise", "all-in"):
+                    hero_total = es
+                else:
+                    hero_total += es
+            else:
+                if ea in ("raise", "all-in"):
+                    opp_total = es
+                else:
+                    opp_total += es
+
+        if last_action == "call" and not last_is_hero:
+            # Case 1: opp called for less (partial call)
+            if opp_total < hero_total - 0.5:
+                opp_went_allin = True
+
+        elif last_action == "fold" and last_is_hero and opp_total > hero_total:
+            # Case 2: opp raised/bet and hero folded.
+            # Check if opp went all-in by looking for a non-hero stack
+            # that matches the uncalled portion.
+            uncalled = opp_total - hero_total
+            if uncalled > 0 and all_stacks:
+                non_hero = [s for s in (all_stacks or [])
+                            if s != hero_stack_displayed]
+                for s in non_hero:
+                    if abs(s - uncalled) < 0.5:
+                        opp_went_allin = True
+                        opp_allin_display = s
+                        break
+
+    # ---- Compute starting stacks ----
+    hero_starting = hero_stack_displayed + hero_perm
+
+    if not opp_entered:
+        return round(hero_starting, 1) if hero_starting >= 1.0 else None
+
+    # ---- Determine opponent starting stack ----
+    if opp_went_allin:
+        if opp_allin_display is not None:
+            # Opponent went all-in and we know their display (uncalled portion)
+            opp_starting = opp_allin_display + opp_perm
+        else:
+            # Opponent went all-in: starting = total investment (display ≈ 0)
+            opp_starting = opp_perm
+    else:
+        # Find opponent's displayed stack from all_stacks.
+        non_hero_stacks = list(all_stacks) if all_stacks else []
+        if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
+            non_hero_stacks.remove(hero_stack_displayed)
+
+        # Strategy: use pot progression to estimate expected dead_money,
+        # then score each candidate by how well it fits.
+        #
+        # dead_money = preflop_pot - hero_blind - opp_blind_inferred
+        # where opp_blind_inferred ∈ {0, 0.5, 1.0}
+        # final_pot_expected = dead_money + hero_perm + opp_perm
+        #
+        # The last pot header should match final_pot_expected.
+        # For each candidate s, opp_starting = s + opp_perm.
+        # The "correct" s is the one where the pot arithmetic is
+        # most consistent.  Since pot doesn't depend on s, we use
+        # another heuristic: the active opponent's displayed stack
+        # should be SMALLER than most folded players' stacks (because
+        # they invested opp_perm into the pot).
+        #
+        # Score each candidate: prefer stacks that, when combined with
+        # opp_perm, produce a starting stack that's between opp_perm
+        # and hero_starting.  Among these, prefer the one whose
+        # displayed stack is most "depleted" (i.e. farthest below
+        # the median non-hero stack).
 
         if non_hero_stacks:
-            # Pick the LARGEST non-hero displayed stack whose resulting
-            # starting stack (s + opp_invested) does not exceed
-            # hero_starting.  Rationale: folded players keep nearly their
-            # full stack, so very large stacks (> hero_starting -
-            # opp_invested) belong to folded big-stacks, not the active
-            # opponent.  The active opponent's displayed stack is reduced
-            # by their investment, making it the largest "shifted-down"
-            # stack still below the hero_starting threshold.
             candidates = [
                 s for s in non_hero_stacks
-                if s + opp_inv_adj <= hero_starting + 0.5  # +0.5 for OCR tolerance
+                if s + opp_perm <= hero_starting + 1.0
             ]
             if candidates:
                 best_stack = max(candidates)
-            else:
-                # All non-hero stacks exceed hero's starting when
-                # combined with investment — hero is the short stack.
-                # Use minimum non-hero stack as conservative fallback.
+            elif non_hero_stacks:
                 best_stack = min(non_hero_stacks)
+            else:
+                best_stack = None
+        else:
+            best_stack = None
 
-            opp_starting = best_stack + opp_inv_adj
-            opponent_startings.append(opp_starting)
+        opp_starting = (best_stack + opp_perm) if best_stack is not None else hero_starting
 
-    # effective_bb = min of all starting stacks of players who entered pot
-    all_starting = [hero_starting] + opponent_startings
-    effective_bb = min(all_starting)
+    all_starting = [hero_starting, opp_starting]
+    effective_bb = round(min(all_starting), 1)
 
-    # Round to 1 decimal
-    effective_bb = round(effective_bb, 1)
-
-    # Sanity check: effective_bb should be at least 1 BB
     if effective_bb < 1.0:
         if all_stacks:
             return round(min(all_stacks), 1)
