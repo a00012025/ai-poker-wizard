@@ -648,9 +648,11 @@ def _run_analysis(hand: dict) -> dict:
     streets = _fix_collapsed_streets(streets)
 
     # Determine position order based on number of players
-    num_players = len(hand.get("player_stacks", []))
+    # Prefer players_at_table (explicitly set) over len(player_stacks)
+    # (OCR may detect extra stacks from pot values or non-player text)
+    num_players = hand.get("players_at_table", 0) or hand.get("num_players", 0)
     if not num_players:
-        num_players = hand.get("players_at_table", 0) or hand.get("num_players", 0)
+        num_players = len(hand.get("player_stacks", []))
     if not num_players:
         # MTTGeneral always uses 8 positions in GTO Wizard API. Default to 8
         # to avoid position misalignment when preflop_actions are incomplete
