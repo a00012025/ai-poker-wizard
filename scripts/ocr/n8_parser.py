@@ -657,6 +657,27 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         "preflop_actions": preflop_actions,
     }
 
+    # Sanity check effective_bb — if unreasonable, leave it out for Gemini
+    if effective_bb is not None:
+        # Must be at least as large as the biggest preflop raise
+        max_preflop_raise = 0
+        for part in preflop_actions.split("-"):
+            if part.startswith("R"):
+                try:
+                    max_preflop_raise = max(max_preflop_raise, float(part[1:]))
+                except ValueError:
+                    pass
+            elif part.startswith("AI"):
+                try:
+                    max_preflop_raise = max(max_preflop_raise, float(part[2:]))
+                except ValueError:
+                    pass
+        if effective_bb < max_preflop_raise:
+            effective_bb = None  # unreasonable, let Gemini compute
+        # Must be reasonable relative to hero's displayed stack
+        elif hero_stack and effective_bb > hero_stack * 5:
+            effective_bb = None  # likely stack matching error
+
     if effective_bb is not None:
         hand["effective_bb"] = effective_bb
 
