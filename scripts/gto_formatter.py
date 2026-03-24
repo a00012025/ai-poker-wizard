@@ -787,6 +787,10 @@ def _action_label(code: str, spot_solution: dict) -> str:
     if code == "RAI":
         return "All-in"
 
+    # Determine if this is preflop (raise) or postflop (bet)
+    street = spot_solution.get("game", {}).get("current_street", {}).get("type", "")
+    is_preflop = street.lower() == "preflop"
+
     # Look up betsize from action_solutions
     for sol in spot_solution["action_solutions"]:
         if sol["action"]["code"] == code:
@@ -794,6 +798,7 @@ def _action_label(code: str, spot_solution: dict) -> str:
             if act.get("allin"):
                 return f"All-in {act['betsize']}"
             pct = float(act.get("betsize_by_pot", 0)) * 100
-            return f"Bet {act['betsize']}（{pct:.0f}% pot）"
+            verb = "RAISE" if is_preflop else "Bet"
+            return f"{verb} {act['betsize']}（{pct:.0f}% pot）"
 
     return code
