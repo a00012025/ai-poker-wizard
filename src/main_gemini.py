@@ -16,7 +16,7 @@ db = Database()
 
 
 async def post_init(application):
-    """Called after Application.initialize() — connect DB."""
+    """Called after Application.initialize() — connect DB + preload OCR."""
     dsn = os.getenv("SUPABASE_CONN")
     if dsn:
         await db.connect(dsn)
@@ -24,6 +24,15 @@ async def post_init(application):
         logger.info("Database ready")
     else:
         logger.warning("SUPABASE_CONN not set — running without database")
+
+    # Preload EasyOCR model to avoid cold start on first image
+    if os.getenv("OCR_ENABLED", "false").lower() in ("true", "1", "yes"):
+        try:
+            from ocr.ocr_utils import _get_reader
+            _get_reader()
+            logger.info("OCR model preloaded")
+        except Exception as e:
+            logger.warning(f"OCR model preload failed: {e}")
 
 
 async def post_shutdown(application):
