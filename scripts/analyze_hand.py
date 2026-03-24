@@ -610,6 +610,21 @@ def _run_analysis(hand: dict) -> dict:
     t0 = time.time()
     hand = _normalize_positions(hand)
     gametype = hand.get("gametype", "MTTGeneral")
+
+    # Ensure effective_bb exists — estimate from preflop raises if missing
+    if "effective_bb" not in hand or hand["effective_bb"] is None:
+        # Estimate from largest preflop raise size × 10, or default 20bb
+        parts = hand.get("preflop_actions", "").split("-")
+        max_raise = 0
+        for p in parts:
+            if p.startswith("R") or p.startswith("AI"):
+                try:
+                    val = float(p.lstrip("RAI"))
+                    max_raise = max(max_raise, val)
+                except ValueError:
+                    pass
+        hand["effective_bb"] = max(max_raise * 10, 20) if max_raise > 0 else 20
+
     depth = nearest_depth(hand["effective_bb"])
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
