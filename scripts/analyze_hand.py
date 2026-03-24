@@ -740,6 +740,7 @@ def _run_analysis(hand: dict) -> dict:
     raw_preflop = hand["preflop_actions"]
     multiway_note = ""
     multiway_positions = None  # set of 2 positions if multiway simplified
+    original_depth = depth  # preserve for preflop open spot (before multiway adjustment)
     simplified_preflop, adjusted_depth, multiway_note, multiway_positions = _simplify_multiway(
         hand, hero_pos, gametype if not is_icm else chipev_gametype,
         depth if not is_icm else chipev_depth,
@@ -764,11 +765,15 @@ def _run_analysis(hand: dict) -> dict:
     hero_spots = []
 
     # Preflop hero spot (initial open/fold decision)
+    # Use ORIGINAL depth (before multiway dead-money adjustment) for the open decision.
+    # The adjusted depth is for postflop spots only — dead money from extra callers
+    # doesn't affect whether hero should open in the first place.
     preflop_before = _preflop_before_hero(preflop_actions, hero_pos, pos_order)
+    preflop_depth = original_depth if multiway_note else depth
     hero_spots.append({
         "street": "preflop",
         "header": "【Preflop】",
-        "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
+        "params": dict(gametype=gametype, depth=preflop_depth, stacks=icm_stacks,
                        preflop_actions=preflop_before),
         "action_desc": None,
     })
