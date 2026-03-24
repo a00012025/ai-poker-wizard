@@ -137,6 +137,157 @@ def _estimate_table_size(action_entries: list[dict]) -> int:
     return 9
 
 
+def _compute_effective_bb(
+    columns: list[dict],
+    hero_stack_displayed: float | None,
+    hero_position: str | None,
+    all_stacks: list[float] | None,
+) -> float | None:
+    """Compute effective_bb from hero's displayed stack + investments.
+
+    Displayed stacks in N8 are END-OF-HAND remaining stacks. To recover
+    hero's starting stack:
+        hero_starting = hero_displayed + hero_total_invested
+
+    For hero who won the pot, this overestimates (displayed includes
+    winnings), so we detect wins and subtract the pot. For hero who
+    folded or lost, displayed + invested = starting exactly.
+
+    Returns effective_bb rounded to 1 decimal, or None.
+    """
+    hero_invested = 0.0
+    hero_folded = False
+    hero_won_amount = None  # from "Wins X BB" entries if visible
+    first_hero_preflop_action = None  # "raise", "call", "check", "fold"
+
+    blinds_col = None
+    preflop_col = None
+    street_cols = []
+
+    for col in columns:
+        name_lower = col["name"].lower()
+        if "blind" in name_lower:
+            blinds_col = col
+        elif "pre" in name_lower:
+            preflop_col = col
+        elif name_lower in ("flop", "turn", "river"):
+            street_cols.append(col)
+
+    # If PreFlop wasn't found but first street column has many entries,
+    # it's likely misidentified PreFlop (same logic as _assemble_hand).
+    if preflop_col is None and street_cols:
+        first_street = street_cols[0]
+        first_entries = first_street.get("entries", [])
+        if (first_street["name"].lower() == "flop"
+                and len(first_entries) >= 5):
+            preflop_col = first_street
+            street_cols = street_cols[1:]
+
+    # Determine hero's blind from blinds column
+    hero_blind = 0.0
+    if blinds_col:
+        for entry in blinds_col.get("entries", []):
+            if entry.get("type") == "hero":
+                action_text = (entry.get("action") or "").lower()
+                size = entry.get("size")
+                if "sb" in action_text or size == 0.5:
+                    hero_blind = 0.5
+                elif "bb" in action_text or size == 1.0:
+                    hero_blind = 1.0
+
+    # Fallback: infer blind from hero_position if blinds column missed it
+    if hero_blind == 0.0 and hero_position:
+        if hero_position == "BB":
+            hero_blind = 1.0
+        elif hero_position == "SB":
+            hero_blind = 0.5
+
+    # Process preflop entries
+    if preflop_col:
+        for entry in preflop_col.get("entries", []):
+            if entry.get("type") != "hero":
+                continue
+            action = (entry.get("action") or "").lower()
+            size = entry.get("size") or 0.0
+
+            if first_hero_preflop_action is None:
+                first_hero_preflop_action = action
+
+            if action in ("raise", "bet", "all-in"):
+                hero_invested += size
+            elif action == "call":
+                hero_invested += size
+            elif action == "fold":
+                hero_folded = True
+
+    # Add blind if hero's first preflop action is Call, Check, or Fold.
+    # If first action is Raise/Bet, the raise amount already includes
+    # the blind (e.g., BB raises to 2.2 = 1.0 blind + 1.2 additional).
+    if hero_blind > 0 and first_hero_preflop_action not in ("raise", "bet", "all-in"):
+        hero_invested += hero_blind
+
+    # Process postflop streets
+    last_hero_action = first_hero_preflop_action
+    for col in street_cols:
+        for entry in col.get("entries", []):
+            if entry.get("type") != "hero":
+                continue
+            action = (entry.get("action") or "").lower()
+            size = entry.get("size") or 0.0
+
+            if action in ("raise", "bet", "all-in"):
+                hero_invested += size
+            elif action == "call":
+                hero_invested += size
+            elif action == "fold":
+                hero_folded = True
+
+            if action in ("raise", "bet", "all-in", "call", "fold", "check"):
+                last_hero_action = action
+
+    if hero_stack_displayed is None:
+        return None
+
+    # Compute hero starting stack
+    hero_starting = hero_stack_displayed + hero_invested
+
+    # If hero didn't fold, displayed stack may include pot winnings.
+    # Detect this: if displayed > invested (hero has more than they put in),
+    # they likely won. Subtract the estimated pot.
+    # Use the last street's pot header value if available.
+    if not hero_folded:
+        last_pot = None
+        all_cols = ([preflop_col] if preflop_col else []) + street_cols
+        for col in reversed(all_cols):
+            if col and col.get("pot") is not None:
+                last_pot = col["pot"]
+                break
+
+        if last_pot is not None and hero_stack_displayed > hero_invested:
+            # Hero likely won — displayed includes the pot they won.
+            # hero_starting = displayed - (pot_won - invested) + invested
+            #               = displayed - pot_won + 2*invested
+            # But pot_won is hard to know exactly. Instead:
+            # hero_starting = displayed + invested - pot_won
+            # Conservative: use last_pot as pot_won estimate.
+            hero_starting = hero_stack_displayed + hero_invested - last_pot
+            # Ensure starting is at least hero_invested (can't start
+            # with less than what was invested, modulo rounding errors)
+            hero_starting = max(hero_starting, hero_invested)
+
+    # Round to 1 decimal
+    effective_bb = round(hero_starting, 1)
+
+    # Sanity check: effective_bb should be at least 1 BB
+    if effective_bb < 1.0:
+        # Fallback to min(all_stacks) if our computation failed
+        if all_stacks:
+            return round(min(all_stacks), 1)
+        return None
+
+    return effective_bb
+
+
 def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None, dict]:
     """Assemble hand JSON from parsed table and panel data.
 
@@ -277,17 +428,15 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     streets = _build_streets(street_cols, board_cards, pos_order,
                              hero_position, active_positions)
 
-    # Effective BB: conservative estimate from all detected player stacks.
-    # effective_bb = min(all stacks) is a lower bound since displayed
-    # stacks are end-of-hand (after chips invested), but it's a reasonable
-    # approximation and far better than None.
-    effective_bb = None
+    # Effective BB: compute from hero's displayed stack + total investment.
+    # Displayed stacks are end-of-hand remaining, so:
+    #   hero_starting = hero_displayed + hero_invested  (conservative)
+    # This gives hero's starting stack, which bounds effective_bb.
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
-    if stacks:
-        effective_bb = min(stacks)
-    elif hero_stack:
-        effective_bb = hero_stack
+    effective_bb = _compute_effective_bb(
+        columns, hero_stack, hero_position, stacks
+    )
 
     hand = {
         "gametype": "MTTGeneral",
