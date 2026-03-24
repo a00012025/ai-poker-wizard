@@ -42,3 +42,4 @@ scripts/_tmp.py
 
 # OCR template raw crops
 scripts/ocr/templates/raw/
+.game_modes_cache.json

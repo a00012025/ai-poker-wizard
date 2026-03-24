@@ -33,7 +33,29 @@
       "Bash(dig:*)",
       "WebSearch",
       "WebFetch(domain:ai.google.dev)",
-      "WebFetch(domain:supabase.com)"
+      "WebFetch(domain:supabase.com)",
+      "Bash(unset:*)",
+      "Bash(gh repo view:*)",
+      "Bash(zip:*)",
+      "Bash(find:*)",
+      "Bash(psql:*)",
+      "mcp__gcloud__run_gcloud_command",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__github__search_repositories",
+      "mcp__github__get_file_contents",
+      "mcp__github__search_code",
+      "mcp__grep__searchGitHub",
+      "Bash(/home/harry/ai-poker-wizard/scripts/_tmp.py:*)",
+      "Bash(nvidia-smi)",
+      "Bash(dpkg -l)",
+      "Bash(xvfb-run:*)",
+      "Bash(export DISPLAY=:24)",
+      "Bash(google-chrome --version)",
+      "Bash(xdpyinfo -display :24)",
+      "Bash(bb:*)",
+      "Bash(bb-browser:*)",
+      "Bash(npx bb-browser:*)"
     ]
   }
 }
