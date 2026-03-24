@@ -145,26 +145,21 @@ def _compute_effective_bb(
 ) -> float | None:
     """Compute effective_bb from ALL active players' starting stacks.
 
-    N8 displayed stacks represent chips at the replay snapshot point.
-    For each player:
-        starting = displayed + invested_before_snapshot
-
-    The formula ``displayed + invested - uncalled_bet`` recovers starting
-    for both winners and losers because:
-    - Losers: displayed = starting - invested, so formula is exact.
-    - Winners: formula overestimates, but losers determine effective_bb.
+    N8 displayed stacks represent chips AFTER investments are deducted
+    (mid-hand snapshot).  For each player who entered the pot:
+        starting = displayed + chips_invested  (excluding uncalled bets)
 
     effective_bb = min(hero_starting, min(opponent_startings))
 
     Returns effective_bb rounded to 1 decimal, or None.
     """
-    import statistics
 
     hero_invested = 0.0
     hero_folded = False
     first_hero_preflop_action = None
 
-    # Track investments for each opponent who entered the pot
+    # Track total investment for each opponent who entered the pot.
+    # Each element is the running total for one active opponent.
     opponent_investments = []  # list of total invested per active opponent
 
     blinds_col = None
@@ -190,17 +185,29 @@ def _compute_effective_bb(
             preflop_col = first_street
             street_cols = street_cols[1:]
 
-    # Determine hero's blind from blinds column
+    # --- Determine blinds from blinds column ---
     hero_blind = 0.0
+    # Map opponent position -> blind amount
+    opponent_blinds: dict[str, float] = {}
+
     if blinds_col:
         for entry in blinds_col.get("entries", []):
+            action_text = (entry.get("action") or "").lower()
+            size = entry.get("size")
             if entry.get("type") == "hero":
-                action_text = (entry.get("action") or "").lower()
-                size = entry.get("size")
                 if "sb" in action_text or size == 0.5:
                     hero_blind = 0.5
                 elif "bb" in action_text or size == 1.0:
                     hero_blind = 1.0
+            else:
+                # Opponent blind entry — detect position from action text
+                pos = None
+                if "sb" in action_text or size == 0.5:
+                    pos = "SB"
+                    opponent_blinds[pos] = 0.5
+                elif "bb" in action_text or size == 1.0:
+                    pos = "BB"
+                    opponent_blinds[pos] = 1.0
 
     # Fallback: infer blind from hero_position if blinds column missed it
     if hero_blind == 0.0 and hero_position:
@@ -210,6 +217,9 @@ def _compute_effective_bb(
             hero_blind = 0.5
 
     # --- Process preflop: track hero AND opponent investments ---
+    # Track which opponent positions entered the pot (for blind matching)
+    active_opponent_positions = []
+
     if preflop_col:
         for entry in preflop_col.get("entries", []):
             action = (entry.get("action") or "").lower()
@@ -228,12 +238,38 @@ def _compute_effective_bb(
                 # Opponent entry
                 if action in ("call", "raise", "bet", "all-in"):
                     opponent_investments.append(size)
+                    # Track position for blind matching
+                    opp_pos = normalize_position(
+                        entry.get("position") or ""
+                    )
+                    active_opponent_positions.append(opp_pos)
 
     # Add blind if hero's first preflop action is Call, Check, or Fold.
     # If first action is Raise/Bet, the raise amount already includes
     # the blind (e.g., BB raises to 2.2 = 1.0 blind + 1.2 additional).
     if hero_blind > 0 and first_hero_preflop_action not in ("raise", "bet", "all-in"):
         hero_invested += hero_blind
+
+    # Add opponent blinds to their investments.
+    # Opponent preflop Call/Raise sizes from the panel are the ADDITIONAL
+    # amount (on top of their blind).  E.g. SB calling a 2bb raise shows
+    # "Call 1.5" — the 0.5 blind is not included.  Add it back.
+    for i, opp_pos in enumerate(active_opponent_positions):
+        if i < len(opponent_investments):
+            blind_amt = opponent_blinds.get(opp_pos, 0.0)
+            # Fallback: infer blind from position name
+            if blind_amt == 0.0:
+                if opp_pos == "SB":
+                    blind_amt = 0.5
+                elif opp_pos == "BB":
+                    blind_amt = 1.0
+            opp_action_size = opponent_investments[i]
+            # Only add blind when the action is Call (additional amount).
+            # For Raise, the panel already shows the total raise-to size.
+            # Heuristic: if size < 2.0 and position is SB/BB, it's likely
+            # just the additional call amount.
+            if blind_amt > 0 and opp_action_size > 0:
+                opponent_investments[i] += blind_amt
 
     # --- Process postflop streets: track hero AND opponent investments ---
     # Assign postflop opponent entries to the first active opponent
@@ -292,11 +328,8 @@ def _compute_effective_bb(
     hero_starting = hero_stack_displayed + hero_invested_adj
 
     # --- Compute opponent starting stacks ---
-    # We cannot map displayed stacks to specific opponents (no position
-    # mapping from table OCR). Use median of non-hero stacks + investment
-    # as a robust estimate of each opponent's starting stack.
+    # Remove hero's displayed stack from the list to get non-hero stacks.
     non_hero_stacks = list(all_stacks) if all_stacks else []
-    # Remove one instance of hero's stack
     if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
         non_hero_stacks.remove(hero_stack_displayed)
 
@@ -308,11 +341,27 @@ def _compute_effective_bb(
             opp_inv_adj = opp_inv - opp_uncalled
 
         if non_hero_stacks:
-            # Use median non-hero stack as best estimate of opponent's
-            # displayed stack. This is robust to OCR errors and avoids
-            # the impossible task of matching stacks to positions.
-            median_stack = statistics.median(non_hero_stacks)
-            opp_starting = median_stack + opp_inv_adj
+            # Pick the LARGEST non-hero displayed stack whose resulting
+            # starting stack (s + opp_invested) does not exceed
+            # hero_starting.  Rationale: folded players keep nearly their
+            # full stack, so very large stacks (> hero_starting -
+            # opp_invested) belong to folded big-stacks, not the active
+            # opponent.  The active opponent's displayed stack is reduced
+            # by their investment, making it the largest "shifted-down"
+            # stack still below the hero_starting threshold.
+            candidates = [
+                s for s in non_hero_stacks
+                if s + opp_inv_adj <= hero_starting + 0.5  # +0.5 for OCR tolerance
+            ]
+            if candidates:
+                best_stack = max(candidates)
+            else:
+                # All non-hero stacks exceed hero's starting when
+                # combined with investment — hero is the short stack.
+                # Use minimum non-hero stack as conservative fallback.
+                best_stack = min(non_hero_stacks)
+
+            opp_starting = best_stack + opp_inv_adj
             opponent_startings.append(opp_starting)
 
     # effective_bb = min of all starting stacks of players who entered pot
