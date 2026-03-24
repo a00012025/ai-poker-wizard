@@ -907,15 +907,42 @@ def parse_table(table_region: np.ndarray) -> dict:
     table_color = _detect_table_color(table_region)
     board_cards = _find_board_cards(table_region)
     hero_cards = _find_hero_cards(table_region)
+    all_stacks = _find_all_stacks(table_region)
     hero_stack = _find_hero_stack(table_region)
 
     return {
         "board_cards": board_cards,
         "hero_cards": hero_cards,
         "hero_stack": hero_stack,
-        "player_stacks": [],  # skip full table stacks OCR (unreliable)
+        "player_stacks": all_stacks,
         "table_color": table_color,
     }
+
+
+def _find_all_stacks(table_region: np.ndarray) -> list[float]:
+    """Find all player stack values (XX.X BB) in the table region using EasyOCR.
+
+    Scans the entire table region for text matching the pattern "XX.X BB".
+    Returns all detected stack values, which can be used to estimate
+    effective_bb as min(all_stacks).
+    """
+    import re
+    from .ocr_utils import ocr_full_image
+
+    results = ocr_full_image(table_region)
+    stacks = []
+    bb_pattern = re.compile(r'(\d+\.?\d*)\s*BB', re.IGNORECASE)
+
+    for r in results:
+        m = bb_pattern.search(r["text"])
+        if m:
+            try:
+                val = float(m.group(1))
+                if 0.5 < val < 500:  # reasonable stack range
+                    stacks.append(val)
+            except ValueError:
+                pass
+    return stacks
 
 
 def _find_hero_stack(table_region: np.ndarray) -> float | None:

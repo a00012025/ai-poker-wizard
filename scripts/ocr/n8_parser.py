@@ -277,14 +277,17 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     streets = _build_streets(street_cols, board_cards, pos_order,
                              hero_position, active_positions)
 
-    # Effective BB: from hero stack or player stacks
+    # Effective BB: conservative estimate from all detected player stacks.
+    # effective_bb = min(all stacks) is a lower bound since displayed
+    # stacks are end-of-hand (after chips invested), but it's a reasonable
+    # approximation and far better than None.
     effective_bb = None
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
-    if hero_stack:
+    if stacks:
+        effective_bb = min(stacks)
+    elif hero_stack:
         effective_bb = hero_stack
-    elif stacks:
-        effective_bb = min(stacks) if len(stacks) > 1 else stacks[0]
 
     hand = {
         "gametype": "MTTGeneral",
