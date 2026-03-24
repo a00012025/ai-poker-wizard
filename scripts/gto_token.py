@@ -45,14 +45,39 @@ def _jwt_exp(token: str) -> int:
     return json.loads(base64.urlsafe_b64decode(payload))["exp"]
 
 
-def _refresh_access(refresh_token: str) -> str | None:
-    """Exchange refresh token for a new access token."""
+def _import_signing():
     try:
+        from scripts.gto_signing import generate_keypair_jwk, sign_refresh_request
+    except ImportError:
+        from gto_signing import generate_keypair_jwk, sign_refresh_request
+    return generate_keypair_jwk, sign_refresh_request
+
+
+def _get_or_create_keypair(tokens: dict | None = None) -> dict:
+    """Get signing keypair from tokens dict, or generate a new one."""
+    if tokens and "signing_keypair" in tokens:
+        return tokens["signing_keypair"]
+    generate_keypair_jwk, _ = _import_signing()
+    return generate_keypair_jwk()
+
+
+def _refresh_access(refresh_token: str, signing_keypair: dict | None = None) -> str | None:
+    """Exchange refresh token for a new access token.
+
+    Uses google-anal-id signed header required by GTO Wizard API.
+    """
+    try:
+        _, sign_refresh_request = _import_signing()
+
+        if signing_keypair is None:
+            signing_keypair = _get_or_create_keypair()
+
+        extra_headers = sign_refresh_request(refresh_token, signing_keypair)
         r = requests.post(
             f"{API_BASE}/v1/token/refresh/",
-            json={"refresh": refresh_token},
-            headers={"origin": ORIGIN, "content-type": "application/json"},
-            timeout=10,
+            data=json.dumps({"refresh": refresh_token}, separators=(",", ":")),
+            headers=extra_headers,
+            timeout=15,
         )
         if r.ok:
             return r.json()["access"]
@@ -106,9 +131,11 @@ def ensure_session() -> bool:
     if refresh:
         try:
             if _jwt_exp(refresh) > time.time():
-                access = _refresh_access(refresh)
+                keypair = _get_or_create_keypair(tokens)
+                access = _refresh_access(refresh, keypair)
                 if access:
                     tokens["access"] = access
+                    tokens["signing_keypair"] = keypair
                     _save_tokens(tokens)
                     return True
         except Exception:
@@ -131,9 +158,10 @@ def capture_browser_token() -> bool:
         )
         token = result.stdout.strip().strip('"')
         if token and token.startswith("eyJ"):
-            access = _refresh_access(token)
+            keypair = _get_or_create_keypair()
+            access = _refresh_access(token, keypair)
             if access:
-                _save_tokens({"refresh": token, "access": access})
+                _save_tokens({"refresh": token, "access": access, "signing_keypair": keypair})
                 return True
     except Exception:
         pass
@@ -163,9 +191,11 @@ def get_access_token() -> str:
             refresh = None
 
     if refresh:
-        access = _refresh_access(refresh)
+        keypair = _get_or_create_keypair(tokens)
+        access = _refresh_access(refresh, keypair)
         if access:
             tokens["access"] = access
+            tokens["signing_keypair"] = keypair
             _save_tokens(tokens)
             return access
 
@@ -180,6 +210,9 @@ def get_access_token() -> str:
 _user_token_cache: dict[int, tuple[str, float]] = {}  # user_id -> (access_token, expiry_ts)
 
 
+_user_keypair_cache: dict[int, dict] = {}  # user_id -> signing_keypair
+
+
 def get_user_access_token(user_id: int, refresh_token: str) -> str:
     """Get a valid access token for a specific user, refreshing if needed.
 
@@ -189,7 +222,12 @@ def get_user_access_token(user_id: int, refresh_token: str) -> str:
     if cached and cached[1] > time.time() + 60:
         return cached[0]
 
-    access = _refresh_access(refresh_token)
+    keypair = _user_keypair_cache.get(user_id)
+    if keypair is None:
+        keypair = _get_or_create_keypair()
+        _user_keypair_cache[user_id] = keypair
+
+    access = _refresh_access(refresh_token, keypair)
     if not access:
         # Evict stale cache entry
         _user_token_cache.pop(user_id, None)
