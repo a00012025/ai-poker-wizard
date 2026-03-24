@@ -137,11 +137,70 @@ def _estimate_table_size(action_entries: list[dict]) -> int:
     return 9
 
 
+def _normalize_name(name: str) -> str:
+    """Normalize a player name for fuzzy matching.
+
+    Strips common OCR noise: spaces, underscores, dots, colons,
+    trailing punctuation, quotes.  Case-insensitive.
+    """
+    import re
+    s = name.lower()
+    s = re.sub(r"[_. :;,'\"\-\[\](){}!]", "", s)
+    return s
+
+
+def _fuzzy_name_match(name1: str, name2: str) -> bool:
+    """Fuzzy match two player names (case-insensitive, partial match).
+
+    OCR may truncate or misread parts of names, so we use multiple
+    strategies: exact, substring, common prefix, and simple edit
+    distance for short names.
+    """
+    if not name1 or not name2:
+        return False
+    a = _normalize_name(name1)
+    b = _normalize_name(name2)
+    if not a or not b:
+        return False
+    # Exact match after normalization
+    if a == b:
+        return True
+    # One contains the other
+    if a in b or b in a:
+        return True
+    # Long common prefix (at least 5 chars or 70% of shorter name)
+    min_len = min(len(a), len(b))
+    prefix_len = 0
+    for i in range(min_len):
+        if a[i] == b[i]:
+            prefix_len += 1
+        else:
+            break
+    if prefix_len >= 5 or (min_len >= 3 and prefix_len >= min_len * 0.7):
+        return True
+    # Simple edit distance for names of similar length.
+    # Allow up to 2 edits for names >= 6 chars, 1 edit for shorter.
+    if abs(len(a) - len(b)) <= 2 and min_len >= 4:
+        max_edits = 2 if min_len >= 6 else 1
+        # Quick Levenshtein via two-row DP
+        prev = list(range(len(b) + 1))
+        for i in range(1, len(a) + 1):
+            curr = [i] + [0] * len(b)
+            for j in range(1, len(b) + 1):
+                cost = 0 if a[i - 1] == b[j - 1] else 1
+                curr[j] = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+            prev = curr
+        if prev[len(b)] <= max_edits:
+            return True
+    return False
+
+
 def _compute_effective_bb(
     columns: list[dict],
     hero_stack_displayed: float | None,
     hero_position: str | None,
     all_stacks: list[float] | None,
+    named_stacks: list[dict] | None = None,
 ) -> float | None:
     """Compute effective_bb from active players' starting stacks.
 
@@ -149,8 +208,9 @@ def _compute_effective_bb(
     The pot is shown separately in the table centre, so this equation
     holds for BOTH the winner and the loser(s).
 
-    Uses pot-header progression to compute per-street contributions
-    and validate preflop blind inference.
+    Uses player name matching between table stacks and panel entries
+    to identify the correct opponent stack.  Falls back to heuristic
+    stack selection when name matching fails.
     """
     if hero_stack_displayed is None:
         return None
@@ -225,6 +285,9 @@ def _compute_effective_bb(
     n_opp_preflop = 0   # count of opponents who enter preflop
     hero_preflop_total = 0.0
 
+    # Collect opponent names from panel entries (for name matching)
+    opp_names_entered = []  # names of opponents who entered the pot
+
     if preflop_col:
         entries = preflop_col.get("entries", [])
         current_bet = 1.0  # BB level
@@ -251,6 +314,9 @@ def _compute_effective_bb(
                 if action in ("call", "raise", "bet", "all-in"):
                     opp_entered = True
                     n_opp_preflop += 1
+                    opp_name = entry.get("player_name")
+                    if opp_name:
+                        opp_names_entered.append(opp_name)
                     if action in ("raise", "all-in"):
                         current_bet = size
 
@@ -297,6 +363,9 @@ def _compute_effective_bb(
         p = pot_by_street.get(nm)
         pot_sequence.append(p)
 
+    # Also collect opponent names from postflop entries
+    opp_names_postflop = []
+
     for idx, col in enumerate(street_cols):
         entries = col.get("entries", [])
         if not entries:
@@ -309,6 +378,12 @@ def _compute_effective_bb(
             action = (entry.get("action") or "").lower()
             size = entry.get("size") or 0.0
             is_hero = entry.get("type") == "hero"
+
+            # Track opponent names in postflop
+            if not is_hero:
+                pn = entry.get("player_name")
+                if pn and pn not in opp_names_postflop:
+                    opp_names_postflop.append(pn)
 
             if action in ("fold", "check"):
                 continue
@@ -446,45 +521,40 @@ def _compute_effective_bb(
             # Opponent went all-in: starting = total investment (display ≈ 0)
             opp_starting = opp_perm
     else:
-        # Find opponent's displayed stack from all_stacks.
-        non_hero_stacks = list(all_stacks) if all_stacks else []
-        if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
-            non_hero_stacks.remove(hero_stack_displayed)
+        # Find opponent's displayed stack using name matching.
+        # Prefer postflop names (the player who stayed), then preflop.
+        active_opp_names = opp_names_postflop or opp_names_entered
+        best_stack = None
 
-        # Strategy: use pot progression to estimate expected dead_money,
-        # then score each candidate by how well it fits.
-        #
-        # dead_money = preflop_pot - hero_blind - opp_blind_inferred
-        # where opp_blind_inferred ∈ {0, 0.5, 1.0}
-        # final_pot_expected = dead_money + hero_perm + opp_perm
-        #
-        # The last pot header should match final_pot_expected.
-        # For each candidate s, opp_starting = s + opp_perm.
-        # The "correct" s is the one where the pot arithmetic is
-        # most consistent.  Since pot doesn't depend on s, we use
-        # another heuristic: the active opponent's displayed stack
-        # should be SMALLER than most folded players' stacks (because
-        # they invested opp_perm into the pot).
-        #
-        # Score each candidate: prefer stacks that, when combined with
-        # opp_perm, produce a starting stack that's between opp_perm
-        # and hero_starting.  Among these, prefer the one whose
-        # displayed stack is most "depleted" (i.e. farthest below
-        # the median non-hero stack).
+        if active_opp_names and named_stacks:
+            # Try to match the active opponent's name to a table stack
+            for opp_name in active_opp_names:
+                for ns in named_stacks:
+                    if ns.get("name") and _fuzzy_name_match(opp_name, ns["name"]):
+                        candidate = ns["stack"]
+                        # Sanity: opp display + investment shouldn't wildly
+                        # exceed hero starting (allow some tolerance)
+                        if candidate + opp_perm <= hero_starting * 2.5:
+                            best_stack = candidate
+                            break
+                if best_stack is not None:
+                    break
 
-        if non_hero_stacks:
-            candidates = [
-                s for s in non_hero_stacks
-                if s + opp_perm <= hero_starting + 1.0
-            ]
-            if candidates:
-                best_stack = max(candidates)
-            elif non_hero_stacks:
-                best_stack = min(non_hero_stacks)
-            else:
-                best_stack = None
-        else:
-            best_stack = None
+        # Fallback: heuristic stack selection when name matching fails
+        if best_stack is None:
+            non_hero_stacks = list(all_stacks) if all_stacks else []
+            if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
+                non_hero_stacks.remove(hero_stack_displayed)
+
+            if non_hero_stacks:
+                candidates = [
+                    s for s in non_hero_stacks
+                    if s + opp_perm <= hero_starting + 1.0
+                ]
+                if candidates:
+                    best_stack = max(candidates)
+                elif non_hero_stacks:
+                    best_stack = min(non_hero_stacks)
 
         opp_starting = (best_stack + opp_perm) if best_stack is not None else hero_starting
 
@@ -645,8 +715,9 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # This gives hero's starting stack, which bounds effective_bb.
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
+    named_stacks = table_result.get("named_stacks", [])
     effective_bb = _compute_effective_bb(
-        columns, hero_stack, hero_position, stacks
+        columns, hero_stack, hero_position, stacks, named_stacks,
     )
 
     hand = {

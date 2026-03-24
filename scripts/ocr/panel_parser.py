@@ -149,12 +149,28 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
     # Split groups that contain multiple actions (merged entries)
     groups = _split_multi_action_groups(groups)
 
-    # Classify each group into an action entry
+    # Classify each group into an action entry.
+    # In N8, each entry has: name group (player name) then action group
+    # (action text + position badge + size).  Pair them so we can extract
+    # the player name for each action.
     entries = []
+    pending_name = None
     for group in groups:
         entry = _classify_group(group, column_region)
-        if entry and entry["action"] != "Skip":
-            entries.append(entry)
+        if entry is None:
+            continue
+        if entry["action"] == "Skip":
+            continue
+        if entry["action"] == "_name_only":
+            # This group is just a player name — remember it for the next
+            # action group.
+            pending_name = entry.get("player_name")
+            continue
+        # Real action entry — attach pending name if available
+        if pending_name:
+            entry["player_name"] = pending_name
+            pending_name = None
+        entries.append(entry)
 
     return entries
 
@@ -268,6 +284,22 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
     # Detect action
     action_match = _ACTION_PATTERNS.search(full_text)
     if not action_match:
+        # No action found — this might be a player name group.
+        # Name groups: 1-2 text items, no action keyword, not a position,
+        # not a number.
+        if len(group) <= 2:
+            name_text = full_text.strip()
+            # Skip if it's just a position badge or number
+            if (name_text.upper() not in _POSITIONS
+                    and not re.match(r'^[\d.]+\s*BB?$', name_text, re.I)
+                    and len(name_text) >= 2):
+                return {
+                    "type": "opponent",
+                    "position": None,
+                    "action": "_name_only",
+                    "size": None,
+                    "player_name": name_text,
+                }
         return None
 
     action_raw = action_match.group(1)
@@ -303,16 +335,50 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
         if position:
             break
 
+    # Extract player name: text items that appear ABOVE the action line,
+    # are not action keywords, positions, or BB amounts.
+    # Sort group by Y (top to bottom) and check items above the action.
+    player_name = None
+    sorted_group = sorted(group, key=lambda t: t["center_y"])
+    action_y = None
+    for t in sorted_group:
+        if _ACTION_PATTERNS.search(t["text"]):
+            action_y = t["center_y"]
+            break
+    if action_y is not None:
+        for t in sorted_group:
+            if t["center_y"] >= action_y:
+                break  # past the action line
+            text = t["text"].strip()
+            text_upper = text.upper()
+            # Skip positions, BB amounts, actions, short/numeric text
+            if text_upper in _POSITIONS:
+                continue
+            if _BB_PATTERN.match(text):
+                continue
+            if _ACTION_PATTERNS.search(text):
+                continue
+            if len(text) < 2:
+                continue
+            if re.match(r'^\d+$', text):
+                continue
+            # This looks like a player name
+            player_name = text
+            break
+
     # Determine hero/opponent by checking background color at group center
     avg_y = int(sum(t["center_y"] for t in group) / len(group))
     entry_type = _detect_entry_type(column_region, avg_y)
 
-    return {
+    result = {
         "type": entry_type,
         "position": position,
         "action": action,
         "size": size,
     }
+    if player_name:
+        result["player_name"] = player_name
+    return result
 
 
 def _normalize_action(action_raw: str) -> str:
