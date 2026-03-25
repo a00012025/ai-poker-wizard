@@ -2328,6 +2328,50 @@ def test_ocr_filter_false_hero_entries():
 
 
 @test
+def test_6max_lj_open_qjo_is_raise():
+    """QJo E2E: 6-player LJ open QJo at 33bb must show RAISE 100%, not fold."""
+    from analyze_hand import analyze_hand_full
+    # Exact scenario from OCR: 6-player table, OCR detected 7 stacks (noise)
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "QsJd",
+        "hero_position": "LJ",
+        "players_at_table": 6,
+        "effective_bb": 33,
+        "preflop_actions": "R2.2-F-C-F-F-C",
+        "player_stacks": [66.5, 31.0, 107.5, 48.0, 36.9, 10.8, 25.3],
+        "streets": [
+            {"board": "6c2dTs", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "Ad", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R4", "size": 4.0},
+                {"position": "CO", "action": "F"},
+                {"position": "BB", "action": "C", "size": 4.0},
+            ]},
+        ],
+    })
+    # QJo at LJ open = 100% RAISE, not fold
+    assert_in("RAISE", result["text"], "QJo should show RAISE in solver data")
+    assert_true(
+        "Fold: 100.0%" not in result["text"] or "【LJ QJo】" not in result["text"],
+        "QJo must NOT show Fold 100%"
+    )
+    # Verify padding: preflop should start with F-F (2 pads for 6→8)
+    assert_true(
+        result["preflop_actions"].startswith("F-F-R"),
+        f"Should pad 2 folds, got: {result['preflop_actions']}"
+    )
+    # After CO folds on turn, should simplify to LJ vs BB HU
+    # Turn/River should attempt solver data (not all "無 solver 數據")
+    assert_in("LJ", result["text"])
+    assert_in("BB", result["text"])
+
+
+@test
 def test_6max_padding_uses_players_at_table():
     """Padding: 6-player table pads to 8 even if player_stacks has 7 elements."""
     from analyze_hand import analyze_hand_full
