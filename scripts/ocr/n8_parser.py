@@ -591,11 +591,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     hero_cards = table_result.get("hero_cards", [])
     table_color = table_result.get("table_color", "unknown")
 
-    # Card confidence
+    # Card confidence — use actual detection quality from table parser
+    hero_card_conf = table_result.get("hero_card_conf", 0.0)
     if hero_cards and len(hero_cards) == 2:
-        conf_parts["card_confidence"] = 0.8
+        conf_parts["card_confidence"] = hero_card_conf
     if board_cards and len(board_cards) >= 3:
-        conf_parts["card_confidence"] = min(1.0, conf_parts["card_confidence"] + 0.2)
+        conf_parts["card_confidence"] = min(1.0, conf_parts["card_confidence"] + 0.1)
 
     # Find the PreFlop and Blinds columns
     blinds_col = None

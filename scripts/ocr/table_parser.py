@@ -296,7 +296,7 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
     return []
 
 
-def _find_hero_cards(table_region: np.ndarray) -> list[str]:
+def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
     """Find and identify hero's hole cards.
 
     Strategy:
@@ -306,6 +306,11 @@ def _find_hero_cards(table_region: np.ndarray) -> list[str]:
     4. Split blob at ~48% mark with small overlap
     5. OCR each card for rank (multiple attempts + template fallback)
     6. Detect suit by BGR color + template matching
+
+    Returns:
+        (cards, confidence) where confidence 0.0-1.0 reflects detection quality.
+        High confidence (>0.7): rank found on early OCR attempts.
+        Low confidence (<0.5): rank found via template matching or late fallback.
     """
     from .ocr_utils import ocr_full_image
 
@@ -313,7 +318,7 @@ def _find_hero_cards(table_region: np.ndarray) -> list[str]:
     hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
     ah, aw = hero.shape[:2]
     if ah < 20 or aw < 20:
-        return []
+        return [], 0.0
 
     gray = cv2.cvtColor(hero, cv2.COLOR_BGR2GRAY)
 
@@ -356,7 +361,7 @@ def _find_hero_cards(table_region: np.ndarray) -> list[str]:
                 break
 
     if not best_blob:
-        return []
+        return [], 0.0
 
     x, y, cw, ch_, _ = best_blob
     blob_ratio = cw / ch_ if ch_ > 0 else 2.0
@@ -395,17 +400,24 @@ def _find_hero_cards(table_region: np.ndarray) -> list[str]:
             suit_card2 = hero[ty:ty + tch, tx + tsplit - 3:tx + tcw]
 
     results = []
+    rank_confs = []
     for card, suit_card in [(card1, suit_card1), (card2, suit_card2)]:
-        rank = _ocr_card_rank(card, ocr_full_image)
+        rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
         suit = _detect_suit_bgr(suit_card)
-        results.append(f"{rank}{suit}" if rank else None)
+        if rank:
+            results.append(f"{rank}{suit}")
+            rank_confs.append(rank_conf)
+        else:
+            results.append(None)
 
     # Filter out None results
     results = [r for r in results if r is not None]
-    return results
+    # Overall confidence = min of individual card confidences (weakest link)
+    card_conf = min(rank_confs) if rank_confs else 0.0
+    return results, card_conf
 
 
-def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
+def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]:
     """OCR a single card image for rank, with template matching fallback.
 
     Tries multiple strategies in order:
@@ -416,6 +428,9 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
     5. OCR on inverted binary full card
     6. OCR on sharpened image
     7. Template matching via CardMatcher
+
+    Returns:
+        (rank, confidence) — confidence decreases with later attempts.
     """
     _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10",
                    "J", "Q", "K", "A"}
@@ -426,7 +441,7 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
     _Q_CHARS = {"0", "O"}
 
     if card is None or card.size == 0 or card.shape[0] < 10:
-        return None
+        return None, 0.0
 
     # Upscale aggressively for small cards
     target_h = 360
@@ -458,7 +473,7 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
                 return tu
         return None
 
-    # Attempt 1: OCR on top-left rank crop (avoids suit symbol misreads)
+    # Attempt 1: OCR on top-left rank crop — highest confidence (0.9)
     ch, cw_up = card_up.shape[:2]
     rh = int(ch * 0.50)
     rw = int(cw_up * 0.60)
@@ -466,14 +481,14 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
         rank_crop = card_up[0:rh, 0:rw]
         rank = _extract_rank(ocr_full_image(rank_crop))
         if rank:
-            return rank
+            return rank, 0.9
 
-    # Attempt 2: OCR on upscaled full card
+    # Attempt 2: OCR on upscaled full card (0.85)
     rank = _extract_rank(ocr_full_image(card_up))
     if rank:
-        return rank
+        return rank, 0.85
 
-    # Attempt 3: Inverted binary on rank crop
+    # Attempt 3: Inverted binary on rank crop (0.7)
     if rh > 10 and rw > 10:
         gray_rc = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
         _, bin_rc = cv2.threshold(gray_rc, 0, 255,
@@ -481,45 +496,40 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
         inv_rc = cv2.bitwise_not(bin_rc)
         rank = _extract_rank(ocr_full_image(inv_rc))
         if rank:
-            return rank
+            return rank, 0.7
 
-    # Attempt 4: Further 2x upscale on rank crop
+    # Attempt 4: Further 2x upscale on rank crop (0.6)
     if rh > 10 and rw > 10:
         rank_crop_2x = cv2.resize(rank_crop, None, fx=2, fy=2,
                                   interpolation=cv2.INTER_CUBIC)
         rank = _extract_rank(ocr_full_image(rank_crop_2x))
         if rank:
-            return rank
+            return rank, 0.6
 
-    # Attempt 5: Inverted binary on full card
+    # Attempt 5: Inverted binary on full card (0.5)
     gray_card = cv2.cvtColor(card_up, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray_card, 0, 255,
                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     inverted = cv2.bitwise_not(binary)
     rank = _extract_rank(ocr_full_image(inverted))
     if rank:
-        return rank
+        return rank, 0.5
 
-    # Attempt 6: Sharpened image
+    # Attempt 6: Sharpened image (0.4)
     sharpen_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(card_up, -1, sharpen_kernel)
     rank = _extract_rank(ocr_full_image(sharpened))
     if rank:
-        return rank
+        return rank, 0.4
 
-    # Attempt 7: CLAHE enhanced
+    # Attempt 7: CLAHE enhanced (0.35)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray_card)
     rank = _extract_rank(ocr_full_image(enhanced))
     if rank:
-        return rank
+        return rank, 0.35
 
-    # Attempt 8: Red-minus-blue channel isolation on rank crop.
-    # Isolates red ink (rank character) from sparkle/glow overlays
-    # which affect blue channel more than red. Uses 4x upscale
-    # for optimal OCR resolution regardless of card size.
-    # Tries two crop windows: standard (top 50%) and sparkle-skipping
-    # (25-60% height) for cards with glow effects at the top.
+    # Attempt 8: Red-minus-blue channel isolation (0.3)
     if card is not None and card.size > 0 and len(card.shape) == 3:
         rb_up = cv2.resize(card, None, fx=4, fy=4,
                            interpolation=cv2.INTER_CUBIC)
@@ -538,15 +548,15 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> str | None:
                 rb_inv = cv2.bitwise_not(rb_bin)
                 rank = _extract_rank(ocr_full_image(rb_inv))
                 if rank:
-                    return rank
+                    return rank, 0.3
 
-    # Attempt 9: Template matching as final fallback (low threshold)
+    # Attempt 9: Template matching as final fallback (0.2)
     matcher = _get_matcher()
     r, _s, conf = matcher.match(card)
     if r and conf > 0.05:
-        return r
+        return r, 0.2
 
-    return None
+    return None, 0.0
 
 
 def _detect_suit_bgr(card_img: np.ndarray) -> str:
@@ -906,7 +916,7 @@ def parse_table(table_region: np.ndarray) -> dict:
 
     table_color = _detect_table_color(table_region)
     board_cards = _find_board_cards(table_region)
-    hero_cards = _find_hero_cards(table_region)
+    hero_cards, hero_card_conf = _find_hero_cards(table_region)
     all_stacks_named = _find_all_stacks(table_region)
     hero_stack = _find_hero_stack(table_region)
 
@@ -916,6 +926,7 @@ def parse_table(table_region: np.ndarray) -> dict:
     return {
         "board_cards": board_cards,
         "hero_cards": hero_cards,
+        "hero_card_conf": hero_card_conf,
         "hero_stack": hero_stack,
         "player_stacks": all_stacks,
         "named_stacks": all_stacks_named,
