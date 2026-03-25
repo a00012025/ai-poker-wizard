@@ -377,34 +377,40 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     if len(non_fold) <= 2:
         return preflop, depth, "", None
 
-    # Multiway — find who remains
+    # Multiway — find earliest point where hand becomes HU involving hero.
+    # Walk street by street: track who's still in. As soon as it drops to
+    # 2 players including hero, simplify to that HU.
     if streets:
-        # Use flop actions to determine remaining players
-        flop_positions = []
-        seen = set()
-        folded_on_flop = set()
-        for act in streets[0]["actions"]:
-            pos = act["position"]
-            if pos not in seen:
-                flop_positions.append(pos)
-                seen.add(pos)
-            if act["action"] == "F":
-                folded_on_flop.add(pos)
+        active = set()
+        folded = set()
+        # Collect all positions that appear in any street
+        for street in streets:
+            for act in street.get("actions", []):
+                active.add(act["position"])
 
-        remaining = [p for p in flop_positions if p not in folded_on_flop]
+        # Walk streets in order to find when it becomes HU
+        villain_pos = None
+        for street in streets:
+            for act in street.get("actions", []):
+                if act["action"] == "F":
+                    folded.add(act["position"])
 
-        if len(remaining) == 2 and hero_pos in remaining:
-            villain_pos = next(p for p in remaining if p != hero_pos)
-        elif len(remaining) == 1 and remaining[0] == hero_pos:
-            # Everyone folded to hero — find the last non-hero bettor as villain
-            villain_pos = None
-            for act in reversed(streets[0]["actions"]):
-                if act["position"] != hero_pos and act["action"] not in ("X", "F"):
-                    villain_pos = act["position"]
+            remaining = [p for p in active if p not in folded]
+            if len(remaining) == 2 and hero_pos in remaining:
+                villain_pos = next(p for p in remaining if p != hero_pos)
+                break
+            elif len(remaining) == 1 and hero_pos in remaining:
+                # Only hero remains — everyone else folded.
+                # Find the last non-hero opponent who was active (even if they folded)
+                for act in reversed(street.get("actions", [])):
+                    if act["position"] != hero_pos and act["action"] not in ("X",):
+                        villain_pos = act["position"]
+                        break
+                if villain_pos:
                     break
-            if not villain_pos:
-                return preflop, depth, "", None
-        else:
+
+        if not villain_pos:
+            # Still multiway at end of all streets, or no villain found
             return preflop, depth, "", None
     else:
         # Preflop-only: solver handles multiway preflop natively, no simplification needed

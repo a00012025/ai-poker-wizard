@@ -2324,6 +2324,66 @@ def test_ocr_filter_false_hero_entries():
     assert_eq(filtered[1]["action"], "Raise")
 
 
+# ── Padding + Multiway Tests ──
+
+
+@test
+def test_6max_padding_uses_players_at_table():
+    """Padding: 6-player table pads to 8 even if player_stacks has 7 elements."""
+    from analyze_hand import analyze_hand_full
+    # OCR may detect 7 stacks for a 6-player table (noise).
+    # players_at_table=6 must take priority, padding 2 folds.
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "QJo",
+        "hero_position": "LJ",
+        "players_at_table": 6,
+        "effective_bb": 33,
+        "preflop_actions": "R2-F-C-F-F-C",
+        "player_stacks": [66.5, 31.0, 107.5, 48.0, 36.9, 10.8, 25.3],
+    })
+    # LJ open QJo at 33bb should be ~100% raise, NOT fold
+    assert_in("RAISE", result["text"], "LJ open QJo should show RAISE in solver data")
+    # The preflop_actions used should have F-F prefix (2 pads for 6→8)
+    assert_true(
+        result["preflop_actions"].startswith("F-F-R"),
+        f"Should pad 2 folds, got: {result['preflop_actions']}"
+    )
+
+
+@test
+def test_multiway_simplifies_after_flop_fold():
+    """Multiway: 3-way pot where one folds on turn simplifies to HU."""
+    from analyze_hand import _simplify_multiway, POSITION_ORDER
+    from gto_api import nearest_depth
+    hand = {
+        "preflop_actions": "F-F-R2.2-F-C-F-F-C",
+        "effective_bb": 33,
+        "streets": [
+            {"board": "6c2dTs", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "Ad", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R4", "size": 4.0},
+                {"position": "CO", "action": "F"},
+                {"position": "BB", "action": "C", "size": 4.0},
+            ]},
+        ],
+    }
+    depth = nearest_depth(33)
+    simplified, adj_depth, note, positions = _simplify_multiway(
+        hand, "LJ", "MTTGeneral", depth
+    )
+    # Should simplify to LJ vs BB (CO folds on turn)
+    assert_true(note != "", "should produce a simplification note")
+    assert_true(positions is not None, "should have active positions")
+    assert_in("LJ", positions, "LJ should be in active positions")
+    assert_in("BB", positions, "BB should be in active positions")
+
+
 # ── Runner ──
 
 def run_tests():
