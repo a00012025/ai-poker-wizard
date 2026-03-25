@@ -122,21 +122,26 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
             corrected.append(code)
         elif code == "C":
             # BB checking option after SB limp requires "X", not "C".
-            # Query solver to validate: if "X" is available but "C" is not, use "X".
-            actions_so_far = "-".join(corrected) if corrected else ""
-            try:
-                resp = get_next_actions(
-                    gametype=gametype, depth=depth, stacks=stacks,
-                    preflop_actions=actions_so_far,
-                )
-                avail = resp["next_actions"]["available_actions"]
-                avail_codes = {a["action"]["code"] for a in avail} if avail else set()
-                if "X" in avail_codes and "C" not in avail_codes:
-                    corrected.append("X")
-                else:
-                    corrected.append("C")
-            except Exception:
-                corrected.append(code)
+            # Only check the LAST "C" in the sequence (BB's position) to avoid
+            # unnecessary API calls — earlier C's are always genuine calls.
+            is_last_c = all(p != "C" for p in parts[i + 1:])
+            if is_last_c and i > 0:
+                actions_so_far = "-".join(corrected) if corrected else ""
+                try:
+                    resp = get_next_actions(
+                        gametype=gametype, depth=depth, stacks=stacks,
+                        preflop_actions=actions_so_far,
+                    )
+                    avail = resp["next_actions"]["available_actions"]
+                    avail_codes = {a["action"]["code"] for a in avail} if avail else set()
+                    if "X" in avail_codes and "C" not in avail_codes:
+                        corrected.append("X")
+                    else:
+                        corrected.append("C")
+                except Exception:
+                    corrected.append(code)
+            else:
+                corrected.append("C")
         elif code == "AI" or code.startswith("AI"):
             # AI = all-in (no size), AI10 = all-in for 10bb (treat as raise)
             actions_so_far = "-".join(corrected) if corrected else ""
