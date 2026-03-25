@@ -188,10 +188,10 @@ IMAGE_PARSE_PROMPT = """\
   4人: CO, BTN, SB, BB
   3人: BTN, SB, BB
   注意：不要用 MP、EP 等別名！截圖上如果寫 MP 請轉換為 LJ，EP 轉換為 UTG
-- player_stacks: 所有玩家的開局籌碼（BB），按位置順序排列
+- player_stacks（必填！）: 所有玩家的開局籌碼（BB），按位置順序排列
   計算方式和 effective_bb 相同：開局籌碼 = 顯示籌碼 + 這局投入的所有籌碼
   例：5人桌 [109, 21, 18, 33, 16]（HJ, CO, BTN, SB, BB 的開局 BB）
-  注意：即使不是 ICM 模式也盡量提取，方便後續切換
+  重要：截圖中每個玩家旁邊都有 BB 數字，務必提取！系統需要 hero 的獨立籌碼來選擇正確的 solver 深度
 - preflop_actions: 按位置順序列出所有動作，用 - 分隔
   F=Fold, C=Call, RX=Raise to Xbb, AIX=All-in Xbb
   3bet/4bet 後的 continuation actions 接在第一輪後面

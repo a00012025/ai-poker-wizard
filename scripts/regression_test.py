@@ -2428,6 +2428,55 @@ def test_multiway_simplifies_after_flop_fold():
     assert_in("BB", positions, "BB should be in active positions")
 
 
+@test
+def test_preflop_open_uses_hero_stack():
+    """Preflop open: uses hero's own stack (not effective) when player_stacks available."""
+    from analyze_hand import analyze_hand_full
+    # Hero LJ has 21bb, BB has 18bb → effective_bb=18.
+    # At effective 18bb (solver 17bb): A3s is limp/fold (no raise).
+    # At hero's 21bb (solver 20bb): A3s is 100% raise.
+    # Preflop open should use hero's stack since hero doesn't know who'll call.
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 18,
+        "players_at_table": 7,
+        "hero_position": "LJ",
+        "hero_hand": "Ac3c",
+        "player_stacks": [14, 21, 36, 20, 16, 16, 18],
+        "preflop_actions": "F-R2-F-F-F-F-C",
+        "streets": [],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # A3s should show RAISE in the preflop strategy, not just Call/Fold
+    assert_in("RAISE", text, "A3s from LJ at hero's 21bb depth should show RAISE")
+    assert_true("Call" not in text.split("【LJ A3s】")[1].split("==")[0],
+                "A3s should NOT show Call (limp) when hero stack maps to raise depth")
+
+
+@test
+def test_preflop_open_depth_correction_no_stacks():
+    """Preflop open: depth auto-corrects to next higher when hero raised but solver shows 0% raise."""
+    from analyze_hand import analyze_hand_full
+    # Same scenario as above but WITHOUT player_stacks — depth correction kicks in.
+    # Hero raised A3s from LJ at effective 16bb (solver 17bb = 0% raise).
+    # Phase 2.5 should detect this and try 20bb solver (100% raise).
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 16,
+        "players_at_table": 6,
+        "hero_position": "LJ",
+        "hero_hand": "Ac3c",
+        "preflop_actions": "R2-F-F-F-F-C",
+        "streets": [],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    assert_in("RAISE", text, "A3s should show RAISE after depth correction (no player_stacks)")
+    assert_true("Call" not in text.split("【LJ A3s】")[1].split("==")[0],
+                "A3s should NOT show Call after depth auto-correction")
+
+
 # ── Runner ──
 
 def run_tests():

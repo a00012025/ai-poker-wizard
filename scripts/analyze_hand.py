@@ -773,11 +773,25 @@ def _run_analysis(hand: dict) -> dict:
     hero_spots = []
 
     # Preflop hero spot (initial open/fold decision)
-    # Use ORIGINAL depth (before multiway dead-money adjustment) for the open decision.
-    # The adjusted depth is for postflop spots only — dead money from extra callers
-    # doesn't affect whether hero should open in the first place.
+    # Use hero's OWN stack depth (not effective_bb) for the open decision when available.
+    # Reason: effective_bb = min(hero, caller) is retroactive — hero doesn't know who'll call
+    # when deciding to open. The solver models uniform stacks, so hero's stack is the best proxy.
+    # Fall back to original_depth (from effective_bb) when player_stacks unavailable.
     preflop_before = _preflop_before_hero(preflop_actions, hero_pos, pos_order)
     preflop_depth = original_depth if multiway_note else depth
+    if not is_icm:
+        hero_stack_bb = hand.get("hero_starting_stack")
+        if not hero_stack_bb and hand.get("player_stacks"):
+            stacks = hand["player_stacks"]
+            # Only use if stacks length matches padded table size (validates correct mapping)
+            if len(stacks) == num_players:
+                hero_idx_padded = pos_order.index(hero_pos)
+                if hero_idx_padded < len(stacks) and stacks[hero_idx_padded] > 0:
+                    hero_stack_bb = stacks[hero_idx_padded]
+        if hero_stack_bb and hero_stack_bb > hand.get("effective_bb", 0):
+            hero_depth = nearest_depth(hero_stack_bb)
+            if hero_depth != preflop_depth:
+                preflop_depth = hero_depth
     hero_spots.append({
         "street": "preflop",
         "header": "【Preflop】",
@@ -1055,6 +1069,71 @@ def _run_analysis(hand: dict) -> dict:
                 solutions[i] = _fetch_with_token(chipev_params)
                 if solutions[i]:
                     icm_fallback_note = "⚠ ICM 模式不可用（可能需要更高等級的 GTO Wizard 訂閱），已自動改用 Chip EV"
+
+    # ── Phase 2.5: Preflop open depth correction ──
+    # If hero raised preflop but the solver shows 0% raise for hero's hand at the
+    # current depth, try the next higher depth. This handles depth quantization
+    # boundary issues where effective_bb < hero's actual stack (e.g. 16bb effective
+    # maps to 17bb solver = limp/fold, but hero's 21bb stack maps to 20bb = 100% raise).
+    if not is_icm and solutions[0] is not None:
+        pf_parts = preflop_actions.split("-")
+        hero_pf_idx = pos_order.index(hero_pos)
+        hero_pf_action = pf_parts[hero_pf_idx] if hero_pf_idx < len(pf_parts) else ""
+        is_hero_open = (hero_pf_action.startswith("R") or hero_pf_action.startswith("AI"))
+        all_fold_before = all(p == "F" for p in pf_parts[:hero_pf_idx])
+
+        if is_hero_open and all_fold_before:
+            # Check if hero's hand has any raise frequency at current depth
+            sol0 = solutions[0]
+            has_raise = False
+            for pi in sol0.get("players_info", []):
+                if pi["player"]["position"] == hero_pos and len(pi.get("range", [])) == 169:
+                    hn = normalize_hand_name(hero_hand)
+                    ranks = "23456789TJQKA"
+                    all_hands = []
+                    for _i, r1 in enumerate(ranks):
+                        for _j, r2 in enumerate(ranks):
+                            if _i == _j:
+                                all_hands.append(f"{r1}{r2}")
+                            elif _i > _j:
+                                all_hands.append(f"{r1}{r2}o")
+                                all_hands.append(f"{r1}{r2}s")
+                    hand_names_sorted = sorted(all_hands)
+                    if hn in hand_names_sorted:
+                        hidx = hand_names_sorted.index(hn)
+                        for asol in sol0.get("action_solutions", []):
+                            code = asol["action"]["code"]
+                            if code.startswith("R") or code == "RAI":
+                                strat = asol.get("strategy", [])
+                                if strat and hidx < len(strat) and strat[hidx] > 0.01:
+                                    has_raise = True
+                                    break
+                    break
+
+            if not has_raise:
+                # Try next higher depth
+                current_depth_bb = float(preflop_depth) - 0.125 if isinstance(preflop_depth, (int, float)) else 0
+                from gto_api import AVAILABLE_DEPTHS
+                higher = [d for d in AVAILABLE_DEPTHS if d > current_depth_bb]
+                if higher:
+                    next_depth = min(higher) + 0.125
+                    retry_params = dict(hero_spots[0]["params"], depth=next_depth)
+                    retry_sol = _fetch_with_token(retry_params)
+                    if retry_sol:
+                        # Check if hero's hand has raise at next depth
+                        for pi in retry_sol.get("players_info", []):
+                            if pi["player"]["position"] == hero_pos and len(pi.get("range", [])) == 169:
+                                if hn in hand_names_sorted:
+                                    for asol in retry_sol.get("action_solutions", []):
+                                        code = asol["action"]["code"]
+                                        if code.startswith("R") or code == "RAI":
+                                            strat = asol.get("strategy", [])
+                                            if strat and hidx < len(strat) and strat[hidx] > 0.01:
+                                                solutions[0] = retry_sol
+                                                hero_spots[0]["params"]["depth"] = next_depth
+                                                preflop_depth = next_depth
+                                                break
+                                break
 
     t_phase2 = time.time()
 

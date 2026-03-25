@@ -213,7 +213,7 @@ def _compute_effective_bb(
     stack selection when name matching fails.
     """
     if hero_stack_displayed is None:
-        return None
+        return None, None
 
     # ---- Locate columns ----
     blinds_col = None
@@ -509,8 +509,9 @@ def _compute_effective_bb(
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
 
+    hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
-        return round(hero_starting, 1) if hero_starting >= 1.0 else None
+        return (hero_start_rounded, hero_start_rounded)
 
     # ---- Determine opponent starting stack ----
     if opp_went_allin:
@@ -563,10 +564,10 @@ def _compute_effective_bb(
 
     if effective_bb < 1.0:
         if all_stacks:
-            return round(min(all_stacks), 1)
-        return None
+            return round(min(all_stacks), 1), round(hero_starting, 1)
+        return None, round(hero_starting, 1) if hero_starting >= 1.0 else None
 
-    return effective_bb
+    return effective_bb, round(hero_starting, 1)
 
 
 def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None, dict]:
@@ -716,7 +717,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
     named_stacks = table_result.get("named_stacks", [])
-    effective_bb = _compute_effective_bb(
+    effective_bb, hero_starting_stack = _compute_effective_bb(
         columns, hero_stack, hero_position, stacks, named_stacks,
     )
 
@@ -751,6 +752,29 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
 
     if effective_bb is not None:
         hand["effective_bb"] = effective_bb
+
+    # Compute hero's starting stack from named_stacks (more reliable than table hero detection)
+    # The table parser may misidentify the bottom-center player as hero.
+    # Use the panel's hero name + named_stacks match for the correct displayed stack.
+    if hero_starting_stack is not None:
+        hero_name_from_panel = None
+        if hero_index is not None and hero_index < len(action_entries):
+            hero_name_from_panel = action_entries[hero_index].get("player_name")
+        if hero_name_from_panel and named_stacks:
+            for ns in named_stacks:
+                if ns.get("name") and _fuzzy_name_match(hero_name_from_panel, ns["name"]):
+                    # Recompute hero starting from correct displayed stack
+                    hero_display = ns["stack"]
+                    # hero_perm was computed in _compute_effective_bb; approximate from
+                    # hero_starting_stack - hero_stack (table hero display)
+                    # Instead, use: hero_starting = hero_display + total_invested
+                    # total_invested = hero_starting_stack - (hero_stack or 0)
+                    hero_invested = hero_starting_stack - (hero_stack or 0)
+                    corrected = round(hero_display + hero_invested, 1)
+                    if corrected > 0 and corrected != hero_starting_stack:
+                        hero_starting_stack = corrected
+                    break
+        hand["hero_starting_stack"] = hero_starting_stack
 
     if streets:
         hand["streets"] = streets
