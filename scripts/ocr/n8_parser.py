@@ -780,7 +780,10 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     if streets:
         hand["streets"] = streets
 
-    if stacks:
+    # Only include player_stacks if count matches players_at_table.
+    # OCR stack detection is unreliable (includes pot values, wrong order).
+    # Mismatched stacks cause position mapping errors downstream.
+    if stacks and len(stacks) == players_at_table:
         hand["player_stacks"] = stacks
 
     # Final Table detection
