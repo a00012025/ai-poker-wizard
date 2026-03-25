@@ -180,7 +180,7 @@ def _identify_cards(region: np.ndarray, card_rects: list[tuple],
             cards.append("??")
             continue
 
-        rank = _ocr_card_rank(card_img, ocr_full_image)
+        rank, _conf = _ocr_card_rank(card_img, ocr_full_image)
         suit = _detect_suit_bgr(card_img)
         if rank:
             cards.append(f"{rank}{suit}")

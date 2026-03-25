@@ -118,8 +118,25 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
     parts = preflop_actions.split("-")
     corrected = []
     for i, code in enumerate(parts):
-        if code in ("F", "C"):
+        if code == "F":
             corrected.append(code)
+        elif code == "C":
+            # BB checking option after SB limp requires "X", not "C".
+            # Query solver to validate: if "X" is available but "C" is not, use "X".
+            actions_so_far = "-".join(corrected) if corrected else ""
+            try:
+                resp = get_next_actions(
+                    gametype=gametype, depth=depth, stacks=stacks,
+                    preflop_actions=actions_so_far,
+                )
+                avail = resp["next_actions"]["available_actions"]
+                avail_codes = {a["action"]["code"] for a in avail} if avail else set()
+                if "X" in avail_codes and "C" not in avail_codes:
+                    corrected.append("X")
+                else:
+                    corrected.append("C")
+            except Exception:
+                corrected.append(code)
         elif code == "AI" or code.startswith("AI"):
             # AI = all-in (no size), AI10 = all-in for 10bb (treat as raise)
             actions_so_far = "-".join(corrected) if corrected else ""

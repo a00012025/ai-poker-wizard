@@ -2477,6 +2477,52 @@ def test_preflop_open_depth_correction_no_stacks():
                 "A3s should NOT show Call after depth auto-correction")
 
 
+@test
+def test_bb_check_option_normalized_to_x():
+    """Preflop: BB check option after SB limp uses X not C, enabling postflop solver data."""
+    from analyze_hand import analyze_hand_full
+    # SB limps, BB checks → preflop "F-F-F-F-C-C" should normalize to "F-F-F-F-F-F-C-X"
+    # Without this, postflop solver returns None (board query fails with C-C).
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 58,
+        "players_at_table": 6,
+        "hero_position": "SB",
+        "hero_hand": "Kh2s",
+        "preflop_actions": "F-F-F-F-C-C",
+        "streets": [
+            {"board": "4sTcJs", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R2", "size": 2.0},
+                {"position": "SB", "action": "C", "size": 2.0},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    text = result["text"]
+    # Flop must have solver data (not "無 solver 數據")
+    assert_true("無 solver 數據" not in text.split("Flop")[1].split("==")[0],
+                "Flop should have solver data after BB check option normalized to X")
+    # Verify the preflop was normalized to include X
+    assert_eq(result["preflop_actions"].split("-")[-1], "X",
+              "BB check option should be X not C")
+
+
+@test
+def test_board_cards_no_tuples():
+    """OCR: board card strings must be clean (no tuples from _ocr_card_rank)."""
+    from ocr.table_parser import _identify_cards, _ocr_card_rank
+    # _ocr_card_rank returns (rank, conf) tuple — _identify_cards must unpack it
+    # Verify _identify_cards returns clean strings not tuple representations
+    import numpy as np
+    # Create a simple white card image (will probably fail OCR but that's OK)
+    dummy = np.ones((50, 35, 3), dtype=np.uint8) * 255
+    cards = _identify_cards(dummy, [(0, 0, 35, 50)])
+    # Cards should be strings like "Xs" or "??" — never contain parentheses
+    for c in cards:
+        assert_true("(" not in c, f"Card string '{c}' should not contain tuple parentheses")
+
+
 # ── Runner ──
 
 def run_tests():
