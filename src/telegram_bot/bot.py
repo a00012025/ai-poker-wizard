@@ -534,12 +534,21 @@ class PokerWizardBot:
                 await status_msg.edit_text("❌ 圖片下載失敗（Telegram 超時），請稍後再試。")
                 return
 
+            gto_sent = False
+
+            async def send_gto_summary(text: str):
+                nonlocal gto_sent
+                await status_msg.delete()
+                await _send_reply(update.message, text, self.log, label)
+                gto_sent = True
+
             response = await self.session_manager.send_image_message(
                 chat_id=update.effective_chat.id,
                 image_bytes=image_bytes,
                 mime_type="image/jpeg",
                 user_text=caption,
                 status_callback=status_msg.edit_text,
+                send_gto_callback=send_gto_summary,
                 user_id=user_id,
                 refresh_token=refresh_token,
             )
@@ -547,10 +556,12 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Photo response OK ({elapsed:.1f}s)")
 
-            await status_msg.delete()
+            if not gto_sent:
+                await status_msg.delete()
 
             if not response or not response.strip():
-                await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
+                if not gto_sent:
+                    await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
             await _send_reply(update.message, response, self.log, label)
 

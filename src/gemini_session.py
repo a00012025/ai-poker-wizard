@@ -820,11 +820,13 @@ class GeminiSessionManager:
                                     mime_type: str = "image/jpeg",
                                     user_text: str = "",
                                     status_callback=None,
+                                    send_gto_callback=None,
                                     user_id: int | None = None,
                                     refresh_token: str | None = None) -> str:
         """Main entry for image-based hand analysis: parse screenshot → GTO → coaching.
 
         status_callback: optional async callable(str) to update user-facing status.
+        send_gto_callback: optional async callable(str) to send GTO summary immediately.
         user_id: Telegram user ID for per-user token lookup.
         refresh_token: user's GTO Wizard refresh token (if any).
         """
@@ -906,6 +908,23 @@ class GeminiSessionManager:
                 f"[chat={chat_id}] Image GTO analysis in {t_analyze - t_parse:.1f}s"
             )
 
+            # Send GTO summary immediately (split response)
+            if send_gto_callback:
+                gto_summary = gto_data
+                if hand_id:
+                    gto_summary = f"📋 `{hand_id}`\n\n{gto_summary}"
+                try:
+                    r = send_gto_callback(gto_summary)
+                    if asyncio.iscoroutine(r):
+                        await r
+                    self._logger.info(
+                        f"[chat={chat_id}] GTO summary sent at {t_analyze - t0:.1f}s"
+                    )
+                except Exception:
+                    self._logger.warning(
+                        f"[chat={chat_id}] Failed to send GTO summary (non-fatal)"
+                    )
+
             # Step 4: Coaching with user's caption/question
             eff_bb2 = hand_json.get('effective_bb')
             eff_str2 = f"({eff_bb2:.0f}bb)" if eff_bb2 else ""
@@ -933,6 +952,7 @@ class GeminiSessionManager:
                 chat_id, coaching_prompt,
                 user_id=user_id, refresh_token=refresh_token,
                 usage_acc=usage_acc,
+                disable_tools=True,
             )
             if hand_id:
                 result = f"📋 `{hand_id}`\n\n{result}"
@@ -1288,7 +1308,8 @@ class GeminiSessionManager:
                                 on_status: Callable[[str], Any] | None = None,
                                 user_id: int | None = None,
                                 refresh_token: str | None = None,
-                                usage_acc: dict | None = None) -> str:
+                                usage_acc: dict | None = None,
+                                disable_tools: bool = False) -> str:
         """Chat with GTO tools for data-driven follow-up answers."""
         declarations = [
             QUERY_NEXT_ACTIONS_DECLARATION,
@@ -1325,7 +1346,7 @@ class GeminiSessionManager:
                     contents=messages,
                     config=types.GenerateContentConfig(
                         system_instruction=system,
-                        tools=[tool],
+                        tools=[] if disable_tools else [tool],
                     ),
                 ),
                 timeout=120,
