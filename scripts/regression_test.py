@@ -2523,6 +2523,71 @@ def test_board_cards_no_tuples():
         assert_true("(" not in c, f"Card string '{c}' should not contain tuple parentheses")
 
 
+@test
+def test_compact_format_preflop():
+    """Compact: preflop output has header, emoji markers, and hero result."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "CO",
+        "hero_hand": "66",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+    })
+    compact = result["text_compact"]
+    assert_in("♠ CO 66", compact, "compact should have header with position and hand")
+    assert_in("30bb", compact, "compact should show effective bb")
+    assert_in("─── Preflop ───", compact, "compact should have street separator")
+    assert_in("✅", compact, "compact should have checkmark for GTO action")
+    assert_true("combos" not in compact.lower(), "compact should not show combos")
+    assert_true("底池" not in compact, "compact should not show pot size")
+
+
+@test
+def test_compact_format_multi_street():
+    """Compact: multi-street output includes hand type labels and hero results."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "CO",
+        "hero_hand": "66",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "streets": [
+            {"board": "Js6h5s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R2", "size": 2.0},
+            ]},
+            {"card": "Kc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R6.6", "size": 6.6},
+            ]},
+        ]
+    })
+    compact = result["text_compact"]
+    assert_in("─── Flop:", compact, "compact should have flop section")
+    assert_in("─── Turn:", compact, "compact should have turn section")
+    assert_in("🎯", compact, "compact should have hand type emoji on postflop")
+    # Also verify detailed text still exists for coaching
+    assert_in("Preflop", result["text"])
+    assert_in("Flop", result["text"])
+
+
+@test
+def test_compact_format_spot_compact():
+    """Compact: format_spot_compact produces emoji-marked action lines."""
+    from gto_formatter import format_spot_compact
+    from gto_api import get_spot_solution
+    sol = get_spot_solution(gametype="MTTGeneral", depth="30.125",
+                            preflop_actions="F-F-F-F-R2-F-F-C")
+    if sol is None:
+        return  # API unavailable, skip
+    compact = format_spot_compact(sol, "66", "CO")
+    assert_in("✅", compact, "should have primary action marker")
+    assert_in("%)", compact, "should show frequency percentage")
+    assert_true("combos" not in compact.lower(), "should not show combos count")
+
+
 # ── Runner ──
 
 def run_tests():

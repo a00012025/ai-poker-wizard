@@ -675,6 +675,61 @@ def format_full_spot(spot_solution: dict, hero_hand: str = None, hero_position: 
     return "\n".join(parts)
 
 
+def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str) -> str:
+    """Format compact spot: only hero's recommended actions with frequencies.
+
+    Output example:
+        ✅ Bet 33% pot (72%)
+        ⚠️ Check (28%)
+    """
+    hand_name = normalize_hand_name(hero_hand)
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == hero_position:
+            player_info = pi
+            break
+
+    if not player_info:
+        return ""
+
+    shc = player_info.get("simple_hand_counters", {})
+    hand_data = shc.get(hand_name)
+
+    # Fall back to range-level frequencies if hero hand not in range
+    if hand_data:
+        actions_freq = hand_data.get("actions_total_frequencies", {})
+    else:
+        actions_freq = None
+
+    lines = []
+    action_solutions = spot_solution.get("action_solutions", [])
+
+    # Sort by frequency descending; first action gets ✅, rest get ⚠️
+    if actions_freq:
+        sorted_actions = sorted(actions_freq.items(), key=lambda x: -x[1])
+        first = True
+        for code, freq in sorted_actions:
+            if freq < 0.001:
+                continue
+            label = _action_label(code, spot_solution)
+            marker = "✅" if first else "⚠️"
+            first = False
+            lines.append(f"{marker} {label} ({freq*100:.0f}%)")
+    else:
+        first = True
+        for sol in sorted(action_solutions, key=lambda s: -s["total_frequency"]):
+            freq = sol["total_frequency"]
+            if freq < 0.001:
+                continue
+            code = sol["action"]["code"]
+            label = _action_label(code, spot_solution)
+            marker = "✅" if first else "⚠️"
+            first = False
+            lines.append(f"{marker} {label} ({freq*100:.0f}%)")
+
+    return "\n".join(lines)
+
+
 def _get_per_action_evs(spot_solution: dict, hand_name: str, position: str) -> dict[str, float] | None:
     """Extract per-action EVs for a hand from action_solutions[i].evs arrays.
 

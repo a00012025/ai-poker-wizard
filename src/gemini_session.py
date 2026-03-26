@@ -910,7 +910,7 @@ class GeminiSessionManager:
 
             # Send GTO summary immediately (split response)
             if send_gto_callback:
-                gto_summary = gto_data
+                gto_summary = context.get("text_compact", gto_data)
                 if hand_id:
                     gto_summary = f"📋 `{hand_id}`\n\n{gto_summary}"
                 try:

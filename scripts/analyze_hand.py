@@ -22,6 +22,7 @@ Output: Natural language analysis for each street.
 """
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1263,8 +1264,92 @@ def _run_analysis(hand: dict) -> dict:
 
     results.append(f"⏱ Discovery: {t_phase1 - t0:.1f}s | Analysis: {t_phase2 - t_phase1:.1f}s | Total: {t_phase2 - t0:.1f}s")
 
+    # ── Phase 3b: Build compact output for user-facing GTO summary ──
+    from gto_formatter import format_spot_compact
+
+    # Compact header
+    eff = hand.get("effective_bb", "")
+    eff_str = f"{eff:.0f}bb" if isinstance(eff, (int, float)) else f"{eff}bb"
+    if is_icm:
+        mode_str = "ICM"
+    elif is_cash:
+        mode_str = f"Cash {num_players}-max"
+    else:
+        mode_str = "MTT"
+    compact = [f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"]
+    if multiway_note:
+        compact.append(f"⚠ {multiway_note}")
+
+    for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        if spot["header"]:
+            # Convert 【Preflop】 → ─── Preflop ───
+            # Simplify 【Turn: Kc（Board: Js6h5sKc）】 → Turn: Kc
+            raw_hdr = spot["header"].strip("【】")
+            paren_idx = raw_hdr.find("（")
+            if paren_idx > 0:
+                raw_hdr = raw_hdr[:paren_idx].rstrip()
+            compact.append(f"\n─── {raw_hdr} ───")
+
+            # Hand type label (postflop)
+            spot_street = spot["street"]
+            if spot_street != "preflop" and spot_street in street_states:
+                spot_board = street_states[spot_street].get("board", "")
+                if spot_board:
+                    eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
+                    eval_result = _eval_hand(eval_input, spot_board)
+                    if eval_result["full_label"]:
+                        compact.append(f"🎯 {eval_result['full_label']}")
+
+        if sol:
+            spot_compact = format_spot_compact(sol, hero_hand, hero_pos)
+            if spot_compact:
+                compact.append(spot_compact)
+
+            # Hero result line
+            taken_code = spot.get("taken_code")
+            if taken_code:
+                # Determine what hero did
+                action_desc_raw = spot.get("action_desc", "")
+                # Extract the action type from "→ 實際行動: POS action..."
+                hero_action_short = taken_code
+                for asol in sol.get("action_solutions", []):
+                    if asol["action"]["code"] == taken_code:
+                        act = asol["action"]
+                        if taken_code == "X":
+                            hero_action_short = "check"
+                        elif taken_code == "F":
+                            hero_action_short = "fold"
+                        elif taken_code == "C":
+                            hero_action_short = "call"
+                        elif act.get("allin"):
+                            hero_action_short = "all-in"
+                        else:
+                            hero_action_short = f"{'raise' if spot['street'] == 'preflop' else 'bet'}"
+                        break
+
+                # Check EV loss
+                is_pf = spot["street"] == "preflop"
+                ev_note = format_ev_comparison(
+                    sol, taken_code, hero_hand, hero_pos,
+                    is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
+                )
+                if ev_note:
+                    # Extract just the EV loss number from "⚠ EV 損失 X.XXbb（...）"
+                    m = re.search(r"EV 損失 ([\d.]+)bb", ev_note)
+                    ev_loss = float(m.group(1)) if m else 0
+                    if ev_loss >= 0.5:
+                        compact.append(f"\nHero {hero_action_short} → ❌ EV損失 -{ev_loss:.1f}bb")
+                    else:
+                        # Tiny EV loss (<0.5bb) — treat as correct
+                        compact.append(f"\nHero {hero_action_short} → ✅")
+                else:
+                    compact.append(f"\nHero {hero_action_short} → ✅")
+        else:
+            compact.append("（無 solver 數據）")
+
     return {
         "text": "\n".join(results),
+        "text_compact": "\n".join(compact),
         "hand": hand,
         "gametype": gametype,
         "depth": depth,
