@@ -2524,6 +2524,38 @@ def test_board_cards_no_tuples():
 
 
 @test
+def test_gto_line_fallback_when_sizing_off_tree():
+    """GTO line fallback: turn gets solver data when flop bet was off-tree sizing."""
+    from analyze_hand import analyze_hand_full
+    # CO opens, BB calls — standard HU postflop
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 15,
+        "hero_position": "CO",
+        "hero_hand": "KQo",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "streets": [
+            {"board": "8s7dAh", "actions": [
+                {"position": "BB", "action": "X"},
+                # Hero bets 2.4bb (~37% pot), off-GTO sizing
+                {"position": "CO", "action": "R2.4", "size": 2.4},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "5h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R10", "size": 10},
+            ]},
+        ]
+    })
+    # Turn should have solver data
+    turn_has_data = False
+    for spot, sol in zip(result["hero_spots"], result["solutions"]):
+        if spot["street"] == "turn" and sol is not None:
+            turn_has_data = True
+    assert_true(turn_has_data, "Turn should have solver data")
+
+
+@test
 def test_compact_format_preflop():
     """Compact: preflop output has header, emoji markers, and hero result."""
     from analyze_hand import analyze_hand_full

@@ -1093,6 +1093,63 @@ def _run_analysis(hand: dict) -> dict:
                 if solutions[i]:
                     icm_fallback_note = "⚠ ICM 模式不可用（可能需要更高等級的 GTO Wizard 訂閱），已自動改用 Chip EV"
 
+    # Retry postflop spots with GTO-recommended action substitution.
+    # When hero's actual bet maps to a low-frequency solver action (e.g. 33% pot
+    # when GTO says 20% pot), the solver may not expand that line for later streets.
+    # Fix: substitute hero's action with the GTO-recommended (highest freq) action
+    # from the previous spot's solution, and retry.
+    gto_line_note = ""
+    for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        if sol is not None or spot["street"] == "preflop":
+            continue
+        # Find the previous hero spot on the same or earlier street that has a solution
+        for j in range(i - 1, -1, -1):
+            prev_spot = hero_spots[j]
+            prev_sol = solutions[j]
+            prev_taken = prev_spot.get("taken_code")
+            if not prev_sol or not prev_taken or prev_taken in ("X", "C", "F"):
+                continue
+            # Find the best action for hero's hand at that spot
+            best_code = None
+            best_freq = 0
+            hn = normalize_hand_name(hero_hand)
+            for pi in prev_sol.get("players_info", []):
+                if pi["player"]["position"] != hero_pos:
+                    continue
+                shc = pi.get("simple_hand_counters", {})
+                hd = shc.get(hn)
+                if not hd:
+                    break
+                for code, freq in hd.get("actions_total_frequencies", {}).items():
+                    if freq > best_freq:
+                        best_freq = freq
+                        best_code = code
+                break
+            if not best_code or best_code == prev_taken:
+                continue
+            # Substitute hero's action in the params
+            retry_params = dict(spot["params"])
+            prev_street = prev_spot["street"]
+            action_key = f"{prev_street}_actions"
+            if action_key in retry_params and prev_taken in retry_params[action_key]:
+                retry_params[action_key] = retry_params[action_key].replace(
+                    prev_taken, best_code, 1)
+                retry_sol = _fetch_with_token(retry_params)
+                if retry_sol:
+                    solutions[i] = retry_sol
+                    # Build descriptive labels for the note
+                    from gto_formatter import _action_label
+                    taken_label = _action_label(prev_taken, prev_sol)
+                    best_label = _action_label(best_code, prev_sol)
+                    prev_street_name = prev_street.capitalize()
+                    gto_line_note = (
+                        f"⚠ Hero 在 {prev_street_name} 的下注（{taken_label}）偏離 GTO 建議（{best_label}），"
+                        f"{spot['street'].capitalize()} 的分析假設走 GTO 建議路線（{best_label}）作為參考"
+                    )
+                    # Update the spot params for display
+                    hero_spots[i]["params"] = retry_params
+            break
+
     # ── Phase 2.5: Preflop open depth correction ──
     # If hero raised preflop but the solver shows 0% raise for hero's hand at the
     # current depth, try the next higher depth. This handles depth quantization
@@ -1181,6 +1238,8 @@ def _run_analysis(hand: dict) -> dict:
         results.append(icm_fallback_note)
     if multiway_note:
         results.append(multiway_note)
+    if gto_line_note:
+        results.append(gto_line_note)
     if raw_preflop != preflop_actions:
         # Generate detailed approximation notes for each corrected action
         raw_parts = raw_preflop.split("-")
@@ -1279,6 +1338,8 @@ def _run_analysis(hand: dict) -> dict:
     compact = [f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"]
     if multiway_note:
         compact.append(f"⚠ {multiway_note}")
+    if gto_line_note:
+        compact.append(gto_line_note)
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         if spot["header"]:
