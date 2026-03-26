@@ -80,9 +80,9 @@ ICM 支援：
   → player_stacks: [0, 0, 8, 0, 23, 10, 18, 23]（UTG=0, UTG+1=0, LJ=8, HJ=0, CO=23, BTN=10, SB=18, BB=23）
   只有用戶明確說了「X 人桌」（如「6人桌決賽桌」）時，才用 X 人格式。
 - 用戶說「ICM bubble 50bb」且沒提到個別籌碼 → 不需要 player_stacks，只需 tournament_type + phase
-- 如果用戶問某個位置的「範圍」或「策略」而沒有指定具體手牌（如「CO 的 open 範圍如何」），
-  仍然要提取手牌 JSON！hero_hand 設為 "AA"（佔位用），hero_position 設為用戶問的位置。
-  系統會自動分析該位置的完整範圍。
+- 如果用戶問某個位置的「範圍」或「策略」而沒有指定具體手牌（如「CO 的 open 範圍如何」「LJ 整體下注頻率」），
+  仍然要提取手牌 JSON！hero_hand 設為 "AA"（佔位用），hero_position 設為用戶問的位置，
+  並加上 "no_hero_hand": true。系統會自動分析該位置的完整範圍，不會顯示 AA 的具體策略。
 - phase 對應規則：
   early/開始 → "START"
   75% left → "PCT75"
@@ -771,10 +771,17 @@ class GeminiSessionManager:
 
                 # Step 4: Coaching from LLM (with tools for follow-up queries)
                 await _status("分析回覆中...")
+                if context.get("no_hero_hand"):
+                    coaching_instruction = (
+                        "用戶沒有指定具體手牌，請根據 GTO 數據分析該位置的整體範圍策略（下注頻率、尺寸分佈、範圍組成等）。"
+                        "不要提及或分析任何特定手牌（如 AA）的策略。"
+                    )
+                else:
+                    coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                    f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                    f"{coaching_instruction}"
                 )
                 result = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
@@ -929,7 +936,8 @@ class GeminiSessionManager:
             eff_bb2 = hand_json.get('effective_bb')
             eff_str2 = f"({eff_bb2:.0f}bb)" if eff_bb2 else ""
             hand_desc = (
-                f"Hero {hand_json['hero_position']} {hand_json['hero_hand']} "
+                f"Hero {hand_json['hero_position']}"
+                f"{'' if hand_json.get('no_hero_hand') else ' ' + hand_json['hero_hand']} "
                 f"{eff_str2}\n"
                 f"Preflop: {hand_json['preflop_actions']}"
             )
@@ -942,11 +950,18 @@ class GeminiSessionManager:
                     hand_desc += f"\n{board} → {acts}"
 
             user_q = user_text.strip() if user_text.strip() else "請分析這手牌"
+            if context.get("no_hero_hand"):
+                img_coaching_instruction = (
+                    "用戶沒有指定具體手牌，請根據 GTO 數據分析該位置的整體範圍策略。"
+                    "不要提及或分析任何特定手牌（如 AA）的策略。"
+                )
+            else:
+                img_coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
             coaching_prompt = (
                 f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
                 f"用戶留言：{user_q}\n\n"
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                f"請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                f"{img_coaching_instruction}"
             )
             result = await self._chat_with_tools(
                 chat_id, coaching_prompt,
@@ -2019,7 +2034,7 @@ class GeminiSessionManager:
 
         lines = [
             "目前分析的手牌：",
-            f"- Hero: {ctx['hero_position']} {ctx['hero_hand']}, {float(ctx['depth']) - 0.125:.0f}bb depth",
+            f"- Hero: {ctx['hero_position']}{'' if ctx.get('no_hero_hand') else ' ' + ctx['hero_hand']}, {float(ctx['depth']) - 0.125:.0f}bb depth",
             f"- Preflop: {ctx['preflop_actions']}",
         ]
 

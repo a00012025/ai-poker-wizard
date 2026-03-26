@@ -658,6 +658,7 @@ def _run_analysis(hand: dict) -> dict:
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
     hero_hand = normalize_hand_name(hero_hand_raw)
+    no_hero_hand = hand.get("no_hero_hand", False)
     # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
     from gto_formatter import _COMBO_RANKS, _COMBO_SUITS
     hero_combo_idx = None
@@ -1244,9 +1245,10 @@ def _run_analysis(hand: dict) -> dict:
     # ── Phase 3: Format results ──
     results = []
     results.append("=" * 50)
+    hero_label = f"Hero: {hero_pos}" if no_hero_hand else f"Hero: {hero_pos} {hero_hand}"
     if is_icm:
         depth_display = depth if isinstance(depth, str) else f"{depth}"
-        results.append(f"Hero: {hero_pos} {hero_hand}")
+        results.append(hero_label)
         if icm_note:
             results.append(icm_note)
         if streets:
@@ -1254,10 +1256,10 @@ def _run_analysis(hand: dict) -> dict:
     elif is_cash:
         results.append(f"Cash Game {num_players}-max")
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth:.0f}bb solver）")
-        results.append(f"Hero: {hero_pos} {hero_hand}")
+        results.append(hero_label)
     else:
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
-        results.append(f"Hero: {hero_pos} {hero_hand}")
+        results.append(hero_label)
     if icm_fallback_note:
         results.append(icm_fallback_note)
     if multiway_note:
@@ -1301,17 +1303,19 @@ def _run_analysis(hand: dict) -> dict:
 
             # Add deterministic hand type label for postflop streets
             # Use hero_hand_raw (with suits, e.g. "AcTh") so flush/flush-draw detection works
-            spot_street = spot["street"]
-            if spot_street != "preflop" and spot_street in street_states:
-                spot_board = street_states[spot_street].get("board", "")
-                if spot_board:
-                    eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
-                    eval_result = _eval_hand(eval_input, spot_board)
-                    if eval_result["full_label"]:
-                        results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
+            if not no_hero_hand:
+                spot_street = spot["street"]
+                if spot_street != "preflop" and spot_street in street_states:
+                    spot_board = street_states[spot_street].get("board", "")
+                    if spot_board:
+                        eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
+                        eval_result = _eval_hand(eval_input, spot_board)
+                        if eval_result["full_label"]:
+                            results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
 
         if sol:
-            spot_text = format_full_spot(sol, hero_hand, hero_pos)
+            # When no hero hand specified, show only range-level summary (no hero-specific detail)
+            spot_text = format_full_spot(sol, None if no_hero_hand else hero_hand, hero_pos)
             results.append(spot_text)
 
             # For ICM preflop spots, include full range breakdown to prevent hallucination
@@ -1322,9 +1326,9 @@ def _run_analysis(hand: dict) -> dict:
                     results.append("")
                     results.append(range_text)
 
-            # Show EV loss if hero took a suboptimal action
+            # Show EV loss if hero took a suboptimal action (skip when no hero hand)
             taken_code = spot.get("taken_code")
-            if taken_code:
+            if taken_code and not no_hero_hand:
                 is_pf = spot["street"] == "preflop"
                 ev_note = format_ev_comparison(
                     sol, taken_code, hero_hand, hero_pos,
@@ -1359,7 +1363,8 @@ def _run_analysis(hand: dict) -> dict:
         mode_str = f"Cash {num_players}-max"
     else:
         mode_str = "MTT"
-    compact = [f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"]
+    compact_hero = f"♠ {hero_pos} | {eff_str} {mode_str}" if no_hero_hand else f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"
+    compact = [compact_hero]
     if multiway_note:
         compact.append(f"⚠ {multiway_note}")
     if gto_line_note:
@@ -1375,24 +1380,26 @@ def _run_analysis(hand: dict) -> dict:
                 raw_hdr = raw_hdr[:paren_idx].rstrip()
             compact.append(f"\n─── {raw_hdr} ───")
 
-            # Hand type label (postflop)
-            spot_street = spot["street"]
-            if spot_street != "preflop" and spot_street in street_states:
-                spot_board = street_states[spot_street].get("board", "")
-                if spot_board:
-                    eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
-                    eval_result = _eval_hand(eval_input, spot_board)
-                    if eval_result["full_label"]:
-                        compact.append(f"🎯 {eval_result['full_label']}")
+            # Hand type label (postflop) — skip when no hero hand
+            if not no_hero_hand:
+                spot_street = spot["street"]
+                if spot_street != "preflop" and spot_street in street_states:
+                    spot_board = street_states[spot_street].get("board", "")
+                    if spot_board:
+                        eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
+                        eval_result = _eval_hand(eval_input, spot_board)
+                        if eval_result["full_label"]:
+                            compact.append(f"🎯 {eval_result['full_label']}")
 
         if sol:
-            spot_compact = format_spot_compact(sol, hero_hand, hero_pos)
+            # When no hero hand, use sentinel to force range-level frequencies
+            spot_compact = format_spot_compact(sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos)
             if spot_compact:
                 compact.append(spot_compact)
 
-            # Hero result line
+            # Hero result line — skip when no hero hand
             taken_code = spot.get("taken_code")
-            if taken_code:
+            if taken_code and not no_hero_hand:
                 # Determine what hero did
                 action_desc_raw = spot.get("action_desc", "")
                 # Extract the action type from "→ 實際行動: POS action..."
@@ -1442,6 +1449,7 @@ def _run_analysis(hand: dict) -> dict:
         "is_icm": is_icm,
         "hero_position": hero_pos,
         "hero_hand": hero_hand,
+        "no_hero_hand": no_hero_hand,
         "preflop_actions": preflop_actions,
         "street_states": street_states,
         "final_actions": {

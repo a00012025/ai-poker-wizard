@@ -2657,6 +2657,39 @@ def test_compact_format_spot_compact():
     assert_true("combos" not in compact.lower(), "should not show combos count")
 
 
+@test
+def test_no_hero_hand_flag():
+    """No hero hand: output omits hero-specific sections when no_hero_hand=True."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "hero_position": "LJ",
+        "hero_hand": "AA",
+        "no_hero_hand": True,
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [
+            {"board": "Th6c2d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R2", "size": 2.0},
+            ]},
+        ]
+    })
+    text = result["text"]
+    compact = result["text_compact"]
+    # Header should show position without hand
+    assert_in("Hero: LJ", text, "detailed text should show hero position")
+    assert_true("Hero: LJ AA" not in text, "detailed text should NOT show AA as hero hand")
+    # Compact header should not show AA
+    assert_in("♠ LJ |", compact, "compact should show position without hand")
+    assert_true("♠ LJ AA" not in compact, "compact should NOT show AA")
+    # Should not show hand type eval for AA (no 🎯 overpair)
+    assert_true("牌型" not in text, "should not show hand type when no hero hand")
+    assert_true("🎯" not in compact, "compact should not show hand type emoji")
+    # Return dict should carry the flag
+    assert_true(result["no_hero_hand"], "result should carry no_hero_hand flag")
+
+
 # ── Runner ──
 
 def run_tests():
