@@ -1127,6 +1127,19 @@ def _run_analysis(hand: dict) -> dict:
                 break
             if not best_code or best_code == prev_taken:
                 continue
+            # Only substitute when hero's action had very low frequency (<10%)
+            hn2 = normalize_hand_name(hero_hand)
+            hero_taken_freq = 0
+            for pi in prev_sol.get("players_info", []):
+                if pi["player"]["position"] != hero_pos:
+                    continue
+                shc2 = pi.get("simple_hand_counters", {})
+                hd2 = shc2.get(hn2)
+                if hd2:
+                    hero_taken_freq = hd2.get("actions_total_frequencies", {}).get(prev_taken, 0)
+                break
+            if hero_taken_freq >= 0.10:
+                continue
             # Substitute hero's action in the params
             retry_params = dict(spot["params"])
             prev_street = prev_spot["street"]
