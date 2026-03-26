@@ -953,6 +953,17 @@ def _run_analysis(hand: dict) -> dict:
             pos = act["position"]
             action_type = act["action"]
             target_size = act.get("size", 0)
+            # Parse size from action string if not provided separately
+            if not target_size and action_type.startswith("R"):
+                try:
+                    target_size = float(action_type[1:])
+                except (ValueError, IndexError):
+                    pass
+            if not target_size and action_type.startswith("AI"):
+                try:
+                    target_size = float(action_type[2:]) if len(action_type) > 2 else 0
+                except ValueError:
+                    pass
 
             # Skip actions from positions not in simplified heads-up
             if multiway_positions and pos not in multiway_positions:

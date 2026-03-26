@@ -2524,6 +2524,43 @@ def test_board_cards_no_tuples():
 
 
 @test
+def test_postflop_size_parsed_from_action_string():
+    """Postflop: bet size parsed from action string when 'size' field missing."""
+    from analyze_hand import analyze_hand_full
+    # 3-way pot: UTG opens, SB+BB call. Flop actions have no "size" field.
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 14.9,
+        "hero_position": "UTG",
+        "hero_hand": "KQo",
+        "preflop_actions": "R2-F-F-F-F-F-C-C",
+        "streets": [
+            {"board": "8s7dAh", "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "X", "position": "BB"},
+                {"action": "R2.4", "position": "UTG"},  # no "size" field
+                {"action": "C", "position": "SB"},
+                {"action": "F", "position": "BB"},
+            ]},
+            {"card": "5h", "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "R10.5", "position": "UTG"},  # no "size" field
+                {"action": "C", "position": "SB"},
+            ]},
+        ]
+    })
+    # Flop hero action should be a bet (R*), not check (X)
+    flop_spot = [s for s in result["hero_spots"] if s["street"] == "flop"][0]
+    assert_true(flop_spot["taken_code"].startswith("R"),
+                f"Flop taken_code should be R* not {flop_spot['taken_code']}")
+    # Turn should have solver data (not "無 solver 數據")
+    turn_sols = [sol for spot, sol in zip(result["hero_spots"], result["solutions"])
+                 if spot["street"] == "turn"]
+    assert_true(turn_sols and turn_sols[0] is not None,
+                "Turn should have solver data when flop bet size parsed from action string")
+
+
+@test
 def test_gto_line_fallback_when_sizing_off_tree():
     """GTO line fallback: turn gets solver data when flop bet was off-tree sizing."""
     from analyze_hand import analyze_hand_full
