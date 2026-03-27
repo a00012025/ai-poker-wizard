@@ -655,7 +655,7 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                 csol = ca / ha if ha > 0 else 1.0
 
                 # Hull defects normalized by sqrt(area) for scale
-                # independence.  Hearts norm > 30, diamonds norm < 25.
+                # independence.  Hearts norm > 22, diamonds norm < 18.
                 hull_idx = cv2.convexHull(target, returnPoints=False)
                 max_defect = 0
                 if len(hull_idx) > 3:
@@ -665,16 +665,46 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
 
                 norm = max_defect / (ca ** 0.5) if ca > 0 else 0
 
-                if norm > 30:
+                # High norm (clear concavity) → heart regardless of
+                # contour size.  Works for hero cards and large board
+                # cards alike.
+                if norm > 22:
                     return "h"
-                if norm < 25:
-                    return "d"
 
-                # Ambiguous: use solidity + green
-                if csol >= 0.95:
-                    return "d"
-                if csol < 0.90:
-                    return "h"
+                if ca >= 4000:
+                    # Large contour: hull defects are reliable.
+                    if norm < 18:
+                        return "d"
+                    # Ambiguous zone (18-22): prefer green channel,
+                    # then solidity.
+                    if green_says_heart:
+                        return "h"
+                    if csol >= 0.95:
+                        return "d"
+                    if csol < 0.90:
+                        return "h"
+                else:
+                    # Small contour (< 4000 area after 4x upscale):
+                    # hull defects are unreliable at this scale.  Use
+                    # center suit pixel color instead.  In N8 rendering
+                    # hearts are a purer red (lower green component)
+                    # than diamonds.
+                    # Two color regimes exist across screenshots:
+                    #   Regime A (cool reds): hearts G/R < 0.093,
+                    #                         diamonds G/R > 0.10
+                    #   Regime B (warm reds): hearts G/R 0.186-0.198,
+                    #                         diamonds G/R > 0.22
+                    center_red_px = center[rmask > 0]
+                    if len(center_red_px) >= 5:
+                        cg = float(np.mean(center_red_px[:, 1]))
+                        cr = float(np.mean(center_red_px[:, 2]))
+                        gr = cg / cr if cr > 0 else 0
+                        if gr < 0.15:
+                            # Regime A: dark/cool reds
+                            return "h" if gr < 0.093 else "d"
+                        else:
+                            # Regime B: warm reds
+                            return "h" if gr < 0.21 else "d"
 
         if green_says_heart:
             return "h"
@@ -822,7 +852,13 @@ def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 20) -> str:
                     return "d"
                 else:
                     return "h"
-        return "d"  # default red → diamond (more common in poker notation)
+        # Default red: use green channel to decide heart vs diamond.
+        # Hearts in N8 rendering have higher green component.
+        red_combined = cv2.bitwise_or(red_mask1, red_mask2)
+        rp = sample[red_combined > 0]
+        if len(rp) >= 5 and float(np.mean(rp[:, 1])) > 60:
+            return "h"
+        return "d"
     else:
         # Black suit: distinguish spade vs club
         # Spade ♠ is pointy at top, club ♣ has round lobes
