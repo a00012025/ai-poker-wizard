@@ -1,0 +1,80 @@
+==================================================
+籌碼深度: 23.9bb（使用 25bb solver）
+Hero: UTG A6s
+Preflop actions 校正: R2-F-F-C-F-F-F-F → R2.1-F-F-C-F-F-F-F
+⚠ 近似說明: UTG raise 2bb → 校正為 R2.1
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【UTG 在 Preflop 】底池 2.500bb
+  Fold: 81.9%（1086 combos）
+  RAISE 2.1（31% pot）: 18.1%（240 combos）
+
+【UTG A6s】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 0.05bb | Equity: 0.0%
+  策略:
+    RAISE 2.1（31% pot）: 100.0%（4.0 combos） EV 0.05bb
+
+==================================================
+【Flop: 2cThJd】
+Hero A6s 牌型: Ace high + 後門花聽牌
+【UTG 在 Flop JdTh2c】底池 6.700bb
+  Check: 25.4%（53 combos）
+  BET 1.35（20% pot）: 23.5%（50 combos）
+  BET 2.2（33% pot）: 29.1%（61 combos）
+  BET 3.7（55% pot）: 20.7%（44 combos）
+  BET 5.55（83% pot）: 1.3%（3 combos）
+
+【UTG A6s】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 0.38bb | Equity: 23.2%
+  策略:
+    Check: 94.5%（3.8 combos） EV 0.38bb
+    Bet 1.35（20% pot）: 3.4%（0.1 combos） EV 0.34bb
+    Bet 2.2（33% pot）: 1.5%（0.1 combos） EV 0.33bb
+    Bet 5.55（83% pot）: 0.6%（0.0 combos） EV 0.31bb
+  → 實際行動: UTG X（solver code: X）
+
+
+==================================================
+【Turn: 4s（Board: 2cThJd4s）】
+Hero A6s 牌型: Ace high
+【UTG 在 Turn JdTh2c4s】底池 6.700bb
+  Check: 56.1%（30 combos）
+  BET 1.35（20% pot）: 1.0%（1 combos）
+  BET 2.2（33% pot）: 1.7%（1 combos）
+  BET 3.7（55% pot）: 17.2%（9 combos）
+  BET 5.55（83% pot）: 23.7%（13 combos）
+  BET 8.4（125% pot）: 0.4%（0 combos）
+
+【UTG A6s】
+  Range 頻率: 94.5%（3.8/4 combos）
+  EV: 0.22bb | Equity: 17.4%
+  策略:
+    Check: 99.3%（3.8 combos） EV 0.22bb
+    Bet 1.35（20% pot）: 0.3%（0.0 combos） EV 0.14bb
+    Bet 2.2（33% pot）: 0.2%（0.0 combos） EV 0.08bb
+    Bet 8.4（125% pot）: 0.2%（0.0 combos） EV 0.09bb
+⚠ EV 損失 0.12bb（Bet 5.55（83% pot） 0.11bb vs Check 0.23bb）
+  → 實際行動: UTG R4.9 4.9bb（solver code: R5.55）
+
+
+==================================================
+【River: 8s（Board: 2cThJd4s8s）】
+Hero A6s 牌型: Ace high
+【UTG 在 River JdTh2c4s8s】底池 17.800bb
+  Check: 45.2%（6 combos）
+  BET 6.5（37% pot）: 2.1%（0 combos）
+  All-in 17.350: 52.6%（7 combos）
+
+【UTG A6s】
+  Range 頻率: 0.0%（0.0/4 combos）
+  EV: 1.92bb | Equity: 18.7%
+  策略:
+    All-in: 100.0%（0.0 combos）
+  → 實際行動: UTG R27.6 27.6bb（solver code: R6.5）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

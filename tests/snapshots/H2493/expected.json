@@ -1,0 +1,67 @@
+{
+  "streets": [
+    {
+      "board": "Th5hAh",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 1.1,
+          "action": "R1.1",
+          "position": "BTN"
+        },
+        {
+          "size": 1.1,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "4c",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 6.0,
+          "action": "R6",
+          "position": "BTN"
+        },
+        {
+          "size": 6.0,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "9d",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 89.9,
+          "action": "R89.9",
+          "position": "BTN"
+        },
+        {
+          "size": 19.1,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "AdJh",
+  "effective_bb": 28.4,
+  "hero_position": "BTN",
+  "preflop_actions": "F-F-F-R2.2-F-C",
+  "players_at_table": 6
+}

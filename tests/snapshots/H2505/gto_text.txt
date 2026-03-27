@@ -1,0 +1,69 @@
+==================================================
+籌碼深度: 23.4bb（使用 25bb solver）
+Hero: LJ 22
+Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2.1-F-F-F-F-C
+⚠ 近似說明: LJ raise 2.2bb → 校正為 R2.1
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【LJ 在 Preflop 】底池 2.500bb
+  Fold: 76.6%（1016 combos）
+  RAISE 2.1（31% pot）: 23.4%（310 combos）
+
+【LJ 22】
+  Range 頻率: 100.0%（6.0/6 combos）
+  EV: 0.00bb | Equity: 0.0%
+  策略:
+    Fold: 100.0%（6.0 combos） EV 0.00bb
+
+==================================================
+【Flop: 9dQs3h】
+Hero 22 牌型: 口袋對 (22) < 牌面
+【LJ 在 Flop Qs9d3h】底池 5.700bb
+  Check: 8.8%（24 combos）
+  BET 1.15（20% pot）: 46.6%（128 combos）
+  BET 1.9（33% pot）: 31.0%（85 combos）
+  BET 3.15（55% pot）: 8.5%（23 combos）
+  BET 4.75（83% pot）: 4.7%（13 combos）
+  BET 7.1（125% pot）: 0.5%（1 combos）
+
+【LJ 22】
+  Range 頻率: 0.0%（0.0/6 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: LJ R1.3 1.3bb（solver code: R1.15）
+
+
+==================================================
+【Turn: 6d（Board: 9dQs3h6d）】
+Hero 22 牌型: 口袋對 (22) < 牌面
+【LJ 在 Turn Qs9d3h6d】底池 8.000bb
+  Check: 44.3%（56 combos）
+  BET 1.6（20% pot）: 0.2%（0 combos）
+  BET 2.65（33% pot）: 1.5%（2 combos）
+  BET 4.4（55% pot）: 9.7%（12 combos）
+  BET 6.65（83% pot）: 41.4%（52 combos）
+  BET 10（125% pot）: 2.9%（4 combos）
+
+【LJ 22】
+  Range 頻率: 0.0%（0.0/6 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: LJ X（solver code: X）
+
+
+==================================================
+【River: 9c（Board: 9dQs3h6d9c）】
+Hero 22 牌型: 口袋對 (22) < 牌面
+【LJ 在 River Qs9d3h6d9c】底池 15.000bb
+  Fold: 51.0%（27 combos）
+  Call: 35.8%（19 combos）
+  RAISE 14.5（34% pot）: 4.5%（2 combos）
+  All-in 21.750: 8.8%（5 combos）
+
+【LJ 22】
+  Range 頻率: 0.0%（0.0/6 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: LJ F（solver code: F）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

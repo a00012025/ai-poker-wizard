@@ -1,0 +1,19 @@
+♠ BB A9s | 11bb MTT
+
+─── Preflop ───
+✅ All-in (100%)
+
+─── Flop: Qs3dAh ───
+🎯 頂對 (A) + 後門花聽牌
+（無 solver 數據）
+（無 solver 數據）
+
+─── Turn: Jd ───
+🎯 頂對 (A) + 堅果花聽牌
+（無 solver 數據）
+（無 solver 數據）
+
+─── River: 3c ───
+🎯 頂對 (A)
+（無 solver 數據）
+（無 solver 數據）

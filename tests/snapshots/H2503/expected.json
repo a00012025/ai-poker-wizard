@@ -1,0 +1,49 @@
+{
+  "streets": [
+    {
+      "board": "4c9d7c",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "As",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "Th",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "CO"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "8s8d",
+  "effective_bb": 31.6,
+  "hero_position": "CO",
+  "preflop_actions": "F-F-R2.2-F-F-C",
+  "players_at_table": 6
+}

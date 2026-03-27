@@ -1,0 +1,10 @@
+♠ BB 88 | 62bb MTT
+
+─── Preflop ───
+✅ Fold (99%)
+⚠️ Call (1%)
+
+─── Flop: 9hAcTh ───
+🎯 口袋對 (88) < 牌面
+（無 solver 數據）
+（無 solver 數據）

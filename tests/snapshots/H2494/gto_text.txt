@@ -1,0 +1,86 @@
+==================================================
+籌碼深度: 41.1bb（使用 40bb solver）
+Hero: HJ ATs
+⚠ 多人底池，簡化為 HJ open vs SB call 單挑分析
+
+
+==================================================
+【Preflop】
+【HJ 在 Preflop 】底池 2.500bb
+  Fold: 70.6%（937 combos）
+  RAISE 2.3（37% pot）: 29.4%（389 combos）
+
+【HJ ATs】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 1.01bb | Equity: 0.0%
+  策略:
+    RAISE 2.3（37% pot）: 100.0%（4.0 combos） EV 1.01bb
+
+==================================================
+【Flop: Kc9d3d】
+Hero ATs 牌型: Ace high + 後門花聽牌
+【HJ 在 Flop Kc9d3d】底池 6.600bb
+  Check: 44.4%（153 combos）
+  BET 1.3（20% pot）: 3.1%（11 combos）
+  BET 2.2（33% pot）: 23.4%（80 combos）
+  BET 3.65（55% pot）: 26.2%（90 combos）
+  BET 5.5（83% pot）: 2.0%（7 combos）
+  BET 8.25（125% pot）: 0.8%（3 combos）
+
+【HJ ATs】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 2.96bb | Equity: 43.8%
+  策略:
+    Check: 36.9%（1.5 combos） EV 2.96bb
+    Bet 3.65（55% pot）: 36.6%（1.5 combos） EV 2.96bb
+    Bet 2.2（33% pot）: 22.4%（0.9 combos） EV 2.95bb
+    Bet 1.3（20% pot）: 2.1%（0.1 combos） EV 2.94bb
+    Bet 5.5（83% pot）: 1.3%（0.1 combos） EV 2.96bb
+    Bet 8.25（125% pot）: 0.7%（0.0 combos） EV 2.90bb
+⚠ EV 損失 0.01bb（Bet 2.2（33% pot） 2.10bb vs Bet 3.65（55% pot） 2.11bb）
+  → 實際行動: HJ R2.5 2.5bb（solver code: R2.2）
+
+
+==================================================
+【Turn: Js（Board: Kc9d3dJs）】
+Hero ATs 牌型: Ace high + 卡順聽牌
+【HJ 在 Turn Kc9d3dJs】底池 11.000bb
+  Check: 46.0%（35 combos）
+  BET 2.2（20% pot）: 1.3%（1 combos）
+  BET 3.65（33% pot）: 2.1%（2 combos）
+  BET 6.05（55% pot）: 12.9%（10 combos）
+  BET 9.15（83% pot）: 37.3%（28 combos）
+  BET 13.75（125% pot）: 0.4%（0 combos）
+
+【HJ ATs】
+  Range 頻率: 22.4%（0.9/4 combos）
+  EV: 3.82bb | Equity: 24.9%
+  策略:
+    Bet 9.15（83% pot）: 74.7%（0.7 combos） EV 3.83bb
+    Bet 6.05（55% pot）: 16.7%（0.1 combos） EV 3.82bb
+    Check: 6.5%（0.1 combos） EV 3.77bb
+    Bet 3.65（33% pot）: 1.1%（0.0 combos） EV 3.81bb
+    Bet 2.2（20% pot）: 0.6%（0.0 combos） EV 3.74bb
+    Bet 13.75（125% pot）: 0.4%（0.0 combos） EV 3.64bb
+⚠ EV 損失 0.02bb（Check 2.65bb vs Bet 9.15（83% pot） 2.67bb）
+  → 實際行動: HJ X（solver code: X）
+
+
+==================================================
+【River: 5h（Board: Kc9d3dJs5h）】
+Hero ATs 牌型: Ace high
+【HJ 在 River Kc9d3dJs5h】底池 11.000bb
+  Check: 57.4%（20 combos）
+  BET 4（36% pot）: 5.5%（2 combos）
+  BET 7（64% pot）: 29.0%（10 combos）
+  BET 10（91% pot）: 8.0%（3 combos）
+
+【HJ ATs】
+  Range 頻率: 1.5%（0.1/4 combos）
+  EV: 0.89bb | Equity: 4.1%
+  策略:
+    Bet 10（91% pot）: 89.9%（0.1 combos） EV 0.89bb
+    Bet 7（64% pot）: 10.0%（0.0 combos） EV 0.85bb
+  → 實際行動: HJ R6.2 6.2bb（solver code: R7）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

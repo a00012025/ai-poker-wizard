@@ -1,0 +1,27 @@
+♠ CO ATs | 17bb MTT
+
+─── Preflop ───
+✅ RAISE 2（29% pot） (100%)
+
+─── Flop: 6cQs8d ───
+🎯 Ace high + 後門花聽牌
+✅ Check (94%)
+⚠️ Bet 1.2（20% pot） (5%)
+⚠️ Bet 2（33% pot） (0%)
+
+Hero bet → ✅
+
+─── Turn: 6d ───
+🎯 第三對 (6) + 堅果花聽牌
+✅ Check (50%)
+⚠️ Bet 5.5（55% pot） (46%)
+⚠️ Bet 3.3（33% pot） (4%)
+
+Hero check → ✅
+
+─── River: 2h ───
+🎯 第三對 (6)
+✅ Call (100%)
+⚠️ All-in (0%)
+
+Hero fold → ✅

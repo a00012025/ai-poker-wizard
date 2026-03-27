@@ -1,0 +1,32 @@
+==================================================
+籌碼深度: 62.4bb（使用 60bb solver）
+Hero: BB 88
+Preflop actions 校正: F-F-F-R2-F-F-R9-C → F-F-F-R2.3-F-F-R9.8-C
+⚠ 近似說明: HJ raise 2bb → 校正為 R2.3; SB raise 9bb → 校正為 R9.8
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【BB 在 Preflop 】底池 14.100bb
+  Fold: 95.2%（1262 combos）
+  Call: 0.4%（5 combos）
+  All-in 60.000: 4.4%（58 combos）
+
+【BB 88】
+  Range 頻率: 100.0%（6.0/6 combos）
+  EV: -0.00bb | Equity: 0.0%
+  策略:
+    Fold: 98.6%（5.9 combos） EV 0.00bb
+    Call: 1.4%（0.1 combos） EV -0.00bb
+
+==================================================
+【Flop: 9hAcTh】
+Hero 88 牌型: 口袋對 (88) < 牌面
+（無 solver 數據）
+  → 實際行動: BB R5 5.0bb（solver code: C）
+
+（無 solver 數據）
+  → 實際行動: BB F（solver code: F）
+
+⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

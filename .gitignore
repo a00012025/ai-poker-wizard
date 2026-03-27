@@ -36,6 +36,13 @@ bot_token.txt
 *.png
 *.jpg
 downloads/
+# Allow snapshot test images
+!tests/snapshots/**/*.jpeg
+!tests/snapshots/**/*.png
+# Snapshot GTO outputs are machine-local (depend on local .gto_cache)
+tests/snapshots/*/gto_text.txt
+tests/snapshots/*/gto_compact.txt
+tests/snapshots/gto_cache/
 .browser-profile/
 .tokens.json
 scripts/_tmp.py

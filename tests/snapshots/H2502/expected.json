@@ -1,0 +1,63 @@
+{
+  "streets": [
+    {
+      "board": "KdAsAd",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 3.7,
+          "action": "R3.7",
+          "position": "HJ"
+        },
+        {
+          "size": 3.7,
+          "action": "C",
+          "position": "CO"
+        },
+        {
+          "action": "F",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "2d",
+      "actions": [
+        {
+          "size": 5.5,
+          "action": "R5.5",
+          "position": "HJ"
+        },
+        {
+          "size": 5.5,
+          "action": "C",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "3h",
+      "actions": [
+        {
+          "size": 6.0,
+          "action": "R6",
+          "position": "HJ"
+        },
+        {
+          "size": 5.9,
+          "action": "C",
+          "position": "CO"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "Ah4h",
+  "effective_bb": 17.1,
+  "hero_position": "CO",
+  "preflop_actions": "F-R2-C-F-F-C",
+  "players_at_table": 6
+}

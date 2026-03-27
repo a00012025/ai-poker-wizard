@@ -1,0 +1,56 @@
+{
+  "streets": [
+    {
+      "board": "Ks2dQc",
+      "actions": [
+        {
+          "size": 7.5,
+          "action": "R7.5",
+          "position": "BB"
+        },
+        {
+          "size": 7.5,
+          "action": "C",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "4h",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "4c",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 22.4,
+          "action": "R22.4",
+          "position": "CO"
+        },
+        {
+          "action": "F",
+          "position": "BB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "KhQd",
+  "effective_bb": 62.3,
+  "hero_position": "CO",
+  "preflop_actions": "F-F-F-F-R2.2-F-F-R10-C",
+  "players_at_table": 8
+}

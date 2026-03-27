@@ -1,0 +1,63 @@
+==================================================
+籌碼深度: 17.1bb（使用 14bb solver）
+Hero: CO A4s
+⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析
+有效籌碼調整: 17.1bb → 15bb（扣除底池死錢 ~2bb）
+
+
+==================================================
+【Preflop】
+【CO 在 Preflop 】底池 4.500bb
+  Fold: 85.9%（1140 combos）
+  Call: 3.9%（52 combos）
+  All-in 17.000: 10.1%（134 combos）
+
+【CO A4s】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: -0.00bb | Equity: 0.0%
+  策略:
+    Fold: 61.0%（2.4 combos） EV 0.00bb
+    Call: 30.5%（1.2 combos） EV -0.00bb
+    All-in: 8.5%（0.3 combos） EV -0.00bb
+
+==================================================
+【Flop: KdAsAd】
+Hero A4s 牌型: 三條 (A)
+【CO 在 Flop AsAdKd】底池 10.100bb
+  Fold: 39.6%（13 combos）
+  Call: 37.1%（12 combos）
+  All-in 12.000: 23.3%（7 combos）
+
+【CO A4s】
+  Range 頻率: 0.0%（0.0/2 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: CO C 3.7bb（solver code: C）
+
+
+==================================================
+【Turn: 2d（Board: KdAsAd2d）】
+Hero A4s 牌型: 三條 (A)
+【CO 在 Turn AsAdKd2d】底池 16.450bb
+  Fold: 13.0%（2 combos）
+  Call: 40.7%（5 combos）
+  All-in 8.400: 46.3%（5 combos）
+
+【CO A4s】
+  Range 頻率: 0.0%（0.0/2 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: CO C 5.5bb（solver code: C）
+
+
+==================================================
+【River: 3h（Board: KdAsAd2d3h）】
+Hero A4s 牌型: 三條 (A)
+【CO 在 River AsAdKd2d3h】底池 24.850bb
+  Fold: 30.9%（1 combos）
+  Call: 69.1%（3 combos）
+
+【CO A4s】
+  Range 頻率: 0.0%（0.0/2 combos）
+  EV: 0.00bb | Equity: 0.0%
+  → 實際行動: CO C 5.9bb（solver code: C）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

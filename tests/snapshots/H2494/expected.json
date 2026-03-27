@@ -1,0 +1,69 @@
+{
+  "streets": [
+    {
+      "board": "Kc9d3d",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 2.5,
+          "action": "R2.5",
+          "position": "HJ"
+        },
+        {
+          "size": 2.5,
+          "action": "C",
+          "position": "SB"
+        },
+        {
+          "action": "F",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "Js",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "action": "X",
+          "position": "HJ"
+        }
+      ]
+    },
+    {
+      "card": "5h",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "size": 6.2,
+          "action": "R6.2",
+          "position": "HJ"
+        },
+        {
+          "size": 6.2,
+          "action": "C",
+          "position": "SB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "AcTc",
+  "effective_bb": 41.1,
+  "hero_position": "HJ",
+  "preflop_actions": "F-R2.2-F-F-C-C",
+  "players_at_table": 6
+}

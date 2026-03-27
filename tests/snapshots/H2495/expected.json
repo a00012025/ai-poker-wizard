@@ -1,0 +1,29 @@
+{
+  "streets": [
+    {
+      "board": "9hAcTh",
+      "actions": [
+        {
+          "size": 5.0,
+          "action": "R5",
+          "position": "BB"
+        },
+        {
+          "size": 14.7,
+          "action": "R14.7",
+          "position": "HJ"
+        },
+        {
+          "action": "F",
+          "position": "BB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "8s8d",
+  "effective_bb": 62.4,
+  "hero_position": "BB",
+  "preflop_actions": "F-R2-F-F-R9-C",
+  "players_at_table": 6
+}

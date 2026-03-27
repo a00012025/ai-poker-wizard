@@ -1,0 +1,35 @@
+♠ LJ 22 | 23bb MTT
+
+─── Preflop ───
+✅ Fold (100%)
+
+─── Flop: 9dQs3h ───
+🎯 口袋對 (22) < 牌面
+✅ Bet 1.15（20% pot） (47%)
+⚠️ Bet 1.9（33% pot） (31%)
+⚠️ Check (9%)
+⚠️ Bet 3.15（55% pot） (8%)
+⚠️ Bet 4.75（83% pot） (5%)
+⚠️ Bet 7.1（125% pot） (0%)
+
+Hero bet → ✅
+
+─── Turn: 6d ───
+🎯 口袋對 (22) < 牌面
+✅ Check (44%)
+⚠️ Bet 6.65（83% pot） (41%)
+⚠️ Bet 4.4（55% pot） (10%)
+⚠️ Bet 10（125% pot） (3%)
+⚠️ Bet 2.65（33% pot） (1%)
+⚠️ Bet 1.6（20% pot） (0%)
+
+Hero check → ✅
+
+─── River: 9c ───
+🎯 口袋對 (22) < 牌面
+✅ Fold (51%)
+⚠️ Call (36%)
+⚠️ All-in (9%)
+⚠️ Bet 14.5（34% pot） (5%)
+
+Hero fold → ✅

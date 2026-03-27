@@ -1,0 +1,39 @@
+{
+  "streets": [
+    {
+      "board": "KdAc4h",
+      "actions": [
+        {
+          "size": 4.0,
+          "action": "R4",
+          "position": "SB"
+        },
+        {
+          "size": 4.0,
+          "action": "C",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "8d",
+      "actions": [
+        {
+          "size": 24.5,
+          "action": "R24.5",
+          "position": "SB"
+        },
+        {
+          "action": "F",
+          "position": "CO"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "AsJh",
+  "effective_bb": 35.5,
+  "hero_position": "SB",
+  "preflop_actions": "F-F-F-F-R2-F-R7-F-C",
+  "players_at_table": 8
+}

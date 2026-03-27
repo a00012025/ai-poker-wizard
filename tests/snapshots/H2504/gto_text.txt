@@ -1,0 +1,48 @@
+==================================================
+籌碼深度: 11.4bb（使用 12bb solver）
+Hero: BB A9s
+
+
+==================================================
+【Preflop】
+【BB 在 Preflop 】底池 4.500bb
+  Fold: 34.1%（453 combos）
+  Call: 51.9%（688 combos）
+  All-in 12.000: 14.0%（185 combos）
+
+【BB A9s】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 1.46bb | Equity: 0.0%
+  策略:
+    All-in: 100.0%（4.0 combos） EV 1.46bb
+
+==================================================
+【Flop: Qs3dAh】
+Hero A9s 牌型: 頂對 (A) + 後門花聽牌
+（無 solver 數據）
+  → 實際行動: BB X（solver code: X）
+
+（無 solver 數據）
+  → 實際行動: BB C 1.0bb（solver code: C）
+
+
+==================================================
+【Turn: Jd（Board: Qs3dAhJd）】
+Hero A9s 牌型: 頂對 (A) + 堅果花聽牌
+（無 solver 數據）
+  → 實際行動: BB X（solver code: X）
+
+（無 solver 數據）
+  → 實際行動: BB C 2.0bb（solver code: C）
+
+
+==================================================
+【River: 3c（Board: Qs3dAhJd3c）】
+Hero A9s 牌型: 頂對 (A)
+（無 solver 數據）
+  → 實際行動: BB X（solver code: X）
+
+（無 solver 數據）
+  → 實際行動: BB C 6.4bb（solver code: C）
+
+⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

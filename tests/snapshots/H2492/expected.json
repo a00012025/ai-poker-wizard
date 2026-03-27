@@ -1,0 +1,52 @@
+{
+  "streets": [
+    {
+      "board": "2cThJd",
+      "actions": [
+        {
+          "action": "X",
+          "position": "UTG"
+        },
+        {
+          "action": "X",
+          "position": "LJ"
+        }
+      ]
+    },
+    {
+      "card": "4s",
+      "actions": [
+        {
+          "size": 4.9,
+          "action": "R4.9",
+          "position": "UTG"
+        },
+        {
+          "size": 4.9,
+          "action": "C",
+          "position": "LJ"
+        }
+      ]
+    },
+    {
+      "card": "8s",
+      "actions": [
+        {
+          "size": 27.6,
+          "action": "R27.6",
+          "position": "UTG"
+        },
+        {
+          "action": "F",
+          "position": "LJ"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "Ac6c",
+  "effective_bb": 23.9,
+  "hero_position": "UTG",
+  "preflop_actions": "R2-F-F-C-F-F-F-F",
+  "players_at_table": 8
+}

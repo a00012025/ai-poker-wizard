@@ -1,0 +1,56 @@
+{
+  "streets": [
+    {
+      "board": "6cQs8d",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "size": 2.0,
+          "action": "R2",
+          "position": "CO"
+        },
+        {
+          "size": 2.0,
+          "action": "C",
+          "position": "SB"
+        }
+      ]
+    },
+    {
+      "card": "6d",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "action": "X",
+          "position": "CO"
+        }
+      ]
+    },
+    {
+      "card": "2h",
+      "actions": [
+        {
+          "size": 4.0,
+          "action": "R4",
+          "position": "SB"
+        },
+        {
+          "action": "F",
+          "position": "CO"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "AdTd",
+  "effective_bb": 17.3,
+  "hero_position": "CO",
+  "preflop_actions": "F-F-F-F-R2-F-C-F",
+  "players_at_table": 8
+}

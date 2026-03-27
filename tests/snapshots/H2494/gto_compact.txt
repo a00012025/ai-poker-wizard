@@ -1,0 +1,34 @@
+♠ HJ ATs | 41bb MTT
+⚠ ⚠ 多人底池，簡化為 HJ open vs SB call 單挑分析
+
+─── Preflop ───
+✅ RAISE 2.3（37% pot） (100%)
+
+─── Flop: Kc9d3d ───
+🎯 Ace high + 後門花聽牌
+✅ Check (37%)
+⚠️ Bet 3.65（55% pot） (37%)
+⚠️ Bet 2.2（33% pot） (22%)
+⚠️ Bet 1.3（20% pot） (2%)
+⚠️ Bet 5.5（83% pot） (1%)
+⚠️ Bet 8.25（125% pot） (1%)
+
+Hero bet → ✅
+
+─── Turn: Js ───
+🎯 Ace high + 卡順聽牌
+✅ Bet 9.15（83% pot） (75%)
+⚠️ Bet 6.05（55% pot） (17%)
+⚠️ Check (6%)
+⚠️ Bet 3.65（33% pot） (1%)
+⚠️ Bet 2.2（20% pot） (1%)
+⚠️ Bet 13.75（125% pot） (0%)
+
+Hero check → ✅
+
+─── River: 5h ───
+🎯 Ace high
+✅ Bet 10（91% pot） (90%)
+⚠️ Bet 7（64% pot） (10%)
+
+Hero bet → ✅
