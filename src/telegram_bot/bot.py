@@ -421,6 +421,12 @@ class PokerWizardBot:
             gto_data = context["text"]
             self.session_manager.hand_contexts[chat_id] = context
 
+            # Extract deviations for leak detection (fire-and-forget)
+            import asyncio as _aio
+            if self.session_manager.db and self.session_manager.db.pool:
+                _aio.create_task(self.session_manager._extract_deviations(
+                    chat_id, hand_id, analysis_input, context))
+
             t_analyze = time.time()
             self.log.info(
                 f"[{label}] HH hand {hand_id} analyzed in {t_analyze - t0:.1f}s"

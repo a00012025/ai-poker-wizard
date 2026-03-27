@@ -34,7 +34,7 @@ from gto_api import (
     find_closest_action, find_closest_action_postflop, nearest_depth,
     nearest_cash_depth,
 )
-from gto_formatter import format_full_spot, format_ev_comparison, normalize_hand_name
+from gto_formatter import format_full_spot, format_ev_comparison, normalize_hand_name, combo_index_for_hand
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
@@ -660,17 +660,7 @@ def _run_analysis(hand: dict) -> dict:
     hero_hand = normalize_hand_name(hero_hand_raw)
     no_hero_hand = hand.get("no_hero_hand", False)
     # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
-    from gto_formatter import _COMBO_RANKS, _COMBO_SUITS
-    hero_combo_idx = None
-    if len(hero_hand_raw) == 4:
-        try:
-            _ci1 = _COMBO_RANKS.index(hero_hand_raw[0]) * 4 + _COMBO_SUITS.index(hero_hand_raw[1])
-            _ci2 = _COMBO_RANKS.index(hero_hand_raw[2]) * 4 + _COMBO_SUITS.index(hero_hand_raw[3])
-            _j, _i = max(_ci1, _ci2), min(_ci1, _ci2)
-            if _j != _i:
-                hero_combo_idx = _j * (_j - 1) // 2 + _i
-        except (ValueError, IndexError):
-            pass
+    hero_combo_idx = combo_index_for_hand(hero_hand_raw)
     streets = hand.get("streets") or hand.get("postflop_actions", [])
 
     # Fix malformed streets: if first street has 4+ card board, split into flop + turn

@@ -17,6 +17,10 @@ scripts/
   hh_parser.py         — Parse GGPoker HH files → analyze_hand_full() input JSON
   hh_deviation_check.py — Direct GTO API deviation checking per hand
   hh_deviation_report.py — analyze_hands() + format_deviation_report()
+  spot_categorizer.py  — Classify hero decisions into ~15 spot buckets + board texture
+  leak_service.py      — DB queries for leak detection (shared by LLM tools + weekly job)
+  weekly_report.py     — Weekly leak report generation + session narrative + tilt detection
+  backfill_deviations.py — One-time backfill of deviations from existing hand_histories
   e2e_test.py          — CLI E2E test (no Telegram needed)
   regression_test.py   — Regression test suite
 ```
@@ -27,6 +31,17 @@ scripts/
 - **Follow-ups**: use `query_gto`/`query_next_actions` tools for LLM to query solver on demand
 - **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
 - **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
+- **Leak Detection**: Deviations extracted after each analysis (fire-and-forget), stored in `deviations` table. LLM has 4 leak tools: `query_my_leaks`, `query_my_stats`, `get_training_plan`, `get_progress`
+
+## Leak Detection & Coaching Memory
+
+- **Spot Categories** (~15 buckets): open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot, cbet_ip, cbet_oop, facing_cbet_ip, facing_cbet_oop, probe, facing_probe, donk, check_raise
+- **Board Texture**: classified as paired > monotone > wet > dry (priority order)
+- **Deviation Extraction**: Fires as `asyncio.create_task()` after coaching response, same pattern as snapshot saving
+- **Weekly Report**: PTB JobQueue runs Sunday 10:00 AM Taipei time, sends to all active users with deviations data
+- **Tilt Detection**: Overall deviation rate across all spots in a moving window (default 10 decisions, minimum 5)
+- **Ranking**: `deviation_rate * sample_count` (no EV numbers in reports)
+- **DB Tables**: `deviations` (UNIQUE on hand_history_id + street + action_index), `leak_reports` (UNIQUE on chat_id + report_period + spot_category)
 
 ## GTO Wizard API Details
 

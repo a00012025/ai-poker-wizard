@@ -2,9 +2,16 @@
 """Entry point using Gemini API (fast, no Claude CLI subprocess)."""
 import logging
 import os
+import sys
+from datetime import time as dt_time
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Allow importing from scripts/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from src.database import Database
 from src.gemini_session import GeminiSessionManager
@@ -13,6 +20,22 @@ from src.telegram_bot.bot import PokerWizardBot
 logger = logging.getLogger("poker_bot")
 
 db = Database()
+
+# Weekly report timezone (Taiwan = UTC+8)
+TZ_TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+async def _weekly_report_job(context):
+    """PTB JobQueue callback: generate and send weekly reports."""
+    try:
+        if not db.pool:
+            logger.warning("Weekly report: DB pool not available, skipping")
+            return
+        from weekly_report import send_weekly_reports
+        sent = await send_weekly_reports(db.pool, context.bot)
+        logger.info(f"Weekly report job completed: {sent} reports sent")
+    except Exception as e:
+        logger.error(f"Weekly report job failed: {e}")
 
 
 async def post_init(application):
@@ -33,6 +56,16 @@ async def post_init(application):
             logger.info("OCR model preloaded")
         except Exception as e:
             logger.warning(f"OCR model preload failed: {e}")
+
+    # Schedule weekly leak report (Sunday 10:00 AM Taipei time)
+    if db.pool and application.job_queue:
+        application.job_queue.run_daily(
+            _weekly_report_job,
+            time=dt_time(hour=10, minute=0, tzinfo=TZ_TAIPEI),
+            days=(6,),  # Sunday = 6
+            name="weekly_leak_report",
+        )
+        logger.info("Weekly leak report job scheduled (Sunday 10:00 AM Taipei)")
 
 
 async def post_shutdown(application):
