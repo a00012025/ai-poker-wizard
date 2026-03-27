@@ -990,7 +990,14 @@ def _run_analysis(hand: dict) -> dict:
                         # First bet of street in multiway — use pot-pct matching
                         taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
                     else:
-                        taken_code = find_closest_action_postflop(avail, target_size)
+                        # When action is a raise/bet but size is unknown (0), restrict
+                        # matching to raise actions only — otherwise C/X wins by proximity
+                        match_avail = avail
+                        if not target_size and action_type.startswith(("R", "AI")):
+                            raise_only = [a for a in avail if a["action"]["code"] not in ("X", "C", "F")]
+                            if raise_only:
+                                match_avail = raise_only
+                        taken_code = find_closest_action_postflop(match_avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
                 hero_spots.append({
@@ -1017,7 +1024,14 @@ def _run_analysis(hand: dict) -> dict:
                         # First bet of street in multiway — use pot-pct matching
                         taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
                     else:
-                        taken_code = find_closest_action_postflop(avail, target_size)
+                        # When action is a raise/bet but size is unknown (0), restrict
+                        # matching to raise actions only — otherwise C/X wins by proximity
+                        match_avail = avail
+                        if not target_size and action_type.startswith(("R", "AI")):
+                            raise_only = [a for a in avail if a["action"]["code"] not in ("X", "C", "F")]
+                            if raise_only:
+                                match_avail = raise_only
+                        taken_code = find_closest_action_postflop(match_avail, target_size)
 
             # Track actual pot through postflop (for multiway percentage matching)
             if actual_pot > 0:

@@ -402,7 +402,15 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
     results = []
     rank_confs = []
     for card, suit_card in [(card1, suit_card1), (card2, suit_card2)]:
-        rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
+        # When a tighter blob is available (face cards with artwork in tall
+        # blob), try rank OCR on it first — the tighter crop excludes card
+        # artwork that confuses OCR.  Fall back to the original tall crop.
+        if suit_card is not card:
+            rank, rank_conf = _ocr_card_rank(suit_card, ocr_full_image)
+            if not rank:
+                rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
+        else:
+            rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
         suit = _detect_suit_bgr(suit_card)
         if rank:
             results.append(f"{rank}{suit}")

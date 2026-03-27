@@ -2593,6 +2593,36 @@ def test_gto_line_fallback_when_sizing_off_tree():
 
 
 @test
+def test_raise_without_size_maps_to_raise_not_call():
+    """Action matching: raise with no size maps to smallest raise, not call."""
+    from analyze_hand import analyze_hand_full
+    # H2506: BB check-raises HJ's cbet but parsed without a size ("R" not "R4.15")
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 20,
+        "players_at_table": 6,
+        "hero_position": "HJ",
+        "hero_hand": "Th9h",
+        "preflop_actions": "F-R2-F-F-F-C",
+        "streets": [
+            {"board": "Jc6d5d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "R1.4", "size": 1.4},
+                {"position": "BB", "action": "R"},  # check-raise, no size
+                {"position": "HJ", "action": "F"},
+            ]},
+        ],
+    })
+    # Hero's second flop spot (facing check-raise) must have solver data
+    flop_spots = [(spot, sol) for spot, sol in zip(result["hero_spots"], result["solutions"])
+                  if spot["street"] == "flop"]
+    assert_true(len(flop_spots) >= 2, f"Expected 2+ flop spots, got {len(flop_spots)}")
+    facing_xr_sol = flop_spots[1][1]
+    assert_true(facing_xr_sol is not None,
+                "Facing check-raise spot must have solver data (raise without size should not match to Call)")
+
+
+@test
 def test_compact_format_preflop():
     """Compact: preflop output has header, emoji markers, and hero result."""
     from analyze_hand import analyze_hand_full
