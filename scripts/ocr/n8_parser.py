@@ -89,6 +89,10 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
 
     Removes false hero detections (e.g., avatar markers that are yellow
     but don't contain action text).
+
+    When multiple entries are detected as hero, only the one with a
+    non-fold action is kept as hero; the others are reclassified as
+    opponents (caused by yellow background bleeding into adjacent rows).
     """
     _ACTION_WORDS = {"fold", "call", "raise", "check", "bet", "all"}
     result = []
@@ -100,6 +104,23 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
             # Skip hero entries without clear action text (avatar markers)
         else:
             result.append(e)
+
+    # Disambiguate false hero detections: when yellow background bleeds
+    # into adjacent rows, fold entries near the real hero get marked as
+    # hero too.  Reclassify hero-Fold entries as opponents when there is
+    # at least one hero with a non-fold action (the real hero).
+    hero_indices = [i for i, e in enumerate(result) if e["type"] == "hero"]
+    if len(hero_indices) > 1:
+        has_non_fold_hero = any(
+            (result[idx].get("action") or "").lower() in ("raise", "call", "bet", "all-in")
+            for idx in hero_indices
+        )
+        if has_non_fold_hero:
+            for idx in hero_indices:
+                action = (result[idx].get("action") or "").lower()
+                if action == "fold":
+                    result[idx] = dict(result[idx], type="opponent")
+
     return result
 
 
@@ -111,30 +132,45 @@ def _estimate_table_size(action_entries: list[dict]) -> int:
     act again (re-actions).
 
     Strategy: find where the first round ends by looking for re-actions.
-    A re-action happens when a raise is followed by calls/folds from
-    positions that would have already acted in the first round.
+    A re-action happens when a player who already acted earlier in the
+    round acts again (detected via duplicate player names or position
+    badges).
     """
     n = len(action_entries)
     if n <= 2:
         return max(n, 2)
-    if n <= 9:
-        # Could be all first-round (no re-actions) or have re-actions
-        # Check: if there's a raise, entries after it might be re-actions
-        # In the first round, each player acts once in order
-        # After a raise, the remaining first-round players still need to act
-        # Re-actions only start AFTER all first-round players have acted
 
-        # Heuristic: find the last raise index. If there are entries after
-        # the raise that are calls/folds, check if they could be the remaining
-        # first-round players or re-actions.
+    # Check for re-actions by looking for duplicate player names.
+    # In the first round each player appears once.  If a name repeats,
+    # the second occurrence is a re-action.  Uses fuzzy matching because
+    # OCR may read the same name slightly differently in each row.
+    seen_names: list[str] = []
+    re_action_start = n  # index where re-actions begin
+    for i, e in enumerate(action_entries):
+        name = (e.get("player_name") or "").strip()
+        if not name:
+            continue
+        # Check against all previously seen names using fuzzy match
+        for prev in seen_names:
+            if _fuzzy_name_match(name, prev):
+                # This player already appeared — re-action detected
+                re_action_start = min(re_action_start, i)
+                break
+        if re_action_start < n:
+            break
+        seen_names.append(name)
 
-        # Simple approach: if total is <= 9, assume it's the table size
-        # This works because N8 shows all players (folders included) in PreFlop
-        return n
+    # Also detect re-actions when hero acted twice (two hero entries)
+    if re_action_start == n:
+        hero_indices = [i for i, e in enumerate(action_entries) if e["type"] == "hero"]
+        if len(hero_indices) >= 2:
+            re_action_start = min(re_action_start, hero_indices[1])
 
-    # More than 9 entries — must have re-actions
-    # Table size is at most 9
-    return 9
+    table_size = re_action_start if re_action_start < n else n
+
+    if table_size > 9:
+        return 9
+    return max(table_size, 2)
 
 
 def _normalize_name(name: str) -> str:
@@ -636,16 +672,55 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
 
     # Determine table size from entry count
     players_at_table = _estimate_table_size(action_entries)
+
+    # Cross-column refinement: detect re-actions where the preflop name
+    # duplicate can't be seen because one entry has no name.
+    # Pattern: unnamed OPPONENT raise earlier + named call/fold at end
+    # where the named entry matches a postflop opponent.  The unnamed
+    # raiser IS the named caller (e.g., player opens, gets 3-bet, calls).
+    if len(action_entries) == players_at_table and players_at_table >= 3:
+        last_e = action_entries[-1]
+        last_action = (last_e.get("action") or "").lower()
+        last_name = (last_e.get("player_name") or "").strip()
+        if last_action in ("call", "fold") and last_name and last_e.get("type") != "hero":
+            # Check if this name matches an earlier unnamed OPPONENT raise
+            has_unnamed_opp_raise = False
+            for j, earlier in enumerate(action_entries[:-1]):
+                if earlier.get("type") == "hero":
+                    continue
+                earlier_action = (earlier.get("action") or "").lower()
+                earlier_name = (earlier.get("player_name") or "").strip()
+                if earlier_action == "raise" and not earlier_name:
+                    has_unnamed_opp_raise = True
+                    break
+            if has_unnamed_opp_raise:
+                # Verify: this player appears in postflop (confirming
+                # they entered the pot and are the same as the raiser)
+                postflop_opp_names = []
+                for col in street_cols:
+                    for e in col.get("entries", []):
+                        if e.get("type") != "hero":
+                            pn = (e.get("player_name") or "").strip()
+                            if pn:
+                                postflop_opp_names.append(pn)
+                in_postflop = any(
+                    _fuzzy_name_match(last_name, pn) for pn in postflop_opp_names
+                )
+                if in_postflop:
+                    players_at_table -= 1
+
     players_at_table = min(max(players_at_table, 2), 9)
     pos_order = POSITION_ORDERS.get(players_at_table, POSITION_ORDERS[8])
 
     # Assign positions by entry order (first entry = first position, etc.)
+    # Only the FIRST hero entry determines hero_position; later hero
+    # entries are re-actions (hero acting again after being raised).
     hero_position = None
     hero_index = None
     for i, entry in enumerate(action_entries[:players_at_table]):
         if i < len(pos_order):
             entry["position"] = pos_order[i]
-            if entry["type"] == "hero":
+            if entry["type"] == "hero" and hero_position is None:
                 hero_position = pos_order[i]
                 hero_index = i
 
@@ -917,7 +992,10 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         name = col["name"].lower()
         entries = col.get("entries", [])
 
-        if not entries:
+        # Include empty-entry columns only when a preceding street had
+        # entries (the hand continued but no action was detected — e.g.,
+        # check-check or went to showdown).
+        if not entries and not streets:
             continue
 
         street = {}
@@ -968,9 +1046,20 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             if action_text == "fold":
                 folded_in_streets.add(pos)
 
+        street["actions"] = actions
         if actions:
-            street["actions"] = actions
             streets.append(street)
+        elif streets:
+            # Include empty-action streets only when the prior street
+            # did NOT end with a fold (hand continued to this street
+            # but no entries were detected — e.g., went to showdown).
+            prev_actions = streets[-1].get("actions", [])
+            prev_ended_fold = (
+                prev_actions
+                and prev_actions[-1].get("action", "").upper() == "F"
+            )
+            if not prev_ended_fold:
+                streets.append(street)
 
     return streets
 
