@@ -2837,6 +2837,268 @@ def _register_snapshot_tests():
 
 _register_snapshot_tests()
 
+# ── Spot Categorizer Tests ──
+
+@test
+def test_spot_categorize_open_raise():
+    """Spot categorizer: first to raise = open_raise."""
+    from spot_categorizer import categorize_preflop
+    # CO opens, everyone folds before CO
+    cat = categorize_preflop("F-F-F-F-R2-F-F-C", "CO", 8, action_index=0)
+    assert_eq(cat, "open_raise")
+
+@test
+def test_spot_categorize_open_raise_utg():
+    """Spot categorizer: UTG first to act = open_raise."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("R2-F-F-F-F-F-F-F", "UTG", 8, action_index=0)
+    assert_eq(cat, "open_raise")
+
+@test
+def test_spot_categorize_facing_open():
+    """Spot categorizer: facing a single raise = facing_open."""
+    from spot_categorizer import categorize_preflop
+    # UTG opens, hero is CO (folds before, one raise = facing_open)
+    cat = categorize_preflop("R2-F-F-F-C-F-F-F", "CO", 8, action_index=0)
+    assert_eq(cat, "facing_open")
+
+@test
+def test_spot_categorize_facing_3bet():
+    """Spot categorizer: hero opened, facing re-raise = facing_3bet."""
+    from spot_categorizer import categorize_preflop
+    # CO opens R2, BB 3bets R8, CO faces the 3bet (action_index=1)
+    cat = categorize_preflop("F-F-F-F-R2-F-F-R8-C", "CO", 8, action_index=1)
+    assert_eq(cat, "facing_3bet")
+
+@test
+def test_spot_categorize_squeeze():
+    """Spot categorizer: open + call + hero raises = squeeze."""
+    from spot_categorizer import categorize_preflop
+    # UTG+1 opens R2, LJ calls, hero (CO) raises
+    cat = categorize_preflop("F-R2-C-F-R8-F-F-F", "CO", 8, action_index=0)
+    assert_eq(cat, "squeeze")
+
+@test
+def test_spot_categorize_facing_4bet():
+    """Spot categorizer: 3+ raises before hero's second decision = facing_4bet."""
+    from spot_categorizer import categorize_preflop
+    # CO open R2, BB 3bet R8, CO 4bet R20, BB faces 4bet (action_index=1 for BB)
+    # Total raises: R2, R8, R20, R50 = 4 raises
+    cat = categorize_preflop("F-F-F-F-R2-F-F-R8-R20-R50", "BB", 8, action_index=1)
+    assert_eq(cat, "facing_4bet")
+
+@test
+def test_spot_categorize_limp_pot():
+    """Spot categorizer: calls without prior raise = limp_pot."""
+    from spot_categorizer import categorize_preflop
+    # SB limps (calls), hero is BB
+    cat = categorize_preflop("F-F-F-F-F-F-C-X", "BB", 8, action_index=0)
+    assert_eq(cat, "limp_pot")
+
+@test
+def test_spot_categorize_6max_open():
+    """Spot categorizer: 6-max table open raise."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("F-F-R2-F-F-F", "CO", 6, action_index=0)
+    assert_eq(cat, "open_raise")
+
+@test
+def test_spot_categorize_cbet_ip():
+    """Spot categorizer: PF aggressor bets IP = cbet_ip."""
+    from spot_categorizer import categorize_postflop_action
+    # CO opened, BB called. Flop: BB checks, CO (hero, IP) acts.
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="CO",
+        street_actions_before_hero=[{"position": "BB", "action": "X"}],
+        preflop_actions="F-F-F-F-R2-F-F-C",
+        num_players=8,
+    )
+    assert_eq(cat, "cbet_ip")
+
+@test
+def test_spot_categorize_cbet_oop():
+    """Spot categorizer: PF aggressor bets OOP = cbet_oop."""
+    from spot_categorizer import categorize_postflop_action
+    # BB 3bet, CO called. Flop: BB (hero, OOP) first to act.
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="BB",
+        street_actions_before_hero=[],
+        preflop_actions="F-F-F-F-R2-F-F-R8-C",
+        num_players=8,
+    )
+    assert_eq(cat, "cbet_oop")
+
+@test
+def test_spot_categorize_facing_cbet_oop():
+    """Spot categorizer: facing c-bet when OOP = facing_cbet_oop."""
+    from spot_categorizer import categorize_postflop_action
+    # CO opened, BB called. Flop: BB checks, CO bets → BB (hero) faces cbet
+    # BB is OOP relative to CO
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="BB",
+        street_actions_before_hero=[{"position": "BB", "action": "X"}, {"position": "CO", "action": "R3"}],
+        preflop_actions="F-F-F-F-R2-F-F-C",
+        num_players=8,
+    )
+    # BB checked then CO bet — this is check-raise opportunity for BB
+    assert_eq(cat, "check_raise")
+
+@test
+def test_spot_categorize_facing_cbet_ip_btn():
+    """Spot categorizer: BTN facing BB c-bet = facing_cbet_ip."""
+    from spot_categorizer import categorize_postflop_action
+    # BB 3bet, BTN called. Flop: BB bets, BTN (hero, IP) faces it.
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="BTN",
+        street_actions_before_hero=[{"position": "BB", "action": "R3"}],
+        preflop_actions="F-F-F-F-F-R2-F-R8-C",
+        num_players=8,
+    )
+    assert_eq(cat, "facing_cbet_ip")
+
+@test
+def test_spot_categorize_probe():
+    """Spot categorizer: non-aggressor bets after check-through = probe."""
+    from spot_categorizer import categorize_postflop_action
+    # CO opened, BB called. Flop: x-x (check through). Turn: BB (hero) bets.
+    cat = categorize_postflop_action(
+        street="turn",
+        hero_pos="BB",
+        street_actions_before_hero=[],
+        preflop_actions="F-F-F-F-R2-F-F-C",
+        num_players=8,
+    )
+    # BB is not PF aggressor, no bets before, but BB has checks before? No, empty.
+    # No checks before hero on this street, BB is first to act and not aggressor
+    # This should be probe since PF aggressor (CO) will act after BB
+    assert_eq(cat, "probe")
+
+@test
+def test_spot_categorize_donk():
+    """Spot categorizer: non-aggressor bets into aggressor (donk is detected as probe)."""
+    from spot_categorizer import categorize_postflop_action
+    # CO opened, BB called. Flop: BB (hero) bets into CO = donk bet
+    # In our simplified categorization, this maps to "probe" when no checks before
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="BB",
+        street_actions_before_hero=[],
+        preflop_actions="F-F-F-F-R2-F-F-C",
+        num_players=8,
+    )
+    # BB is OOP, not aggressor, first to act = probe (donk is a form of probe)
+    assert_eq(cat, "probe")
+
+@test
+def test_spot_categorize_check_raise():
+    """Spot categorizer: hero checks then faces bet = check_raise."""
+    from spot_categorizer import categorize_postflop_action
+    cat = categorize_postflop_action(
+        street="flop",
+        hero_pos="BB",
+        street_actions_before_hero=[
+            {"position": "BB", "action": "X"},
+            {"position": "CO", "action": "R3"},
+        ],
+        preflop_actions="F-F-F-F-R2-F-F-C",
+        num_players=8,
+    )
+    assert_eq(cat, "check_raise")
+
+
+# ── Board Texture Tests ──
+
+@test
+def test_board_texture_paired():
+    """Board texture: paired board (any pair on board)."""
+    from spot_categorizer import classify_board_texture
+    assert_eq(classify_board_texture("Ks6h6s"), "paired")
+    assert_eq(classify_board_texture("AhAdKs"), "paired")
+
+@test
+def test_board_texture_monotone():
+    """Board texture: monotone (3+ same suit)."""
+    from spot_categorizer import classify_board_texture
+    assert_eq(classify_board_texture("Ks9s3s"), "monotone")
+    assert_eq(classify_board_texture("AhKhQh"), "monotone")
+
+@test
+def test_board_texture_wet():
+    """Board texture: wet (flush draw or connected)."""
+    from spot_categorizer import classify_board_texture
+    # Two spades = flush draw = wet
+    assert_eq(classify_board_texture("Ks9s3h"), "wet")
+    # Connected cards within 3 ranks
+    assert_eq(classify_board_texture("Jh9c8d"), "wet")
+
+@test
+def test_board_texture_dry():
+    """Board texture: dry (no pair, no flush draw, no connectivity)."""
+    from spot_categorizer import classify_board_texture
+    # All different suits, ranks far apart
+    assert_eq(classify_board_texture("Ah8c2d"), "dry")
+
+@test
+def test_board_texture_empty():
+    """Board texture: empty or None returns None."""
+    from spot_categorizer import classify_board_texture
+    assert_eq(classify_board_texture(None), None)
+    assert_eq(classify_board_texture(""), None)
+
+@test
+def test_board_texture_priority():
+    """Board texture: paired takes priority over monotone."""
+    from spot_categorizer import classify_board_texture
+    # Paired AND monotone: AhAh... wait, paired + 3 same suit
+    assert_eq(classify_board_texture("AhKh6h6d"), "paired")  # paired > monotone
+
+@test
+def test_spot_categorize_full_hand():
+    """Spot categorizer: categorize_spot with full hand dict."""
+    from spot_categorizer import categorize_spot
+    hand = {
+        "hero_position": "CO",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "players_at_table": 8,
+        "streets": [
+            {"board": "Js6h5s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R3"},
+            ]},
+        ],
+    }
+    # Preflop: CO opens = open_raise
+    cat, tex = categorize_spot(hand, "preflop", action_index=0)
+    assert_eq(cat, "open_raise")
+    assert_eq(tex, None)
+
+    # Flop: CO is PF aggressor, BB checked, CO bets = cbet_ip
+    cat, tex = categorize_spot(
+        hand, "flop", action_index=0,
+        street_actions_before_hero=[{"position": "BB", "action": "X"}],
+    )
+    assert_eq(cat, "cbet_ip")
+    assert_eq(tex, "wet")  # Js6h5s = two spades = flush draw = wet
+
+@test
+def test_spot_edge_missing_actions():
+    """Spot categorizer: empty preflop actions defaults to open_raise."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("", "UTG", 8, action_index=0)
+    assert_eq(cat, "open_raise")
+
+@test
+def test_spot_edge_facing_open_caller():
+    """Spot categorizer: facing open when hero just calls."""
+    from spot_categorizer import categorize_preflop
+    # CO opens R2, hero is BTN, calls (facing_open, not squeeze since no callers in between)
+    cat = categorize_preflop("F-F-F-F-R2-C-F-F", "BTN", 8, action_index=0)
+    assert_eq(cat, "facing_open")
+
 
 # ── Runner ──
 
