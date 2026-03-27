@@ -1327,8 +1327,8 @@ def test_hh_e2e_parse_check_report():
 
 @test
 def test_combo_index_for_hand():
-    """Combo index: _combo_index_for_hand maps specific combos to correct 1326 index."""
-    from hh_deviation_check import _combo_index_for_hand
+    """Combo index: combo_index_for_hand maps specific combos to correct 1326 index."""
+    from gto_formatter import combo_index_for_hand as _combo_index_for_hand
     from gto_formatter import _COMBO_INDEX
 
     # Ah6h → should map to the correct index

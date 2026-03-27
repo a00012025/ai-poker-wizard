@@ -4,7 +4,7 @@
 CREATE TABLE deviations (
   id BIGSERIAL PRIMARY KEY,
   chat_id BIGINT NOT NULL REFERENCES users(user_id),
-  hand_history_id BIGINT REFERENCES hand_histories(id),
+  hand_history_id BIGINT NOT NULL REFERENCES hand_histories(id),
   street TEXT NOT NULL,                   -- preflop/flop/turn/river
   action_index INT NOT NULL DEFAULT 0,   -- multiple decisions per street (e.g., hero bets, gets raised, decides again)
   spot_category TEXT NOT NULL,            -- e.g. "open_raise", "facing_cbet_oop"

@@ -305,7 +305,7 @@ async def generate_leak_report(
     year, week_str = period.split("-W")
     week_num = int(week_str)
     # Monday of that week
-    week_start = datetime.strptime(f"{year}-W{week_num:02d}-1", "%Y-W%W-%w")
+    week_start = datetime.fromisocalendar(int(year), week_num, 1)
     week_end = week_start + timedelta(days=7)
 
     async with pool.acquire() as conn:
@@ -328,48 +328,48 @@ async def generate_leak_report(
             chat_id, week_start, week_end, min_samples,
         )
 
-    if not rows:
-        return []
+        if not rows:
+            return []
 
-    # Get previous period for trend
-    prev_period = f"{year}-W{week_num - 1:02d}" if week_num > 1 else f"{int(year) - 1}-W52"
+        # Get previous period for trend
+        prev_period = f"{year}-W{week_num - 1:02d}" if week_num > 1 else f"{int(year) - 1}-W52"
 
-    reports = []
-    for r in rows:
-        spot = r["spot_category"]
+        reports = []
+        for r in rows:
+            spot = r["spot_category"]
 
-        # Get trend from previous leak_report
-        prev_report = await conn.fetchrow(
-            """
-            SELECT deviation_rate FROM leak_reports
-            WHERE chat_id = $1 AND report_period = $2 AND spot_category = $3
-            """,
-            chat_id, prev_period, spot,
-        ) if pool else None
+            # Get trend from previous leak_report
+            prev_report = await conn.fetchrow(
+                """
+                SELECT deviation_rate FROM leak_reports
+                WHERE chat_id = $1 AND report_period = $2 AND spot_category = $3
+                """,
+                chat_id, prev_period, spot,
+            )
 
-        trend = "stable"
-        trend_delta = 0.0
-        if prev_report:
-            prev_rate = prev_report["deviation_rate"]
-            current_rate = float(r["deviation_rate"])
-            trend_delta = current_rate - prev_rate
-            if trend_delta < -0.05:
-                trend = "improving"
-            elif trend_delta > 0.05:
-                trend = "worsening"
+            trend = "stable"
+            trend_delta = 0.0
+            if prev_report:
+                prev_rate = prev_report["deviation_rate"]
+                current_rate = float(r["deviation_rate"])
+                trend_delta = current_rate - prev_rate
+                if trend_delta < -0.05:
+                    trend = "improving"
+                elif trend_delta > 0.05:
+                    trend = "worsening"
 
-        report = {
-            "chat_id": chat_id,
-            "report_period": period,
-            "spot_category": spot,
-            "sample_count": r["sample_count"],
-            "deviation_rate": float(r["deviation_rate"]),
-            "avg_ev_loss": float(r["avg_ev_loss"]) if r["avg_ev_loss"] else None,
-            "total_ev_loss": float(r["total_ev_loss"]) if r["total_ev_loss"] else None,
-            "trend": trend,
-            "trend_delta": trend_delta,
-        }
-        reports.append(report)
+            report = {
+                "chat_id": chat_id,
+                "report_period": period,
+                "spot_category": spot,
+                "sample_count": r["sample_count"],
+                "deviation_rate": float(r["deviation_rate"]),
+                "avg_ev_loss": float(r["avg_ev_loss"]) if r["avg_ev_loss"] else None,
+                "total_ev_loss": float(r["total_ev_loss"]) if r["total_ev_loss"] else None,
+                "trend": trend,
+                "trend_delta": trend_delta,
+            }
+            reports.append(report)
 
     # Store reports
     async with pool.acquire() as conn:

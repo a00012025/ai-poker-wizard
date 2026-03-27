@@ -48,8 +48,10 @@ async def backfill(limit: int | None = None, dry_run: bool = False):
                 ORDER BY hh.uploaded_at DESC
             """
             if limit:
-                query += f" LIMIT {limit}"
-            rows = await conn.fetch(query)
+                query += " LIMIT $1"
+                rows = await conn.fetch(query, limit)
+            else:
+                rows = await conn.fetch(query)
 
         logger.info(f"Found {len(rows)} hands to backfill")
 
