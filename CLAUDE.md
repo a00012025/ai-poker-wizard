@@ -63,6 +63,8 @@ scripts/
 
 - **users**: `user_id` (bigint PK), `username`, `name`, `is_active`, `created_at`, `gto_refresh_token` (text)
   - Token column is `gto_refresh_token`, NOT `refresh_token`
+- **analysis_snapshots**: `hand_id` (unique), `chat_id`, `source_type`, `user_input`, `image_data` (bytea), `parsed_json`, `expected_json`, `gto_text`, `gto_compact`, `coaching_text`, `is_regression` (bool)
+  - Auto-captured on every analysis; used for E2E regression testing
 - Migrations: `supabase/migrations/` — always use `supabase db push`, never raw psql
 
 ## Ad-hoc Python Scripts
@@ -114,3 +116,34 @@ All tests must pass. If a test fails, fix the issue before committing.
 When adding new features to core analysis logic, add corresponding regression tests to `scripts/regression_test.py`. Use the `@test` decorator and assertion helpers (`assert_eq`, `assert_in`, `assert_true`).
 
 **IMPORTANT: Every bug fix MUST include a regression test.** If it broke once, add a test so it can't break again. This is non-negotiable for all bug reports and fixes.
+
+## Snapshot Regression Tests (E2E)
+
+Snapshots auto-capture every hand analysis to `analysis_snapshots` DB table (input + parsed JSON + GTO output + coaching text). Image bytes stored as bytea for portability.
+
+### Bug fix workflow
+
+1. User reports: "H2489 has problem, T9s not T9o"
+2. Check snapshot: `python scripts/snapshot_test.py --list`
+3. Set corrected parse: `python scripts/snapshot_test.py --set-expected H2489 '{"hero_hand":"T9s"}'`
+4. Fix the code (OCR/parse/analysis)
+5. Update expected GTO output: `python scripts/snapshot_test.py --update H2489`
+6. Flag for regression: `python scripts/snapshot_test.py --add H2489`
+7. Verify: `python scripts/snapshot_test.py H2489`
+8. Run full suite: `python scripts/snapshot_test.py`
+
+### CLI commands
+
+```bash
+python scripts/snapshot_test.py                    # Run all regression tests
+python scripts/snapshot_test.py H2489              # Run specific hand
+python scripts/snapshot_test.py --list             # List regression snapshots
+python scripts/snapshot_test.py --add H2489        # Flag + store expected output
+python scripts/snapshot_test.py --update H2489     # Re-run analysis, update expected
+python scripts/snapshot_test.py --set-expected H2489 '{"hero_hand":"T9s"}'
+```
+
+### Test layers
+
+- **Layer 1 (Parse)**: Image → OCR re-parse → compare key fields with expected_json. Text → Gemini re-parse → compare.
+- **Layer 2 (GTO)**: `analyze_hand_full(expected_json)` → exact match with stored gto_text. Fully deterministic.
