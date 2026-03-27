@@ -657,6 +657,36 @@ class GeminiSessionManager:
         from gto_api import clear_user_token
         clear_user_token()
 
+    async def _save_snapshot(self, hand_id: str, chat_id: int,
+                              source_type: str, user_input: str | None,
+                              image_data: bytes | None,
+                              parsed_json: dict, context: dict):
+        """Fire-and-forget: save analysis snapshot to DB."""
+        if not self.db or not hand_id:
+            return
+        try:
+            await self.db.save_snapshot(
+                hand_id=hand_id, chat_id=chat_id,
+                source_type=source_type,
+                user_input=user_input[:2000] if user_input else None,
+                image_data=image_data,
+                parsed_json=parsed_json,
+                gto_text=context.get("text", ""),
+                gto_compact=context.get("text_compact"),
+            )
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] Failed to save snapshot: {e}")
+
+    async def _update_snapshot_coaching(self, hand_id: str, chat_id: int,
+                                         coaching_text: str):
+        """Fire-and-forget: update coaching text in snapshot."""
+        if not self.db or not hand_id:
+            return
+        try:
+            await self.db.update_snapshot_coaching(hand_id, coaching_text)
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] Failed to update snapshot coaching: {e}")
+
     async def send_message(self, chat_id: int, user_text: str,
                            on_status: Callable[[str], Any] | None = None,
                            user_id: int | None = None,
@@ -761,6 +791,11 @@ class GeminiSessionManager:
                     self._clear_user_token()
                 gto_data = context["text"]
                 self.hand_contexts[chat_id] = context
+                # Save snapshot (fire-and-forget)
+                import asyncio as _aio
+                _aio.create_task(self._save_snapshot(
+                    hand_id, chat_id, "text", user_text,
+                    None, hand_json, context))
 
                 t_analyze = time.time()
                 self._logger.info(
@@ -788,6 +823,10 @@ class GeminiSessionManager:
                     user_id=user_id, refresh_token=refresh_token,
                     usage_acc=usage_acc,
                 )
+                # Update snapshot with coaching text
+                _coaching_only = result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
+                _aio.create_task(self._update_snapshot_coaching(
+                    hand_id, chat_id, _coaching_only))
                 if hand_id:
                     result = f"📋 `{hand_id}`\n\n{result}"
                 t_total = time.time()
@@ -909,6 +948,11 @@ class GeminiSessionManager:
                 self._clear_user_token()
             gto_data = context["text"]
             self.hand_contexts[chat_id] = context
+            # Save snapshot with image bytes (fire-and-forget)
+            import asyncio as _aio
+            _aio.create_task(self._save_snapshot(
+                hand_id, chat_id, "image", user_text or "[screenshot]",
+                image_bytes, hand_json, context))
 
             t_analyze = time.time()
             self._logger.info(
@@ -969,6 +1013,10 @@ class GeminiSessionManager:
                 usage_acc=usage_acc,
                 disable_tools=True,
             )
+            # Update snapshot with coaching text
+            _coaching_only = result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
+            _aio.create_task(self._update_snapshot_coaching(
+                hand_id, chat_id, _coaching_only))
             if hand_id:
                 result = f"📋 `{hand_id}`\n\n{result}"
 
