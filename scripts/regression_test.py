@@ -2690,6 +2690,154 @@ def test_no_hero_hand_flag():
     assert_true(result["no_hero_hand"], "result should carry no_hero_hand flag")
 
 
+# ── Snapshot E2E tests (image → OCR parse → GTO analysis) ──
+
+def _load_snapshots():
+    """Load regression snapshots from tests/snapshots/ directory."""
+    snapshots_dir = Path(__file__).resolve().parent.parent / "tests" / "snapshots"
+    manifest_path = snapshots_dir / "manifest.json"
+    if not manifest_path.exists():
+        return []
+
+    manifest = json.loads(manifest_path.read_text())
+    snapshots = []
+    for entry in manifest:
+        hid = entry["hand_id"]
+        hand_dir = snapshots_dir / hid
+        if not hand_dir.exists():
+            continue
+        snap = {"hand_id": hid, "source_type": entry["source_type"]}
+
+        img_path = hand_dir / "input.jpeg"
+        if img_path.exists():
+            snap["image_data"] = img_path.read_bytes()
+
+        expected_path = hand_dir / "expected.json"
+        if expected_path.exists():
+            snap["expected_json"] = expected_path.read_text()
+
+        gto_path = hand_dir / "gto_text.txt"
+        if gto_path.exists():
+            snap["gto_text"] = gto_path.read_text()
+
+        gto_compact_path = hand_dir / "gto_compact.txt"
+        if gto_compact_path.exists():
+            snap["gto_compact"] = gto_compact_path.read_text()
+
+        snapshots.append(snap)
+    return snapshots
+
+
+_SNAPSHOTS_DIR = Path(__file__).resolve().parent.parent / "tests" / "snapshots"
+
+
+def _register_snapshot_tests():
+    """Dynamically register snapshot E2E tests from files."""
+    import re as _re
+
+    snapshots = _load_snapshots()
+    if not snapshots:
+        return
+
+    strip_timing = lambda s: _re.sub(r"⏱ Discovery:.*$", "", s, flags=_re.MULTILINE).rstrip()
+
+    for snap in snapshots:
+        hid = snap["hand_id"]
+        source = snap["source_type"]
+
+        # Layer 1: OCR parse test (image snapshots only)
+        if source == "image" and snap.get("image_data"):
+            def make_l1(s=snap, h=hid):
+                def _test():
+                    expected = json.loads(s["expected_json"]) if s.get("expected_json") else json.loads(s["parsed_json"])
+                    from ocr.n8_parser import parse_n8_screenshot
+                    result = parse_n8_screenshot(bytes(s["image_data"]))
+                    assert_true(result.get("hand") is not None,
+                                f"OCR returned no hand (confidence={result.get('confidence', 0):.2f})")
+                    parsed = result["hand"]
+                    # Compare key fields (effective_bb excluded — acceptable variance)
+                    for key in ["hero_hand", "hero_position", "preflop_actions",
+                                "players_at_table", "tournament_type"]:
+                        p_val = parsed.get(key)
+                        e_val = expected.get(key)
+                        if e_val is not None:
+                            assert_eq(p_val, e_val, f"{key} mismatch")
+                    # Compare board cards per street
+                    p_streets = parsed.get("streets") or []
+                    e_streets = expected.get("streets") or []
+                    assert_eq(len(p_streets), len(e_streets), "streets count mismatch")
+                    for i, (ps, es) in enumerate(zip(p_streets, e_streets)):
+                        p_board = ps.get("board", ps.get("card", ""))
+                        e_board = es.get("board", es.get("card", ""))
+                        assert_eq(p_board, e_board, f"street[{i}] board mismatch")
+                _test.__name__ = f"test_snapshot_l1_ocr_{h}"
+                _test.__doc__ = f"Snapshot L1-OCR: {h} image → OCR parse matches expected."
+                return _test
+            _tests.append(make_l1())
+
+        # Layer 2: GTO output test (all snapshots)
+        # Deterministic on same machine — uses local .gto_cache.
+        # On first run (no gto_text.txt), generates the golden file.
+        # Subsequent runs compare against it to catch formatting regressions.
+        def make_l2(s=snap, h=hid):
+            def _test():
+                expected_json_str = s.get("expected_json")
+                hand_json = json.loads(expected_json_str) if isinstance(expected_json_str, str) else expected_json_str
+                # Use an isolated cache dir for snapshot tests to avoid
+                # cross-contamination with non-snapshot regression tests.
+                # Golden files are generated on first run using this isolated
+                # cache; subsequent runs read from the same cache → deterministic.
+                import gto_cache
+                snapshot_cache = _SNAPSHOTS_DIR / ".gto_cache"
+                snapshot_cache.mkdir(exist_ok=True)
+                orig_cache_dir = gto_cache._CACHE_DIR
+                gto_cache._CACHE_DIR = snapshot_cache
+                gto_cache._mem.clear()
+                # Disable DB cache (L2) — unset env var to prevent auto-reconnect
+                orig_db = gto_cache._db_conn
+                orig_dsn = os.environ.pop("SUPABASE_CONN", None)
+                gto_cache._db_conn = None
+                try:
+                    from analyze_hand import analyze_hand_full
+                    result = analyze_hand_full(hand_json)
+                finally:
+                    gto_cache._CACHE_DIR = orig_cache_dir
+                    gto_cache._db_conn = orig_db
+                    if orig_dsn:
+                        os.environ["SUPABASE_CONN"] = orig_dsn
+                    gto_cache._mem.clear()
+                actual = strip_timing(result["text"])
+
+                gto_path = _SNAPSHOTS_DIR / h / "gto_text.txt"
+                if not gto_path.exists():
+                    # First run: generate golden file
+                    gto_path.write_text(result["text"])
+                    compact_path = _SNAPSHOTS_DIR / h / "gto_compact.txt"
+                    if result.get("text_compact"):
+                        compact_path.write_text(result["text_compact"])
+                    return  # pass on first run (nothing to compare yet)
+
+                expected = strip_timing(gto_path.read_text())
+                if actual != expected:
+                    exp_lines = expected.split("\n")
+                    act_lines = actual.split("\n")
+                    for i, (el, al) in enumerate(zip(exp_lines, act_lines)):
+                        if el != al:
+                            raise AssertionError(
+                                f"GTO text mismatch at line {i+1}:\n"
+                                f"  expected: {el[:120]}\n"
+                                f"  actual:   {al[:120]}"
+                            )
+                    assert_eq(len(act_lines), len(exp_lines), "GTO text line count mismatch")
+            _test.__name__ = f"test_snapshot_l2_gto_{h}"
+            _test.__doc__ = f"Snapshot L2-GTO: {h} analyze_hand_full() matches stored output."
+            return _test
+        _tests.append(make_l2())
+
+
+_register_snapshot_tests()
+
+
 # ── Runner ──
 
 def run_tests():

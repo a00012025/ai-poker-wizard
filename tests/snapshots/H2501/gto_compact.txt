@@ -1,0 +1,17 @@
+♠ BB Q9o | 43bb MTT
+
+─── Preflop ───
+（無 solver 數據）
+
+─── Flop: 4s8d6s ───
+🎯 高牌 (Q) + 後門花聽牌
+（無 solver 數據）
+
+─── Turn: Ts ───
+🎯 高牌 (Q) + 花聽牌 + 兩頭順聽牌
+（無 solver 數據）
+（無 solver 數據）
+
+─── River: Jc ───
+🎯 順子 (Q-J-T-9-8)
+（無 solver 數據）

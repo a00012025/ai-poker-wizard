@@ -1,0 +1,31 @@
+♠ CO A4s | 17bb MTT
+⚠ ⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析
+有效籌碼調整: 17.1bb → 15bb（扣除底池死錢 ~2bb）
+
+─── Preflop ───
+✅ Fold (61%)
+⚠️ Call (30%)
+⚠️ All-in (8%)
+
+─── Flop: KdAsAd ───
+🎯 三條 (A)
+✅ Fold (40%)
+⚠️ Call (37%)
+⚠️ All-in (23%)
+
+Hero call → ✅
+
+─── Turn: 2d ───
+🎯 三條 (A)
+✅ All-in (46%)
+⚠️ Call (41%)
+⚠️ Fold (13%)
+
+Hero call → ✅
+
+─── River: 3h ───
+🎯 三條 (A)
+✅ Call (69%)
+⚠️ Fold (31%)
+
+Hero call → ✅

@@ -1,0 +1,67 @@
+{
+  "streets": [
+    {
+      "board": "Qs3dAh",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 1.0,
+          "action": "R1",
+          "position": "HJ"
+        },
+        {
+          "size": 1.0,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "Jd",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 2.0,
+          "action": "R2",
+          "position": "HJ"
+        },
+        {
+          "size": 2.0,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "3c",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 7.0,
+          "action": "R7",
+          "position": "HJ"
+        },
+        {
+          "size": 6.4,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "Ad9d",
+  "effective_bb": 11.4,
+  "hero_position": "BB",
+  "preflop_actions": "F-F-R2-F-F-F-C",
+  "players_at_table": 7
+}

@@ -1,0 +1,60 @@
+{
+  "streets": [
+    {
+      "board": "9d9s4h",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "action": "X",
+          "position": "LJ"
+        },
+        {
+          "size": 2.5,
+          "action": "R2.5",
+          "position": "BTN"
+        },
+        {
+          "size": 2.5,
+          "action": "C",
+          "position": "SB"
+        },
+        {
+          "action": "F",
+          "position": "LJ"
+        }
+      ]
+    },
+    {
+      "card": "3h",
+      "actions": [
+        {
+          "action": "X",
+          "position": "SB"
+        },
+        {
+          "size": 19.8,
+          "action": "R19.8",
+          "position": "BTN"
+        },
+        {
+          "size": 5.7,
+          "action": "C",
+          "position": "SB"
+        }
+      ]
+    },
+    {
+      "card": "3s",
+      "actions": []
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "5s5c",
+  "effective_bb": 10.2,
+  "hero_position": "BTN",
+  "preflop_actions": "F-F-R2-F-C-C-F",
+  "players_at_table": 7
+}

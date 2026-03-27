@@ -1,0 +1,36 @@
+==================================================
+籌碼深度: 42.7bb（使用 40bb solver）
+Hero: BB Q9o
+Preflop actions 校正: R2-F-F-F-F-F-F-F-C → R2.3-F-F-F-F-F-F-F-C
+⚠ 近似說明: UTG raise 2bb → 校正為 R2.3
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+（無 solver 數據）
+
+==================================================
+【Flop: 4s8d6s】
+Hero Q9o 牌型: 高牌 (Q) + 後門花聽牌
+（無 solver 數據）
+  → 實際行動: BB X（solver code: X）
+
+
+==================================================
+【Turn: Ts（Board: 4s8d6sTs）】
+Hero Q9o 牌型: 高牌 (Q) + 花聽牌 + 兩頭順聽牌
+（無 solver 數據）
+  → 實際行動: BB X（solver code: X）
+
+（無 solver 數據）
+  → 實際行動: BB C 2.8bb（solver code: C）
+
+
+==================================================
+【River: Jc（Board: 4s8d6sTsJc）】
+Hero Q9o 牌型: 順子 (Q-J-T-9-8)
+（無 solver 數據）
+  → 實際行動: BB R8.4 8.4bb（solver code: X）
+
+⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

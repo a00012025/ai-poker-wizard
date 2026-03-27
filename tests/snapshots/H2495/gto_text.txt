@@ -1,0 +1,57 @@
+==================================================
+籌碼深度: 62.4bb（使用 60bb solver）
+Hero: BB 88
+Preflop actions 校正: F-F-F-R2-F-F-F-R9-C → F-F-F-R2.3-F-F-F-R10.3-C
+⚠ 近似說明: HJ raise 2bb → 校正為 R2.3; BB raise 9bb → 校正為 R10.3
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【BB 在 Preflop 】底池 4.800bb
+  Fold: 34.0%（451 combos）
+  Call: 57.1%（757 combos）
+  RAISE 10.3（131% pot）: 8.9%（118 combos）
+
+【BB 88】
+  Range 頻率: 100.0%（6.0/6 combos）
+  EV: 1.79bb | Equity: 0.0%
+  策略:
+    Call: 90.4%（5.4 combos） EV 1.79bb
+    RAISE 10.3（131% pot）: 9.6%（0.6 combos） EV 1.79bb
+
+==================================================
+【Flop: 9hAcTh】
+Hero 88 牌型: 口袋對 (88) < 牌面
+【BB 在 Flop AcTh9h】底池 22.100bb
+  Check: 24.3%（23 combos）
+  BET 2.2（10% pot）: 10.2%（10 combos）
+  BET 5.5（25% pot）: 31.3%（29 combos）
+  BET 11.05（50% pot）: 33.5%（31 combos）
+  BET 16.6（75% pot）: 0.7%（1 combos）
+
+【BB 88】
+  Range 頻率: 9.6%（0.6/6 combos）
+  EV: 3.11bb | Equity: 36.2%
+  策略:
+    Check: 58.3%（0.3 combos） EV 3.12bb
+    Bet 2.2（10% pot）: 25.2%（0.1 combos） EV 3.08bb
+    Bet 5.5（25% pot）: 15.9%（0.1 combos） EV 3.00bb
+    Bet 16.6（75% pot）: 0.6%（0.0 combos） EV 2.95bb
+⚠ EV 損失 0.26bb（Bet 5.5（25% pot） 2.49bb vs Check 2.75bb）
+  → 實際行動: BB R5 5.0bb（solver code: R5.5）
+
+【BB 在 Flop AcTh9h】底池 44.000bb
+  Fold: 31.0%（9 combos）
+  Call: 41.3%（12 combos）
+  RAISE 34.5（33% pot）: 9.8%（3 combos）
+  All-in 49.700: 17.9%（5 combos）
+
+【BB 88】
+  Range 頻率: 1.5%（0.1/6 combos）
+  EV: -0.00bb | Equity: 24.3%
+  策略:
+    Fold: 100.0%（0.1 combos） EV -0.00bb
+  → 實際行動: BB F（solver code: F）
+
+⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

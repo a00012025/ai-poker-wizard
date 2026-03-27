@@ -1,0 +1,52 @@
+{
+  "streets": [
+    {
+      "board": "KcJc8d",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 1.9,
+          "action": "R1.9",
+          "position": "LJ"
+        },
+        {
+          "size": 1.9,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    },
+    {
+      "card": "6s",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 7.1,
+          "action": "R7.1",
+          "position": "LJ"
+        },
+        {
+          "size": 13.3,
+          "action": "R13.3",
+          "position": "BB"
+        },
+        {
+          "action": "F",
+          "position": "LJ"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "AsQs",
+  "effective_bb": 17.4,
+  "hero_position": "LJ",
+  "preflop_actions": "F-F-R2.2-F-F-F-F-C",
+  "players_at_table": 8
+}

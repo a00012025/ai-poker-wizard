@@ -1,0 +1,66 @@
+==================================================
+籌碼深度: 35.5bb（使用 35bb solver）
+Hero: SB AJo
+Preflop actions 校正: F-F-F-F-R2-F-R7-F-C → F-F-F-F-R2.2-F-R8.3-F-C
+⚠ 近似說明: CO raise 2bb → 校正為 R2.2; SB raise 7bb → 校正為 R8.3
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【SB 在 Preflop 】底池 4.700bb
+  Fold: 71.3%（946 combos）
+  Call: 14.7%（196 combos）
+  RAISE 8.3（95% pot）: 10.0%（132 combos）
+  All-in 35.000: 3.9%（52 combos）
+
+【SB AJo】
+  Range 頻率: 100.0%（12.0/12 combos）
+  EV: 1.70bb | Equity: 0.0%
+  策略:
+    All-in: 68.6%（8.2 combos） EV 1.70bb
+    RAISE 8.3（95% pot）: 31.4%（3.8 combos） EV 1.70bb
+
+==================================================
+【Flop: KdAc4h】
+Hero AJo 牌型: 頂對 (A)
+【SB 在 Flop AcKd4h】底池 18.600bb
+  Check: 36.0%（39 combos）
+  BET 1.85（10% pot）: 24.3%（26 combos）
+  BET 4.65（25% pot）: 4.2%（4 combos）
+  BET 9.3（50% pot）: 35.3%（38 combos）
+  BET 13.95（75% pot）: 0.1%（0 combos）
+
+【SB AJo】
+  Range 頻率: 24.6%（2.2/9 combos）
+  EV: 20.20bb | Equity: 78.7%
+  策略:
+    Bet 9.3（50% pot）: 85.7%（1.9 combos） EV 20.20bb
+    Check: 9.2%（0.2 combos） EV 20.19bb
+    Bet 1.85（10% pot）: 3.5%（0.1 combos） EV 20.15bb
+    Bet 4.65（25% pot）: 1.2%（0.0 combos） EV 20.13bb
+    Bet 13.95（75% pot）: 0.3%（0.0 combos） EV 19.93bb
+⚠ EV 損失 0.08bb（Bet 4.65（25% pot） 20.07bb vs Bet 9.3（50% pot） 20.15bb）
+  → 實際行動: SB R4 4.0bb（solver code: R4.65）
+
+
+==================================================
+【Turn: 8d（Board: KdAc4h8d）】
+Hero AJo 牌型: 頂對 (A)
+【SB 在 Turn AcKd4h8d】底池 27.900bb
+  Check: 49.8%（2 combos）
+  BET 2.8（10% pot）: 0.5%（0 combos）
+  BET 7（25% pot）: 38.6%（2 combos）
+  BET 13.95（50% pot）: 11.0%（0 combos）
+
+【SB AJo】
+  Range 頻率: 0.3%（0.0/9 combos）
+  EV: 26.23bb | Equity: 76.6%
+  策略:
+    Bet 13.95（50% pot）: 68.0%（0.0 combos）
+    Check: 22.6%（0.0 combos）
+    Bet 7（25% pot）: 9.1%（0.0 combos）
+    Bet 2.8（10% pot）: 0.2%（0.0 combos）
+  → 實際行動: SB R24.5 24.5bb（solver code: RAI）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

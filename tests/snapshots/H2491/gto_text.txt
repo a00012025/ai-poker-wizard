@@ -1,0 +1,74 @@
+==================================================
+籌碼深度: 17.3bb（使用 17bb solver）
+Hero: CO ATs
+
+
+==================================================
+【Preflop】
+【CO 在 Preflop 】底池 2.500bb
+  Fold: 67.3%（893 combos）
+  Call: 7.2%（95 combos）
+  RAISE 2（29% pot）: 19.1%（253 combos）
+  All-in 17.000: 6.4%（85 combos）
+
+【CO ATs】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 1.72bb | Equity: 0.0%
+  策略:
+    RAISE 2（29% pot）: 100.0%（4.0 combos） EV 1.72bb
+
+==================================================
+【Flop: 6cQs8d】
+Hero ATs 牌型: Ace high + 後門花聽牌
+【CO 在 Flop Qs8d6c】底池 6.000bb
+  Check: 47.8%（106 combos）
+  BET 1.2（20% pot）: 19.4%（43 combos）
+  BET 2（33% pot）: 25.1%（56 combos）
+  BET 3.3（55% pot）: 7.7%（17 combos）
+
+【CO ATs】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 2.52bb | Equity: 52.5%
+  策略:
+    Check: 94.5%（3.8 combos） EV 2.52bb
+    Bet 1.2（20% pot）: 5.4%（0.2 combos） EV 2.52bb
+    Bet 2（33% pot）: 0.2%（0.0 combos） EV 2.49bb
+⚠ EV 損失 0.06bb（Bet 2（33% pot） 2.55bb vs Check 2.61bb）
+  → 實際行動: CO R2 2.0bb（solver code: R2）
+
+
+==================================================
+【Turn: 6d（Board: 6cQs8d6d）】
+Hero ATs 牌型: 第三對 (6) + 堅果花聽牌
+【CO 在 Turn Qs8d6c6d】底池 10.000bb
+  Check: 30.7%（17 combos）
+  BET 3.3（33% pot）: 38.9%（21 combos）
+  BET 5.5（55% pot）: 30.4%（17 combos）
+
+【CO ATs】
+  Range 頻率: 0.2%（0.0/4 combos）
+  EV: 2.07bb | Equity: 30.4%
+  策略:
+    Check: 50.0%（0.0 combos）
+    Bet 5.5（55% pot）: 45.9%（0.0 combos）
+    Bet 3.3（33% pot）: 4.2%（0.0 combos）
+  → 實際行動: CO X（solver code: X）
+
+
+==================================================
+【River: 2h（Board: 6cQs8d6d2h）】
+Hero ATs 牌型: 第三對 (6)
+【CO 在 River Qs8d6c6d2h】底池 13.500bb
+  Fold: 45.3%（8 combos）
+  Call: 30.8%（5 combos）
+  All-in 13.000: 23.9%（4 combos）
+
+【CO ATs】
+  Range 頻率: 0.1%（0.0/4 combos）
+  EV: 0.50bb | Equity: 23.6%
+  策略:
+    Call: 99.8%（0.0 combos）
+    All-in: 0.2%（0.0 combos）
+  → 實際行動: CO F（solver code: F）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

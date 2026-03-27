@@ -1,0 +1,91 @@
+==================================================
+籌碼深度: 31.6bb（使用 30bb solver）
+Hero: CO 88
+Preflop actions 校正: F-F-F-F-R2.2-F-F-C → F-F-F-F-R2.1-F-F-C
+⚠ 近似說明: CO raise 2.2bb → 校正為 R2.1
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【CO 在 Preflop 】底池 2.500bb
+  Fold: 62.8%（833 combos）
+  RAISE 2.1（31% pot）: 37.2%（493 combos）
+
+【CO 88】
+  Range 頻率: 100.0%（6.0/6 combos）
+  EV: 1.82bb | Equity: 0.0%
+  策略:
+    RAISE 2.1（31% pot）: 100.0%（6.0 combos） EV 1.82bb
+
+==================================================
+【Flop: 4c9d7c】
+Hero 88 牌型: 口袋對 (88)
+【CO 在 Flop 9d7c4c】底池 5.700bb
+  Check: 32.7%（146 combos）
+  BET 1.15（20% pot）: 9.4%（42 combos）
+  BET 1.9（33% pot）: 4.2%（19 combos）
+  BET 3.15（55% pot）: 11.3%（50 combos）
+  BET 4.75（83% pot）: 40.8%（182 combos）
+  BET 7.1（125% pot）: 1.6%（7 combos）
+
+【CO 88】
+  Range 頻率: 100.0%（6.0/6 combos）
+  EV: 4.46bb | Equity: 70.4%
+  策略:
+    Check: 48.6%（2.9 combos） EV 4.46bb
+    Bet 4.75（83% pot）: 25.6%（1.5 combos） EV 4.45bb
+    Bet 3.15（55% pot）: 13.4%（0.8 combos） EV 4.45bb
+    Bet 1.15（20% pot）: 8.1%（0.5 combos） EV 4.45bb
+    Bet 1.9（33% pot）: 4.3%（0.3 combos） EV 4.45bb
+  → 實際行動: CO X（solver code: X）
+
+
+==================================================
+【Turn: As（Board: 4c9d7cAs）】
+Hero 88 牌型: 口袋對 (88)
+【CO 在 Turn 9d7c4cAs】底池 5.700bb
+  Check: 39.5%（52 combos）
+  BET 1.9（33% pot）: 1.1%（1 combos）
+  BET 3.15（55% pot）: 2.0%（3 combos）
+  BET 4.75（83% pot）: 16.4%（22 combos）
+  BET 7.1（125% pot）: 36.3%（48 combos）
+  BET 11.4（200% pot）: 4.7%（6 combos）
+
+【CO 88】
+  Range 頻率: 48.6%（2.9/6 combos）
+  EV: 3.58bb | Equity: 68.7%
+  策略:
+    Check: 74.4%（2.2 combos） EV 3.58bb
+    Bet 4.75（83% pot）: 15.8%（0.5 combos） EV 3.57bb
+    Bet 3.15（55% pot）: 6.1%（0.2 combos） EV 3.57bb
+    Bet 1.9（33% pot）: 3.4%（0.1 combos） EV 3.58bb
+    Bet 1.15（20% pot）: 0.2%（0.0 combos） EV 3.57bb
+  → 實際行動: CO X（solver code: X）
+
+
+==================================================
+【River: Th（Board: 4c9d7cAsTh）】
+Hero 88 牌型: 口袋對 (88)
+【CO 在 River 9d7c4cAsTh】底池 5.700bb
+  Check: 52.8%（27 combos）
+  BET 1（18% pot）: 0.2%（0 combos）
+  BET 2.5（44% pot）: 14.8%（8 combos）
+  BET 4（70% pot）: 23.8%（12 combos）
+  BET 5.5（96% pot）: 8.0%（4 combos）
+  BET 8.5（149% pot）: 0.6%（0 combos）
+
+【CO 88】
+  Range 頻率: 36.2%（2.2/6 combos）
+  EV: 5.39bb | Equity: 94.0%
+  策略:
+    Bet 2.5（44% pot）: 50.0%（1.1 combos） EV 5.40bb
+    Bet 4（70% pot）: 40.9%（0.9 combos） EV 5.39bb
+    Check: 8.3%（0.2 combos） EV 5.36bb
+    Bet 5.5（96% pot）: 0.3%（0.0 combos） EV 5.35bb
+    Bet 8.5（149% pot）: 0.3%（0.0 combos） EV 5.19bb
+    Bet 1（18% pot）: 0.2%（0.0 combos） EV 5.36bb
+⚠ EV 損失 0.03bb（Check 5.36bb vs Bet 2.5（44% pot） 5.39bb）
+  → 實際行動: CO X（solver code: X）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

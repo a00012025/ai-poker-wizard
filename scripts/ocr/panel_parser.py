@@ -97,7 +97,32 @@ def split_columns(panel_image: np.ndarray) -> list[dict]:
                     pass
                 break
 
-        body = panel_image[header_end:, x1:x2]
+        # When the panel has many entries (8-9 players), the first entry
+        # can scroll up into the header area.  Detect this by checking if
+        # any action keyword appears in the header for this column; if so,
+        # extend the body start upward to capture the clipped entry.
+        body_start = header_end
+        action_header_texts = [
+            t for t in col_header_texts
+            if _ACTION_PATTERNS.search(t["text"])
+        ]
+        if action_header_texts:
+            # Find topmost action-related text in the header
+            min_action_y = min(t["center_y"] for t in action_header_texts)
+            # Also check for player name text above the action
+            name_texts = [
+                t for t in col_header_texts
+                if t["center_y"] < min_action_y
+                and not _ACTION_PATTERNS.search(t["text"])
+                and not any(sn.lower() in t["text"].lower() for sn in _STREET_NAMES)
+                and not _BB_PATTERN.search(t["text"])
+            ]
+            if name_texts:
+                body_start = max(0, int(min(t["center_y"] for t in name_texts)) - 10)
+            else:
+                body_start = max(0, int(min_action_y) - 30)
+
+        body = panel_image[body_start:, x1:x2]
         columns.append({
             "name": street_name,
             "pot": pot_value,

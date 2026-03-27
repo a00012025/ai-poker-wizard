@@ -1,0 +1,66 @@
+{
+  "streets": [
+    {
+      "board": "9sQsJc",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 2.3,
+          "action": "R2.3",
+          "position": "UTG"
+        },
+        {
+          "size": 5.0,
+          "action": "R5",
+          "position": "BB"
+        },
+        {
+          "size": 2.7,
+          "action": "C",
+          "position": "UTG"
+        }
+      ]
+    },
+    {
+      "card": "As",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "UTG"
+        }
+      ]
+    },
+    {
+      "card": "3s",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "size": 2.5,
+          "action": "R2.5",
+          "position": "UTG"
+        },
+        {
+          "size": 2.5,
+          "action": "C",
+          "position": "BB"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "Qc7d",
+  "effective_bb": 16.2,
+  "hero_position": "BB",
+  "preflop_actions": "R2.1-F-F-F-F-F-C",
+  "players_at_table": 7
+}

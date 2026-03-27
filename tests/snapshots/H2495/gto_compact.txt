@@ -1,0 +1,17 @@
+♠ BB 88 | 62bb MTT
+
+─── Preflop ───
+✅ Call (90%)
+⚠️ RAISE 10.3（131% pot） (10%)
+
+─── Flop: 9hAcTh ───
+🎯 口袋對 (88) < 牌面
+✅ Check (58%)
+⚠️ Bet 2.2（10% pot） (25%)
+⚠️ Bet 5.5（25% pot） (16%)
+⚠️ Bet 16.6（75% pot） (1%)
+
+Hero bet → ✅
+✅ Fold (100%)
+
+Hero fold → ✅

@@ -1,0 +1,30 @@
+♠ CO KQo | 62bb MTT
+
+─── Preflop ───
+✅ RAISE 2.3（37% pot） (100%)
+✅ Call (100%)
+⚠️ RAISE 20（44% pot） (0%)
+
+─── Flop: Ks2dQc ───
+🎯 兩對 (K, Q)
+✅ Call (93%)
+⚠️ Bet 16.4（33% pot） (7%)
+
+Hero call → ✅
+
+─── Turn: 4h ───
+🎯 兩對 (K, Q)
+✅ Bet 16.55（50% pot） (94%)
+⚠️ Check (4%)
+⚠️ Bet 8.3（25% pot） (1%)
+⚠️ Bet 3.3（10% pot） (1%)
+⚠️ Bet 24.8（75% pot） (0%)
+
+Hero check → ✅
+
+─── River: 4c ───
+🎯 兩對 (K, Q)
+✅ Bet 20.5（62% pot） (64%)
+⚠️ Bet 29（88% pot） (36%)
+
+Hero bet → ✅

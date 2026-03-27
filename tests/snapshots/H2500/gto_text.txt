@@ -1,0 +1,99 @@
+==================================================
+籌碼深度: 62.3bb（使用 60bb solver）
+Hero: CO KQo
+Preflop actions 校正: F-F-F-F-R2.2-F-F-R10-C → F-F-F-F-R2.3-F-F-R10.3-C
+⚠ 近似說明: CO raise 2.2bb → 校正為 R2.3; BB raise 10bb → 校正為 R10.3
+  此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
+
+
+==================================================
+【Preflop】
+【CO 在 Preflop 】底池 2.500bb
+  Fold: 63.0%（835 combos）
+  RAISE 2.3（37% pot）: 37.0%（491 combos）
+
+【CO KQo】
+  Range 頻率: 100.0%（12.0/12 combos）
+  EV: 0.80bb | Equity: 0.0%
+  策略:
+    RAISE 2.3（37% pot）: 100.0%（12.0 combos） EV 0.80bb
+【CO 在 Preflop 】底池 14.100bb
+  Fold: 49.9%（245 combos）
+  Call: 43.5%（214 combos）
+  RAISE 20（44% pot）: 0.1%（0 combos）
+  All-in 60.000: 6.5%（32 combos）
+
+【CO KQo】
+  Range 頻率: 100.0%（12.0/12 combos）
+  EV: 0.62bb | Equity: 0.0%
+  策略:
+    Call: 99.5%（11.9 combos） EV 0.62bb
+    RAISE 20（44% pot）: 0.5%（0.1 combos） EV 0.62bb
+  → 實際行動: CO C（solver code: C）
+
+
+==================================================
+【Flop: Ks2dQc】
+Hero KQo 牌型: 兩對 (K, Q)
+【CO 在 Flop KsQc2d】底池 27.600bb
+  Fold: 16.7%（31 combos）
+  Call: 81.6%（152 combos）
+  RAISE 16.4（33% pot）: 1.7%（3 combos）
+
+【CO KQo】
+  Range 頻率: 99.6%（7.0/7 combos）
+  EV: 37.06bb | Equity: 85.2%
+  策略:
+    Call: 93.4%（6.5 combos） EV 37.07bb
+    Bet 16.4（33% pot）: 6.6%（0.5 combos） EV 37.05bb
+  → 實際行動: CO C 7.5bb（solver code: C）
+
+
+==================================================
+【Turn: 4h（Board: Ks2dQc4h）】
+Hero KQo 牌型: 兩對 (K, Q)
+【CO 在 Turn KsQc2d4h】底池 33.100bb
+  Check: 53.7%（81 combos）
+  BET 3.3（10% pot）: 2.1%（3 combos）
+  BET 8.3（25% pot）: 1.8%（3 combos）
+  BET 16.55（50% pot）: 42.3%（64 combos）
+  BET 24.8（75% pot）: 0.1%（0 combos）
+
+【CO KQo】
+  Range 頻率: 93.0%（6.5/7 combos）
+  EV: 40.71bb | Equity: 93.8%
+  策略:
+    Bet 16.55（50% pot）: 93.9%（6.1 combos） EV 40.71bb
+    Check: 4.3%（0.3 combos） EV 40.68bb
+    Bet 8.3（25% pot）: 0.9%（0.1 combos） EV 40.46bb
+    Bet 3.3（10% pot）: 0.8%（0.1 combos） EV 40.35bb
+    Bet 24.8（75% pot）: 0.1%（0.0 combos） EV 40.29bb
+⚠ EV 損失 0.01bb（Check 40.61bb vs Bet 16.55（50% pot） 40.62bb）
+  → 實際行動: CO X（solver code: X）
+
+
+==================================================
+【River: 4c（Board: Ks2dQc4h4c）】
+Hero KQo 牌型: 兩對 (K, Q)
+【CO 在 River KsQc2d4h4c】底池 33.100bb
+  Check: 53.0%（43 combos）
+  BET 12（36% pot）: 0.7%（1 combos）
+  BET 20.5（62% pot）: 11.2%（9 combos）
+  BET 29（88% pot）: 22.8%（18 combos）
+  All-in 44.200: 12.3%（10 combos）
+
+【CO KQo】
+  Range 頻率: 4.0%（0.3/7 combos）
+  EV: 38.58bb | Equity: 99.5%
+  策略:
+    Bet 20.5（62% pot）: 64.1%（0.2 combos） EV 38.58bb
+    Bet 29（88% pot）: 35.7%（0.1 combos） EV 38.56bb
+  花色差異:
+    KcQd: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.9bb）
+    KhQd: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.6bb）
+    KhQs: Bet 20.5（62% pot） 46%, Bet 29（88% pot） 54%（EV 38.6bb）
+    KdQh: Bet 20.5（62% pot） 98%, Bet 29（88% pot） 2%（EV 38.5bb）
+    KcQh: Bet 20.5（62% pot） 98%, Bet 29（88% pot） 2%（EV 38.6bb）
+  → 實際行動: CO R22.4 22.4bb（solver code: R20.5）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
