@@ -24,36 +24,12 @@ from gto_api import (
 )
 from gto_formatter import (
     normalize_hand_name, _COMBO_INDEX, _COMBO_RANKS, _COMBO_SUITS, _RANK_ORDER,
-    _get_board_cards, _combo_to_hand_name,
+    _get_board_cards, _combo_to_hand_name, combo_index_for_hand as _combo_index_for_hand,
 )
 
 # ── 169-element preflop hand index (ASCII-sorted hand names) ──
 
 _RANKS_BY_VALUE = "23456789TJQKA"
-
-
-def _combo_index_for_hand(hero_hand_raw: str) -> int | None:
-    """Find the 1326-combo index for a specific hero hand like 'Ah6h'.
-
-    Returns index into _COMBO_INDEX, or None if hand is not a 4-char specific combo.
-    """
-    if not hero_hand_raw or len(hero_hand_raw) != 4:
-        return None
-
-    card1 = hero_hand_raw[:2]  # e.g. "Ah"
-    card2 = hero_hand_raw[2:]  # e.g. "6h"
-
-    try:
-        idx1 = _COMBO_RANKS.index(card1[0]) * 4 + _COMBO_SUITS.index(card1[1])
-        idx2 = _COMBO_RANKS.index(card2[0]) * 4 + _COMBO_SUITS.index(card2[1])
-    except (ValueError, IndexError):
-        return None
-
-    j = max(idx1, idx2)
-    i = min(idx1, idx2)
-    if j == i:
-        return None
-    return j * (j - 1) // 2 + i
 
 def _build_hands_169() -> list[str]:
     """Build 169 hand names sorted by ASCII string comparison."""

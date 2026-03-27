@@ -687,6 +687,163 @@ class GeminiSessionManager:
         except Exception as e:
             self._logger.warning(f"[chat={chat_id}] Failed to update snapshot coaching: {e}")
 
+    async def _extract_deviations(self, chat_id: int, hand_id: str | None,
+                                    hand_json: dict, context: dict):
+        """Fire-and-forget: extract deviations from analysis and store in DB.
+
+        Reads hero_spots and solutions from the analysis context, categorizes
+        each hero decision point, compares to GTO, and inserts into deviations table.
+        """
+        if not self.db or not self.db.pool:
+            return
+        try:
+            from spot_categorizer import categorize_spot, classify_board_texture
+            from gto_formatter import combo_index_for_hand, _COMBO_INDEX, _get_board_cards, _combo_to_hand_name
+            from leak_service import insert_deviation
+
+            hero_spots = context.get("hero_spots", [])
+            solutions = context.get("solutions", [])
+            hero_pos = context.get("hero_position", "")
+            hero_hand = context.get("hero_hand", "")
+            hero_hand_raw = hand_json.get("hero_hand", "")
+            effective_bb = hand_json.get("effective_bb")
+            combo_idx = combo_index_for_hand(hero_hand_raw)
+
+            # Parse hand_history_id from hand_id (e.g. "H1234" → 1234)
+            hh_id = None
+            if hand_id and hand_id.startswith("H"):
+                try:
+                    hh_id = int(hand_id[1:])
+                except ValueError:
+                    pass
+
+            preflop_action_index = 0
+            for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+                if not sol or "action_solutions" not in sol:
+                    continue
+
+                street = spot.get("street", "")
+                is_preflop = (street == "preflop")
+
+                # Determine action_index for this street
+                if is_preflop:
+                    action_idx = preflop_action_index
+                    preflop_action_index += 1
+                else:
+                    # Count previous hero spots on the same postflop street
+                    action_idx = sum(
+                        1 for j in range(i)
+                        if hero_spots[j].get("street") == street and hero_spots[j].get("street") != "preflop"
+                    )
+
+                # Build street_actions_before_hero from the spot context
+                # This is tricky — we reconstruct from what we know
+                street_actions_before = spot.get("street_actions_before_hero", [])
+
+                cat, texture = categorize_spot(
+                    hand_json, street, action_index=action_idx if is_preflop else 0,
+                    street_actions_before_hero=street_actions_before if not is_preflop else None,
+                )
+
+                # Get board texture for postflop
+                if not is_preflop and not texture:
+                    board = spot.get("params", {}).get("board", "")
+                    texture = classify_board_texture(board)
+
+                # Extract hero's action and GTO recommendation
+                taken_code = spot.get("taken_code")
+                if not taken_code:
+                    # For preflop open spots, hero's action is in the preflop string
+                    continue
+
+                # Get hero's action frequency from solution
+                hero_freq = None
+                gto_action = ""
+                gto_freq = None
+
+                action_solutions = sol.get("action_solutions", [])
+                player_info = None
+                for pi in sol.get("players_info", []):
+                    if pi["player"]["position"] == hero_pos:
+                        player_info = pi
+                        break
+
+                if player_info and "range" in player_info:
+                    range_arr = player_info["range"]
+
+                    if is_preflop and len(range_arr) == 169:
+                        # Preflop 169-element lookup
+                        from hh_deviation_check import HAND_TO_169
+                        idx_169 = HAND_TO_169.get(hero_hand)
+                        if idx_169 is not None and range_arr[idx_169] >= 0.005:
+                            action_freqs = {}
+                            for asol in action_solutions:
+                                strat = asol.get("strategy", [])
+                                if len(strat) == 169:
+                                    action_freqs[asol["action"]["code"]] = strat[idx_169]
+                            hero_freq = action_freqs.get(taken_code)
+                            if action_freqs:
+                                best_code = max(action_freqs, key=action_freqs.get)
+                                gto_action = best_code
+                                gto_freq = action_freqs[best_code]
+                    elif not is_preflop and len(range_arr) == 1326:
+                        # Postflop 1326-element lookup
+                        use_idx = combo_idx
+                        if use_idx is not None and use_idx < len(range_arr) and range_arr[use_idx] >= 0.005:
+                            action_freqs = {}
+                            for asol in action_solutions:
+                                strat = asol.get("strategy", [])
+                                if len(strat) == 1326:
+                                    freq = strat[use_idx]
+                                    if freq > 0.005:
+                                        action_freqs[asol["action"]["code"]] = freq
+                            hero_freq = action_freqs.get(taken_code, 0)
+                            if action_freqs:
+                                best_code = max(action_freqs, key=action_freqs.get)
+                                gto_action = best_code
+                                gto_freq = action_freqs[best_code]
+
+                if hero_freq is None:
+                    # Fallback: use total_frequency from action_solutions
+                    for asol in action_solutions:
+                        if asol["action"]["code"] == taken_code:
+                            hero_freq = asol.get("total_frequency")
+                            break
+                    if not gto_action:
+                        best_asol = max(action_solutions,
+                                       key=lambda a: a.get("total_frequency", 0),
+                                       default=None)
+                        if best_asol:
+                            gto_action = best_asol["action"]["code"]
+                            gto_freq = best_asol.get("total_frequency")
+
+                # Convert frequencies to percentages (0-100)
+                hero_freq_pct = hero_freq * 100 if hero_freq is not None else None
+                gto_freq_pct = gto_freq * 100 if gto_freq is not None else None
+
+                is_deviation = (hero_freq is not None and hero_freq < 0.10)
+
+                await insert_deviation(
+                    pool=self.db.pool,
+                    chat_id=chat_id,
+                    hand_history_id=hh_id,
+                    street=street,
+                    action_index=action_idx,
+                    spot_category=cat,
+                    position=hero_pos,
+                    hero_action=taken_code,
+                    gto_action=gto_action or taken_code,
+                    hero_freq=hero_freq_pct,
+                    gto_freq=gto_freq_pct,
+                    ev_loss_estimate=None,  # TODO: compute from action EVs
+                    board_texture=texture,
+                    effective_bb=effective_bb,
+                    is_deviation=is_deviation,
+                )
+
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] Failed to extract deviations: {e}")
+
     async def send_message(self, chat_id: int, user_text: str,
                            on_status: Callable[[str], Any] | None = None,
                            user_id: int | None = None,
@@ -796,6 +953,9 @@ class GeminiSessionManager:
                 _aio.create_task(self._save_snapshot(
                     hand_id, chat_id, "text", user_text,
                     None, hand_json, context))
+                # Extract deviations for leak detection (fire-and-forget)
+                _aio.create_task(self._extract_deviations(
+                    chat_id, hand_id, hand_json, context))
 
                 t_analyze = time.time()
                 self._logger.info(
@@ -953,6 +1113,9 @@ class GeminiSessionManager:
             _aio.create_task(self._save_snapshot(
                 hand_id, chat_id, "image", user_text or "[screenshot]",
                 image_bytes, hand_json, context))
+            # Extract deviations for leak detection (fire-and-forget)
+            _aio.create_task(self._extract_deviations(
+                chat_id, hand_id, hand_json, context))
 
             t_analyze = time.time()
             self._logger.info(
