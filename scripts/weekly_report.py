@@ -110,7 +110,7 @@ async def generate_weekly_report(
     if tilt_data and tilt_data["is_tilting"]:
         tilt_rate = tilt_data["deviation_rate"] * 100
         lines.append(
-            f"\n⚠️ 傾斜偵測: 最近 {tilt_data['window_size']} 個決策中 "
+            f"\n⚠️ 上頭偵測: 最近 {tilt_data['window_size']} 個決策中 "
             f"{tilt_data['deviations_in_window']} 個偏離 ({tilt_rate:.0f}%)"
         )
 
