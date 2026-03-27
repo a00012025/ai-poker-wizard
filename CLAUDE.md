@@ -67,6 +67,56 @@ scripts/
   - Auto-captured on every analysis; used for E2E regression testing
 - Migrations: `supabase/migrations/` — always use `supabase db push`, never raw psql
 
+## Git Worktree 開發流程
+
+多個 feature 可以同時在不同 worktree 中平行開發，各自在獨立 branch 上改，完成後發 PR review。
+
+### 開始新 feature
+
+```bash
+# 1. 確保 main 是最新的
+cd ~/ai-poker-wizard
+git fetch origin main && git pull origin main
+
+# 2. 建立 worktree（放在 ~/ai-poker-wizard-{feature} 目錄）
+BRANCH="feat/leak-detection"
+git worktree add ~/ai-poker-wizard-leak-detection -b $BRANCH
+
+# 3. 在 worktree 中工作
+cd ~/ai-poker-wizard-leak-detection
+```
+
+### Worktree 命名規範
+
+- 目錄: `~/ai-poker-wizard-{feature-slug}`
+- Branch: `feat/{feature}`, `fix/{bug}`, `refactor/{scope}`
+- 例: `~/ai-poker-wizard-leak-detection` → `feat/leak-detection`
+
+### 完成後
+
+```bash
+# 1. 在 worktree 中 commit + push
+git push -u origin feat/leak-detection
+
+# 2. 建立 PR
+gh pr create --title "feat: leak detection pipeline" --body "..."
+
+# 3. Review 後 merge，然後清理 worktree
+cd ~/ai-poker-wizard
+git worktree remove ~/ai-poker-wizard-leak-detection
+```
+
+### 注意事項
+
+- 每個 worktree 共享同一個 `.git` — branch 之間不會衝突
+- `.env` 和 `.tokens.json` 在 main repo 中，worktree 需要 symlink 或複製：
+  ```bash
+  ln -s ~/ai-poker-wizard/.env ~/ai-poker-wizard-leak-detection/.env
+  ln -s ~/ai-poker-wizard/.tokens.json ~/ai-poker-wizard-leak-detection/.tokens.json
+  ```
+- Supabase migrations 在任何 worktree 中都可以跑 `supabase db push`
+- regression_test.py 在每個 worktree 中獨立執行
+
 ## Ad-hoc Python Scripts
 
 When running ad-hoc Python snippets for debugging/testing, write them to `scripts/_tmp.py` (gitignored) instead of inline `python -c`. This avoids repeated permission prompts.
