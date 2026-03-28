@@ -644,18 +644,39 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                 # replacement must be large enough to be a real suit
                 # symbol (area > 800 after 4x upscale) to avoid
                 # picking tiny noise contours.
+                #
+                # However, for Aces and number cards the center suit
+                # symbol IS the biggest contour and naturally fills
+                # >25% of the crop.  Check big contour's hull defects
+                # first — if conclusive, use it directly.
                 target = big
                 if big_area / center_area > 0.25 and len(rc) > 1:
-                    for c in sorted(rc, key=cv2.contourArea,
-                                    reverse=True):
-                        ca_c = cv2.contourArea(c)
-                        if ca_c / center_area > 0.25:
-                            continue
-                        bx, by, bw_, bh_ = cv2.boundingRect(c)
-                        asp = bw_ / bh_ if bh_ > 0 else 0
-                        if 0.6 < asp < 1.4 and ca_c > 800:
-                            target = c
-                            break
+                    # Check if big contour's hull defects are conclusive
+                    big_hull_idx = cv2.convexHull(big, returnPoints=False)
+                    big_max_defect = 0
+                    if len(big_hull_idx) > 3:
+                        big_defects = cv2.convexityDefects(
+                            big, big_hull_idx)
+                        if big_defects is not None:
+                            big_max_defect = max(
+                                d[0][3] for d in big_defects)
+                    big_norm = (big_max_defect / (big_area ** 0.5)
+                                if big_area > 0 else 0)
+                    # If big contour clearly heart or diamond, keep it
+                    if big_norm > 22 or big_norm < 12:
+                        pass  # target stays as big
+                    else:
+                        # Ambiguous — try a smaller contour
+                        for c in sorted(rc, key=cv2.contourArea,
+                                        reverse=True):
+                            ca_c = cv2.contourArea(c)
+                            if ca_c / center_area > 0.25:
+                                continue
+                            bx, by, bw_, bh_ = cv2.boundingRect(c)
+                            asp = bw_ / bh_ if bh_ > 0 else 0
+                            if 0.6 < asp < 1.4 and ca_c > 800:
+                                target = c
+                                break
 
                 hll = cv2.convexHull(target)
                 ha = cv2.contourArea(hll)
