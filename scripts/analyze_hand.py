@@ -1440,6 +1440,7 @@ def _run_analysis(hand: dict) -> dict:
 
                 # Find GTO top action for sizing comparison
                 gto_top_label = ""
+                gto_top_freq = 0.0
                 hand_name = normalize_hand_name(hero_hand)
                 for pi in sol.get("players_info", []):
                     if pi["player"]["position"] != hero_pos:
@@ -1450,8 +1451,8 @@ def _run_analysis(hand: dict) -> dict:
                         af = hd.get("actions_total_frequencies", {})
                         if af:
                             top_code = max(af, key=af.get)
+                            gto_top_freq = af[top_code]
                             if top_code != taken_code:
-                                # Build short label for hint
                                 gto_top_label = _action_label_short(
                                     top_code, sol, spot["street"])
                     break
@@ -1463,13 +1464,22 @@ def _run_analysis(hand: dict) -> dict:
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
                 sizing_hint = f" (GTO建議 {gto_top_label})" if gto_top_label else ""
+                # Determine ✅ vs ❌:
+                #   ❌ if EV loss ≥ 0.5bb, OR
+                #   ❌ if GTO top action ≥ 80% and hero took a different action
+                is_bad = False
+                ev_loss = 0.0
                 if ev_note:
                     m = re.search(r"EV 損失 ([\d.]+)bb", ev_note)
                     ev_loss = float(m.group(1)) if m else 0
                     if ev_loss >= 0.5:
-                        compact.append(f"→ Hero {hero_action_short} ❌ EV損失 -{ev_loss:.1f}bb{sizing_hint}")
-                    else:
-                        compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
+                        is_bad = True
+                if gto_top_label and gto_top_freq >= 0.80:
+                    is_bad = True
+
+                if is_bad:
+                    ev_part = f" EV損失 -{ev_loss:.1f}bb" if ev_loss >= 0.5 else ""
+                    compact.append(f"→ Hero {hero_action_short} ❌{ev_part}{sizing_hint}")
                 else:
                     compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
         else:
