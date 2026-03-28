@@ -372,6 +372,10 @@ class PokerWizardBot:
                 await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
             await _send_reply(update.message, response, self.log, label)
+
+            # Send range grid images
+            await self._send_pending_range_images(update, chat_id, label)
+
         except Exception as e:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
@@ -485,6 +489,34 @@ class PokerWizardBot:
         finally:
             await _typing.__aexit__(None, None, None)
 
+    async def _send_pending_range_images(self, update: Update, chat_id: int, label: str):
+        """Send queued range grid images and auto-generate for no_hero_hand."""
+        try:
+            # Auto-generate for no_hero_hand contexts (all streets)
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if ctx and ctx.get("hand", {}).get("no_hero_hand"):
+                hero_pos = ctx.get("hand", {}).get("hero_position", "")
+                for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
+                    if sol is None:
+                        continue
+                    from range_image import generate_range_grid
+                    st = spot.get("street", "").capitalize()
+                    params = spot.get("params", {})
+                    board = params.get("board", "")
+                    title = f"{hero_pos} {st}"
+                    if board:
+                        title += f" | {board}"
+                    img = generate_range_grid(sol, hero_pos, title=title)
+                    if img:
+                        await update.message.reply_photo(photo=img, caption=f"📊 {title}")
+
+            # Send images queued by tool calls (query_gto)
+            pending = self.session_manager.pending_images.pop(chat_id, [])
+            for img_bytes, caption in pending:
+                await update.message.reply_photo(photo=img_bytes, caption=caption)
+        except Exception as e:
+            self.log.warning(f"[{label}] Range image failed: {e}")
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
         await self._touch_user(update)
@@ -574,6 +606,9 @@ class PokerWizardBot:
                     await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
             await _send_reply(update.message, response, self.log, label)
+
+            # Send range grid images
+            await self._send_pending_range_images(update, update.effective_chat.id, label)
 
         except Exception as e:
             elapsed = time.time() - t0

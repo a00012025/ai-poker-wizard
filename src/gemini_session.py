@@ -699,6 +699,7 @@ class GeminiSessionManager:
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
+        self.pending_images: Dict[int, list] = {}  # chat_id → [(bytes, title)]
         self.db = db
 
         # Logging
@@ -2180,7 +2181,26 @@ class GeminiSessionManager:
                     if not solution:
                         return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
 
-        return self._format_solution(solution, position, hand)
+        result_text = self._format_solution(solution, position, hand)
+
+        # Queue range grid image when querying a position's range (no specific hand)
+        if position and not hand:
+            try:
+                from range_image import generate_range_grid
+                game = solution.get("game", {})
+                st = game.get("current_street", {}).get("type", "").capitalize()
+                board = game.get("board", "")
+                title = f"{position} {st}"
+                if board:
+                    title += f" | {board}"
+                img = generate_range_grid(solution, position, title=title)
+                if chat_id not in self.pending_images:
+                    self.pending_images[chat_id] = []
+                self.pending_images[chat_id].append((img, f"📊 {title}"))
+            except Exception:
+                pass  # non-critical
+
+        return result_text
 
     def _find_cached_solution(self, ctx: dict, street: str) -> dict | None:
         """Find a cached spot-solution for the given street."""
