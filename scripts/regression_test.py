@@ -2663,6 +2663,45 @@ def test_duplicate_opponent_check_skipped_in_multiway():
 
 
 @test
+def test_infer_missing_hero_call():
+    """Multiway: missing hero call inferred when opponent bets and hand continues."""
+    from analyze_hand import analyze_hand_full
+    # H2517: SB bets on turn/river but hero (CO) call actions are missing.
+    # Analysis should infer hero called and produce solver data for all streets.
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 116.1,
+        "players_at_table": 6,
+        "hero_position": "CO",
+        "hero_hand": "Jd8d",
+        "preflop_actions": "F-F-R2.2-F-C-C",
+        "streets": [
+            {"board": "9cAsJc", "actions": [
+                {"position": "SB", "action": "R3.2", "size": 3.2},
+                {"position": "BB", "action": "F"},
+                {"position": "CO", "action": "C"},
+            ]},
+            {"card": "Ts", "actions": [
+                {"position": "SB", "action": "R9.2", "size": 9.2},
+                # hero call MISSING — should be inferred
+            ]},
+            {"card": "8c", "actions": [
+                {"position": "SB", "action": "R40", "size": 40},
+                # hero call MISSING — should be inferred (last street)
+            ]},
+        ],
+    })
+    turn_spots = [(s, sol) for s, sol in zip(result["hero_spots"], result["solutions"])
+                  if s["street"] == "turn"]
+    assert_true(len(turn_spots) >= 1, "Should have turn hero spot")
+    assert_true(turn_spots[0][1] is not None, "Turn must have solver data (inferred hero call)")
+    river_spots = [(s, sol) for s, sol in zip(result["hero_spots"], result["solutions"])
+                   if s["street"] == "river"]
+    assert_true(len(river_spots) >= 1, "Should have river hero spot")
+    assert_true(river_spots[0][1] is not None, "River must have solver data (inferred hero call)")
+
+
+@test
 def test_compact_format_preflop():
     """Compact: preflop output has header, emoji markers, and hero result."""
     from analyze_hand import analyze_hand_full
