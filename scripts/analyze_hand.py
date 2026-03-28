@@ -1274,6 +1274,84 @@ def _run_analysis(hand: dict) -> dict:
                                                 break
                                 break
 
+    # ── Phase 2.6: Postflop depth upgrade for off-range hero ──
+    # When hero's preflop action (e.g., raise 2bb) differs from GTO (e.g.,
+    # all-in), hero's combo has 0% postflop range at this depth.  Try 1-2
+    # higher depths where the combo IS in the raise range.  This gives the
+    # user useful postflop analysis despite the preflop deviation.
+    offrange_note = ""
+    if not is_icm and not no_hero_hand and hero_combo_idx is not None:
+        # Check if hero should have gone all-in preflop (≥80% all-in freq)
+        # AND hero combo has 0% postflop range as a result
+        pf_allin_freq = 0
+        if solutions[0]:
+            hn = normalize_hand_name(hero_hand)
+            for pi in solutions[0].get("players_info", []):
+                if pi["player"]["position"] != hero_pos:
+                    continue
+                shc = pi.get("simple_hand_counters", {})
+                hd = shc.get(hn)
+                if hd:
+                    af = hd.get("actions_total_frequencies", {})
+                    pf_allin_freq = af.get("RAI", 0)
+                break
+
+        has_offrange = False
+        if pf_allin_freq >= 0.80:
+            for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+                if spot["street"] == "preflop" or sol is None:
+                    continue
+                action_sols = sol.get("action_solutions", [])
+                if not action_sols or "strategy" not in action_sols[0]:
+                    continue
+                for pi in sol["players_info"]:
+                    if pi["player"]["position"] == hero_pos:
+                        rng = pi.get("range", [])
+                        if len(rng) == 1326 and rng[hero_combo_idx] < 0.005:
+                            has_offrange = True
+                        break
+                if has_offrange:
+                    break
+
+        if has_offrange:
+            from gto_api import AVAILABLE_DEPTHS
+            current_bb = float(depth) - 0.125 if isinstance(depth, (int, float)) else 0
+            higher = sorted(d for d in AVAILABLE_DEPTHS if d > current_bb)[:2]
+            for try_bb in higher:
+                try_depth = try_bb + 0.125
+                # Re-query all postflop spots at higher depth
+                found = False
+                for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+                    if spot["street"] == "preflop" or sol is None:
+                        continue
+                    retry_params = dict(spot["params"], depth=try_depth)
+                    retry_sol = _fetch_with_token(retry_params)
+                    if not retry_sol:
+                        continue
+                    for pi in retry_sol["players_info"]:
+                        if pi["player"]["position"] == hero_pos:
+                            rng = pi.get("range", [])
+                            if len(rng) == 1326 and rng[hero_combo_idx] >= 0.005:
+                                found = True
+                            break
+                    if found:
+                        break
+                if found:
+                    # Apply higher depth to ALL postflop spots
+                    for i, (spot, _) in enumerate(zip(hero_spots, solutions)):
+                        if spot["street"] == "preflop":
+                            continue
+                        retry_params = dict(spot["params"], depth=try_depth)
+                        retry_sol = _fetch_with_token(retry_params)
+                        if retry_sol:
+                            solutions[i] = retry_sol
+                            hero_spots[i]["params"] = retry_params
+                    offrange_note = (
+                        f"⚠ 此深度 {hero_hand} 應 preflop all-in，"
+                        f"postflop 使用 {try_bb:.0f}bb solver 近似（僅供參考）"
+                    )
+                    break
+
     t_phase2 = time.time()
 
     # ── Phase 3: Format results ──
@@ -1300,6 +1378,8 @@ def _run_analysis(hand: dict) -> dict:
         results.append(multiway_note)
     if gto_line_note:
         results.append(gto_line_note)
+    if offrange_note:
+        results.append(offrange_note)
     if raw_preflop != preflop_actions:
         # Generate detailed approximation notes for each corrected action
         raw_parts = raw_preflop.split("-")
@@ -1404,6 +1484,8 @@ def _run_analysis(hand: dict) -> dict:
         compact.append(multiway_note if multiway_note.startswith("⚠") else f"⚠ {multiway_note}")
     if gto_line_note:
         compact.append(gto_line_note)
+    if offrange_note:
+        compact.append(offrange_note)
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         if spot["header"]:
