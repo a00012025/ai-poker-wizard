@@ -1073,8 +1073,10 @@ class GeminiSessionManager:
                 await _status("分析回覆中...")
                 if context.get("no_hero_hand"):
                     coaching_instruction = (
-                        "用戶沒有指定具體手牌，請根據 GTO 數據分析該位置的整體範圍策略（下注頻率、尺寸分佈、範圍組成等）。"
-                        "不要提及或分析任何特定手牌（如 AA）的策略。"
+                        "GTO 數據是該位置的整體範圍策略。"
+                        "如果用戶問到特定手牌（如 Ks8s, AQs），你必須先用 query_gto 工具查詢該手牌的策略數據，"
+                        "再用 evaluate_hand 工具確認該手牌的牌型和聽牌，然後根據工具回傳的數據回答。"
+                        "絕對不要在沒有查詢的情況下自行編造特定手牌的頻率或聽牌描述！"
                     )
                 else:
                     coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
