@@ -2623,6 +2623,46 @@ def test_raise_without_size_maps_to_raise_not_call():
 
 
 @test
+def test_duplicate_opponent_check_skipped_in_multiway():
+    """Multiway: duplicate opponent check (misparsed position) is skipped."""
+    from analyze_hand import analyze_hand_full
+    # H2508: 3-way pot, BB's flop check mislabeled as SB → two SB checks.
+    # Without fix, flop_actions="X-X" (invalid), solver returns 204.
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 14.9,
+        "players_at_table": 8,
+        "hero_position": "UTG",
+        "hero_hand": "KdQs",
+        "preflop_actions": "R2-F-F-F-F-F-C-C",
+        "streets": [
+            {"board": "8s7dAd", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "SB", "action": "X"},  # misparsed BB check
+                {"position": "UTG", "action": "R2.4", "size": 2.4},
+                {"position": "SB", "action": "C", "size": 2.4},
+                {"position": "BB", "action": "F"},
+            ]},
+            {"card": "5d", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "UTG", "action": "R10.5", "size": 10.5},
+                {"position": "SB", "action": "C", "size": 10.5},
+            ]},
+        ],
+    })
+    flop_spots = [(spot, sol) for spot, sol in zip(result["hero_spots"], result["solutions"])
+                  if spot["street"] == "flop"]
+    assert_true(len(flop_spots) >= 1, f"Expected flop spot, got {len(flop_spots)}")
+    assert_true(flop_spots[0][1] is not None,
+                "Flop must have solver data (duplicate SB check should be skipped)")
+    turn_spots = [(spot, sol) for spot, sol in zip(result["hero_spots"], result["solutions"])
+                  if spot["street"] == "turn"]
+    assert_true(len(turn_spots) >= 1, f"Expected turn spot, got {len(turn_spots)}")
+    assert_true(turn_spots[0][1] is not None,
+                "Turn must have solver data")
+
+
+@test
 def test_compact_format_preflop():
     """Compact: preflop output has header, emoji markers, and hero result."""
     from analyze_hand import analyze_hand_full

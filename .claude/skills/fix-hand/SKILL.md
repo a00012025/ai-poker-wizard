@@ -1,0 +1,143 @@
+---
+name: fix-hand
+description: Use when user reports any hand analysis error — OCR misparse, wrong GTO output, bad action matching, missing solver data, formatting bugs. Triggers on hand ID + correction like "H2507 是 KdQs 才對", "H2506 check-raise 沒有 solver 數據". Automates debug → fix → test cycle.
+---
+
+# Fix Hand Analysis
+
+Systematic workflow: diagnose any analysis bug → fix code → add regression test → verify.
+
+Covers: OCR misparse, action matching errors, missing solver data, wrong GTO output, bad formatting.
+
+## Input Format
+
+```
+/fix-hand H2507 hero_hand=KdQs
+/fix-hand H2510 board=Jc6d5d
+/fix-hand H2506 — check-raise 應該有 solver 數據
+/fix-hand H2512 hero_position=BB players_at_table=6
+```
+
+Hand ID + field=value corrections, or a description of what's wrong.
+
+## Workflow
+
+```dot
+digraph fix_hand {
+  rankdir=TB;
+  node [shape=box];
+
+  fetch [label="1. Fetch snapshot from DB\n(parsed_json, image_data, gto_text)"];
+  classify [label="2. Classify error type\n(OCR / action matching / solver / format)"];
+  set_expected [label="3. Set expected corrections\nsnapshot_test.py --set-expected"];
+  diagnose [label="4. Diagnose root cause\n(debug scripts with verbose output)"];
+  fix [label="5. Fix the code"];
+  add_test [label="6. Add regression test\n(snapshot --add + unit test if applicable)"];
+  verify [label="7. Run ALL tests\nregression_test.py + snapshot_test.py"];
+  done [label="8. Report results"];
+
+  fetch -> classify -> set_expected -> diagnose -> fix -> add_test -> verify -> done;
+}
+```
+
+## Step 1: Fetch Snapshot
+
+Write to `scripts/_tmp.py` and run:
+
+```python
+import asyncio, os, sys, json
+sys.path.insert(0, os.path.dirname(__file__))
+import asyncpg
+
+async def main():
+    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
+    row = await conn.fetchrow(
+        "SELECT parsed_json, expected_json, gto_text, image_data IS NOT NULL as has_image "
+        "FROM analysis_snapshots WHERE hand_id = $1", "HXXXX"
+    )
+    await conn.close()
+    parsed = json.loads(row["parsed_json"])
+    print("=== PARSED JSON ===")
+    print(json.dumps(parsed, indent=2))
+    print("\n=== GTO TEXT ===")
+    print(row["gto_text"][:500] if row["gto_text"] else "None")
+    if row["has_image"]:
+        row2 = await conn.fetchrow(
+            "SELECT image_data FROM analysis_snapshots WHERE hand_id = $1", "HXXXX"
+        )
+        with open("/tmp/HXXXX.jpeg", "wb") as f:
+            f.write(row2["image_data"])
+        print("\nImage saved to /tmp/HXXXX.jpeg")
+
+asyncio.run(main())
+```
+
+Run: `set -a && source .env && set +a && python scripts/_tmp.py`
+
+## Step 2: Classify Error Type
+
+| Error Type | Symptoms | Key Files |
+|-----------|----------|-----------|
+| **OCR** | Wrong hero_hand, board, position, player count | `scripts/ocr/table_parser.py`, `card_matcher.py`, `panel_parser.py`, `n8_parser.py` |
+| **Action Matching** | Wrong action mapped, missing solver data after opponent action | `scripts/analyze_hand.py` (action walking), `scripts/gto_api.py` (find_closest_action) |
+| **Solver/API** | "無 solver 數據" when data should exist, wrong depth/gametype/padding | `scripts/analyze_hand.py` (params), `scripts/gto_api.py`, `scripts/icm_modes.py` |
+| **Formatter** | Wrong range compression, missing suit diff, bad combo display | `scripts/gto_formatter.py` |
+| **LLM Parse** | Text-input hand parsed incorrectly | `src/gemini_session.py` (prompt/schema) |
+
+## Step 3: Set Expected
+
+```bash
+python scripts/snapshot_test.py --set-expected HXXXX '{"hero_hand":"KdQs"}'
+```
+
+Only set fields the user reported wrong.
+
+## Step 4: Diagnose
+
+### OCR Issues
+**Read the image first** with Read tool to visually confirm expected values.
+
+Debug `_find_hero_cards`, `_detect_suit_bgr`, `_ocr_card_rank`, or panel parser with verbose output. Check blob ratios, BGR values, template confidence.
+
+### Action Matching Issues
+Trace the action walking loop step by step:
+1. Print each action's `target_size` and available actions from API
+2. Check what `find_closest_action_postflop` returns
+3. Verify the accumulated `flop_actions` / `turn_actions` string
+4. Query `get_spot_solution` with the final params
+
+### Solver/API Issues
+Check: depth calculation, preflop padding (6→8 for MTTGeneral), gametype selection, ICM params. Query `get_next_actions` and `get_spot_solution` directly.
+
+### Formatter Issues
+Run `analyze_hand_full(expected_json)` and compare raw solution data vs formatted text.
+
+## Step 5: Fix Code
+
+Apply minimal fix. For core analysis logic bugs (action matching, range compression, API params), also add a unit test in `scripts/regression_test.py` with the `@test` decorator.
+
+## Step 6: Add Regression Test
+
+```bash
+python scripts/snapshot_test.py --set-expected HXXXX '{"field":"value"}'  # if not done
+python scripts/snapshot_test.py --add HXXXX
+python scripts/snapshot_test.py HXXXX
+```
+
+## Step 7: Run ALL Tests
+
+```bash
+python scripts/regression_test.py
+python scripts/snapshot_test.py
+```
+
+Both must pass before reporting done.
+
+## Important Rules
+
+- **Always write Python to `scripts/_tmp.py`**, never `python -c`
+- **Always `set -a && source .env && set +a`** before running scripts
+- **Read the image visually** when the error involves OCR
+- **Every fix needs a regression test** — snapshot `--add` and/or unit test
+- **Don't modify expected_json fields the user didn't mention**
+- **For action matching / solver bugs**, run `analyze_hand_full(expected_json)` to verify full output after fix

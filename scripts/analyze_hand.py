@@ -930,6 +930,7 @@ def _run_analysis(hand: dict) -> dict:
         outstanding_bet = 0
         street_investments = {}
         _prev_allin = False
+        _acted_this_street = set()  # track who has acted (for misparsed dup detection)
 
         # Postflop uses chip EV for ICM modes (preflop_only)
         post_gametype = chipev_gametype if is_icm else gametype
@@ -970,6 +971,14 @@ def _run_analysis(hand: dict) -> dict:
                         street_investments[pos] = target_size
                         outstanding_bet = target_size
                 continue
+
+            # Skip duplicate simple actions from the same position on the
+            # same street (e.g., two SB checks).  In multiway pots the LLM
+            # sometimes assigns another player's action to the wrong position;
+            # the duplicate corrupts the solver action string.
+            if pos != hero_pos and action_type == "X" and pos in _acted_this_street:
+                continue
+            _acted_this_street.add(pos)
 
             post_preflop = chipev_preflop if is_icm else preflop_actions
 
