@@ -149,6 +149,14 @@ set -a && source .env && set +a && python scripts/e2e_test.py "有效 50bb, co o
 python scripts/e2e_test.py -i "..."  # Interactive mode (multi-turn)
 ```
 
+## Bug Fix Standards (MANDATORY)
+
+When the user reports a bug with expected values (e.g., "hero hand is Ts9d"), you MUST fix it completely:
+- **Every field matters** — rank AND suit, board AND actions, position AND player count. Never dismiss suit errors as "secondary" or "less impactful".
+- **No deferring** — never say "known limitation", "hard to fix", or "less impactful". Find a way and fix it.
+- **Fix until it matches** — the snapshot test must pass with the EXACT expected values the user provided.
+- **Exhaust all approaches** — if one approach fails, try another. Debug deeper. Add new detection strategies. The fix is not done until OCR output matches expected.
+
 ## Regression Tests (REQUIRED)
 
 When modifying any of these core analysis files, you MUST run the regression test suite before committing:

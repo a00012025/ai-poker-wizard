@@ -141,3 +141,4 @@ Both must pass before reporting done.
 - **Every fix needs a regression test** — snapshot `--add` and/or unit test
 - **Don't modify expected_json fields the user didn't mention**
 - **For action matching / solver bugs**, run `analyze_hand_full(expected_json)` to verify full output after fix
+- **No exceptions** — if user provides expected result, fix the code until OCR/analysis matches. Don't skip or defer OCR issues as "known limitations". The only valid reason to not fix is if you believe the user's expected result is wrong (and you must explain why).

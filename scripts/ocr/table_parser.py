@@ -412,6 +412,69 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
         else:
             rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
         suit = _detect_suit_bgr(suit_card)
+
+        # Cross-check suit for hero cards using multiple signals.
+        # Hero cards are small; the center contour analysis in _detect_suit_bgr
+        # can pick up wrong shapes.  Use 3-way vote to correct.
+        if rank and suit_card is not None:
+            h_sc, w_sc = suit_card.shape[:2]
+            sample_sc = suit_card[2:int(h_sc * 0.75), 2:int(w_sc * 0.6)]
+            if sample_sc.size > 0:
+                g_sc = cv2.cvtColor(sample_sc, cv2.COLOR_BGR2GRAY)
+                _, dm_sc = cv2.threshold(g_sc, 120, 255,
+                                         cv2.THRESH_BINARY_INV)
+                _, bm_sc = cv2.threshold(g_sc, 160, 255,
+                                         cv2.THRESH_BINARY)
+                ink_sc = cv2.bitwise_and(
+                    dm_sc, cv2.dilate(bm_sc, None, iterations=3))
+                ink_px = sample_sc[ink_sc > 0] if np.sum(ink_sc > 0) >= 5 \
+                    else sample_sc[dm_sc > 0]
+                if len(ink_px) >= 5:
+                    ir = float(np.mean(ink_px[:, 2]))
+                    ig = float(np.mean(ink_px[:, 1]))
+                    ib = float(np.mean(ink_px[:, 0]))
+                    is_red = ir > ib + 20 and ir > ig + 20
+                else:
+                    is_red = suit in ("h", "d")
+
+                # Cross-check with suit template matching (high margin only).
+                # Reliably corrects red suits (h↔d, margin ~0.4).
+                tmpl_suit = _suit_template_match(suit_card, is_red)
+                if tmpl_suit and tmpl_suit != suit:
+                    suit = tmpl_suit
+
+                # For black suits: use width-profile of the mini suit symbol.
+                # Spade ♠ = narrow at top (point), wide at bottom (belly).
+                # Club ♣ = wide at top (lobes), narrower at bottom.
+                # Measures top-third / bottom-third width ratio in the suit
+                # symbol area at the bottom of the card.
+                if not is_red and suit in ("s", "c"):
+                    h_sc, w_sc = suit_card.shape[:2]
+                    suit_bot = suit_card[int(h_sc * 0.72):int(h_sc * 0.95),
+                                         int(w_sc * 0.08):int(w_sc * 0.48)]
+                    if suit_bot.size > 0 and h_sc >= 55:
+                        sb_up = cv2.resize(suit_bot, None, fx=10, fy=10,
+                                           interpolation=cv2.INTER_CUBIC)
+                        sb_gray = cv2.cvtColor(sb_up, cv2.COLOR_BGR2GRAY)
+                        _, sb_bin = cv2.threshold(
+                            sb_gray, 110, 255, cv2.THRESH_BINARY_INV)
+                        sb_h = sb_bin.shape[0]
+                        if sb_h > 9:
+                            top3 = sum(
+                                np.sum(sb_bin[r] > 0)
+                                for r in range(sb_h // 3)
+                            ) / max(1, sb_h // 3)
+                            bot3 = sum(
+                                np.sum(sb_bin[r] > 0)
+                                for r in range(2 * sb_h // 3, sb_h)
+                            ) / max(1, sb_h // 3)
+                            if bot3 > 0:
+                                wp_ratio = top3 / bot3
+                                if wp_ratio < 0.3:
+                                    suit = "s"  # spade: narrow top
+                                elif wp_ratio > 2.0:
+                                    suit = "c"  # club: wide top
+
         if rank:
             results.append(f"{rank}{suit}")
             rank_confs.append(rank_conf)
@@ -485,16 +548,32 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     ch, cw_up = card_up.shape[:2]
     rh = int(ch * 0.50)
     rw = int(cw_up * 0.60)
+    rank_crop_rank = None
     if rh > 10 and rw > 10:
         rank_crop = card_up[0:rh, 0:rw]
-        rank = _extract_rank(ocr_full_image(rank_crop))
-        if rank:
-            return rank, 0.9
+        rank_crop_ocr = ocr_full_image(rank_crop)
+        rank_crop_rank = _extract_rank(rank_crop_ocr)
 
     # Attempt 2: OCR on upscaled full card (0.85)
-    rank = _extract_rank(ocr_full_image(card_up))
-    if rank:
-        return rank, 0.85
+    full_card_ocr = ocr_full_image(card_up)
+    full_card_rank = _extract_rank(full_card_ocr)
+    full_card_conf = max((r.get("conf", 0) for r in full_card_ocr), default=0)
+
+    # Resolve Q vs 9 ambiguity: rank crop reads "0"→Q but full card reads "9".
+    # Only trust full card when its confidence is high (>0.8) — for actual 9,
+    # full card reads "9" with ~1.0 conf; for actual Q, it reads "9" with ~0.3.
+    if rank_crop_rank and full_card_rank:
+        if rank_crop_rank == full_card_rank:
+            return rank_crop_rank, 0.9
+        if (rank_crop_rank == "Q" and full_card_rank == "9"
+                and full_card_conf > 0.8):
+            return "9", 0.85
+        # Other disagreements: trust rank crop (more focused)
+        return rank_crop_rank, 0.85
+    if rank_crop_rank:
+        return rank_crop_rank, 0.9
+    if full_card_rank:
+        return full_card_rank, 0.85
 
     # Attempt 3: Inverted binary on rank crop (0.7)
     if rh > 10 and rw > 10:
@@ -567,6 +646,57 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     return None, 0.0
 
 
+def _suit_template_match(card_img: np.ndarray, is_red: bool,
+                         min_margin: float = 0.25) -> str | None:
+    """Determine suit via template matching on the mini suit symbol.
+
+    Matches the suit crop region (below rank, top-left of card) against
+    suit templates, restricted to the correct color (red: h/d, black: s/c).
+    Returns the best-matching suit or None if inconclusive.
+    """
+    h, w = card_img.shape[:2]
+    scale = max(3, 360 // max(h, 1))
+    scale = min(scale, 8)
+    up = cv2.resize(card_img, None, fx=scale, fy=scale,
+                    interpolation=cv2.INTER_CUBIC)
+    uh, uw = up.shape[:2]
+    # Suit symbol region: below rank character
+    suit_crop = up[int(uh * 0.30):int(uh * 0.65), 0:int(uw * 0.55)]
+    if suit_crop.size == 0:
+        return None
+    gray = cv2.cvtColor(suit_crop, cv2.COLOR_BGR2GRAY)
+    sh, sw = suit_crop.shape[:2]
+    if sh < 5 or sw < 5:
+        return None
+
+    matcher = _get_matcher()
+    candidates = ("h", "d") if is_red else ("s", "c")
+    scores = {}
+    for sname in candidates:
+        tmpl = matcher.suit_templates.get(sname)
+        if tmpl is None:
+            continue
+        resized = cv2.resize(tmpl, (sw, sh))
+        gt = (cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+              if len(resized.shape) == 3 else resized)
+        result = cv2.matchTemplate(gray, gt, cv2.TM_CCOEFF_NORMED)
+        scores[sname] = result.max()
+
+    if not scores:
+        return None
+    best = max(scores, key=scores.get)
+    second = min(scores, key=scores.get)
+    margin = scores[best] - scores[second]
+    # Require strong margin to avoid false positives.
+    # Genuine corrections show large margin (e.g., d=0.35 vs h=-0.09 = 0.44).
+    # False corrections show small margin (e.g., d=0.35 vs h=0.30 = 0.05).
+    if margin < min_margin:
+        return None
+    if scores[best] < 0.10:
+        return None
+    return best
+
+
 def _detect_suit_bgr(card_img: np.ndarray) -> str:
     """Detect suit by analyzing BGR color of dark (ink) pixels on the card.
 
@@ -585,7 +715,21 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
 
     gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
     _, dark_mask = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
-    dark_pixels = sample[dark_mask > 0]
+
+    # Filter to card-ink pixels: dark pixels near bright card face.
+    # On dark tables, table background pixels (dark green) contaminate
+    # the sample and dilute red ink colors. Mask to dark pixels that
+    # are adjacent to bright (card face) pixels.
+    _, bright_mask = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
+    card_ink_mask = cv2.bitwise_and(
+        dark_mask, cv2.dilate(bright_mask, None, iterations=3))
+    card_ink_pixels = sample[card_ink_mask > 0]
+
+    # Use card-ink pixels if enough; fall back to all dark pixels
+    if len(card_ink_pixels) >= 5:
+        dark_pixels = card_ink_pixels
+    else:
+        dark_pixels = sample[dark_mask > 0]
 
     if len(dark_pixels) < 5:
         return "s"
