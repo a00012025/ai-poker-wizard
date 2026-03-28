@@ -872,9 +872,13 @@ def _action_label(code: str, spot_solution: dict) -> str:
     if code == "RAI":
         return "All-in"
 
-    # Determine if this is preflop (raise) or postflop (bet)
+    # Determine verb: "raise" if facing a bet (fold/call available), else "bet"
     street = spot_solution.get("game", {}).get("current_street", {}).get("type", "")
     is_preflop = street.lower() == "preflop"
+    has_fold_or_call = any(
+        s["action"]["code"] in ("F", "C")
+        for s in spot_solution.get("action_solutions", []))
+    is_raise = is_preflop or has_fold_or_call
 
     # Look up betsize from action_solutions
     for sol in spot_solution["action_solutions"]:
@@ -883,14 +887,14 @@ def _action_label(code: str, spot_solution: dict) -> str:
             if act.get("allin"):
                 return f"All-in {act['betsize']}"
             pct = float(act.get("betsize_by_pot", 0)) * 100
-            verb = "RAISE" if is_preflop else "Bet"
+            verb = "RAISE" if is_raise else "Bet"
             return f"{verb} {act['betsize']}（{pct:.0f}% pot）"
 
     return code
 
 
 def _action_label_short(code: str, spot_solution: dict, street: str = "") -> str:
-    """Short action label for compact hints, e.g. 'bet 20% pot', 'check'."""
+    """Short action label for compact hints, e.g. 'bet 20% pot', 'raise 55% pot'."""
     if code == "X":
         return "check"
     if code == "F":
@@ -899,13 +903,18 @@ def _action_label_short(code: str, spot_solution: dict, street: str = "") -> str
         return "call"
     if code == "RAI":
         return "all-in"
+    # "raise" if preflop or facing a bet (fold/call available)
+    has_fold_or_call = any(
+        s["action"]["code"] in ("F", "C")
+        for s in spot_solution.get("action_solutions", []))
+    is_raise = street == "preflop" or has_fold_or_call
     for sol in spot_solution.get("action_solutions", []):
         if sol["action"]["code"] == code:
             act = sol["action"]
             if act.get("allin"):
                 return "all-in"
             pct = float(act.get("betsize_by_pot", 0)) * 100
-            verb = "raise" if street == "preflop" else "bet"
+            verb = "raise" if is_raise else "bet"
             if pct > 0:
                 return f"{verb} {pct:.0f}% pot"
             return verb

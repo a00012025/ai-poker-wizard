@@ -1454,7 +1454,10 @@ def _run_analysis(hand: dict) -> dict:
                         elif act.get("allin"):
                             hero_action_short = "all-in"
                         else:
-                            verb = "raise" if spot["street"] == "preflop" else "bet"
+                            # "raise" if preflop or facing a bet
+                            has_fc = any(a["action"]["code"] in ("F", "C")
+                                         for a in sol.get("action_solutions", []))
+                            verb = "raise" if (spot["street"] == "preflop" or has_fc) else "bet"
                             pct = float(act.get("betsize_by_pot", 0)) * 100
                             if pct > 0:
                                 hero_action_short = f"{verb} {pct:.0f}% pot"

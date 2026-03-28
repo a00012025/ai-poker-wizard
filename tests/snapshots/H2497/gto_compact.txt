@@ -1,33 +1,23 @@
 ♠ BB Q7o | 16bb MTT
 
 ─── Preflop ───
-✅ Call (100%)
+GTO: Call 100%
 
 ─── Flop: 9sQsJc ───
 🎯 頂對 (Q)
-✅ Check (100%)
-
-Hero check → ✅
-✅ Call (99%)
-⚠️ Bet 4.8（33% pot） (1%)
-
-Hero bet → ✅
+GTO: Check 100%
+→ Hero check ✅
+GTO: Call 99%
+→ Hero raise 33% pot ❌ (GTO建議 call)
 
 ─── Turn: As ───
 🎯 中對 (Q)
-✅ Check (96%)
-⚠️ Bet 3（20% pot） (4%)
-
-Hero check → ✅
+GTO: Check 95%
+→ Hero check ✅
 
 ─── River: 3s ───
 🎯 中對 (Q)
-✅ All-in (58%)
-⚠️ Check (42%)
-
-Hero check → ✅
-✅ Call (87%)
-⚠️ All-in (13%)
-⚠️ Fold (0%)
-
-Hero call → ✅
+GTO: Check 100%
+→ Hero check ✅
+GTO: Call 87% / All-in 13%
+→ Hero call ✅

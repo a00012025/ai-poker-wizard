@@ -45,7 +45,7 @@ Hero KQo 牌型: 兩對 (K, Q)
   EV: 37.06bb | Equity: 85.2%
   策略:
     Call: 93.4%（6.5 combos） EV 37.07bb
-    Bet 16.4（33% pot）: 6.6%（0.5 combos） EV 37.05bb
+    RAISE 16.4（33% pot）: 6.6%（0.5 combos） EV 37.05bb
   → 實際行動: CO C 7.5bb（solver code: C）
 
 
