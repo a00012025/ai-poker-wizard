@@ -904,7 +904,7 @@ class PokerWizardBot:
         """Run the bot (blocking — manages its own event loop)."""
         app = self.setup_handlers(post_init=post_init, post_shutdown=post_shutdown)
         self.log.info(f"Bot starting — model={self.session_manager.model}, max_turns={self.session_manager.max_turns}")
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=False)
 
 
 def _format_for_telegram(text: str) -> str:
