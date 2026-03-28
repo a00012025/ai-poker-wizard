@@ -700,35 +700,45 @@ def format_full_spot(spot_solution: dict, hero_hand: str = None, hero_position: 
 
 
 def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str,
-                        min_freq: float = 0.05) -> str:
+                        min_freq: float = 0.05, combo_idx: int | None = None) -> str:
     """Format compact GTO line: one line with actions ≥ min_freq.
+
+    For postflop, pass combo_idx to get combo-specific frequencies instead of
+    aggregate hand frequencies (e.g., Ks9s vs K9s average which includes Kc9c).
 
     Output example:
         GTO: Raise 68% / Call 32%
         GTO: Bet 20% pot 97%
     """
-    hand_name = normalize_hand_name(hero_hand)
-    player_info = None
-    for pi in spot_solution["players_info"]:
-        if pi["player"]["position"] == hero_position:
-            player_info = pi
-            break
+    action_solutions = spot_solution.get("action_solutions", [])
+    actions_freq = None
 
-    if not player_info:
-        return ""
+    # Postflop: use combo-specific frequencies from 1326-strategy arrays
+    if combo_idx is not None and action_solutions and "strategy" in action_solutions[0]:
+        combo_freq = {}
+        for asol in action_solutions:
+            freq = asol["strategy"][combo_idx]
+            if freq > 0.005:
+                combo_freq[asol["action"]["code"]] = freq
+        if combo_freq:
+            actions_freq = combo_freq
 
-    shc = player_info.get("simple_hand_counters", {})
-    hand_data = shc.get(hand_name)
-
-    # Fall back to range-level frequencies if hero hand not in range
-    if hand_data:
-        actions_freq = hand_data.get("actions_total_frequencies", {})
-    else:
-        actions_freq = None
+    # Fallback: aggregate hand-level frequencies
+    if actions_freq is None:
+        hand_name = normalize_hand_name(hero_hand)
+        player_info = None
+        for pi in spot_solution["players_info"]:
+            if pi["player"]["position"] == hero_position:
+                player_info = pi
+                break
+        if not player_info:
+            return ""
+        shc = player_info.get("simple_hand_counters", {})
+        hand_data = shc.get(hand_name)
+        if hand_data:
+            actions_freq = hand_data.get("actions_total_frequencies", {})
 
     parts = []
-    action_solutions = spot_solution.get("action_solutions", [])
-
     if actions_freq:
         sorted_actions = sorted(actions_freq.items(), key=lambda x: -x[1])
         for code, freq in sorted_actions:

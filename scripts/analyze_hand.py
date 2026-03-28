@@ -1407,7 +1407,11 @@ def _run_analysis(hand: dict) -> dict:
 
         if sol:
             # When no hero hand, use sentinel to force range-level frequencies
-            spot_compact = format_spot_compact(sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos)
+            # For postflop, pass combo_idx for combo-specific frequencies
+            pf_spot = spot["street"] == "preflop"
+            cidx = None if (pf_spot or no_hero_hand) else hero_combo_idx
+            spot_compact = format_spot_compact(sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos,
+                                               combo_idx=cidx)
             if spot_compact:
                 compact.append(spot_compact)
 
@@ -1438,24 +1442,38 @@ def _run_analysis(hand: dict) -> dict:
                                 hero_action_short = verb
                         break
 
-                # Find GTO top action for sizing comparison
+                # Find GTO top action for sizing/deviation comparison.
+                # Use combo-specific frequencies for postflop (not aggregate).
                 gto_top_label = ""
                 gto_top_freq = 0.0
-                hand_name = normalize_hand_name(hero_hand)
-                for pi in sol.get("players_info", []):
-                    if pi["player"]["position"] != hero_pos:
-                        continue
-                    shc = pi.get("simple_hand_counters", {})
-                    hd = shc.get(hand_name)
-                    if hd:
-                        af = hd.get("actions_total_frequencies", {})
-                        if af:
-                            top_code = max(af, key=af.get)
-                            gto_top_freq = af[top_code]
-                            if top_code != taken_code:
-                                gto_top_label = _action_label_short(
-                                    top_code, sol, spot["street"])
-                    break
+                combo_freq = None
+                if not is_pf and hero_combo_idx is not None:
+                    action_sols = sol.get("action_solutions", [])
+                    if action_sols and "strategy" in action_sols[0]:
+                        combo_freq = {}
+                        for asol in action_sols:
+                            f = asol["strategy"][hero_combo_idx]
+                            if f > 0.005:
+                                combo_freq[asol["action"]["code"]] = f
+                if combo_freq:
+                    af = combo_freq
+                else:
+                    af = None
+                    hand_name = normalize_hand_name(hero_hand)
+                    for pi in sol.get("players_info", []):
+                        if pi["player"]["position"] != hero_pos:
+                            continue
+                        shc = pi.get("simple_hand_counters", {})
+                        hd = shc.get(hand_name)
+                        if hd:
+                            af = hd.get("actions_total_frequencies", {})
+                        break
+                if af:
+                    top_code = max(af, key=af.get)
+                    gto_top_freq = af[top_code]
+                    if top_code != taken_code:
+                        gto_top_label = _action_label_short(
+                            top_code, sol, spot["street"])
 
                 # Check EV loss
                 is_pf = spot["street"] == "preflop"
