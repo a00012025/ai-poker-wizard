@@ -357,10 +357,11 @@ class PokerWizardBot:
 
         t0 = time.time()
         try:
-            response = await self.session_manager.send_message(
-                chat_id, user_text, on_status=_on_status,
-                user_id=user_id, refresh_token=refresh_token,
-            )
+            async with _TypingLoop(update.message.chat):
+                response = await self.session_manager.send_message(
+                    chat_id, user_text, on_status=_on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                )
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
 
@@ -390,8 +391,6 @@ class PokerWizardBot:
         label = self._user_label(update)
         hand_id = hand["hand_id"]
 
-        await update.message.chat.send_action(action="typing")
-
         # Require user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
         if not refresh_token:
@@ -399,6 +398,8 @@ class PokerWizardBot:
             return
 
         t0 = time.time()
+        _typing = _TypingLoop(update.message.chat)
+        await _typing.__aenter__()
         try:
             # Build analyze_hand_full input from parsed HH hand
             analysis_input = {
@@ -481,6 +482,8 @@ class PokerWizardBot:
                 return
             self.log.error(f"[{label}] HH follow-up error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 分析 {hand_id} 時發生錯誤：{e}")
+        finally:
+            await _typing.__aexit__(None, None, None)
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
@@ -548,16 +551,17 @@ class PokerWizardBot:
                 await _send_reply(update.message, text, self.log, label)
                 gto_sent = True
 
-            response = await self.session_manager.send_image_message(
-                chat_id=update.effective_chat.id,
-                image_bytes=image_bytes,
-                mime_type="image/jpeg",
-                user_text=caption,
-                status_callback=status_msg.edit_text,
-                send_gto_callback=send_gto_summary,
-                user_id=user_id,
-                refresh_token=refresh_token,
-            )
+            async with _TypingLoop(update.message.chat):
+                response = await self.session_manager.send_image_message(
+                    chat_id=update.effective_chat.id,
+                    image_bytes=image_bytes,
+                    mime_type="image/jpeg",
+                    user_text=caption,
+                    status_callback=status_msg.edit_text,
+                    send_gto_callback=send_gto_summary,
+                    user_id=user_id,
+                    refresh_token=refresh_token,
+                )
 
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Photo response OK ({elapsed:.1f}s)")
@@ -969,6 +973,34 @@ async def _tg_retry(coro_fn, retries=3, label="tg_retry", log=None):
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
     raise last_exc
+
+
+class _TypingLoop:
+    """Send 'typing' action every 4s until stopped. Use as async context manager."""
+
+    def __init__(self, chat):
+        self._chat = chat
+        self._task = None
+
+    async def __aenter__(self):
+        self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _loop(self):
+        while True:
+            try:
+                await self._chat.send_action(action="typing")
+            except Exception:
+                pass
+            await asyncio.sleep(4)
 
 
 class _ResilientStatus:
