@@ -699,12 +699,13 @@ def format_full_spot(spot_solution: dict, hero_hand: str = None, hero_position: 
     return "\n".join(parts)
 
 
-def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str) -> str:
-    """Format compact spot: only hero's recommended actions with frequencies.
+def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str,
+                        min_freq: float = 0.05) -> str:
+    """Format compact GTO line: one line with actions ≥ min_freq.
 
     Output example:
-        ✅ Bet 33% pot (72%)
-        ⚠️ Check (28%)
+        GTO: Raise 68% / Call 32%
+        GTO: Bet 20% pot 97%
     """
     hand_name = normalize_hand_name(hero_hand)
     player_info = None
@@ -725,33 +726,28 @@ def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str)
     else:
         actions_freq = None
 
-    lines = []
+    parts = []
     action_solutions = spot_solution.get("action_solutions", [])
 
-    # Sort by frequency descending; first action gets ✅, rest get ⚠️
     if actions_freq:
         sorted_actions = sorted(actions_freq.items(), key=lambda x: -x[1])
-        first = True
         for code, freq in sorted_actions:
-            if freq < 0.001:
+            if freq < min_freq:
                 continue
             label = _action_label(code, spot_solution)
-            marker = "✅" if first else "⚠️"
-            first = False
-            lines.append(f"{marker} {label} ({freq*100:.0f}%)")
+            parts.append(f"{label} {freq*100:.0f}%")
     else:
-        first = True
         for sol in sorted(action_solutions, key=lambda s: -s["total_frequency"]):
             freq = sol["total_frequency"]
-            if freq < 0.001:
+            if freq < min_freq:
                 continue
             code = sol["action"]["code"]
             label = _action_label(code, spot_solution)
-            marker = "✅" if first else "⚠️"
-            first = False
-            lines.append(f"{marker} {label} ({freq*100:.0f}%)")
+            parts.append(f"{label} {freq*100:.0f}%")
 
-    return "\n".join(lines)
+    if not parts:
+        return ""
+    return "GTO: " + " / ".join(parts)
 
 
 def _get_per_action_evs(spot_solution: dict, hand_name: str, position: str) -> dict[str, float] | None:
@@ -880,4 +876,27 @@ def _action_label(code: str, spot_solution: dict) -> str:
             verb = "RAISE" if is_preflop else "Bet"
             return f"{verb} {act['betsize']}（{pct:.0f}% pot）"
 
+    return code
+
+
+def _action_label_short(code: str, spot_solution: dict, street: str = "") -> str:
+    """Short action label for compact hints, e.g. 'bet 20% pot', 'check'."""
+    if code == "X":
+        return "check"
+    if code == "F":
+        return "fold"
+    if code == "C":
+        return "call"
+    if code == "RAI":
+        return "all-in"
+    for sol in spot_solution.get("action_solutions", []):
+        if sol["action"]["code"] == code:
+            act = sol["action"]
+            if act.get("allin"):
+                return "all-in"
+            pct = float(act.get("betsize_by_pot", 0)) * 100
+            verb = "raise" if street == "preflop" else "bet"
+            if pct > 0:
+                return f"{verb} {pct:.0f}% pot"
+            return verb
     return code

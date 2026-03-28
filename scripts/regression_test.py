@@ -2677,7 +2677,7 @@ def test_compact_format_preflop():
     assert_in("♠ CO 66", compact, "compact should have header with position and hand")
     assert_in("30bb", compact, "compact should show effective bb")
     assert_in("─── Preflop ───", compact, "compact should have street separator")
-    assert_in("✅", compact, "compact should have checkmark for GTO action")
+    assert_in("GTO:", compact, "compact should have GTO action line")
     assert_true("combos" not in compact.lower(), "compact should not show combos")
     assert_true("底池" not in compact, "compact should not show pot size")
 
@@ -2722,8 +2722,8 @@ def test_compact_format_spot_compact():
     if sol is None:
         return  # API unavailable, skip
     compact = format_spot_compact(sol, "66", "CO")
-    assert_in("✅", compact, "should have primary action marker")
-    assert_in("%)", compact, "should show frequency percentage")
+    assert_in("GTO:", compact, "should start with GTO: prefix")
+    assert_in("%", compact, "should show frequency percentage")
     assert_true("combos" not in compact.lower(), "should not show combos count")
 
 

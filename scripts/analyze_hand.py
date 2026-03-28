@@ -1365,7 +1365,7 @@ def _run_analysis(hand: dict) -> dict:
     results.append(f"⏱ Discovery: {t_phase1 - t0:.1f}s | Analysis: {t_phase2 - t_phase1:.1f}s | Total: {t_phase2 - t0:.1f}s")
 
     # ── Phase 3b: Build compact output for user-facing GTO summary ──
-    from gto_formatter import format_spot_compact
+    from gto_formatter import format_spot_compact, _action_label, _action_label_short
 
     # Compact header
     eff = hand.get("effective_bb", "")
@@ -1379,7 +1379,8 @@ def _run_analysis(hand: dict) -> dict:
     compact_hero = f"♠ {hero_pos} | {eff_str} {mode_str}" if no_hero_hand else f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"
     compact = [compact_hero]
     if multiway_note:
-        compact.append(f"⚠ {multiway_note}")
+        # multiway_note already starts with ⚠ — don't double it
+        compact.append(multiway_note if multiway_note.startswith("⚠") else f"⚠ {multiway_note}")
     if gto_line_note:
         compact.append(gto_line_note)
 
@@ -1413,10 +1414,9 @@ def _run_analysis(hand: dict) -> dict:
             # Hero result line — skip when no hero hand
             taken_code = spot.get("taken_code")
             if taken_code and not no_hero_hand:
-                # Determine what hero did
-                action_desc_raw = spot.get("action_desc", "")
-                # Extract the action type from "→ 實際行動: POS action..."
+                # Build hero action label with sizing
                 hero_action_short = taken_code
+                hero_sizing_pct = ""
                 for asol in sol.get("action_solutions", []):
                     if asol["action"]["code"] == taken_code:
                         act = asol["action"]
@@ -1429,8 +1429,32 @@ def _run_analysis(hand: dict) -> dict:
                         elif act.get("allin"):
                             hero_action_short = "all-in"
                         else:
-                            hero_action_short = f"{'raise' if spot['street'] == 'preflop' else 'bet'}"
+                            verb = "raise" if spot["street"] == "preflop" else "bet"
+                            pct = float(act.get("betsize_by_pot", 0)) * 100
+                            if pct > 0:
+                                hero_action_short = f"{verb} {pct:.0f}% pot"
+                                hero_sizing_pct = f"{pct:.0f}%"
+                            else:
+                                hero_action_short = verb
                         break
+
+                # Find GTO top action for sizing comparison
+                gto_top_label = ""
+                hand_name = normalize_hand_name(hero_hand)
+                for pi in sol.get("players_info", []):
+                    if pi["player"]["position"] != hero_pos:
+                        continue
+                    shc = pi.get("simple_hand_counters", {})
+                    hd = shc.get(hand_name)
+                    if hd:
+                        af = hd.get("actions_total_frequencies", {})
+                        if af:
+                            top_code = max(af, key=af.get)
+                            if top_code != taken_code:
+                                # Build short label for hint
+                                gto_top_label = _action_label_short(
+                                    top_code, sol, spot["street"])
+                    break
 
                 # Check EV loss
                 is_pf = spot["street"] == "preflop"
@@ -1438,17 +1462,16 @@ def _run_analysis(hand: dict) -> dict:
                     sol, taken_code, hero_hand, hero_pos,
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
+                sizing_hint = f" (GTO建議 {gto_top_label})" if gto_top_label else ""
                 if ev_note:
-                    # Extract just the EV loss number from "⚠ EV 損失 X.XXbb（...）"
                     m = re.search(r"EV 損失 ([\d.]+)bb", ev_note)
                     ev_loss = float(m.group(1)) if m else 0
                     if ev_loss >= 0.5:
-                        compact.append(f"\nHero {hero_action_short} → ❌ EV損失 -{ev_loss:.1f}bb")
+                        compact.append(f"→ Hero {hero_action_short} ❌ EV損失 -{ev_loss:.1f}bb{sizing_hint}")
                     else:
-                        # Tiny EV loss (<0.5bb) — treat as correct
-                        compact.append(f"\nHero {hero_action_short} → ✅")
+                        compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
                 else:
-                    compact.append(f"\nHero {hero_action_short} → ✅")
+                    compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
         else:
             compact.append("（無 solver 數據）")
 
