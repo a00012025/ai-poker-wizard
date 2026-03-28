@@ -918,6 +918,27 @@ def _run_analysis(hand: dict) -> dict:
                     turn_acts = "X-X"
             continue
 
+        # Infer missing hero call: if an opponent bet/raised but hero didn't
+        # respond, hero must have called (LLM sometimes omits hero's calls).
+        # On non-final streets: hand continues → hero called.
+        # On final street: opponent bet and hero is still in → assume call
+        # to show GTO data for the decision point.
+        acts = street["actions"]
+        if acts:
+            last_act = acts[-1]
+            last_pos = last_act["position"]
+            last_type = last_act["action"]
+            hero_acted = any(a["position"] == hero_pos for a in acts)
+            if (last_pos != hero_pos
+                    and last_type not in ("X", "F")
+                    and not hero_acted):
+                inferred_size = last_act.get("size", 0)
+                acts.append({
+                    "position": hero_pos,
+                    "action": "C",
+                    "size": inferred_size,
+                })
+
         # Snapshot state at start of this street (before actions)
         street_states[street_name] = {
             "board": board,
