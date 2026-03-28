@@ -1432,8 +1432,9 @@ def _run_analysis(hand: dict) -> dict:
             spot_text = format_full_spot(sol, None if no_hero_hand else hero_hand, hero_pos)
             results.append(spot_text)
 
-            # For ICM preflop spots, include full range breakdown to prevent hallucination
-            if is_icm and spot["street"] == "preflop":
+            # Include full range breakdown for preflop when no hero hand specified
+            # or ICM — prevents Gemini from fabricating range compositions
+            if spot["street"] == "preflop" and (is_icm or no_hero_hand):
                 from gto_formatter import format_range_by_action
                 range_text = format_range_by_action(sol, hero_pos)
                 if range_text:
