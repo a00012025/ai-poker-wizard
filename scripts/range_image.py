@@ -30,7 +30,8 @@ def _hand_name(row: int, col: int) -> str:
 
 
 # Action colors (RGB)
-COLOR_FOLD = (40, 60, 90)       # dark blue
+COLOR_FOLD = (40, 60, 100)      # dark blue
+COLOR_NOT_IN_RANGE = (50, 50, 50)  # dark gray — hand not in range at all
 COLOR_CALL = (34, 139, 34)      # forest green
 COLOR_RAISE = (220, 140, 30)    # orange
 COLOR_BIG_RAISE = (200, 40, 40) # red
@@ -149,8 +150,8 @@ def generate_range_grid(spot_solution: dict, position: str,
 
             hand_data = shc.get(hand)
             if not hand_data:
-                # Not in range at all — dark cell
-                draw.rectangle([x0, y0, x0 + CELL, y0 + CELL], fill=COLOR_FOLD)
+                # Not in range at all — gray cell
+                draw.rectangle([x0, y0, x0 + CELL, y0 + CELL], fill=COLOR_NOT_IN_RANGE)
                 draw.text((x0 + CELL // 2, y0 + CELL // 2), hand,
                           fill=COLOR_TEXT_DIM, font=small_font, anchor="mm")
                 continue
@@ -159,7 +160,7 @@ def generate_range_grid(spot_solution: dict, position: str,
             categories = _classify_actions(actions_freq, action_solutions)
 
             if not categories:
-                draw.rectangle([x0, y0, x0 + CELL, y0 + CELL], fill=COLOR_FOLD)
+                draw.rectangle([x0, y0, x0 + CELL, y0 + CELL], fill=COLOR_NOT_IN_RANGE)
                 draw.text((x0 + CELL // 2, y0 + CELL // 2), hand,
                           fill=COLOR_TEXT_DIM, font=small_font, anchor="mm")
                 continue
@@ -192,6 +193,7 @@ def generate_range_grid(spot_solution: dict, position: str,
         ("Call", COLOR_CALL),
         ("Raise", COLOR_RAISE),
         ("Big Raise/AI", COLOR_BIG_RAISE),
+        ("N/A", COLOR_NOT_IN_RANGE),
     ]
     lx = HEADER
     for label, color in legend_items:
