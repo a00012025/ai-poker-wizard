@@ -470,7 +470,7 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                             ) / max(1, sb_h // 3)
                             if bot3 > 0:
                                 wp_ratio = top3 / bot3
-                                if wp_ratio < 0.3:
+                                if wp_ratio < 0.40:
                                     suit = "s"  # spade: narrow top
                                 elif wp_ratio > 2.0:
                                     suit = "c"  # club: wide top
@@ -565,10 +565,12 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     if rank_crop_rank and full_card_rank:
         if rank_crop_rank == full_card_rank:
             return rank_crop_rank, 0.9
-        if (rank_crop_rank == "Q" and full_card_rank == "9"
-                and full_card_conf > 0.8):
-            return "9", 0.85
-        # Other disagreements: trust rank crop (more focused)
+        # Disagreement: trust full card only when confidence is near-perfect
+        # (>0.999). Full card OCR can be wrong at 0.98 (e.g., A→4 on H2494).
+        # Only truly correct full-card reads reach ~1.0 (e.g., 4→4, 9→9).
+        if full_card_conf > 0.999:
+            return full_card_rank, 0.85
+        # Lower confidence: trust rank crop (more focused)
         return rank_crop_rank, 0.85
     if rank_crop_rank:
         return rank_crop_rank, 0.9
