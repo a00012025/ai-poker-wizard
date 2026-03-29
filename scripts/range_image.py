@@ -30,9 +30,9 @@ def _hand_name(row: int, col: int) -> str:
 
 
 # Action colors (RGB)
-COLOR_FOLD = (60, 60, 60)       # dark gray
+COLOR_FOLD = (40, 60, 90)       # dark blue
 COLOR_CALL = (34, 139, 34)      # forest green
-COLOR_RAISE = (30, 100, 200)    # blue
+COLOR_RAISE = (220, 140, 30)    # orange
 COLOR_BIG_RAISE = (200, 40, 40) # red
 COLOR_BG = (25, 25, 25)         # background
 COLOR_TEXT = (255, 255, 255)     # white text
