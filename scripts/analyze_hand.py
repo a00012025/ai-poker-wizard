@@ -1438,6 +1438,9 @@ def _run_analysis(hand: dict) -> dict:
             if raw_code.startswith("AI") and norm_code == "RAI":
                 # Any all-in → solver all-in is the same thing, not a real correction
                 continue
+            if raw_code == "C" and norm_code == "X":
+                # BB call closing preflop = check in solver — same thing
+                continue
             elif raw_code.startswith("AI") and raw_code != "AI":
                 size = raw_code[2:]
                 corrections.append(f"{pos_name} all-in {size}bb → 近似為 raise {norm_code}")

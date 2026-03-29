@@ -2183,23 +2183,22 @@ class GeminiSessionManager:
 
         result_text = self._format_solution(solution, position, hand)
 
-        # TODO: re-enable when ready
-        # # Queue range grid image when querying a position's range (no specific hand)
-        # if position and not hand:
-        #     try:
-        #         from range_image import generate_range_grid
-        #         game = solution.get("game", {})
-        #         st = game.get("current_street", {}).get("type", "").capitalize()
-        #         board = game.get("board", "")
-        #         title = f"{position} {st}"
-        #         if board:
-        #             title += f" | {board}"
-        #         img = generate_range_grid(solution, position, title=title)
-        #         if chat_id not in self.pending_images:
-        #             self.pending_images[chat_id] = []
-        #         self.pending_images[chat_id].append((img, f"📊 {title}"))
-        #     except Exception:
-        #         pass  # non-critical
+        # Queue range grid image when querying a position's range (no specific hand)
+        if position and not hand:
+            try:
+                from range_image import generate_range_grid
+                game = solution.get("game", {})
+                st = game.get("current_street", {}).get("type", "").capitalize()
+                board = game.get("board", "")
+                title = f"{position} {st}"
+                if board:
+                    title += f" | {board}"
+                img = generate_range_grid(solution, position, title=title)
+                if chat_id not in self.pending_images:
+                    self.pending_images[chat_id] = []
+                self.pending_images[chat_id].append((img, f"📊 {title}"))
+            except Exception:
+                pass  # non-critical
 
         return result_text
 
