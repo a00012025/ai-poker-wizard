@@ -1091,6 +1091,52 @@ def _run_analysis(hand: dict) -> dict:
                 all_in_resolved = True
             _prev_allin = taken_code == "RAI" or action_type.startswith("AI")
 
+    # ── Phase 1.5: Create hero spot at current decision point ──
+    # When the hand ends with opponent action and it's hero's turn to act
+    # (e.g., BB checks on turn, hero hasn't acted yet), create a hero spot
+    # so the user sees GTO strategy for the current decision.
+    if streets and not all_in_resolved:
+        last_street = streets[-1]
+        last_acts = last_street.get("actions", [])
+        if last_acts:
+            last_pos = last_acts[-1]["position"]
+            hero_acted_last_street = any(
+                a["position"] == hero_pos for a in last_acts)
+            if last_pos != hero_pos and not hero_acted_last_street:
+                # Hero hasn't acted — create spot at current decision
+                last_street_idx = len(streets) - 1
+                street_name = (["flop", "turn", "river"]
+                               [last_street_idx] if last_street_idx < 3
+                               else f"street{last_street_idx}")
+                post_gametype = chipev_gametype if is_icm else gametype
+                post_depth = chipev_depth if is_icm else depth
+                post_preflop = chipev_preflop if is_icm else preflop_actions
+                params = dict(gametype=post_gametype, depth=post_depth,
+                              preflop_actions=post_preflop)
+                # Build full board: flop board + turn card + river card
+                full_board = streets[0].get("board", "")
+                for si in range(1, last_street_idx + 1):
+                    full_board += streets[si].get("card", "")
+                params["board"] = full_board
+                params["flop_actions"] = flop_acts
+                if last_street_idx >= 1:
+                    params["turn_actions"] = turn_acts
+                if last_street_idx >= 2:
+                    params["river_actions"] = river_acts
+
+                # Build display card for turn/river
+                display_card = last_street.get("card", "")
+                street_label = (f"{street_name.capitalize()}: "
+                                f"{display_card}" if display_card
+                                else f"{street_name.capitalize()}: {full_board}")
+                hero_spots.append({
+                    "street": street_name,
+                    "header": street_label,
+                    "params": params,
+                    "action_desc": f"→ Hero 的決策點",
+                    "taken_code": None,  # hero hasn't acted
+                })
+
     t_phase1 = time.time()
 
     # ── Phase 2: Fetch all spot solutions in parallel ──
