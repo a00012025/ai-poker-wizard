@@ -647,7 +647,7 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
 
 
 def _suit_template_match(card_img: np.ndarray, is_red: bool,
-                         min_margin: float = 0.25) -> str | None:
+                         min_margin: float = 0.19) -> str | None:
     """Determine suit via template matching on the mini suit symbol.
 
     Matches the suit crop region (below rank, top-left of card) against
