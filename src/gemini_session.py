@@ -2544,6 +2544,22 @@ class GeminiSessionManager:
             acts = final.get(f"{street_name}_actions", "")
             lines.append(f"- {street_name.capitalize()}: board={board} | actions={acts}")
 
+        # Include range breakdown from cached solutions to prevent hallucination.
+        # Gemini tends to fabricate range compositions instead of using tools.
+        from gto_formatter import format_range_by_action
+        hero_pos = ctx.get("hero_position", "")
+        for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
+            if sol is None:
+                continue
+            street = spot.get("street", "")
+            try:
+                rb = format_range_by_action(sol, hero_pos)
+                if rb:
+                    lines.append(f"\n{street.capitalize()} range breakdown:")
+                    lines.append(rb)
+            except Exception:
+                pass
+
         lines.append("")
         lines.append(
             "工具使用指南：\n"
