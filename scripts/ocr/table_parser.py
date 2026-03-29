@@ -401,6 +401,7 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
 
     results = []
     rank_confs = []
+    _wp_spade_flags = []  # track which cards were confirmed ♠ by width-profile
     for card, suit_card in [(card1, suit_card1), (card2, suit_card2)]:
         # When a tighter blob is available (face cards with artwork in tall
         # blob), try rank OCR on it first — the tighter crop excludes card
@@ -413,6 +414,7 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
             rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
         suit = _detect_suit_bgr(suit_card)
 
+        _wp_confirmed = False
         # Cross-check suit for hero cards using multiple signals.
         # Hero cards are small; the center contour analysis in _detect_suit_bgr
         # can pick up wrong shapes.  Use 3-way vote to correct.
@@ -472,9 +474,11 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                 wp_ratio = top3 / bot3
                                 if wp_ratio < 0.40:
                                     suit = "s"  # spade: narrow top
+                                    _wp_confirmed = True
                                 elif wp_ratio > 2.0:
                                     suit = "c"  # club: wide top
 
+        _wp_spade_flags.append(_wp_confirmed)
         if rank:
             results.append(f"{rank}{suit}")
             rank_confs.append(rank_conf)
@@ -483,6 +487,17 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
 
     # Filter out None results
     results = [r for r in results if r is not None]
+
+    # Suit consistency: when one card was confirmed ♠ by width-profile
+    # and the other is ♣, unify to ♠. Only for non-pairs (pairs must
+    # have different suits). Don't unify when neither has width-profile
+    # confirmation — could be legitimate ♠♣ offsuit.
+    if len(results) == 2 and any(_wp_spade_flags):
+        r1, r2 = results[0][:-1], results[1][:-1]
+        s1, s2 = results[0][-1], results[1][-1]
+        if r1 != r2 and {s1, s2} == {"s", "c"}:
+            results = [r[:-1] + "s" for r in results]
+
     # Overall confidence = min of individual card confidences (weakest link)
     card_conf = min(rank_confs) if rank_confs else 0.0
     return results, card_conf
