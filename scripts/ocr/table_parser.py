@@ -470,7 +470,9 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                 np.sum(sb_bin[r] > 0)
                                 for r in range(2 * sb_h // 3, sb_h)
                             ) / max(1, sb_h // 3)
-                            if bot3 > 0:
+                            # Both top3 and bot3 must have meaningful pixels
+                            # to avoid noise (e.g., bot3≈0 → ratio=20+)
+                            if bot3 > 10 and top3 > 10:
                                 wp_ratio = top3 / bot3
                                 if wp_ratio < 0.40:
                                     suit = "s"  # spade: narrow top
