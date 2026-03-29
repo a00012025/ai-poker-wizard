@@ -728,6 +728,31 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     for i, entry in enumerate(action_entries[players_at_table:], players_at_table):
         entry["_is_reaction"] = True
 
+    # If hero was assigned to a FOLD position (false hero marker), look for
+    # the actual hero entry — might be beyond [:players_at_table] due to
+    # duplicate position entries pushing BB's check out of range.
+    if hero_position and hero_index is not None:
+        hero_entry = action_entries[hero_index]
+        hero_action = (hero_entry.get("action") or "").lower()
+        if hero_action == "fold":
+            # Hero can't fold preflop and still appear in postflop — find
+            # the real hero entry (non-fold, with hero marker)
+            for j, entry in enumerate(action_entries):
+                if j == hero_index:
+                    continue
+                if entry["type"] != "hero":
+                    continue
+                act = (entry.get("action") or "").lower()
+                if act != "fold":
+                    # This is the real hero — assign to last position (BB)
+                    # since it's typically a BB check after limps
+                    if j >= players_at_table:
+                        hero_position = pos_order[-1] if pos_order else "BB"
+                    elif j < len(pos_order):
+                        hero_position = pos_order[j]
+                    hero_index = j
+                    break
+
     # Check blinds column for hero position override
     if blinds_col:
         blinds_entries = blinds_col.get("entries", [])
