@@ -550,9 +550,11 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     rw = int(cw_up * 0.60)
     rank_crop_rank = None
     rank_crop_via_zero = False  # True if rank was derived from "0"→Q mapping
+    rank_crop_conf = 0.0
     if rh > 10 and rw > 10:
         rank_crop = card_up[0:rh, 0:rw]
         rank_crop_ocr = ocr_full_image(rank_crop)
+        rank_crop_conf = max((r.get("conf", 0) for r in rank_crop_ocr), default=0)
         # Check if we'd get Q only via 0→Q mapping
         rank_crop_rank = _extract_rank(rank_crop_ocr)
         rank_crop_strict = _extract_rank(rank_crop_ocr, allow_q_from_zero=False)
@@ -572,8 +574,12 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
         # For actual Q, full_card reads "9" with conf <0.35.
         if rank_crop_via_zero and full_card_rank != "Q" and full_card_conf > 0.45:
             return full_card_rank, 0.85
-        # For direct reads (not via mapping), only trust full card at very
-        # high confidence (>0.999) to avoid false corrections (e.g., A→4).
+        # When rank_crop has very low confidence (<0.3), trust full_card.
+        # E.g., rank_crop misreads Q as "10"(conf 0.14) but full_card sees "Q".
+        if rank_crop_conf < 0.3 and full_card_conf > rank_crop_conf:
+            return full_card_rank, 0.85
+        # For direct reads at decent confidence, only trust full card at
+        # very high confidence (>0.999) to avoid false corrections.
         if full_card_conf > 0.999:
             return full_card_rank, 0.85
         return rank_crop_rank, 0.85
