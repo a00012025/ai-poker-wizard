@@ -490,29 +490,32 @@ class PokerWizardBot:
             await _typing.__aexit__(None, None, None)
 
     async def _send_pending_range_images(self, update: Update, chat_id: int, label: str):
-        """Send queued range grid images and auto-generate for no_hero_hand."""
+        """Send at most one range grid image (last street with data)."""
         try:
-            # Auto-generate for no_hero_hand contexts (all streets)
             ctx = self.session_manager.hand_contexts.get(chat_id)
             if ctx and ctx.get("hand", {}).get("no_hero_hand"):
                 hero_pos = ctx.get("hand", {}).get("hero_position", "")
+                # Find the LAST street with solver data
+                last_spot, last_sol = None, None
                 for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
-                    if sol is None:
-                        continue
+                    if sol is not None:
+                        last_spot, last_sol = spot, sol
+                if last_spot and last_sol:
                     from range_image import generate_range_grid
-                    st = spot.get("street", "").capitalize()
-                    params = spot.get("params", {})
-                    board = params.get("board", "")
+                    st = last_spot.get("street", "").capitalize()
+                    board = last_spot.get("params", {}).get("board", "")
                     title = f"{hero_pos} {st}"
                     if board:
                         title += f" | {board}"
-                    img = generate_range_grid(sol, hero_pos, title=title)
+                    img = generate_range_grid(last_sol, hero_pos, title=title)
                     if img:
                         await update.message.reply_photo(photo=img, caption=f"📊 {title}")
 
-            # Send images queued by tool calls (query_gto)
+            # Send queued images from tool calls (currently disabled)
             pending = self.session_manager.pending_images.pop(chat_id, [])
-            for img_bytes, caption in pending:
+            if pending:
+                # Only send the last one
+                img_bytes, caption = pending[-1]
                 await update.message.reply_photo(photo=img_bytes, caption=caption)
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
