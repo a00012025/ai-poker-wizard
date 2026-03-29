@@ -549,28 +549,33 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     rh = int(ch * 0.50)
     rw = int(cw_up * 0.60)
     rank_crop_rank = None
+    rank_crop_via_zero = False  # True if rank was derived from "0"→Q mapping
     if rh > 10 and rw > 10:
         rank_crop = card_up[0:rh, 0:rw]
         rank_crop_ocr = ocr_full_image(rank_crop)
+        # Check if we'd get Q only via 0→Q mapping
         rank_crop_rank = _extract_rank(rank_crop_ocr)
+        rank_crop_strict = _extract_rank(rank_crop_ocr, allow_q_from_zero=False)
+        if rank_crop_rank == "Q" and rank_crop_strict is None:
+            rank_crop_via_zero = True
 
     # Attempt 2: OCR on upscaled full card (0.85)
     full_card_ocr = ocr_full_image(card_up)
     full_card_rank = _extract_rank(full_card_ocr)
     full_card_conf = max((r.get("conf", 0) for r in full_card_ocr), default=0)
 
-    # Resolve Q vs 9 ambiguity: rank crop reads "0"→Q but full card reads "9".
-    # Only trust full card when its confidence is high (>0.8) — for actual 9,
-    # full card reads "9" with ~1.0 conf; for actual Q, it reads "9" with ~0.3.
     if rank_crop_rank and full_card_rank:
         if rank_crop_rank == full_card_rank:
             return rank_crop_rank, 0.9
-        # Disagreement: trust full card only when confidence is near-perfect
-        # (>0.999). Full card OCR can be wrong at 0.98 (e.g., A→4 on H2494).
-        # Only truly correct full-card reads reach ~1.0 (e.g., 4→4, 9→9).
+        # When rank_crop got Q via fragile "0"→Q mapping, check full_card.
+        # For actual 9, full_card reads "9" with conf >0.45.
+        # For actual Q, full_card reads "9" with conf <0.35.
+        if rank_crop_via_zero and full_card_rank != "Q" and full_card_conf > 0.45:
+            return full_card_rank, 0.85
+        # For direct reads (not via mapping), only trust full card at very
+        # high confidence (>0.999) to avoid false corrections (e.g., A→4).
         if full_card_conf > 0.999:
             return full_card_rank, 0.85
-        # Lower confidence: trust rank crop (more focused)
         return rank_crop_rank, 0.85
     if rank_crop_rank:
         return rank_crop_rank, 0.9

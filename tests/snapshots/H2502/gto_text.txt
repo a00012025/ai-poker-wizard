@@ -3,6 +3,7 @@
 Hero: CO A4s
 ⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析
 有效籌碼調整: 17.1bb → 15bb（扣除底池死錢 ~2bb）
+⚠ 此深度 A4s 不在 postflop range，postflop 使用 17bb solver 近似（僅供參考）
 
 
 ==================================================
@@ -24,13 +25,18 @@ Hero: CO A4s
 【Flop: KdAsAd】
 Hero A4s 牌型: 三條 (A)
 【CO 在 Flop AsAdKd】底池 10.100bb
-  Fold: 39.6%（13 combos）
-  Call: 37.1%（12 combos）
-  All-in 12.000: 23.3%（7 combos）
+  Fold: 33.2%（11 combos）
+  Call: 47.4%（16 combos）
+  RAISE 8.1（33% pot）: 18.3%（6 combos）
+  All-in 15.000: 1.0%（0 combos）
 
 【CO A4s】
-  Range 頻率: 0.0%（0.0/2 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 30.6%（0.6/2 combos）
+  EV: 8.43bb | Equity: 74.3%
+  策略:
+    RAISE 8.1（33% pot）: 57.5%（0.4 combos） EV 7.97bb
+    Call: 41.0%（0.3 combos） EV 9.11bb
+    All-in: 1.5%（0.0 combos） EV 7.68bb
   → 實際行動: CO C 3.7bb（solver code: C）
 
 
@@ -38,26 +44,33 @@ Hero A4s 牌型: 三條 (A)
 【Turn: 2d（Board: KdAsAd2d）】
 Hero A4s 牌型: 三條 (A)
 【CO 在 Turn AsAdKd2d】底池 16.450bb
-  Fold: 13.0%（2 combos）
-  Call: 40.7%（5 combos）
-  All-in 8.400: 46.3%（5 combos）
+  Fold: 13.4%（2 combos）
+  Call: 59.9%（10 combos）
+  All-in 11.400: 26.6%（4 combos）
 
 【CO A4s】
-  Range 頻率: 0.0%（0.0/2 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 12.5%（0.3/2 combos）
+  EV: 8.29bb | Equity: 60.4%
+  策略:
+    Call: 80.9%（0.2 combos） EV 7.97bb
+    All-in: 18.9%（0.0 combos） EV 9.78bb
+    Fold: 0.2%（0.0 combos） EV 0.00bb
+⚠ EV 損失 1.81bb（Call 7.97bb vs All-in 9.78bb）
   → 實際行動: CO C 5.5bb（solver code: C）
 
 
 ==================================================
 【River: 3h（Board: KdAsAd2d3h）】
 Hero A4s 牌型: 三條 (A)
-【CO 在 River AsAdKd2d3h】底池 24.850bb
-  Fold: 30.9%（1 combos）
-  Call: 69.1%（3 combos）
+【CO 在 River AsAdKd2d3h】底池 27.850bb
+  Fold: 30.9%（3 combos）
+  Call: 69.1%（7 combos）
 
 【CO A4s】
-  Range 頻率: 0.0%（0.0/2 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 10.1%（0.2/2 combos）
+  EV: 3.12bb | Equity: 32.2%
+  策略:
+    Call: 100.0%（0.2 combos） EV 3.12bb
   → 實際行動: CO C 5.9bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -140,7 +140,7 @@ When running ad-hoc Python snippets for debugging/testing, write them to `script
 python scripts/_tmp.py
 ```
 
-**IMPORTANT**: This applies to subagents too! When dispatching Agent subagents, instruct them to always write Python code to `scripts/_tmp.py` and run it via `python scripts/_tmp.py`, never via `python -c "..."`. This prevents permission prompts that block subagent execution.
+**IMPORTANT**: This applies to ALL Python execution — including the main assistant, subagents, and one-off checks. NEVER use `python -c "..."`. Always write to `scripts/_tmp.py` first. This prevents permission prompts and makes code reviewable.
 
 ## E2E Testing
 

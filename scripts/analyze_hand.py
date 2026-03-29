@@ -805,6 +805,14 @@ def _run_analysis(hand: dict) -> dict:
         if hero_stack_bb and hero_stack_bb > hand.get("effective_bb", 0):
             hero_depth = nearest_depth(hero_stack_bb)
             if hero_depth != preflop_depth:
+                # Re-normalize preflop actions for the new depth — raise sizes
+                # differ by depth (e.g., R2 at 20bb → R2.1 at 25bb).
+                try:
+                    renorm = _normalize_preflop_actions(
+                        hand["preflop_actions"], gametype, hero_depth)
+                    preflop_before = _preflop_before_hero(renorm, hero_pos, pos_order)
+                except Exception:
+                    pass  # fall back to original preflop_before
                 preflop_depth = hero_depth
     hero_spots.append({
         "street": "preflop",
@@ -1343,21 +1351,31 @@ def _run_analysis(hand: dict) -> dict:
                 break
 
         has_offrange = False
-        if pf_allin_freq >= 0.80:
-            for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
-                if spot["street"] == "preflop" or sol is None:
-                    continue
-                action_sols = sol.get("action_solutions", [])
-                if not action_sols or "strategy" not in action_sols[0]:
-                    continue
-                for pi in sol["players_info"]:
+        # Trigger when hero combo is 0% at the FIRST postflop spot (flop start).
+        # This means the hand truly shouldn't be in the postflop range
+        # (e.g., GTO says all-in preflop but hero called).
+        # Don't trigger for hands that are just 0% at a later node after
+        # specific actions — those are legitimate range reductions.
+        first_postflop = None
+        for spot, sol in zip(hero_spots, solutions):
+            if spot["street"] != "preflop" and sol is not None:
+                first_postflop = (spot, sol)
+                break
+        if first_postflop:
+            fp_spot, fp_sol = first_postflop
+            # Check range at flop start (no actions = before any bets)
+            flop_start_params = dict(fp_spot["params"])
+            flop_start_params["flop_actions"] = ""
+            flop_start_params["turn_actions"] = ""
+            flop_start_params["river_actions"] = ""
+            flop_start_sol = _fetch_with_token(flop_start_params)
+            if flop_start_sol:
+                for pi in flop_start_sol["players_info"]:
                     if pi["player"]["position"] == hero_pos:
                         rng = pi.get("range", [])
                         if len(rng) == 1326 and rng[hero_combo_idx] < 0.005:
                             has_offrange = True
                         break
-                if has_offrange:
-                    break
 
         if has_offrange:
             from gto_api import AVAILABLE_DEPTHS
@@ -1365,35 +1383,52 @@ def _run_analysis(hand: dict) -> dict:
             higher = sorted(d for d in AVAILABLE_DEPTHS if d > current_bb)[:2]
             for try_bb in higher:
                 try_depth = try_bb + 0.125
-                # Re-query all postflop spots at higher depth
+                # Re-normalize the simplified preflop for higher depth
+                # (raise sizes differ — e.g., R2 at 20bb → R2.1 at 25bb)
+                try:
+                    renorm_pf = _normalize_preflop_actions(
+                        preflop_actions, gametype, try_depth)
+                except Exception:
+                    renorm_pf = preflop_actions
+                # Check if hero combo IS in range at higher depth.
+                # Query flop start (no actions) to avoid action-code mismatch.
+                first_board = streets[0].get("board", "") if streets else ""
+                check_params = dict(gametype=gametype, depth=try_depth,
+                                    preflop_actions=renorm_pf, board=first_board,
+                                    flop_actions="")
+                check_sol = _fetch_with_token(check_params)
                 found = False
-                for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
-                    if spot["street"] == "preflop" or sol is None:
-                        continue
-                    retry_params = dict(spot["params"], depth=try_depth)
-                    retry_sol = _fetch_with_token(retry_params)
-                    if not retry_sol:
-                        continue
-                    for pi in retry_sol["players_info"]:
+                if check_sol:
+                    for pi in check_sol["players_info"]:
                         if pi["player"]["position"] == hero_pos:
                             rng = pi.get("range", [])
                             if len(rng) == 1326 and rng[hero_combo_idx] >= 0.005:
                                 found = True
                             break
-                    if found:
-                        break
                 if found:
-                    # Apply higher depth to ALL postflop spots
+                    # Re-run full analysis at higher depth by re-normalizing
+                    # all postflop actions for the new depth.
                     for i, (spot, _) in enumerate(zip(hero_spots, solutions)):
                         if spot["street"] == "preflop":
                             continue
-                        retry_params = dict(spot["params"], depth=try_depth)
+                        # Re-normalize action codes for new depth
+                        retry_params = dict(spot["params"], depth=try_depth,
+                                            preflop_actions=renorm_pf)
+                        # Try with original action codes first
                         retry_sol = _fetch_with_token(retry_params)
+                        if not retry_sol:
+                            # Action codes might differ at new depth — try
+                            # re-walking from flop start
+                            retry_params2 = dict(retry_params)
+                            retry_params2["flop_actions"] = ""
+                            retry_params2["turn_actions"] = ""
+                            retry_params2["river_actions"] = ""
+                            retry_sol = _fetch_with_token(retry_params2)
                         if retry_sol:
                             solutions[i] = retry_sol
                             hero_spots[i]["params"] = retry_params
                     offrange_note = (
-                        f"⚠ 此深度 {hero_hand} 應 preflop all-in，"
+                        f"⚠ 此深度 {hero_hand} 不在 postflop range，"
                         f"postflop 使用 {try_bb:.0f}bb solver 近似（僅供參考）"
                     )
                     break
