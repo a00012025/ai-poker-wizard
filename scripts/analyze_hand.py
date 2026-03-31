@@ -1099,6 +1099,27 @@ def _run_analysis(hand: dict) -> dict:
                 all_in_resolved = True
             _prev_allin = taken_code == "RAI" or action_type.startswith("AI")
 
+        # After processing all actions on this street, check for incomplete
+        # check-throughs.  When the parsed JSON only records one player's
+        # check (e.g., only "BB X" on the turn with no "HJ X"), but later
+        # streets have actions, both players must have checked through.
+        # Append an implied opponent check so the action string becomes
+        # "X-X" instead of just "X".
+        if not all_in_resolved:
+            cur_acts = (flop_acts if street_idx == 0
+                        else turn_acts if street_idx == 1
+                        else river_acts)
+            # Only a single check was recorded and the street has later action
+            if cur_acts == "X":
+                has_later = any(s.get("actions") for s in streets[street_idx + 1:])
+                if has_later:
+                    if street_idx == 0:
+                        flop_acts = "X-X"
+                    elif street_idx == 1:
+                        turn_acts = "X-X"
+                    elif street_idx == 2:
+                        river_acts = "X-X"
+
     # ── Phase 1.5: Create hero spot at current decision point ──
     # When the hand ends with opponent action and it's hero's turn to act
     # (e.g., BB checks on turn, hero hasn't acted yet), create a hero spot

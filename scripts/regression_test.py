@@ -1769,6 +1769,44 @@ def test_check_through_flop_infers_xx():
 
 
 @test
+def test_single_check_turn_infers_check_through():
+    """Check-through: single check on turn infers X-X when river follows (H2565)."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 21.8,
+        "hero_position": "BB",
+        "hero_hand": "6d4h",
+        "preflop_actions": "F-F-R2-F-F-F-C",
+        "players_at_table": 7,
+        "streets": [
+            {"board": "2dQh4c", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 1.8, "action": "C", "position": "BB"},
+            ]},
+            {"card": "Qd", "actions": [
+                {"action": "X", "position": "BB"},
+            ]},
+            {"card": "Ah", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 3.0, "action": "R3", "position": "HJ"},
+                {"size": 3.0, "action": "C", "position": "BB"},
+            ]},
+        ],
+    }
+    result = analyze_hand_full(hand)
+    # turn_actions should be X-X (inferred opponent check)
+    assert_eq(result["final_actions"]["turn_actions"], "X-X")
+    # River BB check (first river spot) must have solver data
+    river_spots = [(i, s) for i, s in enumerate(result["hero_spots"])
+                   if s["street"] == "river"]
+    assert_true(len(river_spots) >= 1, "Should have at least 1 river hero spot")
+    first_river_idx = river_spots[0][0]
+    assert_true(result["solutions"][first_river_idx] is not None,
+                "River BB check should have solver data (not None)")
+
+
+@test
 def test_allin_turn_skips_river_actions():
     """All-in on turn: river actions are skipped (no 400 error from API)."""
     from analyze_hand import analyze_hand_full

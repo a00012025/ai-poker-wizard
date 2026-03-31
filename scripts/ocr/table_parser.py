@@ -906,7 +906,16 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                             # Regime A: dark/cool reds
                             return "h" if gr < 0.093 else "d"
                         else:
-                            # Regime B: warm reds
+                            # Regime B: warm reds.
+                            # G/R 0.19-0.22 is ambiguous — consult
+                            # template matching with relaxed margin to
+                            # break the tie (e.g. diamond at G/R 0.207).
+                            if 0.19 <= gr <= 0.22:
+                                tmpl = _suit_template_match(
+                                    card_img, is_red=True,
+                                    min_margin=0.12)
+                                if tmpl is not None:
+                                    return tmpl
                             return "h" if gr < 0.21 else "d"
 
         if green_says_heart:
