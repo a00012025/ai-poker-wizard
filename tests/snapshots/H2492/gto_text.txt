@@ -67,6 +67,7 @@ Hero A6s 牌型: Ace high
 Hero A6s 牌型: Ace high
 【UTG 在 River JdTh2c4s8s】底池 17.800bb
   Check: 45.2%（6 combos）
+  BET 2（11% pot）: 0.1%（0 combos）
   BET 6.5（37% pot）: 2.1%（0 combos）
   All-in 17.350: 52.6%（7 combos）
 
@@ -77,4 +78,4 @@ Hero A6s 牌型: Ace high
     All-in: 100.0%（0.0 combos）
   → 實際行動: UTG R27.6 27.6bb（solver code: R6.5）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 1.9s | Analysis: 3.4s | Total: 5.4s

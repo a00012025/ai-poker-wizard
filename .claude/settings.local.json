@@ -16,6 +16,8 @@
       "Bash(DISPLAY=:24:*)",
       "Bash(set:*)",
       "Bash(source:*)",
+      "Bash(set -a && source .env && set +a && python:*)",
+      "Bash(set -a && source .env && set +a && for:*)",
       "Bash(ls:*)",
       "Bash(chmod:*)",
       "Bash(awk:*)",
@@ -55,7 +57,25 @@
       "Bash(xdpyinfo -display :24)",
       "Bash(bb:*)",
       "Bash(bb-browser:*)",
-      "Bash(npx bb-browser:*)"
+      "Bash(npx bb-browser:*)",
+      "Bash(ln -sf /home/harry/ai-poker-wizard/.env /home/harry/ai-poker-wizard-ocr-fix/.env)",
+      "Bash(ln -sf /home/harry/ai-poker-wizard/.tokens.json /home/harry/ai-poker-wizard-ocr-fix/.tokens.json)",
+      "Bash(gh pr:*)",
+      "Bash(ln -sf /home/harry/ai-poker-wizard/.gto_cache /home/harry/ai-poker-wizard-ocr-fix/.gto_cache)",
+      "Bash(du -sh tests/snapshots/ tests/snapshots/gto_cache/ tests/snapshots/H*/input.jpeg)",
+      "Bash(psql \"$SUPABASE_CONN\" -c \"SELECT parsed_json FROM analysis_snapshots WHERE hand_id = ''''H2506''''\")",
+      "Bash(psql \"$SUPABASE_CONN\" -t -c \"SELECT parsed_json FROM analysis_snapshots WHERE hand_id = ''''H2506''''\")",
+      "mcp__plugin_claude-mem_mcp-search__search",
+      "mcp__plugin_claude-mem_mcp-search__get_observations",
+      "Bash(for h:*)",
+      "Bash(do echo:*)",
+      "Bash(done)",
+      "Bash(git commit:*)",
+      "Bash(specific hands\", which caused Gemini to hallucinate when users explicitly:*)",
+      "Bash(do python:*)",
+      "Bash(近似（僅供參考）\":*)",
+      "Bash(python -c \":*)",
+      "Bash(範圍可以打 150%?\"\\).:*)"
     ]
   }
 }

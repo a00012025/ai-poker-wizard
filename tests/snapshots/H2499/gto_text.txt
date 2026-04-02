@@ -63,4 +63,4 @@ Hero AJo 牌型: 頂對 (A)
     Bet 2.8（10% pot）: 0.2%（0.0 combos）
   → 實際行動: SB R24.5 24.5bb（solver code: RAI）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 1.7s | Analysis: 2.0s | Total: 3.7s

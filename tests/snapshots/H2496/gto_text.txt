@@ -31,4 +31,4 @@ Hero 55 牌型: 口袋對 (55)
 （無 solver 數據）
   → 實際行動: BTN R19.8 19.8bb（solver code: RAI）
 
-⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s
+⏱ Discovery: 4.5s | Analysis: 0.5s | Total: 5.0s

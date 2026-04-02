@@ -1,9 +1,9 @@
 ♠ BTN 55 | 10bb MTT
-⚠ ⚠ 多人底池，簡化為 BTN open vs SB call 單挑分析
+⚠ 多人底池，簡化為 BTN open vs SB call 單挑分析
 有效籌碼調整: 10.2bb → 8bb（扣除底池死錢 ~2bb）
 
 ─── Preflop ───
-✅ All-in (100%)
+GTO: All-in 100%
 
 ─── Flop: 9d9s4h ───
 🎯 口袋對 (55)

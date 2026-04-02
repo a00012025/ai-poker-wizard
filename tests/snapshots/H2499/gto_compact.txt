@@ -1,24 +1,14 @@
 ♠ SB AJo | 36bb MTT
 
 ─── Preflop ───
-✅ All-in (69%)
-⚠️ RAISE 8.3（95% pot） (31%)
+GTO: All-in 69% / RAISE 8.3（95% pot） 31%
 
 ─── Flop: KdAc4h ───
 🎯 頂對 (A)
-✅ Bet 9.3（50% pot） (86%)
-⚠️ Check (9%)
-⚠️ Bet 1.85（10% pot） (4%)
-⚠️ Bet 4.65（25% pot） (1%)
-⚠️ Bet 13.95（75% pot） (0%)
-
-Hero bet → ✅
+GTO: Bet 9.3（50% pot） 94%
+→ Hero bet 25% pot ❌ (GTO建議 bet 50% pot)
 
 ─── Turn: 8d ───
 🎯 頂對 (A)
-✅ Bet 13.95（50% pot） (68%)
-⚠️ Check (23%)
-⚠️ Bet 7（25% pot） (9%)
-⚠️ Bet 2.8（10% pot） (0%)
-
-Hero all-in → ✅
+GTO: Bet 13.95（50% pot） 49% / Bet 7（25% pot） 35% / Check 15%
+→ Hero all-in ✅ (GTO建議 bet 50% pot)

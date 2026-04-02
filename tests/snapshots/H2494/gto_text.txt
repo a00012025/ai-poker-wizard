@@ -72,15 +72,15 @@ Hero ATs 牌型: Ace high
 【HJ 在 River Kc9d3dJs5h】底池 11.000bb
   Check: 57.4%（20 combos）
   BET 4（36% pot）: 5.5%（2 combos）
-  BET 7（64% pot）: 29.0%（10 combos）
+  BET 7（64% pot）: 29.1%（10 combos）
   BET 10（91% pot）: 8.0%（3 combos）
 
 【HJ ATs】
   Range 頻率: 1.5%（0.1/4 combos）
   EV: 0.89bb | Equity: 4.1%
   策略:
-    Bet 10（91% pot）: 89.9%（0.1 combos） EV 0.89bb
-    Bet 7（64% pot）: 10.0%（0.0 combos） EV 0.85bb
+    Bet 10（91% pot）: 91.2%（0.1 combos） EV 0.90bb
+    Bet 7（64% pot）: 8.8%（0.0 combos） EV 0.85bb
   → 實際行動: HJ R6.2 6.2bb（solver code: R7）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 1.6s | Analysis: 5.0s | Total: 6.6s

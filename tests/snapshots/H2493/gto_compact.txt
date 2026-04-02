@@ -1,29 +1,19 @@
 ♠ BTN AJo | 28bb MTT
 
 ─── Preflop ───
-✅ RAISE 2.1（31% pot） (100%)
+GTO: RAISE 2.1（31% pot） 100%
 
 ─── Flop: Th5hAh ───
 🎯 頂對 (A) + 花聽牌
-✅ Bet 3.15（55% pot） (60%)
-⚠️ Bet 1.9（33% pot） (32%)
-⚠️ Bet 4.75（83% pot） (4%)
-⚠️ Bet 1.15（20% pot） (4%)
-⚠️ Bet 7.1（125% pot） (0%)
-
-Hero bet → ✅
+GTO: Bet 3.15（55% pot） 74% / Bet 1.9（33% pot） 18% / Bet 4.75（83% pot） 6%
+→ Hero bet 20% pot ✅ (GTO建議 bet 55% pot)
 
 ─── Turn: 4c ───
 🎯 頂對 (A) + 花聽牌
-✅ Bet 6.65（83% pot） (71%)
-⚠️ Bet 4.4（55% pot） (28%)
-⚠️ Bet 2.65（33% pot） (1%)
-
-Hero bet → ✅
+GTO: Bet 6.65（83% pot） 100%
+→ Hero bet 83% pot ✅
 
 ─── River: 9d ───
 🎯 頂對 (A)
-✅ All-in (96%)
-⚠️ Bet 13（61% pot） (4%)
-
-Hero all-in → ✅
+GTO: All-in 75% / Bet 13（61% pot） 25%
+→ Hero all-in ✅

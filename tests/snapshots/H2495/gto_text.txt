@@ -54,4 +54,4 @@ Hero 88 牌型: 口袋對 (88) < 牌面
     Fold: 100.0%（0.1 combos） EV -0.00bb
   → 實際行動: BB F（solver code: F）
 
-⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s
+⏱ Discovery: 1.6s | Analysis: 1.7s | Total: 3.3s

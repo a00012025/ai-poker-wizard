@@ -83,8 +83,8 @@ Hero Q7o 牌型: 中對 (Q)
     All-in: 57.7%（0.0 combos） EV 3.09bb
     Check: 42.3%（0.0 combos） EV 3.15bb
   花色差異:
-    Qh7c: Check 7%, All-in 93%（EV 3.1bb）
     Qh7d: Check 7%, All-in 93%（EV 3.1bb）
+    Qh7c: Check 7%, All-in 93%（EV 3.1bb）
     Qd7c: Check 7%, All-in 93%（EV 3.1bb）
     Qd7h: Check 7%, All-in 93%（EV 3.1bb）
     Qc7d: Check 100%（EV 3.2bb）
@@ -105,4 +105,4 @@ Hero Q7o 牌型: 中對 (Q)
     Fold: 0.3%（0.0 combos） EV 7.55bb
   → 實際行動: BB C 2.5bb（solver code: C）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 1.9s | Analysis: 2.4s | Total: 4.3s

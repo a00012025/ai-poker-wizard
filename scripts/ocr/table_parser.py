@@ -474,10 +474,19 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                             # to avoid noise (e.g., bot3≈0 → ratio=20+)
                             if bot3 > 10 and top3 > 10:
                                 wp_ratio = top3 / bot3
+                                # Guard: when the suit_bot crop is mostly
+                                # dark (>35%), it likely captured the large
+                                # center card symbol (e.g. Ace ♠) rather
+                                # than the mini corner suit icon.  The
+                                # center symbol inverts the width-profile
+                                # for spades (belly at top, point at
+                                # bottom).  Only apply override when the
+                                # crop is sparse (mini icon).
+                                dark_pct = np.sum(sb_bin > 0) / sb_bin.size
                                 if wp_ratio < 0.40:
                                     suit = "s"  # spade: narrow top
                                     _wp_confirmed = True
-                                elif wp_ratio > 2.0:
+                                elif wp_ratio > 2.0 and dark_pct < 0.35:
                                     suit = "c"  # club: wide top
 
         _wp_spade_flags.append(_wp_confirmed)

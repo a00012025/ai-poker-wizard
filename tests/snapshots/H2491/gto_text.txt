@@ -65,10 +65,9 @@ Hero ATs 牌型: 第三對 (6)
 
 【CO ATs】
   Range 頻率: 0.1%（0.0/4 combos）
-  EV: 0.50bb | Equity: 23.6%
+  EV: 0.51bb | Equity: 23.6%
   策略:
-    Call: 99.8%（0.0 combos）
-    All-in: 0.2%（0.0 combos）
+    Call: 99.9%（0.0 combos）
   → 實際行動: CO F（solver code: F）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 2.4s | Analysis: 3.2s | Total: 5.6s

@@ -1,19 +1,25 @@
 ♠ BB A9s | 11bb MTT
 
 ─── Preflop ───
-✅ All-in (100%)
+GTO: All-in 100%
 
 ─── Flop: Qs3dAh ───
 🎯 頂對 (A) + 後門花聽牌
-（無 solver 數據）
-（無 solver 數據）
+GTO: Check 100%
+→ Hero check ✅
+GTO: RAISE 3.65（33% pot） 79% / Call 21%
+→ Hero call ✅ (GTO建議 raise 33% pot)
 
 ─── Turn: Jd ───
 🎯 頂對 (A) + 堅果花聽牌
-（無 solver 數據）
-（無 solver 數據）
+GTO: Check 100%
+→ Hero check ✅
+GTO: RAISE 5.1（33% pot） 53% / Call 47%
+→ Hero call ❌ EV損失 -1.2bb (GTO建議 raise 33% pot)
 
 ─── River: 3c ───
 🎯 頂對 (A)
-（無 solver 數據）
-（無 solver 數據）
+GTO: Check 99%
+→ Hero check ✅
+GTO: Fold 100%
+→ Hero call ❌ EV損失 -6.0bb (GTO建議 fold)

@@ -1,27 +1,16 @@
 ♠ LJ AQs | 17bb MTT
 
 ─── Preflop ───
-✅ RAISE 2（29% pot） (87%)
-⚠️ Call (13%)
+GTO: RAISE 2（29% pot） 87% / Call 13%
 
 ─── Flop: KcJc8d ───
 🎯 Ace high + 卡順聽牌
-✅ Bet 1.8（33% pot） (39%)
-⚠️ Bet 1.1（20% pot） (38%)
-⚠️ Check (12%)
-⚠️ Bet 3（55% pot） (11%)
-⚠️ Bet 4.55（83% pot） (0%)
-
-Hero bet → ✅
+GTO: Bet 1.8（33% pot） 43% / Bet 1.1（20% pot） 30% / Bet 3（55% pot） 17% / Check 10%
+→ Hero bet 33% pot ✅
 
 ─── Turn: 6s ───
 🎯 Ace high + 卡順聽牌
-✅ Check (82%)
-⚠️ Bet 5（55% pot） (14%)
-⚠️ Bet 3（33% pot） (4%)
-
-Hero bet → ✅
-✅ Call (74%)
-⚠️ Fold (26%)
-
-Hero fold → ✅
+GTO: Check 93%
+→ Hero bet 83% pot ❌ (GTO建議 check)
+GTO: Call 74% / Fold 26%
+→ Hero fold ✅

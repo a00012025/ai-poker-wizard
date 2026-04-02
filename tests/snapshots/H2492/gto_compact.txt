@@ -1,28 +1,19 @@
 ♠ UTG A6s | 24bb MTT
 
 ─── Preflop ───
-✅ RAISE 2.1（31% pot） (100%)
+GTO: RAISE 2.1（31% pot） 100%
 
 ─── Flop: 2cThJd ───
 🎯 Ace high + 後門花聽牌
-✅ Check (94%)
-⚠️ Bet 1.35（20% pot） (3%)
-⚠️ Bet 2.2（33% pot） (1%)
-⚠️ Bet 5.55（83% pot） (1%)
-
-Hero check → ✅
+GTO: Check 88% / Bet 1.35（20% pot） 7%
+→ Hero check ✅
 
 ─── Turn: 4s ───
 🎯 Ace high
-✅ Check (99%)
-⚠️ Bet 1.35（20% pot） (0%)
-⚠️ Bet 2.2（33% pot） (0%)
-⚠️ Bet 8.4（125% pot） (0%)
-
-Hero bet → ✅
+GTO: Check 98%
+→ Hero bet 83% pot ❌ (GTO建議 check)
 
 ─── River: 8s ───
 🎯 Ace high
-✅ All-in (100%)
-
-Hero bet → ✅
+GTO: All-in 100%
+→ Hero bet 37% pot ❌ (GTO建議 all-in)

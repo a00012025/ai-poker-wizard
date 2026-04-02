@@ -970,6 +970,40 @@ def _run_analysis(hand: dict) -> dict:
                 hand["preflop_actions"], chipev_gametype, chipev_depth,
             )
 
+        # ── Postflop depth escalation ──
+        # At very shallow depths (e.g. 8-9bb) the solver may not have
+        # postflop solutions.  Detect this on the flop and bump up to the
+        # next available depth that has data.
+        if street_idx == 0 and street.get("actions"):
+            post_preflop_check = chipev_preflop if is_icm else preflop_actions
+            _probe = get_next_actions(
+                gametype=post_gametype, depth=post_depth,
+                preflop_actions=post_preflop_check, board=board,
+            )
+            if _probe and not _probe["next_actions"].get("available_actions"):
+                from gto_api import AVAILABLE_DEPTHS
+                cur_bb = float(post_depth) - 0.125
+                higher = sorted(d for d in AVAILABLE_DEPTHS if d > cur_bb)
+                for try_bb in higher[:3]:
+                    try_depth = try_bb + 0.125
+                    try_pf = _normalize_preflop_actions(
+                        hand["preflop_actions"],
+                        post_gametype, try_depth,
+                    )
+                    _probe2 = get_next_actions(
+                        gametype=post_gametype, depth=try_depth,
+                        preflop_actions=try_pf, board=board,
+                    )
+                    if _probe2 and _probe2["next_actions"].get("available_actions"):
+                        post_depth = try_depth
+                        if is_icm:
+                            chipev_depth = try_depth
+                            chipev_preflop = try_pf
+                        else:
+                            depth = try_depth
+                            preflop_actions = try_pf
+                        break
+
         for act in street["actions"]:
             pos = act["position"]
             action_type = act["action"]
