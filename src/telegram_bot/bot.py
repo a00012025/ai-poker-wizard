@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import telegram
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          MessageHandler, filters, ContextTypes)
 from telegram.request import HTTPXRequest
 from src.claude_session import ClaudeSessionManager
 
@@ -376,6 +377,9 @@ class PokerWizardBot:
             # Send range grid images
             await self._send_pending_range_images(update, chat_id, label)
 
+            # Send follow-up question buttons for hand analysis
+            await self._send_followup_buttons(update, chat_id, label)
+
         except Exception as e:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
@@ -532,6 +536,129 @@ class PokerWizardBot:
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
+    async def _send_followup_buttons(self, update: Update, chat_id: int, label: str):
+        """Generate and send 3 follow-up question buttons after hand analysis."""
+        try:
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if not ctx or ctx.get("_followup_sent"):
+                return
+            hand = ctx.get("hand", {})
+            hero_hand = hand.get("hero_hand", "")
+            hero_pos = hand.get("hero_position", "")
+            if not hero_hand or not hero_pos or hand.get("no_hero_hand"):
+                return
+
+            # Build questions from the analysis context
+            streets = hand.get("streets", [])
+            is_icm = ctx.get("is_icm", False)
+            questions = []
+
+            # Q1: opponent's range on the key street
+            opp_pos = None
+            for s in streets:
+                for a in s.get("actions", []):
+                    if a["position"] != hero_pos:
+                        opp_pos = a["position"]
+            if opp_pos:
+                if len(streets) > 0:
+                    last_street = ["flop", "turn", "river"][
+                        min(len(streets) - 1, 2)]
+                    questions.append(
+                        f"{opp_pos} 在 {last_street} 的範圍是什麼？")
+                else:
+                    questions.append(f"{opp_pos} 的範圍是什麼？")
+
+            # Q2: hero hand specific question
+            if len(streets) > 1:
+                questions.append(f"{hero_hand} 在這裡應該用什麼 size？")
+            elif is_icm:
+                questions.append(f"這個位置的 push 範圍有多寬？")
+            else:
+                questions.append(f"{hero_hand} 的 EV 跟其他手牌比如何？")
+
+            # Q3: strategic question
+            if is_icm:
+                questions.append("如果對手更短碼，策略會怎麼變？")
+            elif len(streets) >= 2:
+                questions.append("對手 raise 的話應該怎麼打？")
+            else:
+                questions.append("這手牌有哪些常見的錯誤打法？")
+
+            questions = questions[:3]
+            if not questions:
+                return
+
+            keyboard = [
+                [InlineKeyboardButton(q, callback_data=f"fq:{q}")]
+                for q in questions
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "💡 你可能想問：", reply_markup=markup)
+            ctx["_followup_sent"] = True
+
+        except Exception as e:
+            self.log.warning(f"[{label}] Follow-up buttons failed: {e}")
+
+    async def handle_followup_button(self, update: Update,
+                                     context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button press — send the question as text."""
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+        if not data.startswith("fq:"):
+            return
+        question = data[3:]
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        label = f"followup-{chat_id}"
+        self.log.info(f"[{label}] Button: {question}")
+
+        # Remove the buttons from the original message
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        # Process as a regular text message (same flow as handle_message)
+        raw_status = await context.bot.send_message(
+            chat_id, "⏳ 查詢中...",
+            read_timeout=10, write_timeout=10, connect_timeout=10)
+        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
+
+        async def _on_status(msg: str):
+            await status_msg.edit_text(f"⏳ {msg}")
+
+        refresh_token = await self._get_user_refresh_token(user_id)
+        try:
+            response = await self.session_manager.send_message(
+                chat_id, question, on_status=_on_status,
+                user_id=user_id, refresh_token=refresh_token,
+            )
+            await status_msg.delete()
+            if response and response.strip():
+                formatted = _format_for_telegram(response)
+                for chunk in _split_message(formatted):
+                    if not chunk.strip():
+                        continue
+                    try:
+                        await context.bot.send_message(
+                            chat_id, chunk, parse_mode='Markdown',
+                            read_timeout=30, write_timeout=30,
+                            connect_timeout=30)
+                    except Exception:
+                        await context.bot.send_message(
+                            chat_id, _strip_markdown(chunk),
+                            read_timeout=30, write_timeout=30,
+                            connect_timeout=30)
+        except Exception as e:
+            self.log.error(f"[{label}] Error: {e}", exc_info=True)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(chat_id, "抱歉，處理問題時出錯了。")
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
         await self._touch_user(update)
@@ -624,6 +751,9 @@ class PokerWizardBot:
 
             # Send range grid images
             await self._send_pending_range_images(update, update.effective_chat.id, label)
+
+            # Send follow-up question buttons for hand analysis
+            await self._send_followup_buttons(update, update.effective_chat.id, label)
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -951,6 +1081,7 @@ class PokerWizardBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
 
