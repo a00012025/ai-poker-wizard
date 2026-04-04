@@ -1084,16 +1084,37 @@ class GeminiSessionManager:
                     )
                 else:
                     coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                followup_instruction = (
+                    "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
+                    "FOLLOWUP: 問題一\n"
+                    "FOLLOWUP: 問題二\n"
+                    "FOLLOWUP: 問題三\n"
+                    "問題要具體、跟這手牌相關、能用 GTO solver 回答。例如「BB 在 turn 的 check-raise 範圍是什麼？」"
+                    "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
+                )
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                    f"{coaching_instruction}"
+                    f"{coaching_instruction}{followup_instruction}"
                 )
                 result = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,
                     usage_acc=usage_acc,
                 )
+                # Extract follow-up questions from response
+                followups = []
+                clean_lines = []
+                for line in result.split("\n"):
+                    if line.strip().startswith("FOLLOWUP:"):
+                        q = line.strip().removeprefix("FOLLOWUP:").strip()
+                        if q:
+                            followups.append(q)
+                    else:
+                        clean_lines.append(line)
+                if followups:
+                    self.hand_contexts.get(chat_id, {})["followup_questions"] = followups
+                    result = "\n".join(clean_lines).rstrip()
                 # Update snapshot with coaching text
                 _coaching_only = result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
                 _aio.create_task(self._update_snapshot_coaching(

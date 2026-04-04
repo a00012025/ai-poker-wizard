@@ -372,13 +372,12 @@ class PokerWizardBot:
                 self.log.warning(f"[{label}] Empty response from session manager")
                 await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
-            await _send_reply(update.message, response, self.log, label)
+            markup = self._build_followup_markup(chat_id)
+            await _send_reply(update.message, response, self.log, label,
+                              reply_markup=markup)
 
             # Send range grid images
             await self._send_pending_range_images(update, chat_id, label)
-
-            # Send follow-up question buttons for hand analysis
-            await self._send_followup_buttons(update, chat_id, label)
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -536,73 +535,90 @@ class PokerWizardBot:
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
-    async def _send_followup_buttons(self, update: Update, chat_id: int, label: str):
-        """Generate and send 3 follow-up question buttons after hand analysis."""
+    def _build_followup_markup(self, chat_id: int) -> InlineKeyboardMarkup | None:
+        """Build follow-up question buttons from hand analysis context."""
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
             if not ctx or ctx.get("_followup_sent"):
-                return
+                return None
             hand = ctx.get("hand", {})
             hero_hand = hand.get("hero_hand", "")
             hero_pos = hand.get("hero_position", "")
             if not hero_hand or not hero_pos or hand.get("no_hero_hand"):
-                return
+                return None
 
-            # Build questions from the analysis context
-            streets = hand.get("streets", [])
-            is_icm = ctx.get("is_icm", False)
-            questions = []
+            # Use LLM-generated follow-up questions if available
+            followups = ctx.get("followup_questions")
+            if followups and isinstance(followups, list):
+                questions = [q for q in followups if isinstance(q, str)][:3]
+            else:
+                # Fallback: build from context
+                streets = hand.get("streets", [])
+                is_icm = ctx.get("is_icm", False)
+                questions = []
 
-            # Q1: opponent's range on the key street
-            opp_pos = None
-            for s in streets:
-                for a in s.get("actions", []):
-                    if a["position"] != hero_pos:
-                        opp_pos = a["position"]
-            if opp_pos:
-                if len(streets) > 0:
-                    last_street = ["flop", "turn", "river"][
-                        min(len(streets) - 1, 2)]
+                opp_pos = None
+                for s in streets:
+                    for a in s.get("actions", []):
+                        if a["position"] != hero_pos:
+                            opp_pos = a["position"]
+                if opp_pos:
+                    if len(streets) > 0:
+                        last_street = ["flop", "turn", "river"][
+                            min(len(streets) - 1, 2)]
+                        questions.append(
+                            f"{opp_pos} 在 {last_street} 的範圍是什麼？")
+                    else:
+                        questions.append(f"{opp_pos} 的範圍是什麼？")
+
+                if len(streets) > 1:
                     questions.append(
-                        f"{opp_pos} 在 {last_street} 的範圍是什麼？")
+                        f"{hero_hand} 在這裡應該用什麼 size？")
+                elif is_icm:
+                    questions.append("這個位置的 push 範圍有多寬？")
                 else:
-                    questions.append(f"{opp_pos} 的範圍是什麼？")
+                    questions.append(
+                        f"{hero_hand} 的 EV 跟其他手牌比如何？")
 
-            # Q2: hero hand specific question
-            if len(streets) > 1:
-                questions.append(f"{hero_hand} 在這裡應該用什麼 size？")
-            elif is_icm:
-                questions.append(f"這個位置的 push 範圍有多寬？")
-            else:
-                questions.append(f"{hero_hand} 的 EV 跟其他手牌比如何？")
-
-            # Q3: strategic question
-            if is_icm:
-                questions.append("如果對手更短碼，策略會怎麼變？")
-            elif len(streets) >= 2:
-                questions.append("對手 raise 的話應該怎麼打？")
-            else:
-                questions.append("這手牌有哪些常見的錯誤打法？")
+                if is_icm:
+                    questions.append("如果對手更短碼，策略會怎麼變？")
+                elif len(streets) >= 2:
+                    questions.append("對手 raise 的話應該怎麼打？")
+                else:
+                    questions.append("這手牌有哪些常見的錯誤打法？")
 
             questions = questions[:3]
             if not questions:
-                return
+                return None
+
+            # Truncate to fit Telegram's 64-byte callback_data limit
+            trimmed = []
+            for q in questions:
+                cb = f"fq:{q}"
+                if len(cb.encode('utf-8')) > 64:
+                    while len(f"fq:{q}".encode('utf-8')) > 61:
+                        q = q[:-1]
+                    q += "…"
+                trimmed.append(q)
 
             keyboard = [
                 [InlineKeyboardButton(q, callback_data=f"fq:{q}")]
-                for q in questions
+                for q in trimmed
             ]
-            markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(
-                "💡 你可能想問：", reply_markup=markup)
             ctx["_followup_sent"] = True
+            return InlineKeyboardMarkup(keyboard)
 
-        except Exception as e:
-            self.log.warning(f"[{label}] Follow-up buttons failed: {e}")
+        except Exception:
+            return None
 
     async def handle_followup_button(self, update: Update,
                                      context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard button press — send the question as text."""
+        """Handle inline keyboard button press.
+
+        1. Remove buttons from the original message
+        2. Send the question as a visible user message (for history)
+        3. Process the question and send the response
+        """
         query = update.callback_query
         await query.answer()
         data = query.data or ""
@@ -614,13 +630,18 @@ class PokerWizardBot:
         label = f"followup-{chat_id}"
         self.log.info(f"[{label}] Button: {question}")
 
-        # Remove the buttons from the original message
+        # Remove buttons from original message
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
 
-        # Process as a regular text message (same flow as handle_message)
+        # Send question as a visible "user" message so it appears in chat
+        await context.bot.send_message(
+            chat_id, f"💬 {question}",
+            read_timeout=10, write_timeout=10, connect_timeout=10)
+
+        # Process the question
         raw_status = await context.bot.send_message(
             chat_id, "⏳ 查詢中...",
             read_timeout=10, write_timeout=10, connect_timeout=10)
@@ -747,13 +768,12 @@ class PokerWizardBot:
                 if not gto_sent:
                     await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
-            await _send_reply(update.message, response, self.log, label)
+            markup = self._build_followup_markup(update.effective_chat.id)
+            await _send_reply(update.message, response, self.log, label,
+                              reply_markup=markup)
 
             # Send range grid images
             await self._send_pending_range_images(update, update.effective_chat.id, label)
-
-            # Send follow-up question buttons for hand analysis
-            await self._send_followup_buttons(update, update.effective_chat.id, label)
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -1226,21 +1246,26 @@ async def _send_status(message, text: str):
                                     read_timeout=30, write_timeout=30, connect_timeout=30)
 
 
-async def _send_reply(message, text: str, log: logging.Logger, label: str) -> None:
+async def _send_reply(message, text: str, log: logging.Logger, label: str,
+                      reply_markup=None) -> None:
     """Send a formatted reply with Markdown fallback and timeout retry.
 
     1. Try Markdown parse_mode
     2. If Markdown fails, strip formatting and send plain text
     3. If any send times out, retry up to 3 times with increasing delays
+
+    If reply_markup is provided, it's attached to the LAST chunk only.
     """
     formatted = _format_for_telegram(text)
-    for chunk in _split_message(formatted):
-        if not chunk.strip():
-            continue
+    chunks = [c for c in _split_message(formatted) if c.strip()]
+    for i, chunk in enumerate(chunks):
+        is_last = (i == len(chunks) - 1)
+        markup = reply_markup if is_last else None
         sent = False
         # Try Markdown first
         try:
             await message.reply_text(chunk, parse_mode='Markdown',
+                                     reply_markup=markup,
                                      read_timeout=30, write_timeout=30, connect_timeout=30)
             sent = True
         except telegram.error.TimedOut:
@@ -1252,7 +1277,7 @@ async def _send_reply(message, text: str, log: logging.Logger, label: str) -> No
             plain = _strip_markdown(chunk)
             for attempt in range(3):
                 try:
-                    await message.reply_text(plain,
+                    await message.reply_text(plain, reply_markup=markup,
                                              read_timeout=30, write_timeout=30, connect_timeout=30)
                     sent = True
                     break
