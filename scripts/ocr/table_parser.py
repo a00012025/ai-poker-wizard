@@ -441,16 +441,49 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
 
                 # Cross-check with suit template matching (high margin only).
                 # Reliably corrects red suits (h↔d, margin ~0.4).
-                tmpl_suit = _suit_template_match(suit_card, is_red)
+                tmpl_suit, tmpl_margin = _suit_template_match(
+                    suit_card, is_red, return_margin=True)
                 if tmpl_suit and tmpl_suit != suit:
-                    suit = tmpl_suit
+                    allow_override = True
+                    # For red h→d overrides with low margin: the template
+                    # crop captures the rank digit (e.g. "9"), not the
+                    # suit icon, causing false diamond detections.
+                    # Verify with hull defects + green channel before
+                    # allowing.  High-margin overrides (>= 0.35) are
+                    # always reliable.
+                    if (is_red and suit == "h" and tmpl_suit == "d"
+                            and tmpl_margin < 0.35):
+                        # green_says_heart: high green in sample red
+                        # pixels indicates diamond color regime.
+                        hsv_gsh = cv2.cvtColor(sample_sc,
+                                               cv2.COLOR_BGR2HSV)
+                        rm1_g = cv2.inRange(hsv_gsh,
+                                            np.array([0, 50, 50]),
+                                            np.array([15, 255, 255]))
+                        rm2_g = cv2.inRange(hsv_gsh,
+                                            np.array([165, 50, 50]),
+                                            np.array([180, 255, 255]))
+                        rms_g = cv2.bitwise_or(rm1_g, rm2_g)
+                        rp_g = sample_sc[rms_g > 0]
+                        gsh = (float(np.mean(rp_g[:, 1])) > 60
+                               if len(rp_g) >= 5 else False)
+                        if not gsh:
+                            # Green doesn't support diamond.  Check
+                            # hull defects — strong concavity (norm>70)
+                            # confirms heart shape.
+                            _hull_norm = _hero_hull_norm(suit_card)
+                            if _hull_norm > 70:
+                                allow_override = False
+                    if allow_override:
+                        suit = tmpl_suit
 
                 # For black suits: use width-profile of the mini suit symbol.
                 # Spade ♠ = narrow at top (point), wide at bottom (belly).
                 # Club ♣ = wide at top (lobes), narrower at bottom.
                 # Measures top-third / bottom-third width ratio in the suit
                 # symbol area at the bottom of the card.
-                if not is_red and suit in ("s", "c"):
+                if not is_red and suit in ("s", "c") and rank not in (
+                        "K", "Q", "J"):
                     h_sc, w_sc = suit_card.shape[:2]
                     suit_bot = suit_card[int(h_sc * 0.72):int(h_sc * 0.95),
                                          int(w_sc * 0.08):int(w_sc * 0.48)]
@@ -685,13 +718,53 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     return None, 0.0
 
 
+def _hero_hull_norm(card_img: np.ndarray) -> float:
+    """Compute hull defect norm for the center red suit symbol.
+
+    Used to verify heart vs diamond: hearts have deep concavity
+    (norm > 70) from the top dip.  Returns 0 if no red contour found.
+    """
+    scale_up = 4
+    up = cv2.resize(card_img, None, fx=scale_up, fy=scale_up,
+                    interpolation=cv2.INTER_CUBIC)
+    uh, uw = up.shape[:2]
+    center = up[int(uh * 0.45):int(uh * 0.85),
+                int(uw * 0.15):int(uw * 0.85)]
+    if center.size == 0:
+        return 0.0
+    hsv_c = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+    rm1 = cv2.inRange(hsv_c, np.array([0, 50, 50]),
+                      np.array([15, 255, 255]))
+    rm2 = cv2.inRange(hsv_c, np.array([165, 50, 50]),
+                      np.array([180, 255, 255]))
+    rmask = cv2.bitwise_or(rm1, rm2)
+    rc, _ = cv2.findContours(rmask, cv2.RETR_EXTERNAL,
+                             cv2.CHAIN_APPROX_SIMPLE)
+    rc = [c for c in rc if cv2.contourArea(c) > 20]
+    if not rc:
+        return 0.0
+    big = max(rc, key=cv2.contourArea)
+    ca = cv2.contourArea(big)
+    hull_idx = cv2.convexHull(big, returnPoints=False)
+    if len(hull_idx) <= 3:
+        return 0.0
+    defects = cv2.convexityDefects(big, hull_idx)
+    if defects is None or len(defects) == 0:
+        return 0.0
+    max_defect = max(d[0][3] for d in defects)
+    return max_defect / (ca ** 0.5) if ca > 0 else 0.0
+
+
 def _suit_template_match(card_img: np.ndarray, is_red: bool,
-                         min_margin: float = 0.19) -> str | None:
+                         min_margin: float = 0.19,
+                         return_margin: bool = False,
+                         ) -> str | None | tuple[str | None, float]:
     """Determine suit via template matching on the mini suit symbol.
 
     Matches the suit crop region (below rank, top-left of card) against
     suit templates, restricted to the correct color (red: h/d, black: s/c).
     Returns the best-matching suit or None if inconclusive.
+    When return_margin=True, returns (suit, margin) tuple.
     """
     h, w = card_img.shape[:2]
     scale = max(3, 360 // max(h, 1))
@@ -722,7 +795,7 @@ def _suit_template_match(card_img: np.ndarray, is_red: bool,
         scores[sname] = result.max()
 
     if not scores:
-        return None
+        return (None, 0.0) if return_margin else None
     best = max(scores, key=scores.get)
     second = min(scores, key=scores.get)
     margin = scores[best] - scores[second]
@@ -730,10 +803,10 @@ def _suit_template_match(card_img: np.ndarray, is_red: bool,
     # Genuine corrections show large margin (e.g., d=0.35 vs h=-0.09 = 0.44).
     # False corrections show small margin (e.g., d=0.35 vs h=0.30 = 0.05).
     if margin < min_margin:
-        return None
+        return (None, margin) if return_margin else None
     if scores[best] < 0.10:
-        return None
-    return best
+        return (None, margin) if return_margin else None
+    return (best, margin) if return_margin else best
 
 
 def _detect_suit_bgr(card_img: np.ndarray) -> str:
