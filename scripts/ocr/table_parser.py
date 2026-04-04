@@ -261,9 +261,11 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
             x, y, w, h = cv2.boundingRect(c)
             area = w * h
             aspect = w / h if h > 0 else 0
-            # Individual card: taller than wide, decent area, reasonable size
+            # Individual card: roughly card-shaped, decent area, reasonable size.
+            # Aspect 0.55-1.15: covers portrait cards (taller than wide)
+            # and nearly-square cards from some table angles.
             if (area > 800 and h > 25 and w > 20
-                    and 0.55 < aspect < 0.95
+                    and 0.55 < aspect < 1.15
                     and h < ch * 0.8):  # not taller than 80% of center region
                 candidates.append((x, y, w, h))
 
