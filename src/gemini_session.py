@@ -1003,6 +1003,7 @@ class GeminiSessionManager:
                         self._clear_user_token()
                     gto_data = context["text"]
                     self.hand_contexts[chat_id] = context
+                    self.pending_images.pop(chat_id, None)
 
                     coaching_prompt = (
                         f"用戶要求切換到 ICM 決賽桌模式重新分析。\n\n"
@@ -1057,6 +1058,7 @@ class GeminiSessionManager:
                     self._clear_user_token()
                 gto_data = context["text"]
                 self.hand_contexts[chat_id] = context
+                self.pending_images.pop(chat_id, None)
                 # Save snapshot (fire-and-forget)
                 import asyncio as _aio
                 _aio.create_task(self._save_snapshot(
