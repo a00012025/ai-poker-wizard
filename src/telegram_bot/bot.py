@@ -493,23 +493,33 @@ class PokerWizardBot:
         """Send at most one range grid image (last street with data)."""
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
-            if ctx and ctx.get("hand", {}).get("no_hero_hand"):
-                hero_pos = ctx.get("hand", {}).get("hero_position", "")
-                # Find the LAST street with solver data
-                last_spot, last_sol = None, None
-                for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
-                    if sol is not None:
-                        last_spot, last_sol = spot, sol
-                if last_spot and last_sol:
-                    from range_image import generate_range_grid
-                    st = last_spot.get("street", "").capitalize()
-                    board = last_spot.get("params", {}).get("board", "")
-                    title = f"{hero_pos} {st}"
-                    if board:
-                        title += f" | {board}"
-                    img = generate_range_grid(last_sol, hero_pos, title=title)
-                    if img:
-                        await update.message.reply_photo(photo=img, caption=f"📊 {title}")
+            if ctx:
+                hand = ctx.get("hand", {})
+                no_hero = hand.get("no_hero_hand")
+                is_icm = ctx.get("is_icm", False)
+                # Send range image for:
+                # 1. no_hero_hand queries (asking about a position's range)
+                # 2. ICM preflop-only spots (push/fold ranges are critical)
+                if no_hero or is_icm:
+                    hero_pos = hand.get("hero_position", "")
+                    # Find the LAST street with solver data
+                    last_spot, last_sol = None, None
+                    for spot, sol in zip(ctx.get("hero_spots", []),
+                                         ctx.get("solutions", [])):
+                        if sol is not None:
+                            last_spot, last_sol = spot, sol
+                    if last_spot and last_sol:
+                        from range_image import generate_range_grid
+                        st = last_spot.get("street", "").capitalize()
+                        board = last_spot.get("params", {}).get("board", "")
+                        title = f"{hero_pos} {st}"
+                        if board:
+                            title += f" | {board}"
+                        img = generate_range_grid(
+                            last_sol, hero_pos, title=title)
+                        if img:
+                            await update.message.reply_photo(
+                                photo=img, caption=f"📊 {title}")
 
             # Send queued images from tool calls (currently disabled)
             pending = self.session_manager.pending_images.pop(chat_id, [])
