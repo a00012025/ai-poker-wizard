@@ -728,6 +728,7 @@ def _run_analysis(hand: dict) -> dict:
                 players_remaining=hand.get("players_remaining"),
                 phase=hand.get("phase"),
                 players_at_table=num_players,
+                preflop_actions=hand.get("preflop_actions", ""),
             )
             gametype = icm_params["gametype"]
             depth = icm_params["depth"]

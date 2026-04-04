@@ -5,6 +5,7 @@ Loads game modes from GTO Wizard API and finds the nearest matching
 ICM gametype and stack configuration for a given tournament scenario.
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -171,12 +172,23 @@ def find_gametype(
 def find_stacks(
     gametype: str,
     player_stacks: list[float],
+    preflop_actions: str = "",
+    empty_seats: set[int] | None = None,
 ) -> tuple[str, str]:
     """Find the nearest stack configuration for an ICM gametype.
+
+    Uses a three-component distance metric:
+    1. Log-ratio distance  — scale-invariant proportion matching
+    2. Rank inversion penalty — preserves who covers whom (ICM critical)
+    3. Min stack penalty   — shortest stack depth drives push/fold ranges
+
+    Active positions (haven't folded yet) are weighted 3× more heavily
+    than already-folded positions.
 
     Args:
         gametype: e.g., 'MTTGeneral_ICM8m1000PTPCT25'
         player_stacks: Stack sizes in bb ordered [UTG, UTG+1, ..., BB]
+        preflop_actions: e.g., 'F-F-F-F-F-RAI' to identify folded positions
 
     Returns:
         (depth_str, stacks_str) e.g., ('50.125', '50.125-25.125-...')
@@ -220,11 +232,95 @@ def find_stacks(
         stacks_str = "-".join(f"{s + 0.125:.3f}" for s in player_stacks)
         return depth_str, stacks_str
 
-    # Find nearest config by L1 distance on bb values
-    def stack_distance(config_stacks: list[float]) -> float:
-        return sum(abs(a - b) for a, b in zip(player_stacks, config_stacks))
+    # --- Identify folded positions from preflop_actions ---
+    # "F-F-F-F-F-RAI" → first 5 positions folded
+    folded = set()
+    if preflop_actions:
+        parts = preflop_actions.split("-")
+        for i, p in enumerate(parts):
+            if i >= len(player_stacks):
+                break
+            if p.upper() == "F":
+                folded.add(i)
+            else:
+                break  # first non-fold ends the fold prefix
 
-    best = min(configs, key=lambda c: stack_distance(c["stacks_bb"]))
+    active_weight = 3.0
+    inversion_penalty = 0.5
+    min_stack_weight = 3.0
+
+    if empty_seats is None:
+        empty_seats = set()
+
+    # The shortest REAL folded stack creates ICM pressure regardless
+    # of which seat it's in.  Match it position-independently against
+    # the shortest non-active stack in the config.
+    folded_min_stack: float | None = None
+    real_folded = [player_stacks[i] for i in folded
+                   if player_stacks[i] > 0 and i not in empty_seats]
+    if real_folded:
+        folded_min_stack = min(real_folded)
+
+    def _icm_distance(config_stacks: list[float]) -> float:
+        n = len(player_stacks)
+
+        # --- ① Log-ratio distance (active positions only) ---
+        log_dist = 0.0
+        for i in range(n):
+            a, c = player_stacks[i], config_stacks[i]
+            if a <= 0 or c <= 0:
+                continue
+            if i in folded or i in empty_seats:
+                continue  # folded/empty handled by ③ instead
+            log_dist += active_weight * abs(
+                math.log(a) - math.log(c))
+
+        # --- ② Rank inversion penalty (active positions only) ---
+        # Count pairwise inversions: if actual[i] < actual[j] but
+        # config[i] > config[j], the cover relationship is flipped.
+        active_idx = [i for i in range(n)
+                      if i not in folded and player_stacks[i] > 0]
+        inversions = 0
+        for ii in range(len(active_idx)):
+            for jj in range(ii + 1, len(active_idx)):
+                ai, aj = active_idx[ii], active_idx[jj]
+                actual_cmp = (player_stacks[ai] > player_stacks[aj]) \
+                    - (player_stacks[ai] < player_stacks[aj])
+                config_cmp = (config_stacks[ai] > config_stacks[aj]) \
+                    - (config_stacks[ai] < config_stacks[aj])
+                if actual_cmp != 0 and config_cmp != 0 \
+                        and actual_cmp != config_cmp:
+                    inversions += 1
+
+        # --- ③ Short stack penalties (position-independent) ---
+        # a) Folded shortest stack: match against the smallest
+        #    non-active config stack.  The ICM pressure comes from
+        #    *having* a short stack, not which seat it occupies.
+        short_penalty = 0.0
+        if folded_min_stack is not None:
+            non_active_cfg = [config_stacks[i] for i in range(n)
+                              if i not in active_idx
+                              and config_stacks[i] > 0]
+            if non_active_cfg:
+                cfg_min = min(non_active_cfg)
+                short_penalty = abs(
+                    math.log(folded_min_stack) - math.log(cfg_min))
+
+        # b) Active shortest stack: depth drives push/fold ranges.
+        min_penalty = 0.0
+        if active_idx:
+            min_actual = min(player_stacks[i] for i in active_idx)
+            min_config = min(config_stacks[i] for i in active_idx)
+            if min_actual > 0 and min_config > 0:
+                min_penalty = abs(
+                    math.log(min_actual) - math.log(min_config))
+
+        return (log_dist
+                + inversion_penalty * inversions
+                + min_stack_weight * short_penalty
+                + min_stack_weight * min_penalty)
+
+    best = min(configs, key=lambda c: _icm_distance(c["stacks_bb"]))
 
     depth_str = best["depth"]
     stacks_str = "-".join(best["stacks"])
@@ -239,6 +335,7 @@ def find_icm_params(
     players_remaining: int | None = None,
     phase: str | None = None,
     players_at_table: int | None = None,
+    preflop_actions: str = "",
 ) -> dict:
     """High-level: find gametype + stacks for an ICM scenario.
 
@@ -251,6 +348,8 @@ def find_icm_params(
         players_at_table: Override for table size (e.g., 8 for 8-max FT even if
             only 5 players have stacks). Zero-stack positions are filled with
             average of remaining stacks for better solver matching.
+        preflop_actions: e.g., 'F-F-F-F-F-RAI' — used to identify folded
+            positions for smarter stack matching.
 
     Returns:
         Dict with keys: gametype, depth, stacks, approximation_note
@@ -258,11 +357,13 @@ def find_icm_params(
     if players_at_table is None:
         players_at_table = len(player_stacks)
 
-    # Fill zero-stack positions with small stacks for better solver matching.
-    # This handles e.g. 5 active players at an 8-max FT (3 empty seats).
+    # Track empty seats (zero-stack positions from 8-max padding).
+    # These are filled with small values for config length matching but
+    # should be ignored in the ICM distance calculation.
+    empty_seats = {i for i, s in enumerate(player_stacks) if s == 0}
     non_zero = [s for s in player_stacks if s > 0]
-    if non_zero and any(s == 0 for s in player_stacks):
-        fill_value = min(non_zero) * 0.5  # use half of smallest stack
+    if non_zero and empty_seats:
+        fill_value = min(non_zero) * 0.5
         player_stacks = [s if s > 0 else fill_value for s in player_stacks]
 
     gametype = find_gametype(
@@ -284,7 +385,9 @@ def find_icm_params(
             "approximation_note": "找不到匹配的 ICM 模式，使用 Chip EV 替代",
         }
 
-    depth_str, stacks_str = find_stacks(gametype, player_stacks)
+    depth_str, stacks_str = find_stacks(gametype, player_stacks,
+                                        preflop_actions=preflop_actions,
+                                        empty_seats=empty_seats)
     actual_stacks = _parse_stacks(stacks_str.split("-"))
 
     # Build approximation note with clear user stacks vs solver stacks comparison
