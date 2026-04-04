@@ -497,10 +497,11 @@ class PokerWizardBot:
                 hand = ctx.get("hand", {})
                 no_hero = hand.get("no_hero_hand")
                 is_icm = ctx.get("is_icm", False)
-                # Send range image for:
+                # Send range image once after initial analysis:
                 # 1. no_hero_hand queries (asking about a position's range)
                 # 2. ICM preflop-only spots (push/fold ranges are critical)
-                if no_hero or is_icm:
+                # Flag prevents re-sending on follow-up messages.
+                if (no_hero or is_icm) and not ctx.get("_range_img_sent"):
                     hero_pos = hand.get("hero_position", "")
                     # Find the LAST street with solver data
                     last_spot, last_sol = None, None
@@ -520,6 +521,7 @@ class PokerWizardBot:
                         if img:
                             await update.message.reply_photo(
                                 photo=img, caption=f"📊 {title}")
+                            ctx["_range_img_sent"] = True
 
             # Send queued images from tool calls (currently disabled)
             pending = self.session_manager.pending_images.pop(chat_id, [])
