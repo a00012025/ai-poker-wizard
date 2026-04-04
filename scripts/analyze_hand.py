@@ -1462,19 +1462,48 @@ def _run_analysis(hand: dict) -> dict:
                                 found = True
                             break
                 if found:
-                    # Re-run full analysis at higher depth by re-normalizing
-                    # all postflop actions for the new depth.
+                    # Re-run at higher depth.  Action codes may differ
+                    # (e.g., at 14bb BB can only F/C/RAI but at 17bb
+                    # there's R9.35).  For each hero spot, update depth
+                    # and preflop, then re-match any raise/bet actions.
+                    import re as _re_mod
                     for i, (spot, _) in enumerate(zip(hero_spots, solutions)):
                         if spot["street"] == "preflop":
                             continue
-                        # Re-normalize action codes for new depth
-                        retry_params = dict(spot["params"], depth=try_depth,
+                        old_code = spot.get("taken_code", "")
+                        retry_params = dict(spot["params"],
+                                            depth=try_depth,
                                             preflop_actions=renorm_pf)
-                        # Try with original action codes first
+                        # Check if old action code needs re-matching
+                        _desc = spot.get("action_desc", "")
+                        _orig_is_raise = (" R" in _desc and "bb" in _desc)
+                        if _orig_is_raise and old_code in ("C", "X"):
+                            # Mis-matched raise→call/check. Re-match
+                            # at new depth.  Spot params already
+                            # represent state BEFORE hero's action.
+                            _re_probe = get_next_actions(**retry_params)
+                            if _re_probe:
+                                _avail = _re_probe["next_actions"].get(
+                                    "available_actions", [])
+                                if _avail:
+                                    _m = _re_mod.search(
+                                        r'([\d.]+)bb', _desc)
+                                    _tgt = float(_m.group(1)) if _m else 0
+                                    new_code = find_closest_action_postflop(
+                                        _avail, _tgt)
+                                    old_code = new_code
+                                    # Spot params are BEFORE hero's
+                                    # action; don't modify them.
+                                    spot["taken_code"] = new_code
+                                    spot["action_desc"] = (
+                                        _desc.rsplit("solver code:", 1)[0]
+                                        + f"solver code: {new_code}）")
+                        else:
+                            # Simple action (X/C/F) — keep as-is
+                            pass
                         retry_sol = _fetch_with_token(retry_params)
                         if not retry_sol:
-                            # Action codes might differ at new depth — try
-                            # re-walking from flop start
+                            # Fallback: query without postflop actions
                             retry_params2 = dict(retry_params)
                             retry_params2["flop_actions"] = ""
                             retry_params2["turn_actions"] = ""
