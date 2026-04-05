@@ -1583,9 +1583,44 @@ class GeminiSessionManager:
 
         return result
 
+    def _text_looks_like_hand(self, user_text: str) -> bool:
+        """Heuristic check: does the text contain enough info to be a new hand?
+
+        Returns True if the text has core hand-defining elements (effective bb,
+        board cards, or a hand+action combo). Follow-up questions like
+        "hero turn bet 83% 的範圍有哪些" should return False.
+        """
+        t = user_text.lower()
+        # Effective BB mentioned (e.g., "30bb", "有效 50bb", "effective 40")
+        has_bb = bool(re.search(r'\d+\s*bb\b', t, re.I)) or '有效' in t or 'effective' in t
+        if has_bb:
+            return True
+        # Board cards (3+ cards with suits, e.g., "Js6h5s", "J♠6♥5♠")
+        has_board = bool(re.search(r'[akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣]', t))
+        if has_board:
+            return True
+        # Specific hand + action (e.g., "TT raise", "AKs open", "66 call")
+        has_hand = bool(re.search(r'\b[akqjt2-9]{2}[so]?\b', t))
+        has_action = bool(re.search(
+            r'\b(raise|call|fold|open|3bet|4bet|limp|all.?in|shove|jam)\b', t, re.I
+        )) or bool(re.search(r'(加注|跟注|棄牌|全下)', t))
+        if has_hand and has_action:
+            return True
+        return False
+
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""
+        # If there's already a hand context and the text doesn't look like a new
+        # hand description, skip parsing to prevent follow-up questions from being
+        # hallucinated into fake hands by the LLM parser.
+        if chat_id in self.hand_contexts and not self._text_looks_like_hand(user_text):
+            self._logger.debug(
+                f"[chat={chat_id}] Skipping parse: existing context + "
+                f"text doesn't look like a new hand"
+            )
+            return None
+
         prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_text}"
         self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
 

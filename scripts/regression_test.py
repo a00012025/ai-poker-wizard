@@ -3250,6 +3250,48 @@ def test_spot_edge_facing_open_caller():
     assert_eq(cat, "facing_open")
 
 
+# ── Follow-up Parse Guard Tests ──
+
+@test
+def test_followup_question_not_parsed_as_hand():
+    """Follow-up questions should not be treated as new hands when context exists."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    # Simulate existing hand context
+    session.hand_contexts = {123: {"hero_position": "HJ", "hero_hand": "JTs"}}
+    # Follow-up questions should NOT look like new hands
+    followups = [
+        "hero turn bet 83% 的範圍有哪些",
+        "對手 check-raise 的範圍是什麼？",
+        "如果 flop 用 33% pot 下注會怎樣？",
+        "BB 在 turn 的策略",
+        "為什麼 solver 建議 check",
+        "這手牌的 EV 是多少",
+    ]
+    for q in followups:
+        result = session._text_looks_like_hand(q)
+        assert_eq(result, False, f"Follow-up should NOT look like a hand: {q!r}")
+
+
+@test
+def test_real_hand_description_parsed():
+    """Real hand descriptions should still be parsed even with existing context."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session.hand_contexts = {123: {"hero_position": "HJ", "hero_hand": "JTs"}}
+    hands = [
+        "有效 30bb, hero CO open raise, BB call, flop Qs7h2d",
+        "50bb hero UTG TT raise, BTN 3bet all in",
+        "hero BTN AKs raise 2.5bb, SB 3bet 8bb, hero call",
+        "25bb CO open, hero BB AQo 該 3bet 還是 call",
+    ]
+    for h in hands:
+        result = session._text_looks_like_hand(h)
+        assert_eq(result, True, f"Hand description should look like a hand: {h!r}")
+
+
 # ── Runner ──
 
 def run_tests():
