@@ -5,10 +5,13 @@ assembly into the JSON format expected by analyze_hand_full().
 """
 
 import json
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from .region_detector import detect_regions
 from .table_parser import parse_table
@@ -627,8 +630,26 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     hero_cards = table_result.get("hero_cards", [])
     table_color = table_result.get("table_color", "unknown")
 
-    # Validate board cards: reject if duplicate cards detected (OCR error).
-    # Also reject board cards that duplicate a hero card.
+    # Validate & fix duplicate cards (OCR errors).
+    # Common OCR confusions: A↔8 (small cards), 6↔9.
+    # When a hero card duplicates a board card, try swapping the hero
+    # card's rank with common confusions before clearing the board.
+    _OCR_RANK_SWAPS = {"A": "8", "8": "A", "6": "9", "9": "6"}
+    if board_cards and hero_cards:
+        board_set = set(board_cards)
+        fixed_hero = list(hero_cards)
+        for i, hc in enumerate(fixed_hero):
+            if hc in board_set and len(hc) == 2:
+                rank, suit = hc[0], hc[1]
+                alt_rank = _OCR_RANK_SWAPS.get(rank)
+                if alt_rank:
+                    alt_card = alt_rank + suit
+                    if alt_card not in board_set:
+                        log.info(f"Hero card conflict: {hc} in board — swapping to {alt_card}")
+                        fixed_hero[i] = alt_card
+        hero_cards = fixed_hero
+
+    # Final duplicate check — clear board if still unresolvable.
     if board_cards:
         all_cards = board_cards + (hero_cards or [])
         if len(set(all_cards)) < len(all_cards):
