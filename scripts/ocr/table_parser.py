@@ -498,9 +498,17 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                 if not is_red and suit in ("s", "c") and rank not in (
                         "K", "Q", "J"):
                     h_sc, w_sc = suit_card.shape[:2]
-                    suit_bot = suit_card[int(h_sc * 0.72):int(h_sc * 0.95),
+                    # For small rank "T" (10) cards (h < 55): the normal
+                    # height gate skips the check entirely, and the
+                    # center contour in _detect_suit_bgr picks up the
+                    # "0" digit (hollow → club-like).  Use a lower
+                    # crop start (82%) to isolate the suit symbol from
+                    # the rank digits, and lower the height gate.
+                    _sb_top = 0.82 if rank == "T" and h_sc < 55 else 0.72
+                    _sb_hmin = 40 if rank == "T" and h_sc < 55 else 55
+                    suit_bot = suit_card[int(h_sc * _sb_top):int(h_sc * 0.95),
                                          int(w_sc * 0.08):int(w_sc * 0.48)]
-                    if suit_bot.size > 0 and h_sc >= 55:
+                    if suit_bot.size > 0 and h_sc >= _sb_hmin:
                         sb_up = cv2.resize(suit_bot, None, fx=10, fy=10,
                                            interpolation=cv2.INTER_CUBIC)
                         sb_gray = cv2.cvtColor(sb_up, cv2.COLOR_BGR2GRAY)
@@ -517,8 +525,14 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                 for r in range(2 * sb_h // 3, sb_h)
                             ) / max(1, sb_h // 3)
                             # Both top3 and bot3 must have meaningful pixels
-                            # to avoid noise (e.g., bot3≈0 → ratio=20+)
-                            if bot3 > 10 and top3 > 10:
+                            # to avoid noise (e.g., bot3≈0 → ratio=20+).
+                            # Exception: top3 ≈ 0 with bot3 substantial
+                            # is the strongest possible spade signal
+                            # (point at top, belly at bottom).
+                            if top3 < 5 and bot3 > 20:
+                                suit = "s"
+                                _wp_confirmed = True
+                            elif bot3 > 10 and top3 > 10:
                                 wp_ratio = top3 / bot3
                                 # Guard: when the suit_bot crop is mostly
                                 # dark (>35%), it likely captured the large
