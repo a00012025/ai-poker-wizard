@@ -627,6 +627,14 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     hero_cards = table_result.get("hero_cards", [])
     table_color = table_result.get("table_color", "unknown")
 
+    # Validate board cards: reject if duplicate cards detected (OCR error).
+    # Also reject board cards that duplicate a hero card.
+    if board_cards:
+        all_cards = board_cards + (hero_cards or [])
+        if len(set(all_cards)) < len(all_cards):
+            log.warning(f"Duplicate cards detected: board={board_cards} hero={hero_cards} — clearing board")
+            board_cards = []
+
     # Card confidence — use actual detection quality from table parser
     hero_card_conf = table_result.get("hero_card_conf", 0.0)
     if hero_cards and len(hero_cards) == 2:

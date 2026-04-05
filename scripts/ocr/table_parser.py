@@ -264,9 +264,12 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
             # Individual card: roughly card-shaped, decent area, reasonable size.
             # Aspect 0.55-1.15: covers portrait cards (taller than wide)
             # and nearly-square cards from some table angles.
+            # y > ch * 0.15: reject contours at top of center region where
+            # player avatars are — board cards are in the lower portion.
             if (area > 800 and h > 25 and w > 20
                     and 0.55 < aspect < 1.15
-                    and h < ch * 0.8):  # not taller than 80% of center region
+                    and h < ch * 0.8  # not taller than 80% of center region
+                    and y > ch * 0.15):  # not in top 15% (player avatars)
                 candidates.append((x, y, w, h))
 
         # Need at least 3 cards at similar Y (same row)
