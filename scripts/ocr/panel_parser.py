@@ -348,15 +348,22 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
             except ValueError:
                 pass
 
-    # Detect position
+    # Detect position — try exact match first, then longest substring
+    # to avoid "UTG" matching "UTG1" before "UTG1" itself.
     position = None
     for t in group:
         text_upper = t["text"].strip().upper()
-        # Check if this text is a known position
+        # Exact match first
         for pos in _POSITIONS:
-            if pos.upper() == text_upper or pos.upper() in text_upper:
+            if pos.upper() == text_upper:
                 position = normalize_position(pos)
                 break
+        if not position:
+            # Substring match, longest first (so "UTG1" beats "UTG")
+            for pos in sorted(_POSITIONS, key=len, reverse=True):
+                if pos.upper() in text_upper:
+                    position = normalize_position(pos)
+                    break
         if position:
             break
 

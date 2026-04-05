@@ -10,7 +10,8 @@
   },
   "position_aliases": {
     "MP": "LJ", "MP1": "HJ", "MP2": "HJ",
-    "EP": "UTG", "EP1": "UTG+1"
+    "EP": "UTG", "EP1": "UTG+1",
+    "UTG1": "UTG+1", "UTG2": "UTG+2"
   },
   "confidence_weights": {
     "pot_consistency": 0.30,
