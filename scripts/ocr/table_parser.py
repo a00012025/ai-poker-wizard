@@ -467,9 +467,20 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                             np.array([180, 255, 255]))
                         rms_g = cv2.bitwise_or(rm1_g, rm2_g)
                         rp_g = sample_sc[rms_g > 0]
-                        gsh = (float(np.mean(rp_g[:, 1])) > 60
-                               if len(rp_g) >= 5 else False)
-                        if not gsh:
+                        green_mean = (float(np.mean(rp_g[:, 1]))
+                                      if len(rp_g) >= 5 else 0.0)
+                        gsh = green_mean > 60
+                        if gsh:
+                            # Very high green (>90) often indicates
+                            # card background glow contaminating the
+                            # sample, not actual diamond color.  Check
+                            # hull shape: norm>40 confirms heart
+                            # concavity — block the override.
+                            if green_mean > 90:
+                                _hull_norm = _hero_hull_norm(suit_card)
+                                if _hull_norm > 40:
+                                    allow_override = False
+                        else:
                             # Green doesn't support diamond.  Check
                             # hull defects — strong concavity (norm>70)
                             # confirms heart shape.
