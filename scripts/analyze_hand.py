@@ -180,7 +180,15 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
                     corrected.append(code)
                 else:
                     target = float(code[1:])  # R2 → 2.0, R2.1 → 2.1
-                    correct_code = find_closest_action(avail, target)
+                    # When user raises, only match against raise actions.
+                    # Otherwise find_closest_action may pick C (call) if
+                    # the user's raise size is closer to the call amount
+                    # than to any available raise (e.g. R5.3 → C instead
+                    # of R9.2 when solver has no small 3-bet).
+                    raise_avail = [a for a in avail
+                                   if a["action"]["code"].startswith("R")]
+                    correct_code = find_closest_action(
+                        raise_avail if raise_avail else avail, target)
                     corrected.append(correct_code)
             except Exception:
                 corrected.append(code)  # fallback to original
@@ -867,9 +875,16 @@ def _run_analysis(hand: dict) -> dict:
                     break
                 cont_idx += 1
 
+        # Label the re-raise type for the header
+        reraise_pos = pos_order[reraise_idx] if reraise_idx is not None else "?"
+        n_raises = sum(1 for p in pf_parts[:num_players] if p.startswith("R") or p.startswith("AI"))
+        if n_raises >= 3:
+            reraise_label = "Facing 4-bet"
+        else:
+            reraise_label = "Facing 3-bet"
         hero_spots.append({
             "street": "preflop",
-            "header": None,
+            "header": f"【Preflop — {reraise_label}】",
             "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
                            preflop_actions=full_n),
             "action_desc": hero_cont_desc,

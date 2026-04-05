@@ -17,6 +17,9 @@ Preflop actions 校正: F-F-F-F-R2.2-F-F-R10-C → F-F-F-F-R2.3-F-F-R10.3-C
   EV: 0.80bb | Equity: 0.0%
   策略:
     RAISE 2.3（37% pot）: 100.0%（12.0 combos） EV 0.80bb
+
+==================================================
+【Preflop — Facing 3-bet】
 【CO 在 Preflop 】底池 14.100bb
   Fold: 49.9%（245 combos）
   Call: 43.5%（214 combos）
@@ -97,4 +100,4 @@ Hero KQo 牌型: 兩對 (K, Q)
     KcQh: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.6bb）
   → 實際行動: CO R22.4 22.4bb（solver code: R20.5）
 
-⏱ Discovery: 1.8s | Analysis: 4.3s | Total: 6.2s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

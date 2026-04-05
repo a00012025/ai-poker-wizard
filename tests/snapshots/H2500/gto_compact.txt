@@ -2,6 +2,8 @@
 
 ─── Preflop ───
 GTO: RAISE 2.3（37% pot） 100%
+
+─── Preflop — Facing 3-bet ───
 GTO: Call 100%
 
 ─── Flop: Ks2dQc ───
