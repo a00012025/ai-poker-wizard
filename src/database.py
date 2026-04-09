@@ -8,7 +8,7 @@ import asyncpg
 
 logger = logging.getLogger("poker_bot")
 
-_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs", "token_usage", "analysis_snapshots", "deviations", "leak_reports"]
+_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs", "token_usage", "analysis_snapshots", "deviations", "leak_reports", "tool_calls"]
 
 
 class Database:
@@ -285,4 +285,29 @@ class Database:
             await conn.execute(
                 "UPDATE analysis_snapshots SET coaching_text = $1 WHERE hand_id = $2",
                 coaching_text, hand_id,
+            )
+
+    async def save_tool_call(
+        self,
+        chat_id: int,
+        request_id: str,
+        hand_id: str | None,
+        tool_name: str,
+        tool_args: dict,
+        tool_result: str,
+        latency_ms: int,
+    ):
+        """Persist a single LLM tool call for debugging/correlation."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO tool_calls
+                    (chat_id, request_id, hand_id, tool_name,
+                     tool_args, tool_result, latency_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                chat_id, request_id, hand_id, tool_name,
+                json.dumps(tool_args, ensure_ascii=False),
+                tool_result[:10000] if tool_result else "",
+                latency_ms,
             )

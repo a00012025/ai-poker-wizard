@@ -5,14 +5,37 @@ Flow: user message → parse hand (Flash) → analyze_hand_full() → coaching (
 Follow-ups: user message → parse (null) → Pro chat WITH query_gto tool → real data
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List
+
+# Per-request correlation ID. Set at each entry point (send_message /
+# send_image_message); ContextVar auto-propagates through asyncio tasks so
+# every log line, tool call, and fire-and-forget task within the same request
+# carries the same id — even under concurrent traffic.
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
+)
+
+
+def new_request_id() -> str:
+    """Generate a short request id (8 hex chars)."""
+    return uuid.uuid4().hex[:8]
+
+
+class _RequestIdFilter(logging.Filter):
+    """Inject request_id from ContextVar onto every log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()
+        return True
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -701,16 +724,37 @@ class GeminiSessionManager:
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
         self.pending_images: Dict[int, list] = {}  # chat_id → [(bytes, title)]
+        # Last hand_id analyzed per chat — used to correlate follow-up
+        # tool calls back to the hand they're asking about.
+        self.last_hand_ids: Dict[int, str] = {}
         self.db = db
 
-        # Logging
+        # Logging. File + stdout, both carry request_id from ContextVar.
         _LOG_DIR.mkdir(exist_ok=True)
         self._logger = logging.getLogger("gemini_session")
         if not self._logger.handlers:
-            handler = logging.FileHandler(_LOG_DIR / "gemini_session.log", encoding="utf-8")
-            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-            self._logger.addHandler(handler)
+            fmt = logging.Formatter(
+                "%(asctime)s [%(levelname)s] [req=%(request_id)s] %(message)s"
+            )
+            req_filter = _RequestIdFilter()
+
+            file_handler = logging.FileHandler(
+                _LOG_DIR / "gemini_session.log", encoding="utf-8"
+            )
+            file_handler.setFormatter(fmt)
+            file_handler.addFilter(req_filter)
+            self._logger.addHandler(file_handler)
+
+            # Mirror to stdout so `docker logs` shows tool calls without
+            # shelling into the container.
+            stream_handler = logging.StreamHandler(sys.stdout)
+            stream_handler.setFormatter(fmt)
+            stream_handler.addFilter(req_filter)
+            self._logger.addHandler(stream_handler)
+
             self._logger.setLevel(logging.DEBUG)
+            # Don't propagate to root (avoid duplicate lines via bot.py's handler)
+            self._logger.propagate = False
 
     @staticmethod
     def _extract_usage(response) -> dict:
@@ -965,6 +1009,7 @@ class GeminiSessionManager:
             user_id: Telegram user ID for per-user token lookup
             refresh_token: user's GTO Wizard refresh token (if any)
         """
+        request_id_var.set(new_request_id())
         t0 = time.time()
         self._logger.info(f"[chat={chat_id}] User: {user_text[:300]}")
         usage_acc = {}
@@ -1059,6 +1104,8 @@ class GeminiSessionManager:
                     self._clear_user_token()
                 gto_data = context["text"]
                 self.hand_contexts[chat_id] = context
+                if hand_id:
+                    self.last_hand_ids[chat_id] = hand_id
                 self.pending_images.pop(chat_id, None)
                 # Save snapshot (fire-and-forget)
                 import asyncio as _aio
@@ -1171,6 +1218,7 @@ class GeminiSessionManager:
         user_id: Telegram user ID for per-user token lookup.
         refresh_token: user's GTO Wizard refresh token (if any).
         """
+        request_id_var.set(new_request_id())
         t0 = time.time()
         self._logger.info(
             f"[chat={chat_id}] Image message ({len(image_bytes)} bytes), "
@@ -1243,6 +1291,8 @@ class GeminiSessionManager:
                 self._clear_user_token()
             gto_data = context["text"]
             self.hand_contexts[chat_id] = context
+            if hand_id:
+                self.last_hand_ids[chat_id] = hand_id
             # Save snapshot with image bytes (fire-and-forget)
             import asyncio as _aio
             _aio.create_task(self._save_snapshot(
@@ -1851,6 +1901,21 @@ class GeminiSessionManager:
                 )
                 tools_called += 1
 
+                # Persist the tool call for debugging (fire-and-forget).
+                if self.db:
+                    try:
+                        asyncio.create_task(self.db.save_tool_call(
+                            chat_id=chat_id,
+                            request_id=request_id_var.get(),
+                            hand_id=self.last_hand_ids.get(chat_id),
+                            tool_name=fn_name,
+                            tool_args=args,
+                            tool_result=tool_result,
+                            latency_ms=int(elapsed * 1000),
+                        ))
+                    except Exception as e:
+                        self._logger.debug(f"[chat={chat_id}] save_tool_call dispatch failed: {e}")
+
                 messages.append(types.Content(
                     role="user",
                     parts=[types.Part.from_function_response(
@@ -2189,10 +2254,54 @@ class GeminiSessionManager:
             except ValueError:
                 pass
 
+        # Fix A: auto-pad preflop_override with leading F's to match the
+        # context's internal preflop length. analyze_hand.py pads 7-max hands
+        # to 8 positions for MTTGeneral (8-max solver); the LLM often echoes
+        # back the unpadded 7-position string from the original parsed JSON,
+        # which causes the solver to reject the spot. Pad leading F's to
+        # recover — only when the override is shorter than the context.
+        ctx_preflop = ctx.get("preflop_actions") or ""
+        if (
+            preflop_override
+            and ctx_preflop
+            and street != "preflop"  # preflop uses its own position-based handling below
+        ):
+            ctx_len = len([p for p in ctx_preflop.split("-") if p])
+            override_parts = [p for p in preflop_override.split("-") if p]
+            if 0 < len(override_parts) < ctx_len:
+                padded = ["F"] * (ctx_len - len(override_parts)) + override_parts
+                new_override = "-".join(padded)
+                self._logger.debug(
+                    f"[chat={chat_id}] Padded preflop_override leading F's: "
+                    f"{preflop_override} → {new_override} (ctx_len={ctx_len})"
+                )
+                preflop_override = new_override
+
         # Override depth if effective_bb specified (only for non-ICM; ICM depth already set)
         depth_override = _nearest_depth(effective_bb) if effective_bb and not args.get("icm_phase") else None
 
         has_override = any([preflop_override, board_override, flop_override, turn_override, river_override, depth_override])
+
+        # Fix B: cache hit when overrides match the played line.
+        # The LLM often echoes back the full played line as "overrides" when
+        # it just wants to query an existing spot. Detect this case and skip
+        # the API call entirely. Compare against the cached hero_spot's
+        # actual params (not street_states, which is a start-of-street
+        # snapshot with incomplete action strings).
+        if has_override and not args.get("icm_phase"):
+            cached_spot = self._find_cached_spot(ctx, street)
+            if cached_spot and self._overrides_match_played_line(
+                cached_spot.get("params", {}),
+                preflop_override, board_override,
+                flop_override, turn_override, river_override,
+                depth_override,
+            ):
+                solution = self._find_cached_solution(ctx, street)
+                if solution:
+                    self._logger.debug(
+                        f"[chat={chat_id}] Overrides match played line; using cached {street} solution"
+                    )
+                    return self._format_solution(solution, position, hand)
 
         # Try cached solution first (no overrides)
         if not has_override:
@@ -2215,13 +2324,38 @@ class GeminiSessionManager:
         params = self._normalize_override_actions(params, street, flop_override, turn_override, river_override,
                                                   preflop_override=preflop_override)
 
+        self._logger.debug(
+            f"[chat={chat_id}] query_gto API params: {json.dumps(params, ensure_ascii=False)}"
+        )
+
         try:
             solution = get_spot_solution(**params)
         except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] query_gto API exception: {e} "
+                f"params={json.dumps(params, ensure_ascii=False)}"
+            )
             return f"API 查詢失敗：{e}"
 
         if not solution:
-            return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
+            self._logger.warning(
+                f"[chat={chat_id}] query_gto empty result. "
+                f"params={json.dumps(params, ensure_ascii=False)}"
+            )
+            # Include the resolved params in the error so the LLM can
+            # self-correct (e.g. realize preflop length was wrong).
+            debug_params = {
+                k: params.get(k)
+                for k in ("preflop_actions", "board", "flop_actions",
+                          "turn_actions", "river_actions", "depth")
+                if params.get(k) not in (None, "")
+            }
+            return (
+                f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
+                f"已發送的參數：{json.dumps(debug_params, ensure_ascii=False)}。"
+                f"請檢查 preflop_actions 是否為 8 個位置（MTTGeneral 8-max），"
+                f"board 花色是否合理，以及 action codes 是否符合 solver 格式。"
+            )
 
         # Auto-pad preflop for position mismatch:
         # If position is specified but not found in the solution, try padding
@@ -2284,6 +2418,69 @@ class GeminiSessionManager:
             if spot["street"] == street and sol is not None:
                 return sol
         return None
+
+    def _find_cached_spot(self, ctx: dict, street: str) -> dict | None:
+        """Find the cached hero_spot for a given street (with solution)."""
+        for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
+            if spot.get("street") == street and sol is not None:
+                return spot
+        return None
+
+    @staticmethod
+    def _norm_action_str(s: str | None) -> str:
+        """Strip empty tokens from an action string for comparison."""
+        if s is None:
+            return ""
+        return "-".join(p for p in s.split("-") if p)
+
+    def _overrides_match_played_line(
+        self,
+        cached_params: dict,
+        preflop_override: str | None,
+        board_override: str | None,
+        flop_override: str | None,
+        turn_override: str | None,
+        river_override: str | None,
+        depth_override: float | None,
+    ) -> bool:
+        """Check whether all overrides redundantly describe the cached spot.
+
+        The LLM often provides full override params when it just wants to
+        query an already-analyzed spot. When the overrides exactly match
+        the cached hero_spot's params, we can skip the API call entirely
+        (faster + sidesteps raise-code normalization quirks).
+
+        `cached_params` is the hero_spot["params"] dict that was used to
+        fetch the cached solution.
+        """
+        if depth_override is not None:
+            try:
+                if float(depth_override) != float(cached_params.get("depth", 0)):
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+        _n = self._norm_action_str
+
+        if preflop_override is not None:
+            if _n(preflop_override) != _n(cached_params.get("preflop_actions")):
+                return False
+
+        if board_override is not None:
+            if (board_override or "").lower() != (cached_params.get("board", "") or "").lower():
+                return False
+
+        for key, ov in (
+            ("flop_actions", flop_override),
+            ("turn_actions", turn_override),
+            ("river_actions", river_override),
+        ):
+            if ov is None:
+                continue
+            if _n(ov) != _n(cached_params.get(key)):
+                return False
+
+        return True
 
     def _build_query_params(self, ctx: dict, street: str,
                             board_override: str | None,

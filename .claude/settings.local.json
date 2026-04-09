@@ -75,7 +75,8 @@
       "Bash(do python:*)",
       "Bash(近似（僅供參考）\":*)",
       "Bash(python -c \":*)",
-      "Bash(範圍可以打 150%?\"\\).:*)"
+      "Bash(範圍可以打 150%?\"\\).:*)",
+      "Bash(OCR_ENABLED=true python scripts/e2e_test.py --image /tmp/n8_test.png)"
     ]
   }
 }

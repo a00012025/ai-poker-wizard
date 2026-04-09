@@ -3292,6 +3292,152 @@ def test_real_hand_description_parsed():
         assert_eq(result, True, f"Hand description should look like a hand: {h!r}")
 
 
+@test
+def test_query_gto_h2643_redundant_overrides():
+    """H2643 river follow-up: LLM sent redundant overrides (including a
+    7-position preflop from a 7-max hand). The cached context has 8-position
+    preflop (MTTGeneral 8-max padding). Should: (1) auto-pad leading F's,
+    (2) detect overrides match played line, (3) return cached river
+    range — NOT hit the API with a malformed preflop and get no data.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from analyze_hand import analyze_hand_full
+    from gemini_session import GeminiSessionManager
+
+    hand_json = {
+        "streets": [
+            {"board": "3d3sJd", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 1.1, "action": "R1.1", "position": "LJ"},
+                {"size": 1.1, "action": "C", "position": "BB"}]},
+            {"card": "7c", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 3.8, "action": "R3.8", "position": "LJ"},
+                {"size": 3.8, "action": "C", "position": "BB"}]},
+            {"card": "Ks", "actions": [
+                {"action": "X", "position": "BB"},
+                {"action": "X", "position": "LJ"}]},
+        ],
+        "gametype": "MTTGeneral",
+        "hero_hand": "AdQd",
+        "effective_bb": 15.9,
+        "hero_position": "LJ",
+        "preflop_actions": "F-R2-F-F-F-F-C",  # 7-max (will be padded to 8)
+        "players_at_table": 7,
+        "hero_starting_stack": 31.9,
+    }
+
+    ctx = analyze_hand_full(hand_json)
+    # Sanity: analyze_hand padded preflop to 8 positions
+    assert_eq(len(ctx["preflop_actions"].split("-")), 8,
+              "analyze_hand should pad 7-max preflop to 8 for MTTGeneral")
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session.hand_contexts = {1: ctx}
+    session.pending_images = {}
+    session.last_hand_ids = {}
+    session.db = None
+
+    import logging as _l
+    session._logger = _l.getLogger("test_h2643_redundant")
+    session._logger.setLevel(_l.WARNING)  # quiet during tests
+
+    # Exact LLM call that failed in production on 2026-04-09 for H2643
+    args = {
+        "street": "river",
+        "position": "LJ",
+        "board_override": "3d3sJd7cKs",
+        "flop_actions_override": "X-R1.1-C",
+        "turn_actions_override": "X-R4.25-C",
+        "river_actions_override": "X",
+        "preflop_actions_override": "F-R2-F-F-F-F-C",  # 7 positions
+    }
+
+    result = session._execute_query_gto(1, args)
+
+    assert_not_in(
+        "沒有 solver 數據", result,
+        "H2643 fix: redundant overrides should hit cache, not return empty"
+    )
+    # Should show the cached river range by action
+    assert_in("All-in", result, "Should show the All-in action in the result")
+    assert_in("Check", result, "Should show the Check action in the result")
+
+
+@test
+def test_overrides_match_played_line_helper():
+    """Unit test for the _overrides_match_played_line helper used by Fix B."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+
+    cached_params = {
+        "gametype": "MTTGeneral",
+        "depth": 17.125,
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "board": "3d3sJd7cKs",
+        "flop_actions": "X-R1.1-C",
+        "turn_actions": "X-R4.25-C",
+        "river_actions": "X",
+    }
+
+    # Exact match (all overrides match)
+    assert_true(mgr._overrides_match_played_line(
+        cached_params,
+        preflop_override="F-F-R2-F-F-F-F-C",
+        board_override="3d3sJd7cKs",
+        flop_override="X-R1.1-C",
+        turn_override="X-R4.25-C",
+        river_override="X",
+        depth_override=None,
+    ), "exact match should return True")
+
+    # Partial (only preflop + board provided, rest None → should match)
+    assert_true(mgr._overrides_match_played_line(
+        cached_params,
+        preflop_override="F-F-R2-F-F-F-F-C",
+        board_override="3d3sJd7cKs",
+        flop_override=None,
+        turn_override=None,
+        river_override=None,
+        depth_override=None,
+    ), "partial overrides (None for unspecified) should match")
+
+    # Mismatch: different board
+    assert_true(not mgr._overrides_match_played_line(
+        cached_params,
+        preflop_override=None,
+        board_override="AhKhQh",  # wrong
+        flop_override=None,
+        turn_override=None,
+        river_override=None,
+        depth_override=None,
+    ), "different board should not match")
+
+    # Mismatch: different flop actions
+    assert_true(not mgr._overrides_match_played_line(
+        cached_params,
+        preflop_override=None,
+        board_override=None,
+        flop_override="X-X",  # wrong
+        turn_override=None,
+        river_override=None,
+        depth_override=None,
+    ), "different flop actions should not match")
+
+    # Depth mismatch
+    assert_true(not mgr._overrides_match_played_line(
+        cached_params,
+        preflop_override=None,
+        board_override=None,
+        flop_override=None,
+        turn_override=None,
+        river_override=None,
+        depth_override=30.125,  # wrong
+    ), "different depth should not match")
+
+
 # ── Runner ──
 
 def run_tests():
