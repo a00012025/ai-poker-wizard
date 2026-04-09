@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1399,22 +1400,39 @@ class GeminiSessionManager:
             partial_str = json.dumps(partial, ensure_ascii=False, default=str)
             prompt_text += f"\n\nOCR 解析結果（需要你驗證和補充，特別是 hero_hand）：{partial_str}"
 
-        response = await asyncio.wait_for(
-            self.client.aio.models.generate_content(
-                model=self.image_parse_model,
-                contents=[
-                    types.Content(role="user", parts=[
-                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                        types.Part(text=prompt_text),
-                    ]),
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    thinking_config=types.ThinkingConfig(thinking_budget=4096),
-                ),
-            ),
-            timeout=300,
-        )
+        # Retry on transient Gemini server errors (503 UNAVAILABLE, 500 INTERNAL, 429)
+        response = None
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.image_parse_model,
+                        contents=[
+                            types.Content(role="user", parts=[
+                                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                                types.Part(text=prompt_text),
+                            ]),
+                        ],
+                        config=types.GenerateContentConfig(
+                            temperature=0,
+                            thinking_config=types.ThinkingConfig(thinking_budget=4096),
+                        ),
+                    ),
+                    timeout=300,
+                )
+                break
+            except genai_errors.ServerError as e:
+                last_err = e
+                if attempt == 2:
+                    raise
+                backoff = 2 ** attempt
+                self._logger.warning(
+                    f"[chat={chat_id}] Gemini image parse transient error "
+                    f"(attempt {attempt + 1}/3): {e}. Retrying in {backoff}s"
+                )
+                await asyncio.sleep(backoff)
+        assert response is not None
         if usage_acc is not None:
             self._accumulate_usage(usage_acc, self._extract_usage(response))
 
