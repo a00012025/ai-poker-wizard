@@ -485,10 +485,13 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                     allow_override = False
                         else:
                             # Green doesn't support diamond.  Check
-                            # hull defects — strong concavity (norm>70)
-                            # confirms heart shape.
+                            # hull defects — concavity (norm>47)
+                            # confirms heart shape.  Threshold 47
+                            # sits between known diamonds (H2554:
+                            # 3♦ norm=45.1) and hearts (H2668:
+                            # Q♥ norm=49.8, H2587: 9♥ norm=103.7).
                             _hull_norm = _hero_hull_norm(suit_card)
-                            if _hull_norm > 70:
+                            if _hull_norm > 47:
                                 allow_override = False
                     if allow_override:
                         suit = tmpl_suit
