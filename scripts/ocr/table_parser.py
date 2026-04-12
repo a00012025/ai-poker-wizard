@@ -649,6 +649,15 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
         rank_crop_strict = _extract_rank(rank_crop_ocr, allow_q_from_zero=False)
         if rank_crop_rank == "Q" and rank_crop_strict is None:
             rank_crop_via_zero = True
+        # Also flag fragile if Q came only from lowercase 'q' (no uppercase
+        # 'Q' in the OCR results). Lowercase 'q' is OCR-confusable with '9',
+        # especially when overlays (e.g. WIN badge) obscure part of the card.
+        if rank_crop_rank == "Q" and not rank_crop_via_zero:
+            has_upper_q = any(
+                r["text"].strip() == "Q" for r in rank_crop_ocr
+            )
+            if not has_upper_q:
+                rank_crop_via_zero = True
 
     # Attempt 2: OCR on upscaled full card (0.85)
     full_card_ocr = ocr_full_image(card_up)
@@ -980,14 +989,39 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
 
                 norm = max_defect / (ca ** 0.5) if ca > 0 else 0
 
-                # High norm (clear concavity) → heart regardless of
-                # contour size.  Works for hero cards and large board
-                # cards alike.
-                if norm > 22:
-                    return "h"
+                # Hull defects are only reliable when the contour is
+                # well-formed (csol > 0.80).  Fragmented contours
+                # (e.g. H2659: norm 117-178 on ♦ cards with
+                # solidity 0.64-0.73) produce spurious high defects
+                # that misclassify diamonds as hearts.  When solidity
+                # is low, skip hull-based decisions entirely and fall
+                # through to the G/R color ratio path.
+                # Hull defects need cross-checking for small contours.
+                # Three failure modes seen:
+                #  1. Fragmented (csol < 0.80): spurious high norms
+                #     (H2659: norm 117-178, csol 0.64-0.73 on ♦)
+                #  2. Tiny with diamond color (H2660: norm 26.1,
+                #     ca 1100, G/R 0.34 on A♦ misread as ♥)
+                # For small contours (ca < 4000), cross-check hull
+                # defects against G/R color.  If G/R > 0.28 (diamond
+                # color) and green channel doesn't confirm heart,
+                # don't trust the hull defect.
+                if norm > 22 and csol > 0.80:
+                    if ca >= 4000:
+                        return "h"
+                    # Small contour: cross-check with color
+                    _cr_px = center[rmask > 0]
+                    _skip = False
+                    if len(_cr_px) >= 5:
+                        _cg = float(np.mean(_cr_px[:, 1]))
+                        _cr = float(np.mean(_cr_px[:, 2]))
+                        _gr = _cg / _cr if _cr > 0 else 0
+                        if _gr > 0.30 and not green_says_heart:
+                            _skip = True
+                    if not _skip:
+                        return "h"
 
-                if ca >= 4000:
-                    # Large contour: hull defects are reliable.
+                if ca >= 4000 and csol > 0.80:
                     if norm < 18:
                         return "d"
                     # Ambiguous zone (18-22): prefer green channel,
@@ -998,9 +1032,10 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                         return "d"
                     if csol < 0.90:
                         return "h"
-                else:
-                    # Small contour (< 4000 area after 4x upscale):
-                    # hull defects are unreliable at this scale.  Use
+
+                if ca < 4000 or csol <= 0.80:
+                    # Small or fragmented contour: hull defects are
+                    # unreliable at this scale/quality.  Use
                     # center suit pixel color instead.  In N8 rendering
                     # hearts are a purer red (lower green component)
                     # than diamonds.
