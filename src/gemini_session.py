@@ -1152,11 +1152,22 @@ class GeminiSessionManager:
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
                     f"{coaching_instruction}{followup_instruction}"
                 )
-                result = await self._chat_with_tools(
-                    chat_id, coaching_prompt, on_status=on_status,
-                    user_id=user_id, refresh_token=refresh_token,
-                    usage_acc=usage_acc,
-                )
+                # Retry coaching on transient Gemini 503/500 errors
+                for _coach_attempt in range(3):
+                    try:
+                        result = await self._chat_with_tools(
+                            chat_id, coaching_prompt, on_status=on_status,
+                            user_id=user_id, refresh_token=refresh_token,
+                            usage_acc=usage_acc,
+                        )
+                        break
+                    except genai_errors.ServerError as e:
+                        if _coach_attempt == 2:
+                            raise
+                        self._logger.warning(
+                            f"[chat={chat_id}] Coaching retry "
+                            f"{_coach_attempt+1}/3: {e}")
+                        await asyncio.sleep(2 * (_coach_attempt + 1))
                 result, followups = self._extract_followups(result)
                 if followups:
                     ctx = self.hand_contexts.get(chat_id)
@@ -1358,12 +1369,24 @@ class GeminiSessionManager:
                 "問題要具體、跟這手牌相關、能用 GTO solver 回答。例如「BB 在 turn 的 check-raise 範圍是什麼？」"
                 "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
             )
-            result = await self._chat_with_tools(
-                chat_id, coaching_prompt,
-                user_id=user_id, refresh_token=refresh_token,
-                usage_acc=usage_acc,
-                disable_tools=True,
-            )
+            # Retry coaching on transient Gemini 503/500 errors
+            _coach_err = None
+            for _coach_attempt in range(3):
+                try:
+                    result = await self._chat_with_tools(
+                        chat_id, coaching_prompt,
+                        user_id=user_id, refresh_token=refresh_token,
+                        usage_acc=usage_acc,
+                        disable_tools=True,
+                    )
+                    break
+                except genai_errors.ServerError as e:
+                    _coach_err = e
+                    if _coach_attempt == 2:
+                        raise
+                    self._logger.warning(
+                        f"[chat={chat_id}] Coaching retry {_coach_attempt+1}/3: {e}")
+                    await asyncio.sleep(2 * (_coach_attempt + 1))
             result, followups = self._extract_followups(result)
             if followups:
                 ctx = self.hand_contexts.get(chat_id)

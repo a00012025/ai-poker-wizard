@@ -785,7 +785,13 @@ class PokerWizardBot:
                 )
                 return
             self.log.error(f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True)
-            await status_msg.edit_text(f"❌ 分析截圖時發生錯誤：{e}")
+            err_msg = f"❌ 分析截圖時發生錯誤：{e}"
+            if gto_sent:
+                # status_msg was deleted after sending GTO summary;
+                # send a new reply so the user sees the error.
+                await update.message.reply_text(err_msg)
+            else:
+                await status_msg.edit_text(err_msg)
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded hand history files (.txt or .zip)."""
