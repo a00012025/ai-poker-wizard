@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ── Test infrastructure ──
@@ -2602,6 +2603,41 @@ def test_postflop_size_parsed_from_action_string():
 
 
 @test
+def test_ocr_rank_lowercase_q_fragile_vs_full_card_9():
+    """OCR rank: lowercase 'q' from rank crop must yield to full-card '9'.
+
+    H2649 regression: hero 9c had a WIN badge over the bottom; rank crop OCR'd
+    'q' (conf 0.64) — direct lowercase-q match — while the full card OCR'd '9'
+    (conf 0.60). Lowercase 'q' is OCR-confusable with '9' and should be
+    treated as fragile, mirroring the existing '0'/'O' → Q fragile path.
+    """
+    from ocr.table_parser import _ocr_card_rank
+    import numpy as np
+
+    dummy = np.ones((50, 35, 3), dtype=np.uint8) * 255
+
+    # Sequence of fake OCR results for the calls _ocr_card_rank makes:
+    #   1) rank_crop  → lowercase 'q' (fragile)
+    #   2) full_card  → '9' with conf > 0.45 (should win)
+    fake_results = [
+        [{"text": "q", "conf": 0.64}],
+        [{"text": "9", "conf": 0.60}],
+    ]
+    calls = {"i": 0}
+
+    def fake_ocr(_img):
+        i = calls["i"]
+        calls["i"] += 1
+        if i < len(fake_results):
+            return fake_results[i]
+        return []
+
+    rank, _conf = _ocr_card_rank(dummy, fake_ocr)
+    assert_eq(rank, "9",
+              "lowercase 'q' from rank crop must yield to full-card '9'")
+
+
+@test
 def test_gto_line_fallback_when_sizing_off_tree():
     """GTO line fallback: turn gets solver data when flop bet was off-tree sizing."""
     from analyze_hand import analyze_hand_full
@@ -3436,6 +3472,32 @@ def test_overrides_match_played_line_helper():
         river_override=None,
         depth_override=30.125,  # wrong
     ), "different depth should not match")
+
+
+@test
+def test_extract_followups_strips_from_text():
+    """Extract FOLLOWUP lines from coaching response and store separately."""
+    from gemini_session import GeminiSessionManager as GeminiSession
+    text = (
+        "*Preflop*\n好的分析\n\n"
+        "FOLLOWUP: Turn 上對手的範圍是什麼？\n"
+        "FOLLOWUP: 如果河牌是空白牌怎麼打？\n"
+        "FOLLOWUP: 這手牌的 EV 如何？"
+    )
+    clean, followups = GeminiSession._extract_followups(text)
+    assert_eq(len(followups), 3, "should extract 3 followup questions")
+    assert_true("FOLLOWUP" not in clean, "clean text should not contain FOLLOWUP lines")
+    assert_eq(followups[0], "Turn 上對手的範圍是什麼？", "first followup content")
+    # Full-width colon variant
+    text2 = "分析內容\nFOLLOWUP：全形冒號問題？"
+    clean2, followups2 = GeminiSession._extract_followups(text2)
+    assert_eq(len(followups2), 1, "should handle full-width colon")
+    assert_true("FOLLOWUP" not in clean2, "clean text should not contain full-width FOLLOWUP")
+    # No followups
+    text3 = "普通分析文字，沒有 followup"
+    clean3, followups3 = GeminiSession._extract_followups(text3)
+    assert_eq(clean3, text3, "text without followups unchanged")
+    assert_eq(len(followups3), 0, "no followups extracted")
 
 
 # ── Runner ──
