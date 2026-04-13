@@ -1794,9 +1794,18 @@ class GeminiSessionManager:
                      usage_acc: dict | None = None) -> str:
         """Chat with GTO tool access — always provides tools so model can query solver."""
         self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
-        return await self._chat_with_tools(chat_id, user_text, on_status=on_status,
-                                           user_id=user_id, refresh_token=refresh_token,
-                                           usage_acc=usage_acc)
+        for attempt in range(3):
+            try:
+                return await self._chat_with_tools(
+                    chat_id, user_text, on_status=on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                    usage_acc=usage_acc)
+            except genai_errors.ServerError as e:
+                if attempt == 2:
+                    raise
+                self._logger.warning(
+                    f"[chat={chat_id}] Follow-up retry {attempt+1}/3: {e}")
+                await asyncio.sleep(2 * (attempt + 1))
 
     async def _chat_with_tools(self, chat_id: int, user_text: str,
                                 on_status: Callable[[str], Any] | None = None,
