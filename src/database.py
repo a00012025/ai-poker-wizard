@@ -244,19 +244,44 @@ class Database:
         return dict(row)
 
     async def find_hand(self, chat_id: int, hand_id_suffix: str) -> dict | None:
-        """Find a hand by hand_id suffix (LIKE '%suffix')."""
+        """Find a hand by hand_id suffix.
+
+        Searches both hand_histories (HH uploads) and analysis_snapshots
+        (image/text uploads). For snapshots, returns expected_json if set
+        (corrected data from bug fixes), else parsed_json. Injects hand_id
+        into the returned dict so callers can reference it.
+        """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT hand_data FROM hand_histories
+                SELECT hand_id, hand_data FROM hand_histories
                 WHERE chat_id = $1 AND hand_id LIKE $2
                 ORDER BY uploaded_at DESC
                 LIMIT 1
                 """,
                 chat_id, f"%{hand_id_suffix}",
             )
-        if row:
-            return json.loads(row["hand_data"])
+            if row:
+                hand = json.loads(row["hand_data"])
+                hand.setdefault("hand_id", row["hand_id"])
+                return hand
+
+            # Fall back to analysis_snapshots (image / text analyses).
+            row = await conn.fetchrow(
+                """
+                SELECT hand_id, parsed_json, expected_json
+                FROM analysis_snapshots
+                WHERE chat_id = $1 AND hand_id LIKE $2
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                chat_id, f"%{hand_id_suffix}",
+            )
+            if row:
+                raw = row["expected_json"] or row["parsed_json"]
+                hand = raw if isinstance(raw, dict) else json.loads(raw)
+                hand.setdefault("hand_id", row["hand_id"])
+                return hand
         return None
 
     async def save_snapshot(self, hand_id: str, chat_id: int,
