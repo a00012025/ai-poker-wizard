@@ -9,11 +9,11 @@ GTO: Check 97%
 → Hero bet 33% pot ❌ (GTO建議 check)
 
 ─── Turn: 6d ───
-🎯 第三對 (6) + 堅果花聽牌
+🎯 Ace high + 堅果花聽牌
 GTO: Check 50% / Bet 5.5（55% pot） 46%
 → Hero check ✅
 
 ─── River: 2h ───
-🎯 第三對 (6)
+🎯 Ace high
 GTO: Call 100%
 → Hero fold ❌ (GTO建議 call)

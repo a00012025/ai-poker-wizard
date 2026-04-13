@@ -205,6 +205,9 @@ def _evaluate_made_hand(hole: list[tuple[int, str]], board: list[tuple[int, str]
             return "two_pair", label
         # Board pair present — classify by the pair(s) hero contributes to
         pair_list = hero_pairs
+    else:
+        # Single pair — if it's entirely on the board, hero doesn't "have" it
+        pair_list = [pr for pr in pair_list if any(r == pr for r in hole_ranks)]
 
     if len(pair_list) == 1:
         pair_rank = pair_list[0]

@@ -1620,6 +1620,32 @@ def test_hand_eval_top_pair():
 
 
 @test
+def test_hand_eval_board_pair_not_hero():
+    """H2671: JTo on KhQdKd = J high (board pair K, hero has no K)."""
+    from hand_eval import evaluate
+    r = evaluate("JhTc", "KhQdKd")
+    assert_eq(r["made_hand"], "high_card")
+    assert_in("J", r["made_hand_label"])
+    r2 = evaluate("JTo", "KhQdKd3h2s")
+    assert_eq(r2["made_hand"], "high_card")
+
+
+@test
+def test_hand_eval_two_pair_with_board_pair():
+    """Two pair logic: board pair does not inflate hero's made hand."""
+    from hand_eval import evaluate
+    # Real two pair on paired board — hero still has two pair
+    r = evaluate("KhQs", "KdQc2h2d")
+    assert_eq(r["made_hand"], "two_pair")
+    # Hero one pair + board pair → should be single pair, NOT two pair
+    r = evaluate("Qh5c", "KhKsQd")
+    assert_eq(r["made_hand"], "second_pair")
+    # Hero no contribution + board pair → high card
+    r = evaluate("9h8c", "KhKs2d3c")
+    assert_eq(r["made_hand"], "high_card")
+
+
+@test
 def test_hand_eval_preflop_empty():
     """Hand eval: no board = empty result."""
     from hand_eval import evaluate
@@ -1914,8 +1940,9 @@ def test_hand_eval_uses_suited_hero_hand():
     from hand_eval import evaluate
     # Without suits: misses flush
     result_no_suit = evaluate("ATo", "Jc7cQcJs9c")
-    assert_eq(result_no_suit["made_hand"], "second_pair",
-              "ATo (no suits) should only see second pair")
+    # Board is paired JJ but hero has no J — hero's best is ace high
+    assert_eq(result_no_suit["made_hand"], "ace_high",
+              "ATo (no suits) on JJQ79 board has no pair — ace high")
     # With suits: detects flush
     result_suited = evaluate("AcTh", "Jc7cQcJs9c")
     assert_eq(result_suited["made_hand"], "flush",

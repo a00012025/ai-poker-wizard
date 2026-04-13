@@ -39,7 +39,7 @@ Hero ATs 牌型: Ace high + 後門花聽牌
 
 ==================================================
 【Turn: 6d（Board: 6cQs8d6d）】
-Hero ATs 牌型: 第三對 (6) + 堅果花聽牌
+Hero ATs 牌型: Ace high + 堅果花聽牌
 【CO 在 Turn Qs8d6c6d】底池 10.000bb
   Check: 30.7%（17 combos）
   BET 3.3（33% pot）: 38.9%（21 combos）
@@ -57,7 +57,7 @@ Hero ATs 牌型: 第三對 (6) + 堅果花聽牌
 
 ==================================================
 【River: 2h（Board: 6cQs8d6d2h）】
-Hero ATs 牌型: 第三對 (6)
+Hero ATs 牌型: Ace high
 【CO 在 River Qs8d6c6d2h】底池 13.500bb
   Fold: 45.3%（8 combos）
   Call: 30.8%（5 combos）
@@ -70,4 +70,4 @@ Hero ATs 牌型: 第三對 (6)
     Call: 99.9%（0.0 combos）
   → 實際行動: CO F（solver code: F）
 
-⏱ Discovery: 2.4s | Analysis: 3.2s | Total: 5.6s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
