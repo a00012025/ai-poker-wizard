@@ -3335,6 +3335,12 @@ def test_followup_question_not_parsed_as_hand():
     for q in followups:
         result = session._text_looks_like_hand(q)
         assert_eq(result, False, f"Follow-up should NOT look like a hand: {q!r}")
+    # Hand ID reference followed by "BB" position should NOT match the
+    # effective-bb regex (H2672 bug: "H2672 BB ..." was parsed as "2672 bb").
+    assert_eq(session._text_looks_like_hand("H2672 BB 在河牌的小額下注範圍是什麼？"),
+              False, "H2672 BB question should not look like a new hand")
+    assert_eq(session._text_looks_like_hand("H2489 hero 的翻牌範圍"),
+              False, "Hxxx hero question should not look like a new hand")
 
 
 @test

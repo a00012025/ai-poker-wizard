@@ -1691,7 +1691,9 @@ class GeminiSessionManager:
         """
         t = user_text.lower()
         # Effective BB mentioned (e.g., "30bb", "有效 50bb", "effective 40")
-        has_bb = bool(re.search(r'\d+\s*bb\b', t, re.I)) or '有效' in t or 'effective' in t
+        # Require word boundary + 1-3 digits so "H2672 BB" (hand id ref) doesn't
+        # match as "2672 bb".
+        has_bb = bool(re.search(r'\b\d{1,3}\s*bb\b', t, re.I)) or '有效' in t or 'effective' in t
         if has_bb:
             return True
         # Board cards (3+ cards with suits, e.g., "Js6h5s", "J♠6♥5♠")
