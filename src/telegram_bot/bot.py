@@ -303,7 +303,10 @@ class PokerWizardBot:
             if self.db:
                 return await self.db.find_hand(chat_id, full_id)
             return None
-        m = re.search(r'\b(\d{4,})\b', text)
+        # Match "H2672", "h2672", or a bare "2672" (4+ digits).
+        # Can't use \b before \d because "H" + "2" has no word boundary
+        # (both are word chars).
+        m = re.search(r'(?:^|[^A-Za-z0-9])[Hh]?(\d{4,})\b', text)
         if m:
             suffix = m.group(1)
             for h in hands:
