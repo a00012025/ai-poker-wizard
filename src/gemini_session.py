@@ -2195,35 +2195,46 @@ class GeminiSessionManager:
             return "暫時無法查詢你的資料，請稍後再試"
 
         try:
-            from leak_service import query_leaks, query_stats, query_progress
+            from leak_service import (
+                query_stats, query_progress,
+                get_top_leaks_ev_ranked,
+                SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH,
+            )
 
             target_chat_id = user_id or chat_id
 
             if fn_name == "query_my_leaks":
-                leaks = await query_leaks(
+                leaks = await get_top_leaks_ev_ranked(
                     pool=self.db.pool,
                     chat_id=target_chat_id,
+                    days=int(args.get("days", 30)),
                     spot_category=args.get("spot_category"),
                     street=args.get("street"),
                     position=args.get("position"),
                     min_samples=int(args.get("min_samples", 5)),
+                    limit=5,
                 )
                 if not leaks:
                     return "目前沒有足夠數據來分析你的弱點。需要至少 5 手相同類型的 spot 才能分析。繼續分析手牌，數據會自動累積！"
 
-                lines = ["📊 偏離分析結果：\n"]
+                lines = ["💸 你的 leaks（按 EV 損失排序）：\n"]
                 for i, leak in enumerate(leaks, 1):
-                    rate = leak["deviation_rate"] * 100
-                    lines.append(
-                        f"{i}. **{leak['spot_category']}** (n={leak['sample_count']})\n"
-                        f"   偏離率: {rate:.0f}%"
+                    desc = SPOT_DESCRIPTIONS_ZH.get(
+                        leak["spot_category"], leak["spot_category"]
                     )
-                    if leak.get("avg_hero_freq") is not None:
-                        lines.append(f"   Hero 平均頻率: {leak['avg_hero_freq']:.0f}%")
-                    if leak.get("avg_gto_freq") is not None:
-                        lines.append(f"   GTO 建議頻率: {leak['avg_gto_freq']:.0f}%")
-                    if leak.get("top_gto_action"):
-                        lines.append(f"   GTO 最常建議: {leak['top_gto_action']}")
+                    direction = AGGRESSION_DIRECTION_ZH.get(
+                        leak["aggression_label"], leak["aggression_label"]
+                    )
+                    ev = leak["total_ev_loss_bb"]
+                    n = leak["sample_count"]
+                    hands = " · ".join(f"H{h}" for h in leak["top_hand_ids"][:3])
+                    block = [f"**{i}. {desc}**（n={n}, -{ev:.2f}bb）"]
+                    block.append(f"   方向：{direction}")
+                    if hands:
+                        block.append(f"   最貴決策：{hands}")
+                    if leak.get("practice_url"):
+                        block.append(f"   → [練習連結]({leak['practice_url']})")
+                    lines.append("\n".join(block))
                 return "\n".join(lines)
 
             elif fn_name == "query_my_stats":
@@ -2248,18 +2259,27 @@ class GeminiSessionManager:
                             f"(n={data['count']})"
                         )
 
-                if stats["worst_spots"]:
-                    lines.append("\n最差的 spot:")
-                    for ws in stats["worst_spots"]:
+                # EV-ranked worst spots (replaces old deviation_rate ranking)
+                worst = await get_top_leaks_ev_ranked(
+                    pool=self.db.pool,
+                    chat_id=target_chat_id,
+                    days=days or 30,
+                    limit=3,
+                )
+                if worst:
+                    lines.append("\n💸 最貴的 leak（按 EV 損失）:")
+                    for ws in worst:
+                        desc = SPOT_DESCRIPTIONS_ZH.get(
+                            ws["spot_category"], ws["spot_category"]
+                        )
                         lines.append(
-                            f"  {ws['spot_category']}: "
-                            f"{ws['deviation_rate']*100:.0f}% 偏離 "
+                            f"  {desc}: -{ws['total_ev_loss_bb']:.2f}bb "
                             f"(n={ws['sample_count']})"
                         )
                 return "\n".join(lines)
 
             elif fn_name == "get_training_plan":
-                leaks = await query_leaks(
+                leaks = await get_top_leaks_ev_ranked(
                     pool=self.db.pool,
                     chat_id=target_chat_id,
                     min_samples=5,
@@ -2268,33 +2288,27 @@ class GeminiSessionManager:
                 if not leaks:
                     return "目前數據不足以生成訓練計畫。繼續分析手牌，數據會自動累積！"
 
-                lines = ["🎯 訓練計畫（根據你最大的弱點）：\n"]
-                spot_descriptions = {
-                    "open_raise": "開局加注範圍",
-                    "facing_open": "面對加注時的應對",
-                    "facing_3bet": "面對 3-bet 的防禦",
-                    "squeeze": "擠壓加注時機",
-                    "facing_4bet": "面對 4-bet 的應對",
-                    "limp_pot": "跛入底池策略",
-                    "cbet_ip": "位置內 C-bet",
-                    "cbet_oop": "位置外 C-bet",
-                    "facing_cbet_ip": "位置內面對 C-bet",
-                    "facing_cbet_oop": "位置外面對 C-bet",
-                    "probe": "探測性下注",
-                    "facing_probe": "面對探測性下注",
-                    "donk": "Donk bet",
-                    "check_raise": "Check-raise",
-                }
+                lines = ["🎯 訓練計畫（根據本月最貴的 leak）：\n"]
                 for i, leak in enumerate(leaks, 1):
-                    cat = leak["spot_category"]
-                    desc = spot_descriptions.get(cat, cat)
-                    rate = leak["deviation_rate"] * 100
-                    lines.append(
-                        f"重點 {i}: {desc}\n"
-                        f"  當前偏離率: {rate:.0f}% (n={leak['sample_count']})\n"
-                        f"  建議: 在 GTO Wizard 練習 {desc} 場景"
+                    desc = SPOT_DESCRIPTIONS_ZH.get(
+                        leak["spot_category"], leak["spot_category"]
                     )
-                return "\n".join(lines)
+                    direction = AGGRESSION_DIRECTION_ZH.get(
+                        leak["aggression_label"], leak["aggression_label"]
+                    )
+                    ev = leak["total_ev_loss_bb"]
+                    n = leak["sample_count"]
+                    block = [
+                        f"重點 {i}: {desc}",
+                        f"  累計 EV 損失: -{ev:.2f}bb (n={n})",
+                        f"  方向: {direction}",
+                    ]
+                    if leak.get("practice_url"):
+                        block.append(f"  練習連結: {leak['practice_url']}")
+                    else:
+                        block.append(f"  建議: 在 GTO Wizard 練習 {desc} 場景")
+                    lines.append("\n".join(block))
+                return "\n\n".join(lines)
 
             elif fn_name == "get_progress":
                 spot = args.get("spot_category", "")

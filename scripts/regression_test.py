@@ -4729,6 +4729,236 @@ def test_backfill_parse_args():
     assert_eq(ns.chat_id, 7)
 
 
+# ── Unified leak tools (EV-ranked) Tests ──
+
+
+@test
+def test_spot_descriptions_has_new_buckets():
+    """leak_service: SPOT_DESCRIPTIONS_ZH contains the 3 new squeeze/3bet buckets."""
+    from leak_service import SPOT_DESCRIPTIONS_ZH
+    for k in ("possible_squeeze", "hero_3bet", "vs_squeeze"):
+        assert_true(k in SPOT_DESCRIPTIONS_ZH, f"missing {k} in SPOT_DESCRIPTIONS_ZH")
+        assert_true(bool(SPOT_DESCRIPTIONS_ZH[k]), f"{k} has empty label")
+
+
+@test
+def test_aggression_direction_zh_complete():
+    """leak_service: AGGRESSION_DIRECTION_ZH has all 4 direction labels."""
+    from leak_service import AGGRESSION_DIRECTION_ZH
+    for k in ("too_passive", "too_aggressive", "mixed", "aligned"):
+        assert_true(k in AGGRESSION_DIRECTION_ZH, f"missing {k}")
+
+
+@test
+def test_get_top_leaks_ev_ranked_shape():
+    """leak_service: EV-ranked leak rows carry cluster fields + practice_url."""
+    import asyncio
+    from leak_service import get_top_leaks_ev_ranked
+
+    c1 = _make_test_cluster(
+        spot_category="cbet_ip", street="flop", pot_type="SRP",
+        hero_pos="BTN", sample_count=11, total_ev_loss_bb=4.80,
+    )
+    c2 = _make_test_cluster(
+        spot_category="facing_3bet", street="preflop", pot_type="3bet",
+        hero_pos="CO", villain_pos="BB", board_texture=None,
+        sample_count=8, total_ev_loss_bb=3.20,
+        aggression_label="too_passive",
+    )
+    c3 = _make_test_cluster(
+        spot_category="open_raise", street="preflop", pot_type=None,
+        hero_pos="LJ", villain_pos=None, board_texture=None,
+        sample_count=6, total_ev_loss_bb=1.50,
+        aggression_label="too_aggressive",
+    )
+
+    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
+        return [c1, c2, c3]
+
+    rows = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=42, days=30, limit=5,
+        mine_clusters_fn=fake_mine,
+    ))
+    assert_eq(len(rows), 3)
+    # Order preserved (EV ranking done inside mine_clusters)
+    assert_eq(rows[0]["spot_category"], "cbet_ip")
+    assert_eq(rows[1]["spot_category"], "facing_3bet")
+    assert_eq(rows[2]["spot_category"], "open_raise")
+    # Shape: required keys
+    for key in ("spot_category", "street", "pot_type", "hero_pos",
+                "sample_count", "total_ev_loss_bb", "avg_ev_loss_bb",
+                "aggression_label", "top_hand_ids", "effective_bb_median",
+                "practice_url"):
+        assert_true(key in rows[0], f"missing {key}")
+    assert_eq(rows[0]["sample_count"], 11)
+    assert_eq(rows[0]["total_ev_loss_bb"], 4.80)
+    # Practice URL should be built for known preflop/postflop mappings
+    assert_true(rows[0]["practice_url"] is not None, "cbet_ip should have URL")
+    assert_true("gtowizard.com" in rows[0]["practice_url"])
+    assert_true(rows[1]["practice_url"] is not None, "facing_3bet should have URL")
+
+
+@test
+def test_get_top_leaks_ev_ranked_post_filter():
+    """leak_service: post-filter by spot_category narrows the result set."""
+    import asyncio
+    from leak_service import get_top_leaks_ev_ranked
+
+    clusters = [
+        _make_test_cluster(spot_category="cbet_ip", sample_count=10, total_ev_loss_bb=5.0),
+        _make_test_cluster(
+            spot_category="facing_3bet", street="preflop", pot_type="3bet",
+            board_texture=None, sample_count=9, total_ev_loss_bb=4.0,
+        ),
+        _make_test_cluster(spot_category="cbet_ip", sample_count=8, total_ev_loss_bb=3.0,
+                           hero_pos="CO"),
+        _make_test_cluster(spot_category="open_raise", street="preflop",
+                           pot_type=None, board_texture=None,
+                           sample_count=7, total_ev_loss_bb=2.0, hero_pos="LJ"),
+        _make_test_cluster(spot_category="cbet_oop", sample_count=6, total_ev_loss_bb=1.0,
+                           hero_pos="BB"),
+    ]
+
+    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
+        return clusters
+
+    # Filter by spot_category
+    rows = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=5, spot_category="cbet_ip",
+        mine_clusters_fn=fake_mine,
+    ))
+    assert_eq(len(rows), 2)
+    assert_true(all(r["spot_category"] == "cbet_ip" for r in rows))
+
+    # Filter by street
+    rows = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=5, street="preflop",
+        mine_clusters_fn=fake_mine,
+    ))
+    assert_eq(len(rows), 2)
+    assert_true(all(r["street"] == "preflop" for r in rows))
+
+    # Filter by position
+    rows = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=5, position="CO",
+        mine_clusters_fn=fake_mine,
+    ))
+    assert_eq(len(rows), 1)
+    assert_eq(rows[0]["hero_pos"], "CO")
+
+
+@test
+def test_get_top_leaks_ev_ranked_empty():
+    """leak_service: empty cluster list → empty result."""
+    import asyncio
+    from leak_service import get_top_leaks_ev_ranked
+
+    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
+        return []
+
+    rows = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=5, mine_clusters_fn=fake_mine,
+    ))
+    assert_eq(rows, [])
+
+
+@test
+def test_query_my_leaks_rendering():
+    """gemini_session: query_my_leaks branch renders EV-ranked zh-TW output."""
+    import asyncio
+    from leak_service import (
+        SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH, get_top_leaks_ev_ranked,
+    )
+
+    c1 = _make_test_cluster(
+        spot_category="cbet_ip", sample_count=11, total_ev_loss_bb=4.80,
+        top_hand_ids=[2590, 2574, 2601],
+    )
+    c2 = _make_test_cluster(
+        spot_category="facing_3bet", street="preflop", pot_type="3bet",
+        board_texture=None, sample_count=8, total_ev_loss_bb=3.20,
+        aggression_label="too_passive", top_hand_ids=[100, 200, 300],
+    )
+
+    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
+        return [c1, c2]
+
+    leaks = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=5, mine_clusters_fn=fake_mine,
+    ))
+
+    # Replicate the gemini_session rendering loop
+    lines = ["💸 你的 leaks（按 EV 損失排序）：\n"]
+    for i, leak in enumerate(leaks, 1):
+        desc = SPOT_DESCRIPTIONS_ZH.get(leak["spot_category"], leak["spot_category"])
+        direction = AGGRESSION_DIRECTION_ZH.get(
+            leak["aggression_label"], leak["aggression_label"])
+        ev = leak["total_ev_loss_bb"]
+        n = leak["sample_count"]
+        hands = " · ".join(f"H{h}" for h in leak["top_hand_ids"][:3])
+        block = [f"**{i}. {desc}**（n={n}, -{ev:.2f}bb）"]
+        block.append(f"   方向：{direction}")
+        if hands:
+            block.append(f"   最貴決策：{hands}")
+        if leak.get("practice_url"):
+            block.append(f"   → [練習連結]({leak['practice_url']})")
+        lines.append("\n".join(block))
+    rendered = "\n".join(lines)
+
+    assert_in("位置內 C-bet", rendered)
+    assert_in("-4.80bb", rendered)
+    assert_in("n=11", rendered)
+    assert_in("H2590", rendered)
+    assert_in("面對 3-bet 的防禦", rendered)
+    assert_in("太 passive", rendered)
+    assert_in("練習連結", rendered)
+
+
+@test
+def test_get_training_plan_rendering():
+    """gemini_session: training plan renders EV loss + direction + practice URL."""
+    import asyncio
+    from leak_service import (
+        SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH, get_top_leaks_ev_ranked,
+    )
+
+    c1 = _make_test_cluster(
+        spot_category="cbet_ip", sample_count=11, total_ev_loss_bb=4.80,
+    )
+
+    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
+        return [c1]
+
+    leaks = asyncio.run(get_top_leaks_ev_ranked(
+        pool=None, chat_id=1, limit=3, mine_clusters_fn=fake_mine,
+    ))
+
+    lines = ["🎯 訓練計畫（根據本月最貴的 leak）：\n"]
+    for i, leak in enumerate(leaks, 1):
+        desc = SPOT_DESCRIPTIONS_ZH.get(leak["spot_category"], leak["spot_category"])
+        direction = AGGRESSION_DIRECTION_ZH.get(
+            leak["aggression_label"], leak["aggression_label"])
+        ev = leak["total_ev_loss_bb"]
+        n = leak["sample_count"]
+        block = [
+            f"重點 {i}: {desc}",
+            f"  累計 EV 損失: -{ev:.2f}bb (n={n})",
+            f"  方向: {direction}",
+        ]
+        if leak.get("practice_url"):
+            block.append(f"  練習連結: {leak['practice_url']}")
+        else:
+            block.append(f"  建議: 在 GTO Wizard 練習 {desc} 場景")
+        lines.append("\n".join(block))
+    rendered = "\n\n".join(lines)
+
+    assert_in("重點 1", rendered)
+    assert_in("位置內 C-bet", rendered)
+    assert_in("-4.80bb", rendered)
+    assert_in("練習連結", rendered)
+    assert_in("gtowizard.com", rendered)
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

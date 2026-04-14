@@ -10,12 +10,151 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, asdict, fields
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, TypedDict
 
 import asyncpg
 
 logger = logging.getLogger("poker_bot")
+
+
+# ── Shared zh-TW labels (single source of truth for LLM tools + reports) ──
+
+SPOT_DESCRIPTIONS_ZH: dict[str, str] = {
+    # Preflop
+    "open_raise":       "開局加注範圍",
+    "facing_open":      "面對加注時的應對",
+    "hero_3bet":        "主動 3-bet 時機",
+    "facing_3bet":      "面對 3-bet 的防禦",
+    "facing_4bet":      "面對 4-bet 的應對",
+    "squeeze":          "擠壓加注時機",
+    "vs_squeeze":       "被 squeeze 後的應對",
+    "possible_squeeze": "錯過 squeeze 機會",
+    "limp_pot":         "跛入底池策略",
+    # Postflop
+    "cbet_ip":          "位置內 C-bet",
+    "cbet_oop":         "位置外 C-bet",
+    "facing_cbet_ip":   "位置內面對 C-bet",
+    "facing_cbet_oop":  "位置外面對 C-bet",
+    "probe":            "探測性下注",
+    "facing_probe":     "面對探測性下注",
+    "donk":             "Donk bet",
+    "check_raise":      "Check-raise",
+}
+
+AGGRESSION_DIRECTION_ZH: dict[str, str] = {
+    "too_passive":    "太 passive（應更主動）",
+    "too_aggressive": "太 aggressive（應更收斂）",
+    "mixed":          "混合方向",
+    "aligned":        "頻率大致正確但 EV 有落差",
+}
+
+
+# ── LeakRow (user-facing, EV-ranked) ──
+
+class LeakRow(TypedDict):
+    spot_category:       str
+    street:              str
+    pot_type:            str | None
+    hero_pos:            str
+    villain_pos:         str | None
+    board_texture:       str | None
+    sample_count:        int
+    total_ev_loss_bb:    float
+    avg_ev_loss_bb:      float
+    aggression_label:    str
+    top_hand_ids:        list[int]
+    effective_bb_median: float
+    gtow_type:           str | None
+    practice_url:        str | None
+
+
+async def get_top_leaks_ev_ranked(
+    pool: asyncpg.Pool,
+    chat_id: int,
+    *,
+    days: int = 30,
+    min_samples: int = 5,
+    limit: int = 5,
+    spot_category: str | None = None,
+    street: str | None = None,
+    position: str | None = None,
+    mine_clusters_fn: Callable[..., Awaitable[list]] | None = None,
+) -> list[LeakRow]:
+    """EV-ranked leak clusters for LLM tools.
+
+    Wraps `leak_miner.mine_clusters()`. Applies optional post-filters on
+    spot_category / street / hero position. Builds GTOW practice URLs
+    deterministically. Returns [] if no clusters meet the threshold.
+
+    `mine_clusters_fn` exists so tests can inject a stub; production
+    callers leave it None and we import the real one lazily.
+    """
+    if mine_clusters_fn is None:
+        from leak_miner import mine_clusters as _mine
+        mine_clusters_fn = _mine
+
+    try:
+        from gtow_trainer_url import build_trainer_url, SpotNotSupportedError
+    except Exception:  # pragma: no cover — defensive
+        build_trainer_url = None  # type: ignore
+        SpotNotSupportedError = Exception  # type: ignore
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    try:
+        clusters = await mine_clusters_fn(
+            pool, chat_id, start, end,
+            min_sample=min_samples,
+            top_k=limit * 3,  # over-fetch to allow post-filter
+        )
+    except Exception as e:
+        logger.warning(f"[chat={chat_id}] get_top_leaks_ev_ranked failed: {e}")
+        return []
+
+    def matches(c) -> bool:
+        if spot_category and c.key.spot_category != spot_category:
+            return False
+        if street and c.key.street != street:
+            return False
+        if position and c.key.hero_pos != position:
+            return False
+        return True
+
+    results: list[LeakRow] = []
+    for c in clusters:
+        if not matches(c):
+            continue
+        url: str | None = None
+        if build_trainer_url is not None:
+            try:
+                url = build_trainer_url(
+                    spot_category=c.key.spot_category,
+                    street=c.key.street,
+                    effective_bb=c.effective_bb_median,
+                    pot_type=c.key.pot_type,
+                )
+            except (SpotNotSupportedError, KeyError, ValueError):
+                url = None
+        results.append(LeakRow(
+            spot_category=c.key.spot_category,
+            street=c.key.street,
+            pot_type=c.key.pot_type,
+            hero_pos=c.key.hero_pos,
+            villain_pos=c.key.villain_pos,
+            board_texture=c.key.board_texture,
+            sample_count=int(c.sample_count),
+            total_ev_loss_bb=float(c.total_ev_loss_bb),
+            avg_ev_loss_bb=float(c.avg_ev_loss_bb),
+            aggression_label=c.aggression_label,
+            top_hand_ids=list(c.top_hand_ids or []),
+            effective_bb_median=float(c.effective_bb_median),
+            gtow_type=c.gtow_type,
+            practice_url=url,
+        ))
+        if len(results) >= limit:
+            break
+    return results
 
 
 # ── DeviationMeta (typed JSONB access) ──
