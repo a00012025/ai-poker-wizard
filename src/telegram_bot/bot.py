@@ -481,6 +481,9 @@ class PokerWizardBot:
                 except Exception:
                     await update.message.reply_text(chunk)
 
+            # Flush any range images queued by tool calls during this turn.
+            await self._send_pending_range_images(update, chat_id, label)
+
         except Exception as e:
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
@@ -496,7 +499,12 @@ class PokerWizardBot:
             await _typing.__aexit__(None, None, None)
 
     async def _send_pending_range_images(self, update: Update, chat_id: int, label: str):
-        """Send at most one range grid image (last street with data)."""
+        """Send at most one range grid image (last street with data).
+
+        Uses update.effective_chat so it works for both messages and
+        callback queries (where update.message is None).
+        """
+        chat = update.effective_chat
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
             if ctx:
@@ -525,16 +533,16 @@ class PokerWizardBot:
                         img = generate_range_grid(
                             last_sol, hero_pos, title=title)
                         if img:
-                            await update.message.reply_photo(
+                            await chat.send_photo(
                                 photo=img, caption=f"📊 {title}")
                             ctx["_range_img_sent"] = True
 
-            # Send queued images from tool calls (currently disabled)
+            # Send queued images from tool calls (query_gto with position, no hand)
             pending = self.session_manager.pending_images.pop(chat_id, [])
             if pending:
                 # Only send the last one
                 img_bytes, caption = pending[-1]
-                await update.message.reply_photo(photo=img_bytes, caption=caption)
+                await chat.send_photo(photo=img_bytes, caption=caption)
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
@@ -675,6 +683,10 @@ class PokerWizardBot:
                             chat_id, _strip_markdown(chunk),
                             read_timeout=30, write_timeout=30,
                             connect_timeout=30)
+
+            # Flush any range images queued by tool calls during this turn.
+            # Without this, images get stranded and bleed into the next message.
+            await self._send_pending_range_images(update, chat_id, label)
         except Exception as e:
             self.log.error(f"[{label}] Error: {e}", exc_info=True)
             try:
