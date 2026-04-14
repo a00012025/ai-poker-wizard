@@ -354,9 +354,25 @@ async def _apply_update(conn, dev_id: int, ev_loss: float | None,
     )
 
 
+async def _fetch_user_refresh_tokens(conn, chat_ids: list[int]) -> dict[int, str | None]:
+    """Look up each user's GTO refresh token. Returns {chat_id: token|None}."""
+    if not chat_ids:
+        return {}
+    rows = await conn.fetch(
+        "SELECT user_id, gto_refresh_token FROM users WHERE user_id = ANY($1::bigint[])",
+        chat_ids,
+    )
+    return {int(r["user_id"]): r["gto_refresh_token"] for r in rows}
+
+
 async def run_backfill(args: argparse.Namespace) -> int:
+    # Lazy imports so tests don't drag in gto_api / thread-local state.
+    from gto_api import set_user_token, clear_user_token
+    from gto_token import get_user_access_token, TokenExpiredError
+
     conn = await _connect()
     done = updated = skipped = errors = 0
+    users_skipped: set[int] = set()  # chat_ids we gave up on due to token failure
     try:
         queue = await _fetch_queue(conn, args.chat_id, args.limit)
         total = len(queue)
@@ -366,63 +382,134 @@ async def run_backfill(args: argparse.Namespace) -> int:
             logger.info("nothing to do — queue empty")
             return 0
 
-        for row in queue:
-            done += 1
+        # Group queue by chat_id so we can set the right token per batch.
+        # asyncpg rows preserve dict access; rely on stable ordering within
+        # _fetch_queue's ORDER BY d.id.
+        distinct_chat_ids = sorted({
+            int(r["chat_id"]) for r in queue if r.get("chat_id") is not None
+        })
+        refresh_tokens = await _fetch_user_refresh_tokens(conn, distinct_chat_ids)
+        logger.info(
+            f"backfill: {len(distinct_chat_ids)} distinct users, "
+            f"{sum(1 for t in refresh_tokens.values() if t)} have refresh tokens"
+        )
+
+        # Pre-flight: for each user, try refreshing their token now so we
+        # know which users to skip before touching their rows.
+        user_access_ok: dict[int, bool] = {}
+        for cid in distinct_chat_ids:
+            rt = refresh_tokens.get(cid)
+            if not rt:
+                logger.warning(f"user {cid}: no gto_refresh_token in DB — skipping all rows")
+                user_access_ok[cid] = False
+                users_skipped.add(cid)
+                continue
             try:
-                payload = _compute_update_for_row(row)
-                if payload is None:
-                    skipped += 1
-                    if args.dry_run:
-                        print(
-                            f"[DRY] deviation id={row['id']} "
-                            f"hand={row.get('hand_id')} street={row['street']} "
-                            f"action={row['action_index']} → SKIP (no hand_data or solver)"
-                        )
-                    continue
-
-                if not payload["has_solver_data"] and payload["ev_loss"] is None:
-                    skipped += 1
-                    if args.dry_run:
-                        print(
-                            f"[DRY] deviation id={row['id']} "
-                            f"hand={row.get('hand_id')} street={row['street']} "
-                            f"action={row['action_index']} → SKIP (no action_evs)"
-                        )
-                    continue
-
-                if args.dry_run:
-                    ev_disp = (
-                        f"{payload['ev_loss']:.2f}bb"
-                        if payload["ev_loss"] is not None else "None"
-                    )
-                    meta_short = ", ".join(
-                        f"{k}={v}" for k, v in payload["meta_updates"].items()
-                    )
-                    print(
-                        f"[DRY] deviation id={row['id']} chat={row['chat_id']} "
-                        f"hand={row.get('hand_id')} street={row['street']} "
-                        f"action={row['action_index']}\n"
-                        f"      existing ev_loss=NULL  → {ev_disp}\n"
-                        f"      meta updates: {meta_short}"
-                    )
-                    updated += 1
-                else:
-                    await _apply_update(
-                        conn, row["id"], payload["ev_loss"], payload["meta_updates"],
-                    )
-                    updated += 1
+                get_user_access_token(cid, rt)  # refresh + cache
+                user_access_ok[cid] = True
+                logger.info(f"user {cid}: token refreshed ok")
+            except TokenExpiredError as e:
+                logger.warning(f"user {cid}: token refresh failed ({e}) — skipping all rows")
+                user_access_ok[cid] = False
+                users_skipped.add(cid)
             except Exception as e:
-                errors += 1
                 logger.warning(
-                    f"row id={row.get('id')} failed: {type(e).__name__}: {e}"
+                    f"user {cid}: unexpected token error {type(e).__name__}: {e} — skipping"
                 )
-                # Do NOT mark as attempted — let next run retry.
+                user_access_ok[cid] = False
+                users_skipped.add(cid)
 
-            if done % 50 == 0:
-                logger.info(
-                    f"backfill: {done}/{total} processed, "
-                    f"{updated} updated, {skipped} skipped, {errors} errors"
-                )
+        current_user_token_cid: int | None = None
+        try:
+            for row in queue:
+                done += 1
+                cid = int(row["chat_id"]) if row.get("chat_id") is not None else None
+
+                # Skip rows whose user has no working token.
+                if cid is None or not user_access_ok.get(cid, False):
+                    skipped += 1
+                    if args.dry_run:
+                        print(
+                            f"[DRY] deviation id={row['id']} chat={cid} "
+                            f"hand={row.get('hand_id')} → SKIP (user token unavailable)"
+                        )
+                    continue
+
+                # Set the right per-user token for this row's owner.
+                if cid != current_user_token_cid:
+                    rt = refresh_tokens.get(cid)
+                    try:
+                        access = get_user_access_token(cid, rt)
+                        set_user_token(access)
+                        current_user_token_cid = cid
+                    except TokenExpiredError:
+                        logger.warning(
+                            f"user {cid} token went stale mid-run — skipping rest of user"
+                        )
+                        user_access_ok[cid] = False
+                        users_skipped.add(cid)
+                        skipped += 1
+                        continue
+
+                try:
+                    payload = _compute_update_for_row(row)
+                    if payload is None:
+                        skipped += 1
+                        if args.dry_run:
+                            print(
+                                f"[DRY] deviation id={row['id']} "
+                                f"hand={row.get('hand_id')} street={row['street']} "
+                                f"action={row['action_index']} → SKIP (no hand_data or solver walk failed)"
+                            )
+                        continue
+
+                    if not payload["has_solver_data"] and payload["ev_loss"] is None:
+                        skipped += 1
+                        if args.dry_run:
+                            print(
+                                f"[DRY] deviation id={row['id']} "
+                                f"hand={row.get('hand_id')} street={row['street']} "
+                                f"action={row['action_index']} hero_action={row.get('hero_action')} "
+                                f"→ SKIP (off-tree: hero's combo has <0.5% range weight at this decision; "
+                                f"real leak is upstream)"
+                            )
+                        continue
+
+                    if args.dry_run:
+                        ev_disp = (
+                            f"{payload['ev_loss']:.2f}bb"
+                            if payload["ev_loss"] is not None else "None"
+                        )
+                        meta_short = ", ".join(
+                            f"{k}={v}" for k, v in payload["meta_updates"].items()
+                        )
+                        print(
+                            f"[DRY] deviation id={row['id']} chat={row['chat_id']} "
+                            f"hand={row.get('hand_id')} street={row['street']} "
+                            f"action={row['action_index']}\n"
+                            f"      existing ev_loss=NULL  → {ev_disp}\n"
+                            f"      meta updates: {meta_short}"
+                        )
+                        updated += 1
+                    else:
+                        await _apply_update(
+                            conn, row["id"], payload["ev_loss"], payload["meta_updates"],
+                        )
+                        updated += 1
+                except Exception as e:
+                    errors += 1
+                    logger.warning(
+                        f"row id={row.get('id')} failed: {type(e).__name__}: {e}"
+                    )
+                    # Do NOT mark as attempted — let next run retry.
+
+                if done % 50 == 0:
+                    logger.info(
+                        f"backfill: {done}/{total} processed, "
+                        f"{updated} updated, {skipped} skipped, {errors} errors"
+                    )
+        finally:
+            clear_user_token()
     except KeyboardInterrupt:
         print("\n^C — aborting", file=sys.stderr)
     finally:
@@ -432,12 +519,17 @@ async def run_backfill(args: argparse.Namespace) -> int:
     if args.dry_run:
         print(
             f"DRY-RUN SUMMARY: {done} rows eligible, {updated} would update, "
-            f"{skipped} skipped (no solver data), {errors} errors"
+            f"{skipped} skipped, {errors} errors"
         )
     else:
         print(
             f"BACKFILL SUMMARY: {done} rows processed, "
             f"{updated} updated, {skipped} skipped, {errors} errors"
+        )
+    if users_skipped:
+        print(
+            f"Users fully skipped (token unavailable or refresh failed): "
+            f"{sorted(users_skipped)}"
         )
     return 0 if errors == 0 else 1
 
