@@ -1,5 +1,36 @@
 # TODOS
 
+## P1 — Weekly Report v2 follow-ups
+
+### GTOW trainer URL schema reverse-engineering (Option Z)
+Weekly Report v2 ships with `fh_actions=<type>` + `depth` URLs that land on the right pot-type + depth but don't pin the exact position pair (e.g. LJ-vs-HJ). User manually picks the seat on arrival. To make links position-accurate: open Chrome devtools Network tab on app.gtowizard.com, click through the practice UI for different position pairs, capture the URL/POST params (likely a hidden `shortcut_id=<int>` or `positions=...` field), then rewrite `scripts/gtow_trainer_url.py:build_trainer_url` to emit position-accurate URLs.
+- **Why:** Closes the loop from "leak found" to "drilling the exact spot" in one tap
+- **Effort:** CC ~30 min once access is set up
+- **Risk:** Low — isolated URL builder change
+- **Depends on:** Weekly Report v2 shipped
+- **Gate:** Do this once URL imprecision becomes the most-complained-about issue in reports
+
+### `raw_solver_snippet` JSONB column on deviations
+Add a column to `deviations` table that stores the slice of `next_actions` response needed for future re-processing (per-action EVs + frequencies for hero's hand). Means future analytics iterations never need to re-hit GTOW API or the cache.
+- **Why:** Future-proof — today's backfill works because gto_api_cache hits, but a schema/solver change could invalidate cache. Embedding the data in deviations makes it permanent.
+- **Effort:** CC ~15 min — one migration + one write at insertion point
+- **Risk:** Low — additive column
+- **Depends on:** Weekly Report v2 shipped (can be a follow-up PR)
+
+### Cross-week cluster recurrence detection
+When the same cluster key appears in consecutive weekly reports with similar total_ev_loss, surface it as "recurring leak, not improving" in the report header. Also track "leak resolved" when a cluster drops out.
+- **Why:** Motivational + accountability signal — "you've had this leak for 3 weeks now"
+- **Effort:** CC ~20 min
+- **Risk:** Low — additive query on leak_reports history
+- **Depends on:** Weekly Report v2 shipped + 2-3 weeks of data
+
+### Tilt detection v2 on ev_loss_rate
+Current tilt detection uses deviation_rate moving window. Rebase on ev_loss_rate (cumulative -bb over last N decisions) to match the rest of v2's philosophy.
+- **Why:** Ranking-consistency with main report, truer signal of "bleeding chips now"
+- **Effort:** CC ~15 min
+- **Risk:** Low — swap the metric in existing logic
+- **Depends on:** Weekly Report v2 shipped + 1 week of ev_loss data
+
 ## P2 — Phase 2 (核心 pipeline 完成後)
 
 ### Meta-leak detection (問題模式分析)

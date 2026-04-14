@@ -851,9 +851,27 @@ class GeminiSessionManager:
         if not self.db or not self.db.pool:
             return
         try:
-            from spot_categorizer import categorize_spot, classify_board_texture
+            from spot_categorizer import (
+                categorize_spot,
+                classify_board_texture,
+                compute_preflop_line_key,
+                compute_pot_type,
+                identify_primary_villain,
+                map_spot_to_gtow,
+                _identify_preflop_aggressor,
+            )
             from gto_formatter import combo_index_for_hand, _COMBO_INDEX, _get_board_cards, _combo_to_hand_name
-            from leak_service import insert_deviation
+            from hh_deviation_check import (
+                _get_action_evs_preflop,
+                _get_action_evs_postflop,
+            )
+            from leak_service import (
+                insert_deviation,
+                DeviationMeta,
+                compute_ev_loss,
+                pick_best_ev_action,
+                classify_aggression_direction,
+            )
 
             hero_spots = context.get("hero_spots", [])
             solutions = context.get("solutions", [])
@@ -977,6 +995,73 @@ class GeminiSessionManager:
 
                 is_deviation = (hero_freq is not None and hero_freq < 0.10)
 
+                # ── Per-action EVs → true EV loss + best-EV action ──
+                # Note: "gto_action" / best_code above is MAX FREQUENCY; we
+                # track it as dominant_action and compute the true best-EV
+                # action separately for the URL builder / ev_loss formula.
+                try:
+                    if is_preflop:
+                        action_evs = _get_action_evs_preflop(sol, hero_hand, hero_pos)
+                    else:
+                        action_evs = _get_action_evs_postflop(
+                            sol, hero_hand, hero_pos, combo_idx=combo_idx
+                        )
+                except Exception:
+                    action_evs = None
+
+                ev_loss = compute_ev_loss(action_evs, taken_code)
+                gto_best_ev_code = pick_best_ev_action(action_evs)
+                gto_dominant_code = gto_action or None
+
+                # ── Meta fields ──
+                preflop_actions_str = hand_json.get("preflop_actions", "") or ""
+                num_players = hand_json.get("players_at_table", 8)
+                try:
+                    line_key = compute_preflop_line_key(
+                        preflop_actions_str,
+                        hero_pos,
+                        num_players=num_players,
+                        action_index=(action_idx if is_preflop else 0),
+                    )
+                except Exception:
+                    line_key = None
+                pot_type = compute_pot_type(line_key) if line_key is not None else None
+
+                try:
+                    villain_pos = identify_primary_villain(
+                        hand_json,
+                        hero_pos,
+                        street,
+                        street_actions_before if not is_preflop else None,
+                    )
+                except Exception:
+                    villain_pos = None
+
+                try:
+                    pf_agg = _identify_preflop_aggressor(preflop_actions_str, num_players)
+                except Exception:
+                    pf_agg = None
+                hero_is_pf_aggressor = (pf_agg == hero_pos)
+
+                gtow_type, gtow_hero_role = map_spot_to_gtow(
+                    cat, pot_type, street, hero_is_pf_aggressor
+                )
+
+                aggression_direction = classify_aggression_direction(
+                    taken_code, gto_best_ev_code
+                )
+
+                dm = DeviationMeta(
+                    villain_pos=villain_pos,
+                    preflop_line_key=line_key or None,
+                    pot_type=pot_type,
+                    aggression_direction=aggression_direction,
+                    gtow_type=gtow_type,
+                    gtow_hero_role=gtow_hero_role,
+                    gto_dominant_action=gto_dominant_code,
+                    gto_best_ev_action=gto_best_ev_code,
+                )
+
                 await insert_deviation(
                     pool=self.db.pool,
                     chat_id=chat_id,
@@ -989,10 +1074,11 @@ class GeminiSessionManager:
                     gto_action=gto_action or taken_code,
                     hero_freq=hero_freq_pct,
                     gto_freq=gto_freq_pct,
-                    ev_loss_estimate=None,  # TODO: compute from action EVs
+                    ev_loss_estimate=ev_loss,
                     board_texture=texture,
                     effective_bb=effective_bb,
                     is_deviation=is_deviation,
+                    meta=dm.to_jsonb() or None,
                 )
 
         except Exception as e:

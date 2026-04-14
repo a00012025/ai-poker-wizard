@@ -3313,6 +3313,217 @@ def test_spot_edge_facing_open_caller():
     assert_eq(cat, "facing_open")
 
 
+# ── New buckets: possible_squeeze, hero_3bet, vs_squeeze ──
+
+@test
+def test_spot_categorize_possible_squeeze():
+    """possible_squeeze: open + caller in front, hero does not raise."""
+    from spot_categorizer import categorize_preflop
+    # CO opens R2, BTN calls, hero is BB and flats/folds
+    cat = categorize_preflop("F-F-F-F-R2-C-F-F", "BB", 8, action_index=0)
+    assert_eq(cat, "possible_squeeze")
+
+@test
+def test_spot_categorize_possible_squeeze_sb():
+    """possible_squeeze: LJ opens, CO calls, hero SB does not raise."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("F-F-R2-F-C-F-F-F", "SB", 8, action_index=0)
+    assert_eq(cat, "possible_squeeze")
+
+@test
+def test_spot_categorize_hero_3bet():
+    """hero_3bet: hero 3bets facing an open with no callers in between."""
+    from spot_categorizer import categorize_preflop
+    # LJ opens R2, HJ/CO fold, hero is BTN 3bets
+    cat = categorize_preflop("F-F-R2-F-F-R8-F-F", "BTN", 8, action_index=0)
+    assert_eq(cat, "hero_3bet")
+
+@test
+def test_spot_categorize_hero_3bet_bb():
+    """hero_3bet: CO opens, hero BB 3bets, no callers."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("F-F-F-F-R2-F-F-R8", "BB", 8, action_index=0)
+    assert_eq(cat, "hero_3bet")
+
+@test
+def test_spot_categorize_vs_squeeze():
+    """vs_squeeze: hero opened, caller came in, then re-raise (squeeze)."""
+    from spot_categorizer import categorize_preflop
+    # Hero LJ opens, CO calls, BTN squeezes, LJ's second decision
+    cat = categorize_preflop("F-F-R2-F-C-R8-F-F", "LJ", 8, action_index=1)
+    assert_eq(cat, "vs_squeeze")
+
+@test
+def test_spot_categorize_vs_squeeze_co():
+    """vs_squeeze: CO opens, BTN calls, BB squeezes; CO faces squeeze."""
+    from spot_categorizer import categorize_preflop
+    cat = categorize_preflop("F-F-F-F-R2-C-F-R8", "CO", 8, action_index=1)
+    assert_eq(cat, "vs_squeeze")
+
+@test
+def test_spot_categorize_facing_3bet_no_squeeze_still_works():
+    """Regression: facing_3bet without caller between stays facing_3bet."""
+    from spot_categorizer import categorize_preflop
+    # CO opens, BB 3bets, CO faces 3bet (no caller between)
+    cat = categorize_preflop("F-F-F-F-R2-F-F-R8-C", "CO", 8, action_index=1)
+    assert_eq(cat, "facing_3bet")
+
+@test
+def test_spot_categorize_facing_open_regression():
+    """REGRESSION: facing_open must still classify when no callers in front
+    and hero does not raise. This is the critical split-safety guarantee."""
+    from spot_categorizer import categorize_preflop
+    # UTG opens, folds to CO (hero), one raise + no calls before = facing_open
+    cat = categorize_preflop("R2-F-F-F-F-F-F-F", "UTG+1", 8, action_index=0)
+    assert_eq(cat, "facing_open")
+    cat2 = categorize_preflop("F-F-R2-F-F-F-F-F", "HJ", 8, action_index=0)
+    assert_eq(cat2, "facing_open")
+
+@test
+def test_spot_categorize_squeeze_still_works():
+    """Regression: squeeze (hero IS the squeezer) unchanged."""
+    from spot_categorizer import categorize_preflop
+    # UTG+1 opens, LJ calls, hero CO squeezes
+    cat = categorize_preflop("F-R2-C-F-R8-F-F-F", "CO", 8, action_index=0)
+    assert_eq(cat, "squeeze")
+
+
+# ── compute_preflop_line_key tests ──
+
+@test
+def test_line_key_srp_open_call():
+    """HJ opens, hero BB calls → 'HJ-R' (hero action excluded, pre-raise folds elided)."""
+    from spot_categorizer import compute_preflop_line_key
+    key = compute_preflop_line_key("F-F-F-R2-F-F-F-C", "BB", 8)
+    assert_eq(key, "HJ-R")
+
+@test
+def test_line_key_simple_open_fold():
+    """CO opens, hero BTN folds (or acts) → 'CO-R'."""
+    from spot_categorizer import compute_preflop_line_key
+    key = compute_preflop_line_key("F-F-F-F-R2-F-F-F", "BTN", 8)
+    assert_eq(key, "CO-R")
+
+@test
+def test_line_key_3bet_pot():
+    """LJ opens, CO folds, BTN 3bets, SB folds, hero BB; BTN-F elided (pre-RR fold),
+    but SB-F is retained since it comes AFTER the 3bet."""
+    from spot_categorizer import compute_preflop_line_key
+    # LJ opens, HJ folds, CO folds, BTN 3bets, SB folds, hero BB
+    key = compute_preflop_line_key("F-F-R2-F-F-R8-F-F", "BB", 8)
+    # Folds before RR (HJ, CO) elided; SB-F comes after RR, kept.
+    assert_eq(key, "LJ-R-BTN-RR-SB-F")
+
+@test
+def test_line_key_squeeze_pot():
+    """LJ opens, HJ folds, CO calls, BTN squeezes, hero SB."""
+    from spot_categorizer import compute_preflop_line_key
+    key = compute_preflop_line_key("F-F-R2-F-C-R8-F-F", "SB", 8)
+    assert_eq(key, "LJ-R-CO-C-BTN-RR")
+
+@test
+def test_line_key_limp_iso():
+    """UTG limps, UTG+1 limps, BTN iso-raises, hero SB."""
+    from spot_categorizer import compute_preflop_line_key
+    key = compute_preflop_line_key("C-C-F-F-F-R2-F-F", "SB", 8)
+    assert_eq(key, "UTG-C-UTG+1-C-BTN-R")
+
+@test
+def test_line_key_hero_excluded():
+    """Hero's own token must not appear in the key."""
+    from spot_categorizer import compute_preflop_line_key
+    # Hero CO opens R2; key should be empty (nothing before hero, hero excluded)
+    key = compute_preflop_line_key("F-F-F-F-R2-F-F-F", "CO", 8)
+    assert_eq(key, "")
+
+@test
+def test_line_key_4bet_pot():
+    """CO opens, BB 3bets, CO 4bets (hero is BB, second decision) → captures
+    LJ-R ... wait: CO opens R2, hero BB 3bets, CO 4bets → hero BB acts second.
+    Key includes CO-R, then hero's 3bet excluded, then CO-RR (the 4bet)."""
+    from spot_categorizer import compute_preflop_line_key
+    # seats 0..7, CO idx4 R2, BB idx7 R8, CO (continuation) R20 ...
+    key = compute_preflop_line_key("F-F-F-F-R2-F-F-R8-R20", "BB", 8, action_index=1)
+    # Action order: F,F,F,F (elide), CO-R (level1), F,F (elide),
+    # BB=hero → excluded, raise_level becomes 2. Then continuation:
+    # active=[idx4 CO, idx7 BB], cont_idx=0 → CO. Token R20 → RRR (level3).
+    # But we stop at hero's second action (BB). CO-RRR comes before that.
+    assert_eq(key, "CO-R-CO-RRR")
+
+@test
+def test_line_key_fold_after_3bet_kept():
+    """Fold that follows a 3bet (RR) should be kept."""
+    from spot_categorizer import compute_preflop_line_key
+    # LJ opens, CO 3bets, BTN folds, SB folds, hero BB
+    key = compute_preflop_line_key("F-F-R2-F-R8-F-F-F", "BB", 8)
+    # HJ-F elided (pre-RR). BTN-F and SB-F kept (post-RR).
+    assert_eq(key, "LJ-R-CO-RR-BTN-F-SB-F")
+
+@test
+def test_line_key_fold_after_open_elided():
+    """Folds that only follow a single raise (R) are elided."""
+    from spot_categorizer import compute_preflop_line_key
+    # LJ opens, everyone folds to hero BB
+    key = compute_preflop_line_key("F-F-R2-F-F-F-F-F", "BB", 8)
+    assert_eq(key, "LJ-R")
+
+@test
+def test_line_key_unopened():
+    """All folds with no raise — hero BB walks."""
+    from spot_categorizer import compute_preflop_line_key
+    key = compute_preflop_line_key("F-F-F-F-F-F-F-F", "BB", 8)
+    assert_eq(key, "")
+
+@test
+def test_line_key_6max_3bet():
+    """6-max: CO opens, BTN 3bets, hero SB."""
+    from spot_categorizer import compute_preflop_line_key
+    # 6-max seats: LJ, HJ, CO, BTN, SB, BB
+    key = compute_preflop_line_key("F-F-R2-R8-F-F", "SB", 6)
+    assert_eq(key, "CO-R-BTN-RR")
+
+
+# ── compute_pot_type tests ──
+
+@test
+def test_pot_type_srp():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type("CO-R"), "SRP")
+    assert_eq(compute_pot_type("HJ-R-BTN-F-SB-F"), "SRP")
+
+@test
+def test_pot_type_3bet():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type("LJ-R-BTN-RR-SB-F"), "3bet")
+    assert_eq(compute_pot_type("CO-R-BB-RR"), "3bet")
+
+@test
+def test_pot_type_4bet():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type("CO-R-BB-RR-CO-RRR"), "4bet")
+
+@test
+def test_pot_type_squeezed():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type("LJ-R-CO-C-BTN-RR"), "squeezed")
+
+@test
+def test_pot_type_limp():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type("UTG-C-UTG+1-C-BTN-R"), "limp")
+
+@test
+def test_pot_type_limp_pure():
+    from spot_categorizer import compute_pot_type
+    # pure limp pot with no iso raise
+    assert_eq(compute_pot_type("UTG-C-SB-C"), "limp")
+
+@test
+def test_pot_type_unopened():
+    from spot_categorizer import compute_pot_type
+    assert_eq(compute_pot_type(""), "unopened")
+
+
 # ── Follow-up Parse Guard Tests ──
 
 @test
@@ -3533,6 +3744,408 @@ def test_extract_followups_strips_from_text():
     assert_eq(len(followups3), 0, "no followups extracted")
 
 
+# ── Lane A2: EV loss + DeviationMeta + aggression direction tests ──
+
+from leak_service import (  # noqa: E402
+    DeviationMeta,
+    compute_ev_loss,
+    pick_best_ev_action,
+    classify_aggression_direction,
+)
+from spot_categorizer import map_spot_to_gtow  # noqa: E402
+
+
+@test
+def test_ev_loss_tied_best():
+    """Mixed bet/check with tied EVs → loss is 0 when hero bets."""
+    evs = {"R2": 10.5, "X": 10.5}
+    assert_eq(compute_ev_loss(evs, "R2"), 0.0)
+    assert_eq(compute_ev_loss(evs, "X"), 0.0)
+
+
+@test
+def test_ev_loss_small_delta():
+    """Hero picks the slightly worse line → loss equals delta."""
+    evs = {"R2": 10.5, "X": 10.3}
+    loss = compute_ev_loss(evs, "X")
+    assert_true(loss is not None and abs(loss - 0.2) < 1e-9, f"loss={loss}")
+
+
+@test
+def test_ev_loss_dominated_action():
+    """Dominated action: bet 10, call 9, fold 8 → hero folds → loss=2.0."""
+    evs = {"R2": 10.0, "C": 9.0, "F": 8.0}
+    loss = compute_ev_loss(evs, "F")
+    assert_true(loss is not None and abs(loss - 2.0) < 1e-9, f"loss={loss}")
+
+
+@test
+def test_ev_loss_one_legal_action():
+    """Only one legal action → loss is 0."""
+    evs = {"F": 0.0}
+    assert_eq(compute_ev_loss(evs, "F"), 0.0)
+
+
+@test
+def test_ev_loss_missing_inputs():
+    """Missing EVs or unknown code → returns None, no crash."""
+    assert_eq(compute_ev_loss(None, "R2"), None)
+    assert_eq(compute_ev_loss({}, "R2"), None)
+    assert_eq(compute_ev_loss({"R2": 10.0}, None), None)
+    assert_eq(compute_ev_loss({"R2": 10.0}, "X"), None)  # code not in dict
+
+
+@test
+def test_ev_loss_fp_edge_clamp():
+    """Floating-point: hero_ev marginally > max due to FP error → clamps to 0."""
+    # 0.1 + 0.2 == 0.30000000000000004 ≠ 0.3; construct a tiny negative delta.
+    a = 0.1 + 0.2  # 0.30000000000000004
+    b = 0.3
+    evs = {"R2": b, "X": a}
+    loss = compute_ev_loss(evs, "X")
+    assert_true(loss is not None and loss == 0.0, f"loss={loss}")
+
+
+@test
+def test_pick_best_ev_action():
+    assert_eq(pick_best_ev_action({"R2": 10.0, "C": 9.0, "F": 8.0}), "R2")
+    assert_eq(pick_best_ev_action({}), None)
+    assert_eq(pick_best_ev_action(None), None)
+
+
+@test
+def test_deviation_meta_to_jsonb_excludes_none():
+    dm = DeviationMeta(villain_pos="HJ", pot_type="SRP")
+    d = dm.to_jsonb()
+    assert_eq(d, {"villain_pos": "HJ", "pot_type": "SRP"})
+    assert_true("aggression_direction" not in d)
+
+
+@test
+def test_deviation_meta_from_jsonb_none():
+    dm = DeviationMeta.from_jsonb(None)
+    assert_eq(dm, DeviationMeta())
+    dm2 = DeviationMeta.from_jsonb({})
+    assert_eq(dm2, DeviationMeta())
+
+
+@test
+def test_deviation_meta_round_trip():
+    original = DeviationMeta(
+        villain_pos="HJ",
+        preflop_line_key="LJ-R-HJ-C",
+        pot_type="SRP",
+        aggression_direction="too_aggressive",
+        gtow_type="SRP",
+        gtow_hero_role="aggressor",
+        gto_dominant_action="R2",
+        gto_best_ev_action="R2",
+    )
+    restored = DeviationMeta.from_jsonb(original.to_jsonb())
+    assert_eq(restored, original)
+
+
+@test
+def test_deviation_meta_from_jsonb_ignores_unknown():
+    """Unknown keys in JSONB should not crash from_jsonb."""
+    dm = DeviationMeta.from_jsonb({"villain_pos": "BTN", "future_field": 42})
+    assert_eq(dm.villain_pos, "BTN")
+
+
+@test
+def test_aggression_direction_aligned():
+    assert_eq(classify_aggression_direction("R2", "R2"), "aligned")
+    assert_eq(classify_aggression_direction("F", "F"), "aligned")
+
+
+@test
+def test_aggression_direction_too_passive():
+    # X (check) when GTO wants to bet/raise.
+    assert_eq(classify_aggression_direction("X", "R2"), "too_passive")
+    assert_eq(classify_aggression_direction("C", "R3"), "too_passive")
+    assert_eq(classify_aggression_direction("F", "AI"), "too_passive")
+
+
+@test
+def test_aggression_direction_too_aggressive():
+    assert_eq(classify_aggression_direction("R2", "X"), "too_aggressive")
+    assert_eq(classify_aggression_direction("AI", "C"), "too_aggressive")
+    assert_eq(classify_aggression_direction("R3", "F"), "too_aggressive")
+
+
+@test
+def test_aggression_direction_mixed():
+    # Two aggressive actions, different sizings → "mixed".
+    assert_eq(classify_aggression_direction("R2", "R3"), "mixed")
+    assert_eq(classify_aggression_direction("R2", "AI"), "mixed")
+
+
+@test
+def test_aggression_direction_missing():
+    assert_eq(classify_aggression_direction(None, "R2"), None)
+    assert_eq(classify_aggression_direction("R2", None), None)
+
+
+@test
+def test_map_spot_to_gtow_preflop():
+    cases = {
+        "open_raise":       ("RFI",             "aggressor"),
+        "facing_open":      ("vsSRP",           "caller_candidate"),
+        "hero_3bet":        ("3bet",            "3bettor"),
+        "facing_3bet":      ("vs3bet",          "opener"),
+        "facing_4bet":      ("vs4bet",          "3bettor"),
+        "squeeze":          ("Squeeze",         "squeezer"),
+        "vs_squeeze":       ("vsSqueeze",       "opener"),
+        "possible_squeeze": ("possibleSqueeze", "caller_candidate"),
+        "limp_pot":         ("vsLimp",          "iso_candidate"),
+    }
+    for spot, expected in cases.items():
+        actual = map_spot_to_gtow(spot, None, "preflop", hero_is_pf_aggressor=False)
+        assert_eq(actual, expected, msg=f"preflop spot {spot}")
+
+
+@test
+def test_map_spot_to_gtow_postflop():
+    # SRP pot, hero is the aggressor (cbet_ip) → (SRP, aggressor).
+    assert_eq(
+        map_spot_to_gtow("cbet_ip", "SRP", "flop", hero_is_pf_aggressor=True),
+        ("SRP", "aggressor"),
+    )
+    # 3bet pot, hero is the caller → (3bet, caller).
+    assert_eq(
+        map_spot_to_gtow("facing_cbet_oop", "3bet", "flop", hero_is_pf_aggressor=False),
+        ("3bet", "caller"),
+    )
+    # 4bet pot collapses to 3bet flop type.
+    assert_eq(
+        map_spot_to_gtow("cbet_oop", "4bet", "flop", hero_is_pf_aggressor=True),
+        ("3bet", "aggressor"),
+    )
+    # Squeezed pot.
+    assert_eq(
+        map_spot_to_gtow("cbet_ip", "squeezed", "flop", hero_is_pf_aggressor=True),
+        ("Squeeze", "aggressor"),
+    )
+
+
+@test
+def test_map_spot_to_gtow_unknown():
+    # Unknown preflop spot category → (None, None).
+    assert_eq(
+        map_spot_to_gtow("nonsense_spot", None, "preflop", hero_is_pf_aggressor=False),
+        (None, None),
+    )
+
+
+# ── Lane B: GTOW trainer URL builder tests ──
+
+from urllib.parse import urlparse, parse_qs
+from gtow_trainer_url import (
+    build_trainer_url,
+    snap_depth,
+    SpotNotSupportedError,
+    AVAILABLE_DEPTHS_BB,
+)
+
+
+@test
+def test_snap_depth_exact_points():
+    """snap_depth: exact snap points round to themselves"""
+    for d in (10, 20, 30, 100):
+        assert_eq(snap_depth(d), d, f"exact {d}")
+
+
+@test
+def test_snap_depth_round_down():
+    """snap_depth: 22.4 → 20 (nearer to 20 than 25)"""
+    assert_eq(snap_depth(22.4), 20)
+
+
+@test
+def test_snap_depth_round_up():
+    """snap_depth: 22.6 → 25"""
+    assert_eq(snap_depth(22.6), 25)
+
+
+@test
+def test_snap_depth_tie_rounds_down():
+    """snap_depth: 17.5 → 15 (tie rounds down)"""
+    assert_eq(snap_depth(17.5), 15)
+
+
+@test
+def test_snap_depth_clamp_min():
+    """snap_depth: 5 → 10 (clamped to min)"""
+    assert_eq(snap_depth(5), 10)
+
+
+@test
+def test_snap_depth_clamp_max():
+    """snap_depth: 150 → 100 (clamped to max)"""
+    assert_eq(snap_depth(150), 100)
+
+
+@test
+def test_snap_depth_gtow_float_format():
+    """snap_depth: 30.125 (GTOW internal format) → 30"""
+    assert_eq(snap_depth(30.125), 30)
+
+
+@test
+def test_snap_depth_boundary_tie_low():
+    """snap_depth: 12.5 → 10 (tie between 10 and 15 rounds down)"""
+    assert_eq(snap_depth(12.5), 10)
+
+
+@test
+def test_build_url_open_raise():
+    """build_trainer_url: open_raise → fh_actions=RFI"""
+    url = build_trainer_url("open_raise", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["RFI"])
+    assert_eq(qs["fh_start_spot"], ["preflop"])
+
+
+@test
+def test_build_url_facing_3bet():
+    """build_trainer_url: facing_3bet → fh_actions=vs3bet"""
+    url = build_trainer_url("facing_3bet", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["vs3bet"])
+
+
+@test
+def test_build_url_possible_squeeze():
+    """build_trainer_url: possible_squeeze → fh_actions=possibleSqueeze"""
+    url = build_trainer_url("possible_squeeze", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["possibleSqueeze"])
+
+
+@test
+def test_build_url_hero_3bet():
+    """build_trainer_url: hero_3bet → fh_actions=3bet"""
+    url = build_trainer_url("hero_3bet", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["3bet"])
+
+
+@test
+def test_build_url_vs_squeeze():
+    """build_trainer_url: vs_squeeze → fh_actions=vsSqueeze"""
+    url = build_trainer_url("vs_squeeze", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["vsSqueeze"])
+
+
+@test
+def test_build_url_depth_snapped():
+    """build_trainer_url: effective_bb=22.4 → depth=20.125"""
+    url = build_trainer_url("open_raise", "preflop", 22.4)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["depth"], ["20.125"])
+    assert_eq(qs["depth_list"], ["20.125"])
+
+
+@test
+def test_build_url_unknown_preflop_spot_raises():
+    """build_trainer_url: unknown preflop spot → SpotNotSupportedError"""
+    try:
+        build_trainer_url("made_up_spot", "preflop", 20)
+    except SpotNotSupportedError:
+        return
+    raise AssertionError("expected SpotNotSupportedError")
+
+
+@test
+def test_build_url_is_parseable():
+    """build_trainer_url: result is a valid URL starting with base"""
+    url = build_trainer_url("open_raise", "preflop", 20)
+    assert_true(url.startswith("https://app.gtowizard.com/practice/trainer?"))
+    parsed = urlparse(url)
+    assert_eq(parsed.scheme, "https")
+    assert_eq(parsed.netloc, "app.gtowizard.com")
+    assert_eq(parsed.path, "/practice/trainer")
+
+
+@test
+def test_build_url_postflop_srp():
+    """build_trainer_url: flop + SRP → fh_actions=SRP, fh_start_spot=flop"""
+    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="SRP")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["SRP"])
+    assert_eq(qs["fh_start_spot"], ["flop"])
+
+
+@test
+def test_build_url_postflop_3bet_pot():
+    """build_trainer_url: flop + 3bet pot → fh_actions=3bet"""
+    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="3bet")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["3bet"])
+
+
+@test
+def test_build_url_postflop_squeezed():
+    """build_trainer_url: flop + squeezed pot → fh_actions=Squeeze"""
+    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="squeezed")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["Squeeze"])
+
+
+@test
+def test_build_url_postflop_4bet_falls_back_to_3bet():
+    """build_trainer_url: flop + 4bet pot → fh_actions=3bet (closest)"""
+    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="4bet")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["3bet"])
+
+
+@test
+def test_build_url_turn_srp_keeps_turn_start():
+    """build_trainer_url: turn + SRP → fh_actions=SRP, fh_start_spot=turn"""
+    url = build_trainer_url("cbet_ip", "turn", 30, pot_type="SRP")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_actions"], ["SRP"])
+    assert_eq(qs["fh_start_spot"], ["turn"])
+
+
+@test
+def test_build_url_postflop_missing_pot_type_raises():
+    """build_trainer_url: postflop without pot_type → SpotNotSupportedError"""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30)
+    except SpotNotSupportedError:
+        return
+    raise AssertionError("expected SpotNotSupportedError")
+
+
+@test
+def test_build_url_postflop_unknown_pot_type_raises():
+    """build_trainer_url: unknown pot_type → SpotNotSupportedError"""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30, pot_type="weirdpot")
+    except SpotNotSupportedError:
+        return
+    raise AssertionError("expected SpotNotSupportedError")
+
+
+@test
+def test_build_url_preserves_ui_flags():
+    """build_trainer_url: every URL contains fh_trainer_hero_range=on"""
+    url = build_trainer_url("open_raise", "preflop", 20)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["fh_trainer_hero_range"], ["on"])
+
+
+@test
+def test_build_url_contains_solution_type():
+    """build_trainer_url: every URL contains solution_type=gwiz"""
+    url = build_trainer_url("facing_3bet", "preflop", 25)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["solution_type"], ["gwiz"])
+
+
 # ── Runner ──
 
 def run_tests():
@@ -3578,6 +4191,542 @@ def run_tests():
     print(f"{'='*60}")
 
     return failed == 0
+
+
+# ── Leak Miner Tests ──
+
+@test
+def test_label_aggression_all_passive():
+    """leak_miner: all passive → too_passive."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(5, 0, 0, 0), "too_passive")
+
+
+@test
+def test_label_aggression_all_aggressive():
+    """leak_miner: all aggressive → too_aggressive."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(0, 5, 0, 0), "too_aggressive")
+
+
+@test
+def test_label_aggression_70pct_passive():
+    """leak_miner: 70% passive exactly → too_passive."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(7, 3, 0, 0), "too_passive")
+
+
+@test
+def test_label_aggression_69pct_passive():
+    """leak_miner: 69% passive → mixed (below threshold)."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(69, 31, 0, 0), "mixed")
+
+
+@test
+def test_label_aggression_50_50():
+    """leak_miner: 50/50 split → mixed."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(5, 5, 0, 0), "mixed")
+
+
+@test
+def test_label_aggression_all_aligned():
+    """leak_miner: all aligned → aligned."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(0, 0, 10, 0), "aligned")
+
+
+@test
+def test_label_aggression_mostly_aligned_one_passive():
+    """leak_miner: mostly aligned with 1 passive → too_passive (non-aligned dominated by passive)."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(1, 0, 9, 0), "too_passive")
+
+
+@test
+def test_label_aggression_empty():
+    """leak_miner: zero everything → mixed (degenerate fallback)."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(0, 0, 0, 0), "mixed")
+
+
+@test
+def test_label_aggression_mixed_with_mixed_bucket():
+    """leak_miner: 3/2/0/5 → mixed (neither side hits threshold)."""
+    from leak_miner import _label_aggression
+    assert_eq(_label_aggression(3, 2, 0, 5), "mixed")
+
+
+@test
+def test_cluster_key_to_dict():
+    """leak_miner: ClusterKey.to_dict preserves all fields incl. Nones."""
+    from leak_miner import ClusterKey
+    k = ClusterKey(
+        pot_type="srp",
+        street="flop",
+        gtow_hero_role=None,
+        villain_pos="BB",
+        hero_pos="BTN",
+        spot_category="cbet_ip",
+        board_texture=None,
+    )
+    d = k.to_dict()
+    assert_eq(d["pot_type"], "srp")
+    assert_eq(d["street"], "flop")
+    assert_eq(d["gtow_hero_role"], None)
+    assert_eq(d["villain_pos"], "BB")
+    assert_eq(d["hero_pos"], "BTN")
+    assert_eq(d["spot_category"], "cbet_ip")
+    assert_eq(d["board_texture"], None)
+    assert_eq(set(d.keys()), {
+        "pot_type", "street", "gtow_hero_role", "villain_pos",
+        "hero_pos", "spot_category", "board_texture",
+    })
+
+
+@test
+def test_cluster_to_dict_rounding():
+    """leak_miner: Cluster.to_dict rounds numeric fields as specified."""
+    from leak_miner import Cluster, ClusterKey
+    k = ClusterKey(
+        pot_type="3bp",
+        street="preflop",
+        gtow_hero_role="IP_3B",
+        villain_pos="CO",
+        hero_pos="BTN",
+        spot_category="facing_3bet",
+        board_texture=None,
+    )
+    c = Cluster(
+        key=k,
+        sample_count=12,
+        total_ev_loss_bb=3.14159,
+        avg_ev_loss_bb=0.26180,
+        aggression_label="too_passive",
+        passive_ratio=0.83333,
+        aggressive_ratio=0.16666,
+        top_hand_ids=[101, 202, 303],
+        effective_bb_median=27.55,
+        gtow_type="ICMGeneral",
+    )
+    d = c.to_dict()
+    assert_eq(d["sample_count"], 12)
+    assert_eq(d["total_ev_loss_bb"], 3.14)
+    assert_eq(d["avg_ev_loss_bb"], 0.262)
+    assert_eq(d["aggression_label"], "too_passive")
+    assert_eq(d["passive_ratio"], 0.83)
+    assert_eq(d["aggressive_ratio"], 0.17)
+    assert_eq(d["top_hand_ids"], [101, 202, 303])
+    assert_eq(d["effective_bb_median"], 27.6)
+    assert_eq(d["gtow_type"], "ICMGeneral")
+    assert_true("key" in d and isinstance(d["key"], dict))
+
+
+# ── Weekly Report v2 Tests (Lane C2) ──
+
+
+def _make_test_cluster(
+    spot_category="cbet_ip",
+    street="flop",
+    pot_type="SRP",
+    hero_pos="BTN",
+    villain_pos="BB",
+    board_texture="dry",
+    sample_count=11,
+    total_ev_loss_bb=4.80,
+    aggression_label="too_aggressive",
+    top_hand_ids=None,
+    effective_bb_median=30.0,
+    gtow_type="MTTGeneral",
+):
+    from leak_miner import Cluster, ClusterKey
+    if top_hand_ids is None:
+        top_hand_ids = [2590, 2574, 2601]
+    return Cluster(
+        key=ClusterKey(
+            pot_type=pot_type,
+            street=street,
+            gtow_hero_role=None,
+            villain_pos=villain_pos,
+            hero_pos=hero_pos,
+            spot_category=spot_category,
+            board_texture=board_texture,
+        ),
+        sample_count=sample_count,
+        total_ev_loss_bb=total_ev_loss_bb,
+        avg_ev_loss_bb=total_ev_loss_bb / max(sample_count, 1),
+        aggression_label=aggression_label,
+        passive_ratio=0.0 if aggression_label == "too_aggressive" else 1.0,
+        aggressive_ratio=1.0 if aggression_label == "too_aggressive" else 0.0,
+        top_hand_ids=top_hand_ids,
+        effective_bb_median=effective_bb_median,
+        gtow_type=gtow_type,
+    )
+
+
+@test
+def test_validate_hand_ids_clean():
+    """weekly_report: narrative referencing only allowed H IDs validates."""
+    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="cbet 過頻",
+        explanation="H2590 和 H2574 都打了過頻，特別是 H2601。",
+        practice_hint="練 SRP 乾板",
+    )
+    assert_true(_validate_narrative_hand_ids(nar, {2590, 2574, 2601}))
+
+
+@test
+def test_validate_hand_ids_extra_id_rejected():
+    """weekly_report: narrative referencing un-allowed H ID rejected."""
+    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="cbet 過頻",
+        explanation="H2590 和 H9999 都打了過頻。",  # 9999 not allowed
+        practice_hint="hint",
+    )
+    assert_true(not _validate_narrative_hand_ids(nar, {2590, 2574, 2601}))
+
+
+@test
+def test_validate_hand_ids_no_mentions():
+    """weekly_report: narrative with zero hand IDs is vacuously valid."""
+    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="cbet 過頻",
+        explanation="這個 spot 你打太多。",
+        practice_hint="hint",
+    )
+    assert_true(_validate_narrative_hand_ids(nar, {2590}))
+
+
+@test
+def test_validate_hand_ids_strict_h_prefix():
+    """weekly_report: bare numbers (e.g. dates, percentages) are NOT matched."""
+    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
+    # 2026 (year) and 50 (a percent) should NOT be parsed as hand IDs.
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="2026 年表現",
+        explanation="這個 spot 偏離 50% 以上，看 H2590。",
+        practice_hint="hint",
+    )
+    assert_true(_validate_narrative_hand_ids(nar, {2590}))
+
+
+@test
+def test_templated_narrative_basic():
+    """weekly_report: templated fallback fills required fields + flags is_fallback."""
+    from weekly_report import _templated_narrative
+    cluster = _make_test_cluster()
+    nar = _templated_narrative(cluster, "0")
+    assert_true(nar.is_fallback)
+    assert_eq(nar.cluster_id, "0")
+    assert_true(len(nar.headline) > 0)
+    assert_true(len(nar.explanation) > 0)
+    assert_true(len(nar.practice_hint) > 0)
+    # Templated narrative should not invent hand IDs.
+    from weekly_report import _validate_narrative_hand_ids
+    assert_true(_validate_narrative_hand_ids(nar, set(cluster.top_hand_ids)))
+
+
+@test
+def test_render_cluster_line_postflop_dry():
+    """weekly_report: postflop SRP dry cluster line contains key substrings."""
+    from weekly_report import _render_cluster_line, ClusterNarrative
+    cluster = _make_test_cluster()
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="LJ 開 + HJ flat 之後乾板過度 cbet",
+        explanation="H2590 和 H2574 都太頻繁。",
+        practice_hint="練 1/3 pot 頻率",
+    )
+    line = _render_cluster_line(
+        cluster, nar, "https://example.com/url", rank=1,
+    )
+    assert_in("**1.", line)
+    assert_in("LJ 開", line)
+    assert_in("乾板", line)
+    assert_in("SRP", line)
+    assert_in("n=11", line)
+    assert_in("-4.80bb", line)
+    assert_in("太 aggressive", line)
+    assert_in("H2590", line)
+    assert_in("https://example.com/url", line)
+
+
+@test
+def test_render_cluster_line_preflop_pot_type():
+    """weekly_report: preflop cluster descriptor uses pot_type + position."""
+    from weekly_report import _render_cluster_line, ClusterNarrative
+    cluster = _make_test_cluster(
+        spot_category="facing_3bet",
+        street="preflop",
+        pot_type="3bet",
+        hero_pos="SB",
+        villain_pos="BTN",
+        board_texture=None,
+        aggression_label="too_passive",
+    )
+    nar = ClusterNarrative(
+        cluster_id="0",
+        headline="SB 面對 3bet 太緊",
+        explanation="",
+        practice_hint="",
+    )
+    line = _render_cluster_line(cluster, nar, None, rank=2)
+    assert_in("3bet pot", line)
+    assert_in("SB", line)
+    assert_in("太 passive", line)
+
+
+@test
+def test_render_cluster_line_direction_aligned():
+    """weekly_report: 'aligned' direction renders with proper Chinese label."""
+    from weekly_report import _render_cluster_line, ClusterNarrative
+    cluster = _make_test_cluster(aggression_label="aligned")
+    nar = ClusterNarrative("0", "headline", "exp", "hint")
+    line = _render_cluster_line(cluster, nar, None, rank=1)
+    assert_in("頻率大致正確", line)
+
+
+@test
+def test_render_cluster_line_ev_format():
+    """weekly_report: EV loss formatted with 2 decimals + minus sign."""
+    from weekly_report import _render_cluster_line, ClusterNarrative
+    cluster = _make_test_cluster(total_ev_loss_bb=2.5)
+    nar = ClusterNarrative("0", "h", "e", "p")
+    line = _render_cluster_line(cluster, nar, None, rank=1)
+    assert_in("-2.50bb", line)
+
+
+class _MockGenAIClient:
+    """Mock google-genai client matching client.aio.models.generate_content."""
+    def __init__(self, responses):
+        # responses: list[str] returned in order on successive calls
+        self._responses = list(responses)
+        self.calls = 0
+
+        class _Models:
+            def __init__(inner, parent):
+                inner._parent = parent
+
+            async def generate_content(inner, model, contents, config=None):
+                idx = inner._parent.calls
+                inner._parent.calls += 1
+                if idx >= len(inner._parent._responses):
+                    text = inner._parent._responses[-1]
+                else:
+                    text = inner._parent._responses[idx]
+
+                class _Resp:
+                    pass
+                r = _Resp()
+                r.text = text
+                return r
+
+        class _Aio:
+            def __init__(inner, parent):
+                inner.models = _Models(parent)
+
+        self.aio = _Aio(self)
+
+
+@test
+def test_generate_cluster_narratives_happy_path():
+    """weekly_report: LLM returns valid array → narratives passed through."""
+    import asyncio as _asyncio
+    from weekly_report import generate_cluster_narratives
+    cluster = _make_test_cluster()
+    raw = json.dumps([{
+        "cluster_id":   "0",
+        "headline":     "cbet 過頻",
+        "explanation":  "H2590 是最貴的決策。",
+        "practice_hint": "練 1/3 pot 頻率",
+    }])
+    mock = _MockGenAIClient([raw])
+    out = _asyncio.get_event_loop().run_until_complete(
+        generate_cluster_narratives([cluster], model_client=mock)
+    )
+    assert_eq(len(out), 1)
+    assert_true(not out[0].is_fallback)
+    assert_eq(out[0].headline, "cbet 過頻")
+    assert_eq(mock.calls, 1)
+
+
+@test
+def test_generate_cluster_narratives_retry_then_succeed():
+    """weekly_report: hallucinated ID → retry once → second attempt valid."""
+    import asyncio as _asyncio
+    from weekly_report import generate_cluster_narratives
+    cluster = _make_test_cluster()
+    bad = json.dumps([{
+        "cluster_id":    "0",
+        "headline":      "headline",
+        "explanation":   "H9999 是最貴的決策。",  # hallucinated
+        "practice_hint": "hint",
+    }])
+    good = json.dumps([{
+        "cluster_id":    "0",
+        "headline":      "cbet 過頻",
+        "explanation":   "H2590 是最貴的決策。",
+        "practice_hint": "練習",
+    }])
+    mock = _MockGenAIClient([bad, good])
+    out = _asyncio.get_event_loop().run_until_complete(
+        generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
+    )
+    assert_eq(len(out), 1)
+    assert_true(not out[0].is_fallback)
+    assert_eq(out[0].headline, "cbet 過頻")
+    assert_eq(mock.calls, 2)
+
+
+@test
+def test_generate_cluster_narratives_two_fails_falls_back():
+    """weekly_report: two validation failures in a row → templated fallback."""
+    import asyncio as _asyncio
+    from weekly_report import generate_cluster_narratives
+    cluster = _make_test_cluster()
+    bad = json.dumps([{
+        "cluster_id":    "0",
+        "headline":      "headline",
+        "explanation":   "H9999 hallucinated.",
+        "practice_hint": "hint",
+    }])
+    mock = _MockGenAIClient([bad, bad])
+    out = _asyncio.get_event_loop().run_until_complete(
+        generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
+    )
+    assert_eq(len(out), 1)
+    assert_true(out[0].is_fallback)
+    assert_eq(mock.calls, 2)
+
+
+@test
+def test_generate_cluster_narratives_no_client():
+    """weekly_report: model_client=None → all clusters templated."""
+    import asyncio as _asyncio
+    from weekly_report import generate_cluster_narratives
+    clusters = [_make_test_cluster(), _make_test_cluster(spot_category="cbet_oop")]
+    out = _asyncio.get_event_loop().run_until_complete(
+        generate_cluster_narratives(clusters, model_client=None)
+    )
+    assert_eq(len(out), 2)
+    assert_true(all(n.is_fallback for n in out))
+
+
+@test
+def test_empty_state_message():
+    """weekly_report: empty state helper returns a non-empty zh-TW string."""
+    from weekly_report import _empty_state_message
+    msg = _empty_state_message()
+    assert_true(len(msg) > 0)
+    assert_in("本週", msg)
+
+
+@test
+def test_render_report_full():
+    """weekly_report: end-to-end render assembles header + clusters + total."""
+    from weekly_report import _render_report, _templated_narrative
+    from datetime import datetime as _dt
+    clusters = [
+        _make_test_cluster(total_ev_loss_bb=4.80),
+        _make_test_cluster(spot_category="cbet_oop", total_ev_loss_bb=2.30),
+    ]
+    narratives = [_templated_narrative(c, str(i)) for i, c in enumerate(clusters)]
+    out = _render_report(
+        clusters=clusters,
+        narratives=narratives,
+        period_start=_dt(2026, 4, 4),
+        period_end=_dt(2026, 4, 11),
+        total_hands=50,
+        total_decisions=159,
+    )
+    assert_in("📊 週報", out)
+    assert_in("04/04", out)
+    assert_in("04/11", out)
+    assert_in("50 手", out)
+    assert_in("159 決策", out)
+    assert_in("**1.", out)
+    assert_in("**2.", out)
+    assert_in("-7.10bb", out)  # cumulative
+
+
+# ── Backfill script pure helpers ──
+
+@test
+def test_backfill_walk_preflop_first():
+    """backfill: _walk_to_decision finds preflop snapshot at action_index=0."""
+    from backfill_ev_loss import _walk_to_decision
+    analysis = {
+        "hero_spots": [
+            {"street": "preflop"},
+            {"street": "flop"},
+        ],
+        "solutions": [
+            {"action_solutions": [{"action": {"code": "R2"}}]},
+            {"action_solutions": [{"action": {"code": "X"}}]},
+        ],
+    }
+    snap = _walk_to_decision(analysis, "preflop", 0)
+    assert_true(snap is not None, "expected non-None snapshot")
+    assert_eq(snap["action_solutions"][0]["action"]["code"], "R2")
+
+
+@test
+def test_backfill_walk_missing_street():
+    """backfill: _walk_to_decision returns None for mismatched street."""
+    from backfill_ev_loss import _walk_to_decision
+    analysis = {
+        "hero_spots": [{"street": "preflop"}],
+        "solutions": [{"action_solutions": [{"action": {"code": "R2"}}]}],
+    }
+    assert_true(_walk_to_decision(analysis, "river", 0) is None)
+    assert_true(_walk_to_decision({}, "preflop", 0) is None)
+    assert_true(_walk_to_decision(analysis, "preflop", 5) is None)
+
+
+@test
+def test_backfill_walk_postflop_second():
+    """backfill: _walk_to_decision indexes per-street for postflop."""
+    from backfill_ev_loss import _walk_to_decision
+    analysis = {
+        "hero_spots": [
+            {"street": "preflop"},
+            {"street": "flop"},
+            {"street": "flop"},
+            {"street": "turn"},
+        ],
+        "solutions": [
+            {"action_solutions": [{"tag": "pf"}]},
+            {"action_solutions": [{"tag": "flop_a"}]},
+            {"action_solutions": [{"tag": "flop_b"}]},
+            {"action_solutions": [{"tag": "turn"}]},
+        ],
+    }
+    snap = _walk_to_decision(analysis, "flop", 1)
+    assert_true(snap is not None)
+    assert_eq(snap["action_solutions"][0]["tag"], "flop_b")
+
+
+@test
+def test_backfill_parse_args():
+    """backfill: parse_args defaults to dry-run, --execute flips it."""
+    from backfill_ev_loss import parse_args
+    ns = parse_args([])
+    assert_true(ns.dry_run is True, "default must be dry-run")
+    assert_true(ns.execute is False, "execute must default False")
+    ns = parse_args(["--execute"])
+    assert_true(ns.dry_run is False)
+    assert_true(ns.execute is True)
+    ns = parse_args(["--execute", "--limit", "42", "--chat-id", "7"])
+    assert_eq(ns.limit, 42)
+    assert_eq(ns.chat_id, 7)
 
 
 if __name__ == "__main__":

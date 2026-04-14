@@ -9,12 +9,114 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, asdict, fields
 from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
 
 logger = logging.getLogger("poker_bot")
+
+
+# ── DeviationMeta (typed JSONB access) ──
+
+@dataclass
+class DeviationMeta:
+    """Typed view of the `deviations.meta` JSONB column.
+
+    All fields are optional; `to_jsonb()` drops None entries so we only
+    store what we actually know. `from_jsonb()` tolerates extra/unknown
+    keys for forward-compat.
+    """
+    villain_pos: str | None = None
+    preflop_line_key: str | None = None
+    pot_type: str | None = None
+    # "too_passive" | "too_aggressive" | "aligned" | "mixed" | None
+    aggression_direction: str | None = None
+    gtow_type: str | None = None
+    # "aggressor" | "caller" | "squeezer" | "3bettor" | ...
+    gtow_hero_role: str | None = None
+    gto_dominant_action: str | None = None  # highest frequency
+    gto_best_ev_action: str | None = None   # highest EV
+
+    def to_jsonb(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_jsonb(cls, d: dict | None) -> "DeviationMeta":
+        if not d:
+            return cls()
+        valid_keys = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+
+
+# ── EV loss + aggression helpers ──
+
+_PASSIVE_CODES = {"F", "X", "C"}
+_AGGRESSIVE_PREFIXES = ("R", "AI", "B")  # B reserved; not currently emitted.
+
+
+def _is_passive(code: str) -> bool:
+    return code in _PASSIVE_CODES
+
+
+def _is_aggressive(code: str) -> bool:
+    if not code:
+        return False
+    return any(code.startswith(p) for p in _AGGRESSIVE_PREFIXES)
+
+
+def compute_ev_loss(
+    action_evs: dict[str, float] | None,
+    hero_code: str | None,
+) -> float | None:
+    """Return max(0, best_ev - hero_ev) in bb, or None if data is missing.
+
+    Floating-point safe: if hero_ev barely exceeds max_ev due to rounding,
+    clamps to 0 rather than returning a negative loss.
+    """
+    if not action_evs or hero_code is None:
+        return None
+    if hero_code not in action_evs:
+        return None
+    hero_ev = action_evs[hero_code]
+    if hero_ev is None:
+        return None
+    try:
+        max_ev = max(action_evs.values())
+    except ValueError:
+        return None
+    loss = max_ev - hero_ev
+    return loss if loss > 0.0 else 0.0
+
+
+def pick_best_ev_action(action_evs: dict[str, float] | None) -> str | None:
+    """Return the action code with the highest EV, or None."""
+    if not action_evs:
+        return None
+    return max(action_evs, key=lambda k: action_evs[k])
+
+
+def classify_aggression_direction(
+    hero_code: str | None,
+    gto_best_code: str | None,
+) -> str | None:
+    """Is hero playing more passively or more aggressively than GTO wants?
+
+    Returns one of: "aligned", "too_passive", "too_aggressive", "mixed".
+    Returns None if either code is missing.
+    """
+    if not hero_code or not gto_best_code:
+        return None
+    if hero_code == gto_best_code:
+        return "aligned"
+    hp, ha = _is_passive(hero_code), _is_aggressive(hero_code)
+    gp, ga = _is_passive(gto_best_code), _is_aggressive(gto_best_code)
+    if hp and ga:
+        return "too_passive"
+    if ha and gp:
+        return "too_aggressive"
+    return "mixed"
 
 
 # ── Deviation Insertion ──
