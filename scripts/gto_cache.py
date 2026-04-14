@@ -5,11 +5,31 @@ Sync interface (psycopg2) because gto_api.py is synchronous.
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 from pathlib import Path
 
 import psycopg2
+
+
+def _sanitize_json(obj):
+    """Recursively replace NaN/Inf floats with None so Postgres JSONB accepts it.
+
+    Python's json.dumps emits 'NaN'/'Infinity' by default (non-standard JSON)
+    which Postgres rejects. Some GTO Wizard responses contain NaN total_ev
+    when a hand combo has 0 range weight on a given street. We null those
+    out before serializing.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(v) for v in obj]
+    return obj
 
 logger = logging.getLogger("poker_bot")
 
@@ -106,13 +126,17 @@ def put(function: str, params: dict, response: dict | None):
     key = _cache_key(function, params)
     _mem[key] = response
 
+    # Sanitize once up-front: replace NaN/Inf floats with None so both L2
+    # (Postgres JSONB) and L3 (file cache reparsed elsewhere) stay strict-JSON.
+    sanitized = _sanitize_json(response) if response is not None else None
+
     # L2: PostgreSQL
     with _db_lock:
         conn = _get_conn()
         if conn is not None:
             try:
                 cur = conn.cursor()
-                if response is None:
+                if sanitized is None:
                     cur.execute(
                         "INSERT INTO gto_api_cache (cache_key, response, is_null) "
                         "VALUES (%s, NULL, TRUE) ON CONFLICT DO NOTHING",
@@ -122,7 +146,7 @@ def put(function: str, params: dict, response: dict | None):
                     cur.execute(
                         "INSERT INTO gto_api_cache (cache_key, response, is_null) "
                         "VALUES (%s, %s, FALSE) ON CONFLICT DO NOTHING",
-                        (key, json.dumps(response)),
+                        (key, json.dumps(sanitized, allow_nan=False)),
                     )
                 cur.close()
             except Exception as e:
@@ -132,10 +156,10 @@ def put(function: str, params: dict, response: dict | None):
     try:
         _CACHE_DIR.mkdir(exist_ok=True)
         cache_file = _CACHE_DIR / f"{key}.json"
-        if response is None:
+        if sanitized is None:
             data = {"is_null": True}
         else:
-            data = {"is_null": False, "response": response}
-        cache_file.write_text(json.dumps(data))
+            data = {"is_null": False, "response": sanitized}
+        cache_file.write_text(json.dumps(data, allow_nan=False))
     except Exception as e:
         logger.warning(f"gto_cache: file write failed: {e}")
