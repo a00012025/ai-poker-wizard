@@ -4,7 +4,8 @@
 Pure function: no API calls, just parsing the action sequence and board.
 
 Spot categories:
-  Preflop:  open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot
+  Preflop:  open_raise, facing_open, possible_squeeze, hero_3bet,
+            facing_3bet, vs_squeeze, squeeze, facing_4bet, limp_pot
   Postflop: cbet_ip, cbet_oop, facing_cbet_ip, facing_cbet_oop,
             probe, facing_probe, donk, check_raise
 """
@@ -150,6 +151,235 @@ def _parse_preflop_context(preflop_actions: str, hero_pos: str,
     }
 
 
+def _iter_preflop_tokens(preflop_actions: str, num_players: int):
+    """Yield (position, raw_token) pairs in ORDER of action.
+
+    Handles both the seat-indexed section (first num_players entries)
+    and the continuation section (subsequent entries cycle through
+    still-active, non-folded players in seat order — same convention
+    as _identify_preflop_aggressor).
+    """
+    pos_order = POSITION_ORDERS.get(num_players, POSITION_ORDERS[8])
+    parts = preflop_actions.split("-")
+
+    # Seat section: one token per seat, in seat order
+    n_seat = min(num_players, len(parts))
+    for i in range(n_seat):
+        token = parts[i]
+        if token == "":
+            continue
+        pos = pos_order[i] if i < len(pos_order) else f"P{i}"
+        yield pos, token
+
+    if len(parts) <= num_players:
+        return
+
+    # Continuation section: cycle through active (non-folded) seats.
+    active = [i for i in range(num_players)
+              if i < len(parts) and parts[i] not in ("F", "")]
+    if not active:
+        return
+    cont_idx = 0
+    for j in range(num_players, len(parts)):
+        token = parts[j]
+        if token == "":
+            cont_idx = (cont_idx + 1) % len(active)
+            continue
+        pos_idx = active[cont_idx]
+        pos = pos_order[pos_idx] if pos_idx < len(pos_order) else f"P{pos_idx}"
+        yield pos, token
+        cont_idx = (cont_idx + 1) % len(active)
+
+
+def _classify_token(token: str, current_raise_level: int) -> tuple[str, int]:
+    """Map a raw action token into (line_key_action, new_raise_level).
+
+    Raise levels: 0 = no raise yet, 1 = R (open), 2 = RR (3bet), 3 = RRR (4bet), ...
+    Returns (action_code, updated_raise_level). action_code in {F,C,R,RR,RRR,AI}.
+    All-ins ('AI*') are treated as raises at the next level, but the
+    returned action_code stays 'AI' (carries its own semantic).
+    """
+    if token == "F":
+        return "F", current_raise_level
+    if token == "C" or token == "X":
+        # X (check) behaves like C in BB when BB can check through a limp pot.
+        return "C", current_raise_level
+    if token.startswith("AI"):
+        new_level = current_raise_level + 1
+        return "AI", new_level
+    if token.startswith("R"):
+        new_level = current_raise_level + 1
+        code_map = {1: "R", 2: "RR", 3: "RRR", 4: "RRRR"}
+        return code_map.get(new_level, "R" * new_level), new_level
+    # Unknown token — skip.
+    return "", current_raise_level
+
+
+def _hero_faced_squeeze(preflop_actions: str, hero_pos: str,
+                        num_players: int) -> bool:
+    """True if hero opened, a caller came in, then a re-raise happened
+    before hero's next decision (the vs_squeeze pattern)."""
+    hero_opened = False
+    saw_caller_after_hero = False
+    for pos, token in _iter_preflop_tokens(preflop_actions, num_players):
+        if not hero_opened:
+            if pos == hero_pos and (token.startswith("R") or token.startswith("AI")):
+                hero_opened = True
+            continue
+        # After hero opened
+        if pos == hero_pos:
+            # Hero's second action reached — stop scanning.
+            return False
+        if token == "C":
+            saw_caller_after_hero = True
+        elif token.startswith("R") or token.startswith("AI"):
+            if saw_caller_after_hero:
+                return True
+            # A 3bet without a caller between = plain facing_3bet.
+            return False
+    return False
+
+
+def compute_preflop_line_key(preflop_actions: str, hero_pos: str,
+                             num_players: int = 8,
+                             action_index: int | None = 0) -> str:
+    """Build a compact signature of the preflop action sequence.
+
+    Grammar:
+        line_key := "-".join of POS-ACT tokens in action order
+        POS       := position name (UTG, LJ, HJ, CO, BTN, SB, BB, ...)
+        ACT       := F | C | R | RR | RRR | AI
+    Rules:
+        - Action order (not seat order).
+        - Hero's own tokens are EXCLUDED.
+        - Folds are elided unless they follow a re-raise (RR or higher).
+          (Folds to a single open carry no range info; folds to a 3bet/4bet
+          do.)
+        - action_index semantics:
+            * int (default 0): for a PREFLOP decision. Key captures what
+              happened before hero's (action_index+1)-th preflop token.
+              Use 0 for hero's first decision, 1 for facing-3bet, etc.
+            * None: for a POSTFLOP decision. Consume the full preflop
+              sequence (no stopping) — the key describes the pot type
+              going into the flop.
+    """
+    tokens_out: list[str] = []
+    raise_level = 0
+    hero_action_count = 0
+    # Stop once hero has been seen (action_index + 1) times: the key
+    # captures everything strictly before hero's current decision point.
+    # action_index=None means "never stop" — used for postflop line_keys
+    # where we want the full preflop sequence.
+    stop_after_hero_count = None if action_index is None else action_index + 1
+    for pos, raw in _iter_preflop_tokens(preflop_actions, num_players):
+        if pos == hero_pos:
+            hero_action_count += 1
+            if stop_after_hero_count is not None and hero_action_count >= stop_after_hero_count:
+                break
+            # Classify to update raise_level (so folds after a hero
+            # re-raise are still kept) but do NOT emit hero's token.
+            _code, raise_level = _classify_token(raw, raise_level)
+            continue
+
+        code, new_level = _classify_token(raw, raise_level)
+        if code == "":
+            continue
+        if code == "F":
+            # Keep folds only if they follow a re-raise (raise_level >= 2).
+            if raise_level >= 2:
+                tokens_out.append(f"{pos}-{code}")
+            # else elide
+        else:
+            tokens_out.append(f"{pos}-{code}")
+            raise_level = new_level
+
+    return "-".join(tokens_out)
+
+
+def compute_pot_type_from_preflop(preflop_actions: str,
+                                  num_players: int = 8) -> str:
+    """Classify pot type directly from the raw preflop_actions string.
+
+    Preferred over compute_pot_type(line_key) because it doesn't depend on
+    hero-exclusion semantics (when hero is the opener, their R is excluded
+    from line_key, which can make an SRP look like a limp pot).
+
+    Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
+    """
+    if not preflop_actions:
+        return "unopened"
+    max_level = 0
+    saw_raise = False
+    any_call_before_raise = False
+    saw_call_after_first_raise = False
+    squeeze = False
+    for _pos, raw in _iter_preflop_tokens(preflop_actions, num_players):
+        code, new_level = _classify_token(raw, max_level)
+        if code == "C":
+            if not saw_raise:
+                any_call_before_raise = True
+            elif max_level == 1:
+                saw_call_after_first_raise = True
+        elif code in ("R", "RR", "RRR", "RRRR"):
+            if code == "RR" and saw_call_after_first_raise:
+                squeeze = True
+            saw_raise = True
+            if new_level > max_level:
+                max_level = new_level
+
+    if max_level >= 3:
+        return "4bet"
+    if max_level == 2:
+        return "squeezed" if squeeze else "3bet"
+    if max_level == 1:
+        return "limp" if any_call_before_raise else "SRP"
+    return "unopened"
+
+
+def compute_pot_type(preflop_line_key: str) -> str:
+    """Classify the pot type from a preflop line_key.
+
+    NOTE: Prefer compute_pot_type_from_preflop() at call sites that have
+    access to raw preflop_actions. This function is kept for cases where
+    only the line_key is available, but beware: when hero is the opener
+    the hero's raise is excluded from the line_key, which can cause
+    false "limp" / "unopened" classifications.
+
+    Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
+    """
+    if not preflop_line_key:
+        return "unopened"
+    tokens = preflop_line_key.split("-")
+    # Extract just the action codes (every other token starting at index 1).
+    actions = [tokens[i] for i in range(1, len(tokens), 2)]
+
+    if "RRRR" in actions or "RRR" in actions:
+        return "4bet"
+
+    has_rr = "RR" in actions
+    has_r = "R" in actions
+    # Squeeze detection: a C appears before an RR.
+    if has_rr:
+        first_rr = actions.index("RR")
+        earlier = actions[:first_rr]
+        if "C" in earlier and "R" in earlier:
+            return "squeezed"
+        return "3bet"
+
+    if has_r:
+        # Limp vs SRP: if a C appears before the R, it's a limp pot (iso).
+        first_r = actions.index("R")
+        earlier = actions[:first_r]
+        if "C" in earlier:
+            return "limp"
+        return "SRP"
+
+    # No raise at all.
+    if "C" in actions:
+        return "limp"
+    return "unopened"
+
+
 def categorize_preflop(preflop_actions: str, hero_pos: str,
                        num_players: int = 8, action_index: int = 0) -> str:
     """Categorize a preflop hero decision into a spot bucket.
@@ -157,7 +387,8 @@ def categorize_preflop(preflop_actions: str, hero_pos: str,
     action_index: 0 = first decision, 1 = second decision (facing 3bet/4bet).
 
     Returns one of:
-        open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot
+        open_raise, facing_open, possible_squeeze, hero_3bet,
+        facing_3bet, vs_squeeze, squeeze, facing_4bet, limp_pot
     """
     ctx = _parse_preflop_context(preflop_actions, hero_pos, num_players)
 
@@ -165,6 +396,10 @@ def categorize_preflop(preflop_actions: str, hero_pos: str,
         # Hero's second decision: they already acted, now facing a re-raise
         if ctx["num_raises_total"] >= 4:
             return "facing_4bet"
+        # vs_squeeze: hero opened, a caller came in, then a re-raise (squeeze).
+        # Detect by scanning preflop_actions for pattern: hero-R, caller-C, then RR
+        if _hero_faced_squeeze(preflop_actions, hero_pos, num_players):
+            return "vs_squeeze"
         return "facing_3bet"
 
     # Hero's first decision
@@ -177,9 +412,16 @@ def categorize_preflop(preflop_actions: str, hero_pos: str,
 
     if ctx["num_raises_before"] == 1:
         # One raise before hero
-        if ctx["num_calls_before"] > 0 and ctx["hero_raised"]:
-            # Open + call(s) + hero raises = squeeze
-            return "squeeze"
+        if ctx["num_calls_before"] > 0:
+            if ctx["hero_raised"]:
+                # Open + call(s) + hero raises = squeeze
+                return "squeeze"
+            # Open + call(s), hero did not raise = possible_squeeze spot
+            return "possible_squeeze"
+        # No callers in front
+        if ctx["hero_raised"]:
+            # Hero is the one 3-betting facing an open
+            return "hero_3bet"
         return "facing_open"
 
     if ctx["num_raises_before"] == 2:
@@ -396,6 +638,92 @@ def categorize_spot(
         board=board,
     )
     return category, texture
+
+
+# ── GTOW mapping + primary villain helpers ──
+
+# Maps spot_category (preflop) → (gtow_type, gtow_hero_role).
+# Postflop categories are handled separately via pot_type.
+_PREFLOP_SPOT_TO_GTOW: dict[str, tuple[str, str]] = {
+    "open_raise":       ("RFI",              "aggressor"),
+    "facing_open":      ("vsSRP",            "caller_candidate"),
+    "hero_3bet":        ("3bet",             "3bettor"),
+    "facing_3bet":      ("vs3bet",           "opener"),
+    "facing_4bet":      ("vs4bet",           "3bettor"),
+    "squeeze":          ("Squeeze",          "squeezer"),
+    "vs_squeeze":       ("vsSqueeze",        "opener"),
+    "possible_squeeze": ("possibleSqueeze",  "caller_candidate"),
+    "limp_pot":         ("vsLimp",           "iso_candidate"),
+}
+
+# Maps pot_type → postflop GTOW type (flop taxonomy).
+_POT_TYPE_TO_FLOP_GTOW: dict[str, str] = {
+    "SRP":       "SRP",
+    "3bet":      "3bet",
+    "4bet":      "3bet",      # GTOW has no 4bet flop; nearest is 3bet pot
+    "squeezed":  "Squeeze",
+    "limp":      "limp",
+    "iso":       "iso",
+    "unopened":  "SRP",       # best-effort fallback
+}
+
+
+def map_spot_to_gtow(
+    spot_category: str,
+    pot_type: str | None,
+    street: str,
+    hero_is_pf_aggressor: bool,
+) -> tuple[str | None, str | None]:
+    """Return (gtow_type, gtow_hero_role) for URL builder + mining.
+
+    - Preflop uses spot_category directly.
+    - Postflop uses pot_type for the type and hero_is_pf_aggressor for role.
+    """
+    if street == "preflop":
+        return _PREFLOP_SPOT_TO_GTOW.get(spot_category, (None, None))
+
+    gtow_type = _POT_TYPE_TO_FLOP_GTOW.get(pot_type or "", None)
+    role = "aggressor" if hero_is_pf_aggressor else "caller"
+    return gtow_type, role
+
+
+def identify_primary_villain(
+    hand: dict,
+    hero_pos: str,
+    street: str,
+    street_actions_before_hero: list[dict] | None,
+) -> str | None:
+    """Pick a single primary villain for this decision point.
+
+    - Preflop: last raiser (aggressor) that hero is facing.
+    - Postflop: last bettor before hero on this street; else the preflop
+      aggressor (the player hero most likely has in mind).
+    """
+    preflop_actions = hand.get("preflop_actions", "")
+    num_players = hand.get("players_at_table", 8)
+
+    if street == "preflop":
+        agg = _identify_preflop_aggressor(preflop_actions, num_players)
+        if agg and agg != hero_pos:
+            return agg
+        return None
+
+    if street_actions_before_hero:
+        last_bettor = None
+        for act in street_actions_before_hero:
+            code = act.get("action", "")
+            pos = act.get("position", "")
+            if not pos or pos == hero_pos:
+                continue
+            if code.startswith("R") or code.startswith("AI"):
+                last_bettor = pos
+        if last_bettor:
+            return last_bettor
+
+    agg = _identify_preflop_aggressor(preflop_actions, num_players)
+    if agg and agg != hero_pos:
+        return agg
+    return None
 
 
 def _get_board_for_street(hand: dict, street: str) -> str | None:

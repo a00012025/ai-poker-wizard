@@ -851,9 +851,27 @@ class GeminiSessionManager:
         if not self.db or not self.db.pool:
             return
         try:
-            from spot_categorizer import categorize_spot, classify_board_texture
+            from spot_categorizer import (
+                categorize_spot,
+                classify_board_texture,
+                compute_preflop_line_key,
+                compute_pot_type_from_preflop,
+                identify_primary_villain,
+                map_spot_to_gtow,
+                _identify_preflop_aggressor,
+            )
             from gto_formatter import combo_index_for_hand, _COMBO_INDEX, _get_board_cards, _combo_to_hand_name
-            from leak_service import insert_deviation
+            from hh_deviation_check import (
+                _get_action_evs_preflop,
+                _get_action_evs_postflop,
+            )
+            from leak_service import (
+                insert_deviation,
+                DeviationMeta,
+                compute_ev_loss,
+                pick_best_ev_action,
+                classify_aggression_direction,
+            )
 
             hero_spots = context.get("hero_spots", [])
             solutions = context.get("solutions", [])
@@ -977,6 +995,81 @@ class GeminiSessionManager:
 
                 is_deviation = (hero_freq is not None and hero_freq < 0.10)
 
+                # ── Per-action EVs → true EV loss + best-EV action ──
+                # Note: "gto_action" / best_code above is MAX FREQUENCY; we
+                # track it as dominant_action and compute the true best-EV
+                # action separately for the URL builder / ev_loss formula.
+                try:
+                    if is_preflop:
+                        action_evs = _get_action_evs_preflop(sol, hero_hand, hero_pos)
+                    else:
+                        action_evs = _get_action_evs_postflop(
+                            sol, hero_hand, hero_pos, combo_idx=combo_idx
+                        )
+                except Exception:
+                    action_evs = None
+
+                ev_loss = compute_ev_loss(action_evs, taken_code)
+                gto_best_ev_code = pick_best_ev_action(action_evs)
+                gto_dominant_code = gto_action or None
+
+                # ── Meta fields ──
+                preflop_actions_str = hand_json.get("preflop_actions", "") or ""
+                num_players = hand_json.get("players_at_table", 8)
+                try:
+                    line_key = compute_preflop_line_key(
+                        preflop_actions_str,
+                        hero_pos,
+                        num_players=num_players,
+                        # Preflop: key captures up to hero's current decision.
+                        # Postflop: consume the full preflop sequence so the
+                        # pot_type reflects the line going into the flop.
+                        action_index=(action_idx if is_preflop else None),
+                    )
+                except Exception:
+                    line_key = None
+                try:
+                    pot_type = compute_pot_type_from_preflop(
+                        preflop_actions_str, num_players=num_players,
+                    )
+                except Exception:
+                    pot_type = None
+
+                try:
+                    villain_pos = identify_primary_villain(
+                        hand_json,
+                        hero_pos,
+                        street,
+                        street_actions_before if not is_preflop else None,
+                    )
+                except Exception:
+                    villain_pos = None
+
+                try:
+                    pf_agg = _identify_preflop_aggressor(preflop_actions_str, num_players)
+                except Exception:
+                    pf_agg = None
+                hero_is_pf_aggressor = (pf_agg == hero_pos)
+
+                gtow_type, gtow_hero_role = map_spot_to_gtow(
+                    cat, pot_type, street, hero_is_pf_aggressor
+                )
+
+                aggression_direction = classify_aggression_direction(
+                    taken_code, gto_best_ev_code
+                )
+
+                dm = DeviationMeta(
+                    villain_pos=villain_pos,
+                    preflop_line_key=line_key or None,
+                    pot_type=pot_type,
+                    aggression_direction=aggression_direction,
+                    gtow_type=gtow_type,
+                    gtow_hero_role=gtow_hero_role,
+                    gto_dominant_action=gto_dominant_code,
+                    gto_best_ev_action=gto_best_ev_code,
+                )
+
                 await insert_deviation(
                     pool=self.db.pool,
                     chat_id=chat_id,
@@ -989,10 +1082,11 @@ class GeminiSessionManager:
                     gto_action=gto_action or taken_code,
                     hero_freq=hero_freq_pct,
                     gto_freq=gto_freq_pct,
-                    ev_loss_estimate=None,  # TODO: compute from action EVs
+                    ev_loss_estimate=ev_loss,
                     board_texture=texture,
                     effective_bb=effective_bb,
                     is_deviation=is_deviation,
+                    meta=dm.to_jsonb() or None,
                 )
 
         except Exception as e:
@@ -2109,35 +2203,46 @@ class GeminiSessionManager:
             return "暫時無法查詢你的資料，請稍後再試"
 
         try:
-            from leak_service import query_leaks, query_stats, query_progress
+            from leak_service import (
+                query_stats, query_progress,
+                get_top_leaks_ev_ranked,
+                SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH,
+            )
 
             target_chat_id = user_id or chat_id
 
             if fn_name == "query_my_leaks":
-                leaks = await query_leaks(
+                leaks = await get_top_leaks_ev_ranked(
                     pool=self.db.pool,
                     chat_id=target_chat_id,
+                    days=int(args.get("days", 30)),
                     spot_category=args.get("spot_category"),
                     street=args.get("street"),
                     position=args.get("position"),
                     min_samples=int(args.get("min_samples", 5)),
+                    limit=5,
                 )
                 if not leaks:
                     return "目前沒有足夠數據來分析你的弱點。需要至少 5 手相同類型的 spot 才能分析。繼續分析手牌，數據會自動累積！"
 
-                lines = ["📊 偏離分析結果：\n"]
+                lines = ["💸 你的 leaks（按 EV 損失排序）：\n"]
                 for i, leak in enumerate(leaks, 1):
-                    rate = leak["deviation_rate"] * 100
-                    lines.append(
-                        f"{i}. **{leak['spot_category']}** (n={leak['sample_count']})\n"
-                        f"   偏離率: {rate:.0f}%"
+                    desc = SPOT_DESCRIPTIONS_ZH.get(
+                        leak["spot_category"], leak["spot_category"]
                     )
-                    if leak.get("avg_hero_freq") is not None:
-                        lines.append(f"   Hero 平均頻率: {leak['avg_hero_freq']:.0f}%")
-                    if leak.get("avg_gto_freq") is not None:
-                        lines.append(f"   GTO 建議頻率: {leak['avg_gto_freq']:.0f}%")
-                    if leak.get("top_gto_action"):
-                        lines.append(f"   GTO 最常建議: {leak['top_gto_action']}")
+                    direction = AGGRESSION_DIRECTION_ZH.get(
+                        leak["aggression_label"], leak["aggression_label"]
+                    )
+                    ev = leak["total_ev_loss_bb"]
+                    n = leak["sample_count"]
+                    hands = " · ".join(f"H{h}" for h in leak["top_hand_ids"][:3])
+                    block = [f"**{i}. {desc}**（n={n}, -{ev:.2f}bb）"]
+                    block.append(f"   方向：{direction}")
+                    if hands:
+                        block.append(f"   最貴決策：{hands}")
+                    if leak.get("practice_url"):
+                        block.append(f"   → [練習連結]({leak['practice_url']})")
+                    lines.append("\n".join(block))
                 return "\n".join(lines)
 
             elif fn_name == "query_my_stats":
@@ -2162,18 +2267,27 @@ class GeminiSessionManager:
                             f"(n={data['count']})"
                         )
 
-                if stats["worst_spots"]:
-                    lines.append("\n最差的 spot:")
-                    for ws in stats["worst_spots"]:
+                # EV-ranked worst spots (replaces old deviation_rate ranking)
+                worst = await get_top_leaks_ev_ranked(
+                    pool=self.db.pool,
+                    chat_id=target_chat_id,
+                    days=days or 30,
+                    limit=3,
+                )
+                if worst:
+                    lines.append("\n💸 最貴的 leak（按 EV 損失）:")
+                    for ws in worst:
+                        desc = SPOT_DESCRIPTIONS_ZH.get(
+                            ws["spot_category"], ws["spot_category"]
+                        )
                         lines.append(
-                            f"  {ws['spot_category']}: "
-                            f"{ws['deviation_rate']*100:.0f}% 偏離 "
+                            f"  {desc}: -{ws['total_ev_loss_bb']:.2f}bb "
                             f"(n={ws['sample_count']})"
                         )
                 return "\n".join(lines)
 
             elif fn_name == "get_training_plan":
-                leaks = await query_leaks(
+                leaks = await get_top_leaks_ev_ranked(
                     pool=self.db.pool,
                     chat_id=target_chat_id,
                     min_samples=5,
@@ -2182,33 +2296,27 @@ class GeminiSessionManager:
                 if not leaks:
                     return "目前數據不足以生成訓練計畫。繼續分析手牌，數據會自動累積！"
 
-                lines = ["🎯 訓練計畫（根據你最大的弱點）：\n"]
-                spot_descriptions = {
-                    "open_raise": "開局加注範圍",
-                    "facing_open": "面對加注時的應對",
-                    "facing_3bet": "面對 3-bet 的防禦",
-                    "squeeze": "擠壓加注時機",
-                    "facing_4bet": "面對 4-bet 的應對",
-                    "limp_pot": "跛入底池策略",
-                    "cbet_ip": "位置內 C-bet",
-                    "cbet_oop": "位置外 C-bet",
-                    "facing_cbet_ip": "位置內面對 C-bet",
-                    "facing_cbet_oop": "位置外面對 C-bet",
-                    "probe": "探測性下注",
-                    "facing_probe": "面對探測性下注",
-                    "donk": "Donk bet",
-                    "check_raise": "Check-raise",
-                }
+                lines = ["🎯 訓練計畫（根據本月最貴的 leak）：\n"]
                 for i, leak in enumerate(leaks, 1):
-                    cat = leak["spot_category"]
-                    desc = spot_descriptions.get(cat, cat)
-                    rate = leak["deviation_rate"] * 100
-                    lines.append(
-                        f"重點 {i}: {desc}\n"
-                        f"  當前偏離率: {rate:.0f}% (n={leak['sample_count']})\n"
-                        f"  建議: 在 GTO Wizard 練習 {desc} 場景"
+                    desc = SPOT_DESCRIPTIONS_ZH.get(
+                        leak["spot_category"], leak["spot_category"]
                     )
-                return "\n".join(lines)
+                    direction = AGGRESSION_DIRECTION_ZH.get(
+                        leak["aggression_label"], leak["aggression_label"]
+                    )
+                    ev = leak["total_ev_loss_bb"]
+                    n = leak["sample_count"]
+                    block = [
+                        f"重點 {i}: {desc}",
+                        f"  累計 EV 損失: -{ev:.2f}bb (n={n})",
+                        f"  方向: {direction}",
+                    ]
+                    if leak.get("practice_url"):
+                        block.append(f"  練習連結: {leak['practice_url']}")
+                    else:
+                        block.append(f"  建議: 在 GTO Wizard 練習 {desc} 場景")
+                    lines.append("\n".join(block))
+                return "\n\n".join(lines)
 
             elif fn_name == "get_progress":
                 spot = args.get("spot_category", "")
