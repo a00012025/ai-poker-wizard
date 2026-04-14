@@ -855,7 +855,7 @@ class GeminiSessionManager:
                 categorize_spot,
                 classify_board_texture,
                 compute_preflop_line_key,
-                compute_pot_type,
+                compute_pot_type_from_preflop,
                 identify_primary_villain,
                 map_spot_to_gtow,
                 _identify_preflop_aggressor,
@@ -1021,11 +1021,19 @@ class GeminiSessionManager:
                         preflop_actions_str,
                         hero_pos,
                         num_players=num_players,
-                        action_index=(action_idx if is_preflop else 0),
+                        # Preflop: key captures up to hero's current decision.
+                        # Postflop: consume the full preflop sequence so the
+                        # pot_type reflects the line going into the flop.
+                        action_index=(action_idx if is_preflop else None),
                     )
                 except Exception:
                     line_key = None
-                pot_type = compute_pot_type(line_key) if line_key is not None else None
+                try:
+                    pot_type = compute_pot_type_from_preflop(
+                        preflop_actions_str, num_players=num_players,
+                    )
+                except Exception:
+                    pot_type = None
 
                 try:
                     villain_pos = identify_primary_villain(

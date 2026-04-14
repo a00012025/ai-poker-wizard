@@ -242,9 +242,8 @@ def _hero_faced_squeeze(preflop_actions: str, hero_pos: str,
 
 def compute_preflop_line_key(preflop_actions: str, hero_pos: str,
                              num_players: int = 8,
-                             action_index: int = 0) -> str:
-    """Build a compact signature of the preflop action sequence up to hero's
-    decision point.
+                             action_index: int | None = 0) -> str:
+    """Build a compact signature of the preflop action sequence.
 
     Grammar:
         line_key := "-".join of POS-ACT tokens in action order
@@ -256,23 +255,26 @@ def compute_preflop_line_key(preflop_actions: str, hero_pos: str,
         - Folds are elided unless they follow a re-raise (RR or higher).
           (Folds to a single open carry no range info; folds to a 3bet/4bet
           do.)
-        - Scan stops when hero's second decision point would begin — i.e.
-          the key only captures what happened before the *current* hero
-          action. Since the categorizer calls this once per decision, we
-          include everything up to (but not including) any hero token
-          reached after an initial hero raise. For the common first-decision
-          case this is simply "everything before hero's first token".
+        - action_index semantics:
+            * int (default 0): for a PREFLOP decision. Key captures what
+              happened before hero's (action_index+1)-th preflop token.
+              Use 0 for hero's first decision, 1 for facing-3bet, etc.
+            * None: for a POSTFLOP decision. Consume the full preflop
+              sequence (no stopping) — the key describes the pot type
+              going into the flop.
     """
     tokens_out: list[str] = []
     raise_level = 0
     hero_action_count = 0
     # Stop once hero has been seen (action_index + 1) times: the key
     # captures everything strictly before hero's current decision point.
-    stop_after_hero_count = action_index + 1
+    # action_index=None means "never stop" — used for postflop line_keys
+    # where we want the full preflop sequence.
+    stop_after_hero_count = None if action_index is None else action_index + 1
     for pos, raw in _iter_preflop_tokens(preflop_actions, num_players):
         if pos == hero_pos:
             hero_action_count += 1
-            if hero_action_count >= stop_after_hero_count:
+            if stop_after_hero_count is not None and hero_action_count >= stop_after_hero_count:
                 break
             # Classify to update raise_level (so folds after a hero
             # re-raise are still kept) but do NOT emit hero's token.
@@ -294,8 +296,54 @@ def compute_preflop_line_key(preflop_actions: str, hero_pos: str,
     return "-".join(tokens_out)
 
 
+def compute_pot_type_from_preflop(preflop_actions: str,
+                                  num_players: int = 8) -> str:
+    """Classify pot type directly from the raw preflop_actions string.
+
+    Preferred over compute_pot_type(line_key) because it doesn't depend on
+    hero-exclusion semantics (when hero is the opener, their R is excluded
+    from line_key, which can make an SRP look like a limp pot).
+
+    Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
+    """
+    if not preflop_actions:
+        return "unopened"
+    max_level = 0
+    saw_raise = False
+    any_call_before_raise = False
+    saw_call_after_first_raise = False
+    squeeze = False
+    for _pos, raw in _iter_preflop_tokens(preflop_actions, num_players):
+        code, new_level = _classify_token(raw, max_level)
+        if code == "C":
+            if not saw_raise:
+                any_call_before_raise = True
+            elif max_level == 1:
+                saw_call_after_first_raise = True
+        elif code in ("R", "RR", "RRR", "RRRR"):
+            if code == "RR" and saw_call_after_first_raise:
+                squeeze = True
+            saw_raise = True
+            if new_level > max_level:
+                max_level = new_level
+
+    if max_level >= 3:
+        return "4bet"
+    if max_level == 2:
+        return "squeezed" if squeeze else "3bet"
+    if max_level == 1:
+        return "limp" if any_call_before_raise else "SRP"
+    return "unopened"
+
+
 def compute_pot_type(preflop_line_key: str) -> str:
     """Classify the pot type from a preflop line_key.
+
+    NOTE: Prefer compute_pot_type_from_preflop() at call sites that have
+    access to raw preflop_actions. This function is kept for cases where
+    only the line_key is available, but beware: when hero is the opener
+    the hero's raise is excluded from the line_key, which can cause
+    false "limp" / "unopened" classifications.
 
     Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
     """

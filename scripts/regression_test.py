@@ -3483,6 +3483,104 @@ def test_line_key_6max_3bet():
     assert_eq(key, "CO-R-BTN-RR")
 
 
+@test
+def test_line_key_postflop_consumes_full_preflop():
+    """action_index=None: consume full preflop line, don't stop at hero."""
+    from spot_categorizer import compute_preflop_line_key
+    # 6-max: LJ, HJ, CO, BTN, SB, BB
+    # LJ folds, HJ opens, CO/BTN/SB fold, BB calls. Hero=HJ on flop.
+    key = compute_preflop_line_key("F-R2-F-F-F-C", "HJ", 6, action_index=None)
+    # Hero's own R2 is excluded. Pre-hero fold elided. Post-hero folds
+    # elided (no re-raise). BB's call is kept — this is the critical
+    # difference from action_index=0 (which would stop at HJ's R and
+    # never see BB's C).
+    assert_eq(key, "BB-C")
+
+
+@test
+def test_line_key_postflop_3bet_pot_full_preflop():
+    """Postflop line_key for a 3bet pot: full preflop consumed."""
+    from spot_categorizer import compute_preflop_line_key
+    # 8-max: UTG opens, HJ 3bets, UTG calls. Hero=UTG on flop.
+    key = compute_preflop_line_key(
+        "R2-F-F-R8-F-F-F-F-C", "UTG", 8, action_index=None,
+    )
+    # Hero's R2 excluded, hero's C excluded. Folds-to-open elided.
+    # HJ-RR kept. Post-RR folds kept (raise_level=2).
+    assert_in("HJ-RR", key)
+
+
+@test
+def test_line_key_postflop_srp_hero_is_caller():
+    """Postflop line_key when hero flatted preflop: full preflop kept."""
+    from spot_categorizer import compute_preflop_line_key
+    # 6-max: HJ opens, hero BTN calls, SB/BB fold.
+    key = compute_preflop_line_key("F-R2-F-C-F-F", "BTN", 6, action_index=None)
+    # Pre-hero: HJ-R kept (the open). Hero's own C excluded.
+    # Post-hero: SB/BB folds elided (no re-raise).
+    assert_eq(key, "HJ-R")
+
+
+# ── compute_pot_type_from_preflop tests (hero-independent) ──
+
+@test
+def test_pot_type_from_preflop_srp_hero_is_opener():
+    """Regression for the bug where hero-as-opener falsely showed as limp.
+    compute_pot_type_from_preflop works directly on raw actions."""
+    from spot_categorizer import compute_pot_type_from_preflop
+    # HJ opens, folds around to BB who calls
+    assert_eq(compute_pot_type_from_preflop("F-R2-F-F-F-C", 6), "SRP")
+    # UTG opens, hero=UTG (this was the empty-line_key case in backfill)
+    assert_eq(compute_pot_type_from_preflop("R2-F-F-F-F-F-C-C", 8), "SRP")
+
+
+@test
+def test_pot_type_from_preflop_3bet():
+    from spot_categorizer import compute_pot_type_from_preflop
+    # UTG opens, HJ 3bets, UTG calls
+    assert_eq(compute_pot_type_from_preflop("R2-F-F-R8-F-F-F-F-C", 8), "3bet")
+
+
+@test
+def test_pot_type_from_preflop_4bet():
+    from spot_categorizer import compute_pot_type_from_preflop
+    # CO opens, BTN 3bets, CO 4bets
+    assert_eq(compute_pot_type_from_preflop("F-F-R2-R8-F-F-F-F-R20", 8), "4bet")
+
+
+@test
+def test_pot_type_from_preflop_squeezed():
+    from spot_categorizer import compute_pot_type_from_preflop
+    # LJ opens, CO calls, BTN squeezes
+    assert_eq(compute_pot_type_from_preflop("F-F-R2-F-C-R8-F-F", 8), "squeezed")
+
+
+@test
+def test_pot_type_from_preflop_limp():
+    from spot_categorizer import compute_pot_type_from_preflop
+    # UTG limps, CO iso-raises
+    assert_eq(compute_pot_type_from_preflop("C-F-F-R3-F-F-F-F", 8), "limp")
+
+
+@test
+def test_pot_type_from_preflop_unopened():
+    from spot_categorizer import compute_pot_type_from_preflop
+    # All folds (hypothetical — shouldn't happen in practice)
+    assert_eq(compute_pot_type_from_preflop("F-F-F-F-F-F-F-F", 8), "unopened")
+    assert_eq(compute_pot_type_from_preflop("", 8), "unopened")
+
+
+@test
+def test_line_key_preflop_default_still_stops_at_hero():
+    """action_index=0 (default): preflop behavior unchanged — stop at hero."""
+    from spot_categorizer import compute_preflop_line_key
+    # 6-max: LJ-HJ-CO-BTN-SB-BB. HJ opens, hero=BTN about to act.
+    # Pre-hero: only HJ's open. Hero's own action not yet in the string,
+    # so everything we see goes into the key.
+    key = compute_preflop_line_key("F-R2-F", "BTN", 6)  # default action_index=0
+    assert_eq(key, "HJ-R")
+
+
 # ── compute_pot_type tests ──
 
 @test
