@@ -1832,7 +1832,31 @@ def analyze_hand_full(hand: dict) -> dict:
         hero_spots: list of {street, params, ...} per hero decision
         solutions: list of raw spot-solution API responses (parallel to hero_spots)
     """
-    return _run_analysis(hand)
+    result = _run_analysis(hand)
+
+    # Cash-game fallback: if all spot solutions came back None (typically a 403
+    # from a subscription that doesn't cover the cash solver tree), retry as
+    # MTTGeneral at the same effective depth. Users who only have the MTT
+    # subscription routinely describe 100bb deep scenarios without specifying
+    # a tournament context, which the parser classifies as cash.
+    is_cash = hand.get("game_format") == "cash"
+    solutions = result.get("solutions") or []
+    if (
+        is_cash
+        and solutions
+        and all(s is None for s in solutions)
+        and hand.get("tournament_type") != "icm"
+    ):
+        mtt_hand = dict(hand)
+        mtt_hand["game_format"] = "mtt"
+        mtt_result = _run_analysis(mtt_hand)
+        mtt_solutions = mtt_result.get("solutions") or []
+        if any(s is not None for s in mtt_solutions):
+            note = "⚠ Cash 牌型無對應 solver 解（可能訂閱未涵蓋 Cash 6-max），已自動改用 MTT 100bb 參考"
+            mtt_result["text"] = note + "\n\n" + mtt_result.get("text", "")
+            return mtt_result
+
+    return result
 
 
 def main():

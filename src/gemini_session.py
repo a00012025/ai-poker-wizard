@@ -2361,6 +2361,7 @@ class GeminiSessionManager:
         from gto_formatter import format_action_summary, format_hand_detail, format_range_overview
 
         from gto_api import nearest_depth as _nearest_depth
+        from gto_api import nearest_cash_depth as _nearest_cash_depth
 
         # ICM args force standalone context (don't use cached chip EV context)
         if args.get("icm_phase"):
@@ -2427,8 +2428,13 @@ class GeminiSessionManager:
                 )
                 preflop_override = new_override
 
-        # Override depth if effective_bb specified (only for non-ICM; ICM depth already set)
-        depth_override = _nearest_depth(effective_bb) if effective_bb and not args.get("icm_phase") else None
+        # Override depth if effective_bb specified (only for non-ICM; ICM depth already set).
+        # Cash games use integer depth (100.0), MTT uses .125 suffix (100.125).
+        if effective_bb and not args.get("icm_phase"):
+            is_cash = ctx.get("gametype", "").startswith("Cash")
+            depth_override = _nearest_cash_depth(effective_bb) if is_cash else _nearest_depth(effective_bb)
+        else:
+            depth_override = None
 
         has_override = any([preflop_override, board_override, flop_override, turn_override, river_override, depth_override])
 
@@ -2834,6 +2840,7 @@ class GeminiSessionManager:
     def _execute_query_next_actions(self, chat_id: int, args: dict) -> str:
         """Execute a query_next_actions tool call. Returns available actions."""
         from gto_api import get_next_actions, nearest_depth as _nearest_depth
+        from gto_api import nearest_cash_depth as _nearest_cash_depth
 
         # ICM args force standalone context
         if args.get("icm_phase"):
@@ -2855,8 +2862,15 @@ class GeminiSessionManager:
         flop_override = args.get("flop_actions_override")
         turn_override = args.get("turn_actions_override")
 
-        # For ICM, depth is already set correctly in ctx
-        depth = ctx["depth"] if args.get("icm_phase") else (_nearest_depth(effective_bb) if effective_bb else ctx["depth"])
+        # For ICM, depth is already set correctly in ctx.
+        # Cash games use integer depth (100.0), MTT uses .125 suffix.
+        if args.get("icm_phase"):
+            depth = ctx["depth"]
+        elif effective_bb:
+            is_cash = ctx.get("gametype", "").startswith("Cash")
+            depth = _nearest_cash_depth(effective_bb) if is_cash else _nearest_depth(effective_bb)
+        else:
+            depth = ctx["depth"]
 
         # Build params for the target street
         states = ctx.get("street_states", {})
