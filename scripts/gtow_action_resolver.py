@@ -217,6 +217,9 @@ def _identify_villain(
     for s in hand_data.get("streets", []) or []:
         actors = {a.get("position") for a in (s.get("actions") or [])}
         actors.discard(None)
+        if not actors:
+            # Street recorded but not played (e.g. hand ended earlier) — skip.
+            continue
         if len(actors) > 2 or (last_villain and last_villain not in actors and hero_pos_8max not in actors):
             return None
     return last_villain

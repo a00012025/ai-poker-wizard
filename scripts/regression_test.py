@@ -5451,6 +5451,35 @@ def test_build_custom_spot_url_raises_on_unmapped_pot_type():
 
 
 @test
+def test_identify_villain_with_unplayed_river_street():
+    """gtow_action_resolver: empty river actions list (hand ended on turn) must
+    not disqualify villain identification. Regression for H2661-style hands
+    where streets[] includes a recorded-but-unplayed later street."""
+    from gtow_action_resolver import _identify_villain
+
+    hand_data = {
+        "streets": [
+            {"board": "7h9sJs", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "Ah", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R4.2"},
+            ]},
+            # River present but not played — empty actions list must be skipped.
+            {"card": "Th", "actions": []},
+        ],
+    }
+    # Preflop codes: 8-max CO opens, BB calls. Hero=CO, villain=BB.
+    result = _identify_villain(
+        hand_data, hero_pos_8max="CO",
+        preflop_codes="F-F-F-F-R2.1-F-F-C", street="turn",
+    )
+    assert_eq(result, "BB")
+
+
+@test
 def test_build_url_for_cluster_falls_back_on_build_error():
     """weekly_report: if custom builder fails (no deviation_ids), returns bucket URL."""
     import asyncio
