@@ -698,7 +698,64 @@ def test_icm_symmetric_stacks():
     })
     assert_eq(result["is_icm"], True)
     assert_true(result["stacks"] != "")
-    assert_in("對稱籌碼", result["text"])
+    assert_in("對稱", result["text"])
+    # 20bb is an available SYMMETRIC depth for BUBBLE 8-max 1000 — must be picked exactly
+    assert_in("20.125", result["stacks"])
+
+
+@test
+def test_icm_symmetric_stacks_off_grid_depth():
+    """ICM: 17bb symmetric (no SYMMETRIC config at that depth) must snap to nearest available.
+
+    Regression: H2702 — user said "17bb icm near bubble", parsed_json had no
+    player_stacks, the else branch synthesized stacks=17.125×8 but the solver
+    only exposes SYMMETRIC configs at 20/25/30/35/40/50bb for
+    MTTGeneral_ICM8m1000PTBUBBLE160PT. The 17.125 symmetric request returned
+    204 → forced fallback to Chip EV and hid the ICM analysis the user wanted.
+    """
+    import analyze_hand
+    # Stub solver calls — this test only verifies param resolution, not solver data.
+    orig_next = analyze_hand.get_next_actions
+    orig_spot = analyze_hand.get_spot_solution
+    analyze_hand.get_next_actions = lambda **kw: {"actions": []}
+    analyze_hand.get_spot_solution = lambda **kw: None
+    try:
+        result = analyze_hand.analyze_hand_full({
+            "gametype": "MTTGeneral",
+            "tournament_type": "icm",
+            "phase": "BUBBLE",
+            "effective_bb": 17,
+            "hero_position": "CO",
+            "hero_hand": "QQ",
+            "preflop_actions": "F-R2-F-F-R5-F-F-F",
+            "players_at_table": 8,
+        })
+    finally:
+        analyze_hand.get_next_actions = orig_next
+        analyze_hand.get_spot_solution = orig_spot
+    assert_eq(result["is_icm"], True)
+    # Must snap to 20bb SYMMETRIC (nearest available); must NOT emit 17.125
+    # which corresponds to an ASYMMETRIC_FAR config that won't match uniform stacks.
+    assert_true(result["stacks"].startswith("20.125-"),
+                f"expected 20.125 symmetric stacks, got {result['stacks']!r}")
+    assert_eq(len(result["stacks"].split("-")), 8, "must be 8 stack positions")
+    assert_eq(result["depth"], "20.125")
+    assert_in("用戶籌碼: 17bb", result["text"])
+    assert_in("Solver 籌碼: 20bb", result["text"])
+    # The resolved (depth, stacks) must exist as a visible config in the cached
+    # game modes — the bug was picking a config the solver doesn't actually expose.
+    from icm_modes import _load_game_modes
+    gt_name = result["gametype"]
+    mode = next(m for m in _load_game_modes() if m["name"] == gt_name)
+    picked_stacks = result["stacks"].split("-")
+    found = any(
+        gm["depth"] == result["depth"]
+        and gm.get("stacks") == picked_stacks
+        and not gm.get("info", {}).get("hidden", False)
+        for gm in mode["game_modes"]
+    )
+    assert_true(found,
+                f"resolved config (depth={result['depth']}, symmetric 20bb) must be a visible entry in {gt_name}")
 
 
 @test
@@ -4548,7 +4605,7 @@ def test_render_cluster_line_postflop_dry():
     )
     assert_in("**1.", line)
     assert_in("LJ 開", line)
-    assert_in("乾板", line)
+    assert_in("乾燥面", line)
     assert_in("SRP", line)
     assert_in("n=11", line)
     assert_in("-4.80bb", line)
