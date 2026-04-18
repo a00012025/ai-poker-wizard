@@ -55,10 +55,10 @@ _STREET_ZH = {
 }
 
 _BOARD_TEXTURE_ZH = {
-    "dry":      "乾板",
-    "wet":      "濕板",
-    "monotone": "同花板",
-    "paired":   "對板",
+    "dry":      "乾燥面",
+    "wet":      "潮濕面",
+    "monotone": "同花面",
+    "paired":   "公對面",
 }
 
 
