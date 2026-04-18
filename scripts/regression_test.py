@@ -4462,6 +4462,7 @@ def test_cluster_to_dict_rounding():
         passive_ratio=0.83333,
         aggressive_ratio=0.16666,
         top_hand_ids=[101, 202, 303],
+        top_deviation_ids=[9101, 9202, 9303],
         effective_bb_median=27.55,
         gtow_type="ICMGeneral",
     )
@@ -4492,12 +4493,15 @@ def _make_test_cluster(
     total_ev_loss_bb=4.80,
     aggression_label="too_aggressive",
     top_hand_ids=None,
+    top_deviation_ids=None,
     effective_bb_median=30.0,
     gtow_type="MTTGeneral",
 ):
     from leak_miner import Cluster, ClusterKey
     if top_hand_ids is None:
         top_hand_ids = [2590, 2574, 2601]
+    if top_deviation_ids is None:
+        top_deviation_ids = []
     return Cluster(
         key=ClusterKey(
             pot_type=pot_type,
@@ -4515,6 +4519,7 @@ def _make_test_cluster(
         passive_ratio=0.0 if aggression_label == "too_aggressive" else 1.0,
         aggressive_ratio=1.0 if aggression_label == "too_aggressive" else 0.0,
         top_hand_ids=top_hand_ids,
+        top_deviation_ids=top_deviation_ids,
         effective_bb_median=effective_bb_median,
         gtow_type=gtow_type,
     )
@@ -4797,6 +4802,7 @@ def test_render_report_full():
     out = _render_report(
         clusters=clusters,
         narratives=narratives,
+        urls=[None, None],
         period_start=_dt(2026, 4, 4),
         period_end=_dt(2026, 4, 11),
         total_hands=50,
@@ -5442,6 +5448,25 @@ def test_build_custom_spot_url_raises_on_unmapped_pot_type():
         assert_true(False, "expected CustomSpotBuildError")
     except CustomSpotBuildError:
         pass
+
+
+@test
+def test_build_url_for_cluster_falls_back_on_build_error():
+    """weekly_report: if custom builder fails (no deviation_ids), returns bucket URL."""
+    import asyncio
+    from weekly_report import _build_url_for_cluster
+
+    cluster = _make_test_cluster(
+        spot_category="cbet_ip", street="turn", pot_type="SRP",
+        hero_pos="BTN", villain_pos="BB", board_texture="paired",
+        effective_bb_median=30.0, top_deviation_ids=[],
+    )
+
+    url = asyncio.run(_build_url_for_cluster(cluster, pool=None))
+    assert_true(url is not None, "fallback should return bucket URL")
+    # Bucket URL markers for postflop street "turn" with pot_type "SRP":
+    assert_in("fh_start_spot=turn", url)
+    assert_in("fh_actions=SRP", url)
 
 
 if __name__ == "__main__":
