@@ -5232,6 +5232,118 @@ def test_classify_board_odd_length_raises():
         pass
 
 
+@test
+def test_resolve_h2665_turn_decision():
+    """gtow_action_resolver: H2665 turn fold resolves to R2.1 / R1.9-C / R5.2 at 30bb."""
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    # NOTE: effective_bb=30.0 here (constructed), not H2665's real 36.7,
+    # so nearest_depth snaps to 30.125 where verified R2.1/R1.9/R5.2 codes apply.
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 5,
+        "preflop_actions": "F-F-R2.2-F-C",
+        "streets": [
+            {
+                "board": "4c6h8h",
+                "actions": [
+                    {"position": "BB",  "action": "R2.7", "size": 2.7},
+                    {"position": "BTN", "action": "C"},
+                ],
+            },
+            {
+                "card": "4h",
+                "actions": [
+                    {"position": "BB",  "action": "R5.4", "size": 5.4},
+                    {"position": "BTN", "action": "F"},
+                ],
+            },
+        ],
+    }
+
+    # action_index=0 = hero's FIRST decision on the turn (BTN's fold).
+    # Raw stream: [BB donk @ idx 0, BTN fold @ idx 1]. Resolver must emit R5.2
+    # (BB's donk) as turn_actions, then stop before hero's fold.
+    result = resolve_actions_for_deviation(
+        hand_data, street="turn", action_index=0,
+    )
+
+    assert_eq(result["preflop_actions"], "F-F-F-F-F-R2.1-F-C")
+    assert_eq(result["flop_actions"], "R1.9-C")
+    assert_eq(result["turn_actions"], "R5.2")
+    assert_eq(result["river_actions"], "")
+    assert_eq(result["hero_pos"], "BTN")
+    assert_eq(result["villain_pos"], "BB")
+    assert_eq(result["history_spot"], 11)
+    assert_eq(result["depth"], 30.125)
+    assert_eq(result["gametype"], "MTTGeneral")
+
+
+@test
+def test_resolve_3bet_pot_preflop():
+    """gtow_action_resolver: 6-max CO open, BTN 3bet, CO call, flop check.
+
+    Ensures multi-raise preflop lines resolve correctly (each R token gets a
+    new next_actions lookup that sees the previously-resolved prefix).
+    """
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 40.0,
+        "hero_position": "CO",
+        "players_at_table": 6,
+        # 6-max: UTG, HJ, CO, BTN, SB, BB.
+        # Here: UTG F, HJ F, CO R2.3, BTN R6.5, SB F, BB F, CO C.
+        "preflop_actions": "F-F-R2.3-R6.5-F-F-C",
+        "streets": [
+            {"board": "2c7dJh", "actions": [
+                {"position": "CO",  "action": "X"},
+                {"position": "BTN", "action": "X"},
+            ]},
+        ],
+    }
+    result = resolve_actions_for_deviation(
+        hand_data, street="flop", action_index=0,
+    )
+
+    # Padded to 8-max: 2 extra folds at front (6-max → 8-max = +2).
+    # Shape: F-F-F-F-<CO>-<BTN>-F-F-C (9 tokens; CO at slot 4, BTN at slot 5).
+    pf = result["preflop_actions"].split("-")
+    assert_eq(len(pf), 9)
+    assert_eq(pf[0:4], ["F", "F", "F", "F"])
+    assert_true(pf[4].startswith("R"), f"CO open must be R*, got {pf[4]}")
+    assert_true(pf[5].startswith("R"), f"BTN 3bet must be R*, got {pf[5]}")
+    assert_eq(pf[6:9], ["F", "F", "C"])
+    assert_eq(result["hero_pos"], "CO")
+    assert_eq(result["villain_pos"], "BTN")  # last non-hero aggressor
+
+
+@test
+def test_resolve_cash_game_depth_has_no_125():
+    """gtow_action_resolver: cash games use nearest_cash_depth without .125 suffix."""
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    hand_data = {
+        "gametype": "Cash6m100",
+        "effective_bb": 100.0,
+        "hero_position": "BTN",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-F-R2.5-F-C",
+        "streets": [],
+    }
+    result = resolve_actions_for_deviation(
+        hand_data, street="preflop", action_index=0,
+    )
+    # Cash depth is a plain float, no .125 suffix
+    assert_true(
+        not str(result["depth"]).endswith(".125"),
+        f"cash depth should not have .125 suffix, got {result['depth']}",
+    )
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
