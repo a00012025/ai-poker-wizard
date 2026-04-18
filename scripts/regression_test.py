@@ -5344,6 +5344,106 @@ def test_resolve_cash_game_depth_has_no_125():
     )
 
 
+@test
+def test_build_custom_spot_url_h2665():
+    """gtow_custom_url: H2665 turn fold → URL with all expected params.
+
+    Fixture uses effective_bb=30.0 (constructed) so depth snaps to 30.125
+    where verified R2.1/R1.9/R5.2 codes apply.
+    """
+    from gtow_custom_url import build_custom_spot_url
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 5,
+        "preflop_actions": "F-F-R2.2-F-C",
+        "streets": [
+            {"board": "4c6h8h", "actions": [
+                {"position": "BB", "action": "R2.7", "size": 2.7},
+                {"position": "BTN", "action": "C"},
+            ]},
+            {"card": "4h", "actions": [
+                {"position": "BB", "action": "R5.4", "size": 5.4},
+                {"position": "BTN", "action": "F"},
+            ]},
+        ],
+    }
+
+    url = build_custom_spot_url(
+        hand_data, street="turn", action_index=0, pot_type="SRP",
+    )
+
+    # H2665's actual board 4c6h8h has 2 hearts → flush_draw (not rainbow).
+    # Turn 4h brings 3 hearts → flush + pairs the 4. No river flags (folded turn).
+    assert_in("fh_start_spot=custom_spot", url)
+    assert_in("gmfs_solution_tab=ai_sols", url)
+    assert_in("preflop_actions=F-F-F-F-F-R2.1-F-C", url)
+    assert_in("flop_actions=R1.9-C", url)
+    assert_in("turn_actions=R5.2", url)
+    assert_in("history_spot=11", url)
+    assert_in("fh_hero=BTN", url)
+    assert_in("fh_opponent=BB", url)
+    assert_in("fh_actions=SRP", url)
+    assert_in("flop_paired=not_paired", url)
+    assert_in("flop_suits=flush_draw", url)
+    assert_in("flop_connectedness=disconnected", url)
+    assert_in("turn_paired=paired", url)
+    assert_in("turn_suit=flush", url)
+    assert_true("river_paired" not in url, "river flags should be omitted when hand ended on turn")
+    assert_true("river_suit" not in url, "river flags should be omitted when hand ended on turn")
+    assert_in("depth=30.125", url)
+    assert_in("depth_list=30.125", url)
+    assert_in("gametype=MTTGeneral", url)
+    assert_in("dialogs=trainer-advanced-filter-dialog", url)
+
+
+@test
+def test_build_custom_spot_url_raises_on_multiway_postflop():
+    """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
+    from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 6,
+        # 3-way to flop: CO open, BTN call, BB call
+        "preflop_actions": "F-F-R2.5-C-F-C",
+        "streets": [
+            {"board": "2c7dJh", "actions": [
+                {"position": "BB",  "action": "X"},
+                {"position": "CO",  "action": "R1.8", "size": 1.8},
+                {"position": "BTN", "action": "C"},
+                {"position": "BB",  "action": "C"},
+            ]},
+        ],
+    }
+    try:
+        build_custom_spot_url(hand_data, street="flop", action_index=0, pot_type="SRP")
+        assert_true(False, "expected CustomSpotBuildError for multiway")
+    except CustomSpotBuildError:
+        pass
+
+
+@test
+def test_build_custom_spot_url_raises_on_unmapped_pot_type():
+    """gtow_custom_url: unknown pot_type → CustomSpotBuildError (bucket fallback)."""
+    from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
+
+    hand_data = {"gametype": "MTTGeneral", "effective_bb": 30.0,
+                 "hero_position": "BTN", "players_at_table": 5,
+                 "preflop_actions": "F-F-R2.2-F-C", "streets": []}
+    try:
+        build_custom_spot_url(
+            hand_data, street="flop", action_index=0, pot_type="straddled",
+        )
+        assert_true(False, "expected CustomSpotBuildError")
+    except CustomSpotBuildError:
+        pass
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

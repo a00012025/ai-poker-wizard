@@ -135,3 +135,101 @@ def classify_board(board: str) -> dict[str, str]:
         out["river_paired"] = "paired" if p == "tripled" else p
         out["river_suit"]   = _suit_flag_turn_river(river)
     return out
+
+
+from urllib.parse import quote, urlencode
+
+from gtow_trainer_url import _TRAINER_UI_DEFAULTS, _BASE_URL
+
+_CUSTOM_DIALOGS = "trainer-advanced-filter-dialog_namespace-tra/alpha_tmpNamespace-tmp/primary"
+
+_POT_TYPE_TO_FH_ACTIONS: dict[str, str] = {
+    "SRP":      "SRP",
+    "3bet":     "3bet",
+    "4bet":     "3bet",
+    "squeezed": "Squeeze",
+    "limp":     "limp",
+    "iso":      "iso",
+}
+
+
+class CustomSpotBuildError(ValueError):
+    """Raised when the custom-spot URL can't be built — caller should fall back."""
+
+
+def build_custom_spot_url(
+    hand_data: dict,
+    street: str,
+    action_index: int,
+    pot_type: str,
+) -> str:
+    """Build a GTOW custom-spot practice URL for a specific hand decision.
+
+    Raises CustomSpotBuildError when:
+      - pot_type has no fh_actions mapping
+      - villain can't be identified (multiway / RFI)
+      - resolver fails (bubbles up from gtow_action_resolver as ValueError,
+        converted to CustomSpotBuildError here for the caller's single-catch).
+    """
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    fh_actions = _POT_TYPE_TO_FH_ACTIONS.get(pot_type or "")
+    if not fh_actions:
+        raise CustomSpotBuildError(f"pot_type {pot_type!r} has no fh_actions mapping")
+
+    try:
+        resolved = resolve_actions_for_deviation(hand_data, street, action_index)
+    except Exception as e:
+        raise CustomSpotBuildError(f"resolver failed: {e}") from e
+
+    if not resolved.get("villain_pos"):
+        raise CustomSpotBuildError("could not identify HU villain (multiway or RFI)")
+
+    # Board classification: full board across all played streets
+    streets = hand_data.get("streets") or []
+    board_parts: list[str] = []
+    for i, s in enumerate(streets):
+        if i == 0:
+            board_parts.append(s.get("board") or "")
+        else:
+            board_parts.append(s.get("card") or "")
+    full_board = "".join(board_parts)
+    texture = classify_board(full_board)
+
+    depth_str = f"{resolved['depth']:g}"
+    if resolved["gametype"] == "MTTGeneral" and not depth_str.endswith(".125"):
+        depth_str = f"{int(resolved['depth'])}.125"
+
+    params: list[tuple[str, str]] = []
+    params.append(("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]))
+    params.append(("gametype", resolved["gametype"]))
+    params.append(("depth", depth_str))
+    params.append(("depth_list", depth_str))
+    # Trainer UI flags — skip solution_type (already emitted) and dialogs
+    # (we set a custom value below).
+    for k, v in _TRAINER_UI_DEFAULTS.items():
+        if k in ("solution_type", "dialogs"):
+            continue
+        params.append((k, v))
+    params.append(("fh_start_spot", "custom_spot"))
+    params.append(("gmfs_solution_tab", "ai_sols"))
+    params.append(("preflop_actions", resolved["preflop_actions"]))
+    params.append(("history_spot", str(resolved["history_spot"])))
+    params.append(("fh_actions", fh_actions))
+    params.append(("dialogs", _CUSTOM_DIALOGS))
+    # Emit board flags in a stable order for testability.
+    for k in ("flop_paired", "turn_paired", "river_paired",
+              "flop_suits",  "turn_suit",   "river_suit",
+              "flop_connectedness"):
+        if k in texture and texture[k]:
+            params.append((k, texture[k]))
+    params.append(("fh_hero", resolved["hero_pos"]))
+    params.append(("fh_opponent", resolved["villain_pos"]))
+    if resolved["flop_actions"]:
+        params.append(("flop_actions", resolved["flop_actions"]))
+    if resolved["turn_actions"]:
+        params.append(("turn_actions", resolved["turn_actions"]))
+    if resolved["river_actions"]:
+        params.append(("river_actions", resolved["river_actions"]))
+
+    return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
