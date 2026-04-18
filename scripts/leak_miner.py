@@ -49,6 +49,7 @@ class Cluster:
     passive_ratio:       float  # 0..1
     aggressive_ratio:    float  # 0..1
     top_hand_ids:        list[int]   # top 3 by individual ev_loss DESC
+    top_deviation_ids:   list[int]   # parallel to top_hand_ids (for custom-spot URL builder)
     effective_bb_median: float
     gtow_type:           str | None  # for URL builder (from the cluster's dominant row)
 
@@ -62,6 +63,7 @@ class Cluster:
             "passive_ratio":       round(self.passive_ratio, 2),
             "aggressive_ratio":    round(self.aggressive_ratio, 2),
             "top_hand_ids":        list(self.top_hand_ids),
+            "top_deviation_ids":   list(self.top_deviation_ids),
             "effective_bb_median": round(self.effective_bb_median, 1),
             "gtow_type":           self.gtow_type,
         }
@@ -87,6 +89,7 @@ async def mine_clusters(
     sql = """
     WITH cluster_rows AS (
       SELECT
+        id                         AS deviation_id,
         meta->>'pot_type'          AS pot_type,
         street,
         meta->>'gtow_hero_role'    AS hero_role,
@@ -120,6 +123,8 @@ async def mine_clusters(
         percentile_cont(0.5) WITHIN GROUP (ORDER BY effective_bb) AS eff_bb_median,
         (array_agg(hand_history_id ORDER BY ev_loss_estimate DESC))[1:3]
                                                                  AS top_hands,
+        (array_agg(deviation_id    ORDER BY ev_loss_estimate DESC))[1:3]
+                                                                 AS top_dev_ids,
         (array_agg(gtow_type ORDER BY ev_loss_estimate DESC))[1] AS dom_gtow_type
       FROM cluster_rows
       GROUP BY 1,2,3,4,5,6,7
@@ -158,6 +163,7 @@ async def mine_clusters(
             board_texture=r["board_texture"],
         )
         top_hands = [int(h) for h in (r["top_hands"] or []) if h is not None]
+        top_dev_ids = [int(d) for d in (r["top_dev_ids"] or []) if d is not None]
         out.append(Cluster(
             key=key,
             sample_count=int(n),
@@ -167,6 +173,7 @@ async def mine_clusters(
             passive_ratio=passive_ratio,
             aggressive_ratio=aggressive_ratio,
             top_hand_ids=top_hands,
+            top_deviation_ids=top_dev_ids,
             effective_bb_median=float(r["eff_bb_median"] or 0.0),
             gtow_type=r["dom_gtow_type"],
         ))

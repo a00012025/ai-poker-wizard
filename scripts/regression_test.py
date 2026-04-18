@@ -4462,6 +4462,7 @@ def test_cluster_to_dict_rounding():
         passive_ratio=0.83333,
         aggressive_ratio=0.16666,
         top_hand_ids=[101, 202, 303],
+        top_deviation_ids=[9101, 9202, 9303],
         effective_bb_median=27.55,
         gtow_type="ICMGeneral",
     )
@@ -4492,12 +4493,15 @@ def _make_test_cluster(
     total_ev_loss_bb=4.80,
     aggression_label="too_aggressive",
     top_hand_ids=None,
+    top_deviation_ids=None,
     effective_bb_median=30.0,
     gtow_type="MTTGeneral",
 ):
     from leak_miner import Cluster, ClusterKey
     if top_hand_ids is None:
         top_hand_ids = [2590, 2574, 2601]
+    if top_deviation_ids is None:
+        top_deviation_ids = []
     return Cluster(
         key=ClusterKey(
             pot_type=pot_type,
@@ -4515,6 +4519,7 @@ def _make_test_cluster(
         passive_ratio=0.0 if aggression_label == "too_aggressive" else 1.0,
         aggressive_ratio=1.0 if aggression_label == "too_aggressive" else 0.0,
         top_hand_ids=top_hand_ids,
+        top_deviation_ids=top_deviation_ids,
         effective_bb_median=effective_bb_median,
         gtow_type=gtow_type,
     )
@@ -4797,6 +4802,7 @@ def test_render_report_full():
     out = _render_report(
         clusters=clusters,
         narratives=narratives,
+        urls=[None, None],
         period_start=_dt(2026, 4, 4),
         period_end=_dt(2026, 4, 11),
         total_hands=50,
@@ -5112,6 +5118,384 @@ def test_get_training_plan_rendering():
     assert_in("-4.80bb", rendered)
     assert_in("練習連結", rendered)
     assert_in("gtowizard.com", rendered)
+
+
+@test
+def test_classify_board_flush_draw_disconnected():
+    """gtow_custom_url: 4c6h8h — flush_draw flop (2 hearts), not paired, disconnected (H2665 flop)."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+    assert_eq(r["flop_connectedness"], "disconnected")
+    assert_eq(r.get("turn_paired"), None)  # no turn card
+
+
+@test
+def test_classify_board_connected_flop():
+    """gtow_custom_url: 7h8d9s — 3 consecutive ranks → connected."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h8d9s")
+    assert_eq(r["flop_connectedness"], "connected")
+
+
+@test
+def test_classify_board_oesd_possible_flop():
+    """gtow_custom_url: 7h8dJc — two adjacent + one gap → oesd_possible."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h8dJc")
+    assert_eq(r["flop_connectedness"], "oesd_possible")
+
+
+@test
+def test_classify_board_turn_pairs_flop():
+    """gtow_custom_url: 4c6h8h4h — flush_draw flop, turn pairs the 4 AND completes 3 hearts."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h4h")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["turn_paired"], "paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+    # 4 cards suit counts: c=1, h=3, s=0 → max 3 → flush
+    assert_eq(r["turn_suit"], "flush")
+
+
+@test
+def test_classify_board_turn_backdoor():
+    """gtow_custom_url: 4c6h8s2h — flop rainbow, turn brings 2nd heart → backdoor."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8s2h")
+    assert_eq(r["flop_suits"], "rainbow")
+    # c=1, h=2, s=1 → max 2 → backdoor
+    assert_eq(r["turn_suit"], "backdoor")
+
+
+@test
+def test_classify_board_flush_draw_flop():
+    """gtow_custom_url: AhKh2c — 2-tone flop → flush_draw."""
+    from gtow_custom_url import classify_board
+    r = classify_board("AhKh2c")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+
+
+@test
+def test_classify_board_monotone_flop():
+    """gtow_custom_url: AhKhQh — all hearts → monotone."""
+    from gtow_custom_url import classify_board
+    r = classify_board("AhKhQh")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "monotone")
+
+
+@test
+def test_classify_board_paired_flop():
+    """gtow_custom_url: 7h7d2c — paired flop."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h7d2c")
+    assert_eq(r["flop_paired"], "paired")
+    assert_eq(r["flop_suits"], "rainbow")
+
+
+@test
+def test_classify_board_river():
+    """gtow_custom_url: 4c6h8h4hKh — flush_draw flop, turn pairs the 4 AND completes flush, river keeps flush."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h4hKh")
+    # 5 cards: 4c 6h 8h 4h Kh → flop c=1, h=2 → flush_draw; turn c=1, h=3 → flush; river c=1, h=4 → flush
+    assert_eq(r["flop_suits"], "flush_draw")
+    assert_eq(r["turn_suit"], "flush")
+    assert_eq(r["river_suit"], "flush")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["turn_paired"], "paired")
+    assert_eq(r["river_paired"], "paired")
+
+
+@test
+def test_classify_board_empty():
+    """gtow_custom_url: empty board → empty dict (no keys, not an error)."""
+    from gtow_custom_url import classify_board
+    assert_eq(classify_board(""), {})
+    assert_eq(classify_board(None), {})
+
+
+@test
+def test_classify_board_tripled_flop():
+    """gtow_custom_url: 7h7d7s — tripled flop (NOT 'paired')."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h7d7s")
+    assert_eq(r["flop_paired"], "tripled")
+    assert_eq(r["flop_suits"], "rainbow")
+
+
+@test
+def test_classify_board_odd_length_raises():
+    """gtow_custom_url: odd-length board string → ValueError (caller falls back)."""
+    from gtow_custom_url import classify_board
+    try:
+        classify_board("4c6h8")  # 5 chars — malformed
+        assert_true(False, "expected ValueError")
+    except ValueError:
+        pass
+
+
+@test
+def test_resolve_h2665_turn_decision():
+    """gtow_action_resolver: H2665 turn fold resolves to R2.1 / R1.9-C / R5.2 at 30bb."""
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    # NOTE: effective_bb=30.0 here (constructed), not H2665's real 36.7,
+    # so nearest_depth snaps to 30.125 where verified R2.1/R1.9/R5.2 codes apply.
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 5,
+        "preflop_actions": "F-F-R2.2-F-C",
+        "streets": [
+            {
+                "board": "4c6h8h",
+                "actions": [
+                    {"position": "BB",  "action": "R2.7", "size": 2.7},
+                    {"position": "BTN", "action": "C"},
+                ],
+            },
+            {
+                "card": "4h",
+                "actions": [
+                    {"position": "BB",  "action": "R5.4", "size": 5.4},
+                    {"position": "BTN", "action": "F"},
+                ],
+            },
+        ],
+    }
+
+    # action_index=0 = hero's FIRST decision on the turn (BTN's fold).
+    # Raw stream: [BB donk @ idx 0, BTN fold @ idx 1]. Resolver must emit R5.2
+    # (BB's donk) as turn_actions, then stop before hero's fold.
+    result = resolve_actions_for_deviation(
+        hand_data, street="turn", action_index=0,
+    )
+
+    assert_eq(result["preflop_actions"], "F-F-F-F-F-R2.1-F-C")
+    assert_eq(result["flop_actions"], "R1.9-C")
+    assert_eq(result["turn_actions"], "R5.2")
+    assert_eq(result["river_actions"], "")
+    assert_eq(result["hero_pos"], "BTN")
+    assert_eq(result["villain_pos"], "BB")
+    assert_eq(result["history_spot"], 11)
+    assert_eq(result["depth"], 30.125)
+    assert_eq(result["gametype"], "MTTGeneral")
+
+
+@test
+def test_resolve_3bet_pot_preflop():
+    """gtow_action_resolver: 6-max CO open, BTN 3bet, CO call, flop check.
+
+    Ensures multi-raise preflop lines resolve correctly (each R token gets a
+    new next_actions lookup that sees the previously-resolved prefix).
+    """
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 40.0,
+        "hero_position": "CO",
+        "players_at_table": 6,
+        # 6-max: UTG, HJ, CO, BTN, SB, BB.
+        # Here: UTG F, HJ F, CO R2.3, BTN R6.5, SB F, BB F, CO C.
+        "preflop_actions": "F-F-R2.3-R6.5-F-F-C",
+        "streets": [
+            {"board": "2c7dJh", "actions": [
+                {"position": "CO",  "action": "X"},
+                {"position": "BTN", "action": "X"},
+            ]},
+        ],
+    }
+    result = resolve_actions_for_deviation(
+        hand_data, street="flop", action_index=0,
+    )
+
+    # Padded to 8-max: 2 extra folds at front (6-max → 8-max = +2).
+    # Shape: F-F-F-F-<CO>-<BTN>-F-F-C (9 tokens; CO at slot 4, BTN at slot 5).
+    pf = result["preflop_actions"].split("-")
+    assert_eq(len(pf), 9)
+    assert_eq(pf[0:4], ["F", "F", "F", "F"])
+    assert_true(pf[4].startswith("R"), f"CO open must be R*, got {pf[4]}")
+    assert_true(pf[5].startswith("R"), f"BTN 3bet must be R*, got {pf[5]}")
+    assert_eq(pf[6:9], ["F", "F", "C"])
+    assert_eq(result["hero_pos"], "CO")
+    assert_eq(result["villain_pos"], "BTN")  # last non-hero aggressor
+
+
+@test
+def test_resolve_cash_game_depth_has_no_125():
+    """gtow_action_resolver: cash games use nearest_cash_depth without .125 suffix."""
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    hand_data = {
+        "gametype": "Cash6m100",
+        "effective_bb": 100.0,
+        "hero_position": "BTN",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-F-R2.5-F-C",
+        "streets": [],
+    }
+    result = resolve_actions_for_deviation(
+        hand_data, street="preflop", action_index=0,
+    )
+    # Cash depth is a plain float, no .125 suffix
+    assert_true(
+        not str(result["depth"]).endswith(".125"),
+        f"cash depth should not have .125 suffix, got {result['depth']}",
+    )
+
+
+@test
+def test_build_custom_spot_url_h2665():
+    """gtow_custom_url: H2665 turn fold → URL with all expected params.
+
+    Fixture uses effective_bb=30.0 (constructed) so depth snaps to 30.125
+    where verified R2.1/R1.9/R5.2 codes apply.
+    """
+    from gtow_custom_url import build_custom_spot_url
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 5,
+        "preflop_actions": "F-F-R2.2-F-C",
+        "streets": [
+            {"board": "4c6h8h", "actions": [
+                {"position": "BB", "action": "R2.7", "size": 2.7},
+                {"position": "BTN", "action": "C"},
+            ]},
+            {"card": "4h", "actions": [
+                {"position": "BB", "action": "R5.4", "size": 5.4},
+                {"position": "BTN", "action": "F"},
+            ]},
+        ],
+    }
+
+    url = build_custom_spot_url(
+        hand_data, street="turn", action_index=0, pot_type="SRP",
+    )
+
+    # H2665's actual board 4c6h8h has 2 hearts → flush_draw (not rainbow).
+    # Turn 4h brings 3 hearts → flush + pairs the 4. No river flags (folded turn).
+    assert_in("fh_start_spot=custom_spot", url)
+    assert_in("gmfs_solution_tab=ai_sols", url)
+    assert_in("preflop_actions=F-F-F-F-F-R2.1-F-C", url)
+    assert_in("flop_actions=R1.9-C", url)
+    assert_in("turn_actions=R5.2", url)
+    assert_in("history_spot=11", url)
+    assert_in("fh_hero=BTN", url)
+    assert_in("fh_opponent=BB", url)
+    assert_in("fh_actions=SRP", url)
+    assert_in("flop_paired=not_paired", url)
+    assert_in("flop_suits=flush_draw", url)
+    assert_in("flop_connectedness=disconnected", url)
+    assert_in("turn_paired=paired", url)
+    assert_in("turn_suit=flush", url)
+    assert_true("river_paired" not in url, "river flags should be omitted when hand ended on turn")
+    assert_true("river_suit" not in url, "river flags should be omitted when hand ended on turn")
+    assert_in("depth=30.125", url)
+    assert_in("depth_list=30.125", url)
+    assert_in("gametype=MTTGeneral", url)
+    assert_in("dialogs=trainer-advanced-filter-dialog", url)
+
+
+@test
+def test_build_custom_spot_url_raises_on_multiway_postflop():
+    """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
+    from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30.0,
+        "hero_position": "BTN",
+        "players_at_table": 6,
+        # 3-way to flop: CO open, BTN call, BB call
+        "preflop_actions": "F-F-R2.5-C-F-C",
+        "streets": [
+            {"board": "2c7dJh", "actions": [
+                {"position": "BB",  "action": "X"},
+                {"position": "CO",  "action": "R1.8", "size": 1.8},
+                {"position": "BTN", "action": "C"},
+                {"position": "BB",  "action": "C"},
+            ]},
+        ],
+    }
+    try:
+        build_custom_spot_url(hand_data, street="flop", action_index=0, pot_type="SRP")
+        assert_true(False, "expected CustomSpotBuildError for multiway")
+    except CustomSpotBuildError:
+        pass
+
+
+@test
+def test_build_custom_spot_url_raises_on_unmapped_pot_type():
+    """gtow_custom_url: unknown pot_type → CustomSpotBuildError (bucket fallback)."""
+    from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
+
+    hand_data = {"gametype": "MTTGeneral", "effective_bb": 30.0,
+                 "hero_position": "BTN", "players_at_table": 5,
+                 "preflop_actions": "F-F-R2.2-F-C", "streets": []}
+    try:
+        build_custom_spot_url(
+            hand_data, street="flop", action_index=0, pot_type="straddled",
+        )
+        assert_true(False, "expected CustomSpotBuildError")
+    except CustomSpotBuildError:
+        pass
+
+
+@test
+def test_identify_villain_with_unplayed_river_street():
+    """gtow_action_resolver: empty river actions list (hand ended on turn) must
+    not disqualify villain identification. Regression for H2661-style hands
+    where streets[] includes a recorded-but-unplayed later street."""
+    from gtow_action_resolver import _identify_villain
+
+    hand_data = {
+        "streets": [
+            {"board": "7h9sJs", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "Ah", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R4.2"},
+            ]},
+            # River present but not played — empty actions list must be skipped.
+            {"card": "Th", "actions": []},
+        ],
+    }
+    # Preflop codes: 8-max CO opens, BB calls. Hero=CO, villain=BB.
+    result = _identify_villain(
+        hand_data, hero_pos_8max="CO",
+        preflop_codes="F-F-F-F-R2.1-F-F-C", street="turn",
+    )
+    assert_eq(result, "BB")
+
+
+@test
+def test_build_url_for_cluster_falls_back_on_build_error():
+    """weekly_report: if custom builder fails (no deviation_ids), returns bucket URL."""
+    import asyncio
+    from weekly_report import _build_url_for_cluster
+
+    cluster = _make_test_cluster(
+        spot_category="cbet_ip", street="turn", pot_type="SRP",
+        hero_pos="BTN", villain_pos="BB", board_texture="paired",
+        effective_bb_median=30.0, top_deviation_ids=[],
+    )
+
+    url = asyncio.run(_build_url_for_cluster(cluster, pool=None))
+    assert_true(url is not None, "fallback should return bucket URL")
+    # Bucket URL markers for postflop street "turn" with pot_type "SRP":
+    assert_in("fh_start_spot=turn", url)
+    assert_in("fh_actions=SRP", url)
 
 
 if __name__ == "__main__":

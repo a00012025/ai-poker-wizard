@@ -409,8 +409,41 @@ async def generate_cluster_narratives(
 
 # ── URL builder wrapper ──
 
-def _build_url_for_cluster(cluster) -> str | None:
-    """Wrap build_trainer_url with safe error handling."""
+async def _build_url_for_cluster(cluster, pool) -> str | None:
+    """Build a GTOW practice URL for a cluster.
+
+    Strategy: try custom-spot URL first (precise action-sequence deep-link
+    via the top-ranked deviation's hand_data). On any failure — no pool,
+    no top_deviation_ids, missing hand_data, resolver error, multiway,
+    unknown pot_type — fall back to the coarse bucket URL.
+    """
+    try:
+        dev_id = (cluster.top_deviation_ids or [None])[0]
+        if dev_id and pool is not None:
+            from gtow_custom_url import build_custom_spot_url
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT d.street, d.action_index, h.hand_data
+                    FROM deviations d
+                    JOIN hand_histories h ON h.id = d.hand_history_id
+                    WHERE d.id = $1
+                    """,
+                    dev_id,
+                )
+            if row and row["hand_data"]:
+                import json as _json
+                hd = row["hand_data"]
+                if isinstance(hd, str):
+                    hd = _json.loads(hd)
+                return build_custom_spot_url(
+                    hd, row["street"], row["action_index"],
+                    pot_type=cluster.key.pot_type or "",
+                )
+    except Exception as e:
+        logger.info(f"weekly_report: custom URL failed, fallback to bucket: {e}")
+
+    # Fallback: existing bucket URL
     try:
         from gtow_trainer_url import build_trainer_url, SpotNotSupportedError
     except Exception as e:
@@ -443,6 +476,7 @@ def _empty_state_message() -> str:
 def _render_report(
     clusters: list,
     narratives: list[ClusterNarrative],
+    urls: list[str | None],
     period_start: datetime,
     period_end: datetime,
     total_hands: int | None = None,
@@ -461,8 +495,7 @@ def _render_report(
 
     lines = [header, "", "💸 本週 EV 落差 Top 5：", ""]
     total_loss = 0.0
-    for i, (cluster, narrative) in enumerate(zip(clusters, narratives), start=1):
-        url = _build_url_for_cluster(cluster)
+    for i, (cluster, narrative, url) in enumerate(zip(clusters, narratives, urls), start=1):
         lines.append(_render_cluster_line(cluster, narrative, url, i))
         lines.append("")
         total_loss += cluster.total_ev_loss_bb
@@ -518,9 +551,14 @@ async def generate_weekly_report(
         max_retries=1,
     )
 
+    urls: list[str | None] = []
+    for c in clusters:
+        urls.append(await _build_url_for_cluster(c, pool))
+
     return _render_report(
         clusters=clusters,
         narratives=narratives,
+        urls=urls,
         period_start=period_start,
         period_end=period_end,
         total_hands=totals.get("total_hands") if totals else None,
