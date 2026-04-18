@@ -5114,6 +5114,124 @@ def test_get_training_plan_rendering():
     assert_in("gtowizard.com", rendered)
 
 
+@test
+def test_classify_board_flush_draw_disconnected():
+    """gtow_custom_url: 4c6h8h — flush_draw flop (2 hearts), not paired, disconnected (H2665 flop)."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+    assert_eq(r["flop_connectedness"], "disconnected")
+    assert_eq(r.get("turn_paired"), None)  # no turn card
+
+
+@test
+def test_classify_board_connected_flop():
+    """gtow_custom_url: 7h8d9s — 3 consecutive ranks → connected."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h8d9s")
+    assert_eq(r["flop_connectedness"], "connected")
+
+
+@test
+def test_classify_board_oesd_possible_flop():
+    """gtow_custom_url: 7h8dJc — two adjacent + one gap → oesd_possible."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h8dJc")
+    assert_eq(r["flop_connectedness"], "oesd_possible")
+
+
+@test
+def test_classify_board_turn_pairs_flop():
+    """gtow_custom_url: 4c6h8h4h — flush_draw flop, turn pairs the 4 AND completes 3 hearts."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h4h")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["turn_paired"], "paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+    # 4 cards suit counts: c=1, h=3, s=0 → max 3 → flush
+    assert_eq(r["turn_suit"], "flush")
+
+
+@test
+def test_classify_board_turn_backdoor():
+    """gtow_custom_url: 4c6h8s2h — flop rainbow, turn brings 2nd heart → backdoor."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8s2h")
+    assert_eq(r["flop_suits"], "rainbow")
+    # c=1, h=2, s=1 → max 2 → backdoor
+    assert_eq(r["turn_suit"], "backdoor")
+
+
+@test
+def test_classify_board_flush_draw_flop():
+    """gtow_custom_url: AhKh2c — 2-tone flop → flush_draw."""
+    from gtow_custom_url import classify_board
+    r = classify_board("AhKh2c")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "flush_draw")
+
+
+@test
+def test_classify_board_monotone_flop():
+    """gtow_custom_url: AhKhQh — all hearts → monotone."""
+    from gtow_custom_url import classify_board
+    r = classify_board("AhKhQh")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["flop_suits"], "monotone")
+
+
+@test
+def test_classify_board_paired_flop():
+    """gtow_custom_url: 7h7d2c — paired flop."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h7d2c")
+    assert_eq(r["flop_paired"], "paired")
+    assert_eq(r["flop_suits"], "rainbow")
+
+
+@test
+def test_classify_board_river():
+    """gtow_custom_url: 4c6h8h4hKh — flush_draw flop, turn pairs the 4 AND completes flush, river keeps flush."""
+    from gtow_custom_url import classify_board
+    r = classify_board("4c6h8h4hKh")
+    # 5 cards: 4c 6h 8h 4h Kh → flop c=1, h=2 → flush_draw; turn c=1, h=3 → flush; river c=1, h=4 → flush
+    assert_eq(r["flop_suits"], "flush_draw")
+    assert_eq(r["turn_suit"], "flush")
+    assert_eq(r["river_suit"], "flush")
+    assert_eq(r["flop_paired"], "not_paired")
+    assert_eq(r["turn_paired"], "paired")
+    assert_eq(r["river_paired"], "paired")
+
+
+@test
+def test_classify_board_empty():
+    """gtow_custom_url: empty board → empty dict (no keys, not an error)."""
+    from gtow_custom_url import classify_board
+    assert_eq(classify_board(""), {})
+    assert_eq(classify_board(None), {})
+
+
+@test
+def test_classify_board_tripled_flop():
+    """gtow_custom_url: 7h7d7s — tripled flop (NOT 'paired')."""
+    from gtow_custom_url import classify_board
+    r = classify_board("7h7d7s")
+    assert_eq(r["flop_paired"], "tripled")
+    assert_eq(r["flop_suits"], "rainbow")
+
+
+@test
+def test_classify_board_odd_length_raises():
+    """gtow_custom_url: odd-length board string → ValueError (caller falls back)."""
+    from gtow_custom_url import classify_board
+    try:
+        classify_board("4c6h8")  # 5 chars — malformed
+        assert_true(False, "expected ValueError")
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
