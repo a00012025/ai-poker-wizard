@@ -38,6 +38,55 @@ POSITION_ORDERS = {
 }
 
 
+def _resolve_hero_board_conflict(
+    board_cards: list[str], hero_cards: list[str]
+) -> tuple[list[str], list[str]]:
+    """Reconcile hero and board cards that share the same rank+suit.
+
+    Common OCR confusions (A↔8, 6↔9) are tried first on the hero side
+    — these swaps cover the bulk of small-card rank errors.  If a
+    conflict remains, clear the hero (not the board): board cards are
+    rendered larger and rarely obscured, so they are almost always the
+    more reliable OCR read.  Hero cards can be partially hidden by WIN
+    banners, chip stacks, or rendering overlaps, leading to hallucinated
+    ranks/suits that collide with the board.  Clearing the hero drops
+    the n8_parser confidence below the 0.85 gate and triggers the
+    downstream Gemini fallback to re-read hero from the image, while
+    keeping the board preserves postflop solver queries.
+
+    Returns the (possibly modified) board, hero tuple.
+    """
+    _OCR_RANK_SWAPS = {"A": "8", "8": "A", "6": "9", "9": "6"}
+    if board_cards and hero_cards:
+        board_set = set(board_cards)
+        fixed_hero = list(hero_cards)
+        for i, hc in enumerate(fixed_hero):
+            if hc in board_set and len(hc) == 2:
+                rank, suit = hc[0], hc[1]
+                alt_rank = _OCR_RANK_SWAPS.get(rank)
+                if alt_rank:
+                    alt_card = alt_rank + suit
+                    if alt_card not in board_set:
+                        log.info(
+                            f"Hero card conflict: {hc} in board — "
+                            f"swapping to {alt_card}"
+                        )
+                        fixed_hero[i] = alt_card
+        hero_cards = fixed_hero
+
+    if board_cards:
+        all_cards = board_cards + (hero_cards or [])
+        if len(set(all_cards)) < len(all_cards):
+            log.warning(
+                f"Duplicate cards detected: board={board_cards} "
+                f"hero={hero_cards} — clearing hero (board is more "
+                f"reliably OCR'd)"
+            )
+            hero_cards = []
+
+    return board_cards, hero_cards
+
+
 def parse_n8_screenshot(image_bytes: bytes) -> dict:
     """Parse N8 replay screenshot into hand JSON.
 
@@ -630,31 +679,8 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     hero_cards = table_result.get("hero_cards", [])
     table_color = table_result.get("table_color", "unknown")
 
-    # Validate & fix duplicate cards (OCR errors).
-    # Common OCR confusions: A↔8 (small cards), 6↔9.
-    # When a hero card duplicates a board card, try swapping the hero
-    # card's rank with common confusions before clearing the board.
-    _OCR_RANK_SWAPS = {"A": "8", "8": "A", "6": "9", "9": "6"}
-    if board_cards and hero_cards:
-        board_set = set(board_cards)
-        fixed_hero = list(hero_cards)
-        for i, hc in enumerate(fixed_hero):
-            if hc in board_set and len(hc) == 2:
-                rank, suit = hc[0], hc[1]
-                alt_rank = _OCR_RANK_SWAPS.get(rank)
-                if alt_rank:
-                    alt_card = alt_rank + suit
-                    if alt_card not in board_set:
-                        log.info(f"Hero card conflict: {hc} in board — swapping to {alt_card}")
-                        fixed_hero[i] = alt_card
-        hero_cards = fixed_hero
-
-    # Final duplicate check — clear board if still unresolvable.
-    if board_cards:
-        all_cards = board_cards + (hero_cards or [])
-        if len(set(all_cards)) < len(all_cards):
-            log.warning(f"Duplicate cards detected: board={board_cards} hero={hero_cards} — clearing board")
-            board_cards = []
+    board_cards, hero_cards = _resolve_hero_board_conflict(
+        board_cards, hero_cards)
 
     # Card confidence — use actual detection quality from table parser
     hero_card_conf = table_result.get("hero_card_conf", 0.0)

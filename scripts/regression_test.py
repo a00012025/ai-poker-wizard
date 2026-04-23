@@ -5498,6 +5498,167 @@ def test_build_url_for_cluster_falls_back_on_build_error():
     assert_in("fh_actions=SRP", url)
 
 
+@test
+def test_resolve_hero_board_conflict_unresolvable_clears_hero():
+    """n8_parser: when hero duplicates a board card and no common-OCR
+    rank-swap resolves it, clear the hero side and keep the board.
+
+    Regression for H2758 where hero was OCR'd as AsQs (true hand Ac3s,
+    occluded by a WIN banner) duplicating the board's Qs.  Pre-fix:
+    whole board was cleared on conflict, breaking flop/turn solver
+    lookups.  Post-fix: hero side is cleared so confidence drops below
+    the 0.85 gate and the Gemini fallback re-reads hero with OCR's
+    board as a hint.
+    """
+    from ocr.n8_parser import _resolve_hero_board_conflict
+
+    board = ["Qs", "Qd", "2d", "Ah", "5c"]
+    hero = ["As", "Qs"]  # Qs unresolvable (no common OCR swap for Q)
+
+    new_board, new_hero = _resolve_hero_board_conflict(board, hero)
+    assert_eq(new_board, board, "board must be preserved")
+    assert_eq(new_hero, [], "hero must be cleared on unresolvable conflict")
+
+
+@test
+def test_resolve_hero_board_conflict_ocr_swap_fixes_a_vs_8():
+    """n8_parser: the A↔8 OCR-confusion swap should auto-repair hero
+    without clearing it.  A frequent failure mode on small hero cards
+    is A read as 8 (or vice versa); if the corrected card doesn't
+    collide with the board, prefer the swap over clearing.
+    """
+    from ocr.n8_parser import _resolve_hero_board_conflict
+
+    # Hero reads "8h" but the real hero is "Ah"; board has a true 8h.
+    board = ["8h", "Kd", "2c"]
+    hero = ["8h", "3s"]  # 8h collides; A↔8 swap gives Ah, not in board
+    new_board, new_hero = _resolve_hero_board_conflict(board, hero)
+    assert_eq(new_board, board, "board preserved")
+    assert_eq(new_hero, ["Ah", "3s"], "hero card swapped 8h → Ah")
+
+
+@test
+def test_suit_detect_red_with_green_felt_bleed():
+    """table_parser._detect_suit_bgr: red-suit cards whose tiny crops
+    include green-felt bleed at the overlap seam must still be detected
+    as red via the inner-region HSV red-pixel pre-check.
+
+    Regression for H2754 where 8♦ had sample-ink-BGR = (88,100,54)
+    (green-dominated from seam bleed), making the mean-BGR is_red check
+    return False.  The inner-region HSV red-pixel pre-check forces
+    is_red=True when saturated red pixels exceed 10% of the inner crop.
+    """
+    import cv2 as _cv2
+    import numpy as _np
+    from ocr.table_parser import _detect_suit_bgr
+
+    # Synthesize a 59x59 red-diamond card with a narrow left strip of
+    # dark-green table felt bleed — the same geometry as H2754 card2.
+    card = _np.full((59, 59, 3), 245, dtype=_np.uint8)  # white card
+    # Left 8px strip: dark green felt (H2754-style seam bleed).
+    card[:, :8] = _np.array([40, 95, 30], dtype=_np.uint8)  # BGR dark green
+    # Draw a small red "8" character in the top-left rank area.
+    _cv2.putText(card, "8", (6, 22), _cv2.FONT_HERSHEY_SIMPLEX,
+                 0.55, (40, 40, 220), 2)  # BGR near-red
+    # Draw a small red diamond-shape block in the center.
+    _cv2.rectangle(card, (24, 30), (34, 44), (40, 40, 220), -1)
+
+    suit = _detect_suit_bgr(card)
+    assert_in(suit, ("h", "d"),
+              f"card with clear red digit + red center must be detected as "
+              f"red (h/d); got {suit!r}")
+
+
+@test
+def test_ocr_rank_prefers_definitive_over_zero_to_q_fallback():
+    """_ocr_card_rank: when a card crop overlaps a "$0.75" prize banner,
+    OCR returns multiple detections including '0' (from the banner) and
+    the actual rank digit.  _extract_rank must prefer the definitive
+    rank character over the fragile '0'→Q fallback.
+
+    Regression for H2758 3♠ where OCR produced
+    [('0', 0.95), ('75', 1.0), ('3', 1.0)] and the '0' was mapped to Q,
+    shadowing the correct '3'.
+    """
+    import cv2 as _cv2
+    import numpy as _np
+    from ocr.table_parser import _ocr_card_rank
+
+    # Build a minimal non-empty card so _ocr_card_rank doesn't short-circuit.
+    card = _np.full((60, 58, 3), 240, dtype=_np.uint8)
+
+    # Canned OCR output that simulates H2758 card2's banner + rank.
+    def fake_ocr(_img):
+        return [
+            {"text": "0", "conf": 0.95, "center_y": 5, "center_x": 5,
+             "bbox": [[0, 0], [10, 0], [10, 10], [0, 10]],
+             "x_min": 0, "x_max": 10, "y_min": 0, "y_max": 10},
+            {"text": "75", "conf": 1.0, "center_y": 5, "center_x": 15,
+             "bbox": [[10, 0], [25, 0], [25, 10], [10, 10]],
+             "x_min": 10, "x_max": 25, "y_min": 0, "y_max": 10},
+            {"text": "3", "conf": 1.0, "center_y": 30, "center_x": 10,
+             "bbox": [[5, 25], [15, 25], [15, 35], [5, 35]],
+             "x_min": 5, "x_max": 15, "y_min": 25, "y_max": 35},
+        ]
+
+    rank, _conf = _ocr_card_rank(card, fake_ocr)
+    assert_eq(rank, "3",
+              f"must prefer definitive rank '3' over 0→Q fallback; got {rank!r}")
+
+
+@test
+def test_ocr_rank_zero_to_q_fallback_still_works_when_only_zero():
+    """_ocr_card_rank: when OCR sees only '0' (true Q misread), the
+    two-pass extractor must still map it to Q via the second-pass
+    fallback.  Regression for ensuring the two-pass refactor didn't
+    disable this legitimate case.
+    """
+    import numpy as _np
+    from ocr.table_parser import _ocr_card_rank
+
+    card = _np.full((60, 58, 3), 240, dtype=_np.uint8)
+
+    def fake_ocr(_img):
+        return [
+            {"text": "0", "conf": 0.92, "center_y": 10, "center_x": 10,
+             "bbox": [[0, 0], [20, 0], [20, 20], [0, 20]],
+             "x_min": 0, "x_max": 20, "y_min": 0, "y_max": 20},
+        ]
+
+    rank, _conf = _ocr_card_rank(card, fake_ocr)
+    assert_eq(rank, "Q", f"0→Q fallback must still fire; got {rank!r}")
+
+
+@test
+def test_suit_detect_black_with_red_border_bleed():
+    """table_parser._detect_suit_bgr: black-suit cards whose outer
+    border includes red bleed from an adjacent red-suit card must NOT
+    be forced to red — the inner-region check skips 8-10% border
+    on each side.
+
+    Regression for H2587 K♣ where an adjacent 9♥ bled red onto the
+    right edge, producing ~8% red pixels in the original full-sample
+    region (would have triggered my initial looser threshold).
+    """
+    import cv2 as _cv2
+    import numpy as _np
+    from ocr.table_parser import _detect_suit_bgr
+
+    card = _np.full((60, 58, 3), 245, dtype=_np.uint8)
+    # Right-edge strip: red bleed from adjacent card (H2587 style).
+    card[:, 52:] = _np.array([40, 40, 220], dtype=_np.uint8)
+    # Black "K" character in the top-left.
+    _cv2.putText(card, "K", (6, 22), _cv2.FONT_HERSHEY_SIMPLEX,
+                 0.55, (20, 20, 20), 2)
+    # Black center blob (the ♣ symbol).
+    _cv2.rectangle(card, (22, 30), (36, 46), (20, 20, 20), -1)
+
+    suit = _detect_suit_bgr(card)
+    assert_in(suit, ("s", "c"),
+              f"black-suit card with only edge-bleed red must stay black; "
+              f"got {suit!r}")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

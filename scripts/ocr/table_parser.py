@@ -542,14 +542,36 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                                 wp_ratio = top3 / bot3
                                 # Guard: when the suit_bot crop is mostly
                                 # dark (>35%), it likely captured the large
-                                # center card symbol (e.g. Ace ♠) rather
-                                # than the mini corner suit icon.  The
-                                # center symbol inverts the width-profile
-                                # for spades (belly at top, point at
-                                # bottom).  Only apply override when the
-                                # crop is sparse (mini icon).
+                                # center card symbol rather than the mini
+                                # corner suit icon.  The center symbol can
+                                # invert the width-profile — e.g. the
+                                # bottom half of a central ♣ produces
+                                # wp_ratio < 0.40 even though the card is
+                                # a club.  Discriminate real small ♠ from
+                                # center-♣ artifact by smoothness: a real
+                                # spade bottom (point→belly→base) is
+                                # monotonic with max row-to-row jump ≤0.22,
+                                # while a center-♣ bottom has a sharp
+                                # stem→base transition (jump ≥0.3) or is
+                                # broken by lobe gaps (multiple decreases).
                                 dark_pct = np.sum(sb_bin > 0) / sb_bin.size
-                                if wp_ratio < 0.40:
+                                step_p = max(1, sb_h // 10)
+                                prof = [float(np.sum(sb_bin[r] > 0)) /
+                                        max(sb_bin.shape[1], 1)
+                                        for r in range(0, sb_h, step_p)]
+                                if len(prof) >= 3:
+                                    max_jump_p = max(
+                                        abs(prof[i + 1] - prof[i])
+                                        for i in range(len(prof) - 1))
+                                    n_dec = sum(
+                                        1 for i in range(len(prof) - 1)
+                                        if prof[i + 1] < prof[i] - 0.05)
+                                else:
+                                    max_jump_p = 0.0
+                                    n_dec = 0
+                                sb_is_smooth = (max_jump_p < 0.22
+                                                and n_dec <= 1)
+                                if wp_ratio < 0.40 and sb_is_smooth:
                                     suit = "s"  # spade: narrow top
                                     _wp_confirmed = True
                                 elif wp_ratio > 2.0 and dark_pct < 0.35:
@@ -614,26 +636,33 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
                          interpolation=cv2.INTER_CUBIC)
 
     def _extract_rank(ocr_results, allow_q_from_zero=True):
+        # First pass: look for definitive rank characters across ALL
+        # results before considering the lossy "0"→Q fallback.  A crop
+        # that overlaps a "$0.75" prize banner can produce multiple
+        # detections like [('0', 0.95), ('75', 1.0), ('3', 1.0)] — the
+        # actual rank (3) must win over the banner's "0" triggering the
+        # 0→Q mapping.  Regression for H2758 where 3♠ was read as Q♠
+        # because '0' appeared before '3' in the results list.
         for r in ocr_results:
             t = r["text"].strip()
             tu = t.upper()
-            conf = r.get("conf", 0)
-            # Check exact matches first (e.g., "10", "A", "K")
             if t in _RANK_CHARS:
                 return _RANK_MAP.get(t, t)
             if tu in _RANK_CHARS:
                 return _RANK_MAP.get(tu, tu)
-            # Check multi-char mappings (e.g., "IO", "I0", "1O")
             if tu in _RANK_MAP:
                 return _RANK_MAP[tu]
-            # Standalone "0" or "O" → Q (EasyOCR misreads Q)
-            # Confidence threshold 0.7 balances Q detection vs false positives
-            if allow_q_from_zero and tu in _Q_CHARS and len(t) == 1:
-                if conf > 0.7:
-                    return "Q"
-            # Single valid rank character
             if len(t) == 1 and tu in "23456789JQKA":
                 return tu
+        # Second pass: "0" / "O" → Q fallback (EasyOCR misreads Q).
+        # Only reached when no definitive rank was found above.
+        if allow_q_from_zero:
+            for r in ocr_results:
+                t = r["text"].strip()
+                tu = t.upper()
+                conf = r.get("conf", 0)
+                if tu in _Q_CHARS and len(t) == 1 and conf > 0.7:
+                    return "Q"
         return None
 
     # Attempt 1: OCR on top-left rank crop — highest confidence (0.9)
@@ -643,6 +672,7 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
     rank_crop_rank = None
     rank_crop_via_zero = False  # True if rank was derived from "0"→Q mapping
     rank_crop_conf = 0.0
+    rank_crop = None
     if rh > 10 and rw > 10:
         rank_crop = card_up[0:rh, 0:rw]
         rank_crop_ocr = ocr_full_image(rank_crop)
@@ -661,6 +691,53 @@ def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]
             )
             if not has_upper_q:
                 rank_crop_via_zero = True
+
+    # Attempt 1b: on very small cards the rank digit extends past 50% of
+    # the card height; a taller rank crop (0.70) recovers it when the
+    # first attempt returned nothing.  Must not run when attempt 1 found
+    # a rank — the tighter crop is preferred to avoid picking up the
+    # suit symbol.
+    if not rank_crop_rank:
+        rh2 = int(ch * 0.70)
+        rw2 = int(cw_up * 0.60)
+        if rh2 > 10 and rw2 > 10:
+            rank_crop2 = card_up[0:rh2, 0:rw2]
+            rank_crop2_ocr = ocr_full_image(rank_crop2)
+            conf2 = max((r.get("conf", 0) for r in rank_crop2_ocr), default=0)
+            rank2 = _extract_rank(rank_crop2_ocr)
+            rank2_strict = _extract_rank(rank_crop2_ocr, allow_q_from_zero=False)
+            if rank2 and conf2 > 0.70:
+                rank_crop_rank = rank2
+                rank_crop_conf = conf2
+                rank_crop = rank_crop2
+                if rank2 == "Q" and rank2_strict is None:
+                    rank_crop_via_zero = True
+
+    # Attempt 1c: shifted-down rank crop for cards whose blob includes
+    # a prize-money banner ("$0.75", "$1.12", …) overlapping the card
+    # top.  The banner consumes the top ~20% of the blob, pushing the
+    # rank digit into y[0.25:0.50] instead of y[0:0.45].  Standard
+    # crops (attempts 1 and 1b) then see only the banner text, which
+    # _extract_rank correctly rejects as non-rank.  A crop starting at
+    # y=0.30 excludes the banner entirely and isolates the rank.
+    # Regression for H2759 J♥ where "$0.75" masked the 'J' on every
+    # top-anchored crop and attempt 2 also saw only "1.75".
+    if not rank_crop_rank:
+        rh3_lo = int(ch * 0.30)
+        rh3_hi = int(ch * 0.80)
+        rw3 = int(cw_up * 0.60)
+        if rh3_hi - rh3_lo > 20 and rw3 > 10:
+            rank_crop3 = card_up[rh3_lo:rh3_hi, 0:rw3]
+            rank_crop3_ocr = ocr_full_image(rank_crop3)
+            conf3 = max((r.get("conf", 0) for r in rank_crop3_ocr), default=0)
+            rank3 = _extract_rank(rank_crop3_ocr)
+            rank3_strict = _extract_rank(rank_crop3_ocr, allow_q_from_zero=False)
+            if rank3 and conf3 > 0.80:
+                rank_crop_rank = rank3
+                rank_crop_conf = conf3
+                rank_crop = rank_crop3
+                if rank3 == "Q" and rank3_strict is None:
+                    rank_crop_via_zero = True
 
     # Attempt 2: OCR on upscaled full card (0.85)
     full_card_ocr = ocr_full_image(card_up)
@@ -892,7 +969,34 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
     avg_g = float(np.mean(dark_pixels[:, 1]))
     avg_b = float(np.mean(dark_pixels[:, 0]))
 
-    is_red = avg_r > avg_b + 20 and avg_r > avg_g + 20
+    # Pre-check: when a tiny hero card crop includes green-felt bleed
+    # at the overlap seam, ink-BGR averaging can be green-dominated
+    # even on clearly red cards.  Count pure saturated-red HSV pixels
+    # in an INNER region (y[0.25:0.72], x[0.10:0.55]) that excludes
+    # (a) the top 25% where a "$0.75" prize-money banner overlays the
+    # card and contaminates the ink-BGR mean, (b) the left seam to
+    # adjacent cards (which leaks green felt on red-suit cards), and
+    # (c) the right edge where a neighbor card's red can bleed onto a
+    # black card (H2587 K♣ next to 9♥).  Tight H/S/V thresholds
+    # (H≤10 / ≥170, S≥120, V≥80) exclude orange/yellow chip-glow and
+    # the banner's own yellow pixels.  Threshold 0.05 gives a clean
+    # gap: real red cards score ≥ 0.08 (H2759 J♥ at 0.088 is the
+    # tightest), real black cards score ≤ 0.016.
+    h_card, w_card = card_img.shape[:2]
+    inner = card_img[int(h_card * 0.25):int(h_card * 0.72),
+                     int(w_card * 0.10):int(w_card * 0.55)]
+    if inner.size > 0:
+        hsv_pre = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
+        rp_m1 = cv2.inRange(hsv_pre, np.array([0, 120, 80]),
+                            np.array([10, 255, 255]))
+        rp_m2 = cv2.inRange(hsv_pre, np.array([170, 120, 80]),
+                            np.array([180, 255, 255]))
+        red_pure_pct = float(np.sum(cv2.bitwise_or(rp_m1, rp_m2) > 0)) / max(
+            inner.shape[0] * inner.shape[1], 1)
+    else:
+        red_pure_pct = 0.0
+
+    is_red = (avg_r > avg_b + 20 and avg_r > avg_g + 20) or red_pure_pct > 0.05
 
     if is_red:
         # Hearts vs Diamonds: hull defects approach.
@@ -1023,6 +1127,18 @@ def _detect_suit_bgr(card_img: np.ndarray) -> str:
                             _skip = True
                     if not _skip:
                         return "h"
+
+                # Very high hull-defect norm declares heart even when
+                # solidity is low.  Face cards (J/Q/K) merge the rank
+                # character into the red-mask center contour,
+                # fragmenting it (csol drops to ~0.63) and blocking the
+                # strict `norm > 22 and csol > 0.80` check above.
+                # Threshold 150 cleanly separates observed samples:
+                #   H2759 J♥ (real heart): norm=214, csol=0.63
+                #   H2659 fragmented diamonds: norm=129-135, csol=0.70-0.73
+                # Requires ca > 1500 to reject tiny noise contours.
+                if norm >= 150 and ca > 1500 and csol <= 0.80:
+                    return "h"
 
                 if ca >= 4000 and csol > 0.80:
                     if norm < 18:
