@@ -41,41 +41,19 @@ POSITION_ORDERS = {
 def _resolve_hero_board_conflict(
     board_cards: list[str], hero_cards: list[str]
 ) -> tuple[list[str], list[str]]:
-    """Reconcile hero and board cards that share the same rank+suit.
+    """If hero and board share a card, clear hero.
 
-    Common OCR confusions (A↔8, 6↔9) are tried first on the hero side
-    — these swaps cover the bulk of small-card rank errors.  If a
-    conflict remains, clear the hero (not the board): board cards are
-    rendered larger and rarely obscured, so they are almost always the
-    more reliable OCR read.  Hero cards can be partially hidden by WIN
-    banners, chip stacks, or rendering overlaps, leading to hallucinated
-    ranks/suits that collide with the board.  Clearing the hero drops
-    the n8_parser confidence below the 0.85 gate and triggers the
-    downstream Gemini fallback to re-read hero from the image, while
-    keeping the board preserves postflop solver queries.
-
-    Returns the (possibly modified) board, hero tuple.
+    Legacy versions tried A↔8 and 6↔9 rank swaps first — those patterns
+    covered frequent confusions from the old heuristic OCR pipeline. The
+    CNN classifier has different error modes (e.g., 8 vs 9 based on
+    crop edge detail) so those swaps now actively produce wrong answers
+    on hands where the classifier's second-best pick happens to match
+    the board. Instead we just clear the hero, which drops card_confidence
+    and naturally routes the hand into the Gemini fallback where the
+    image is re-read end-to-end.
     """
-    _OCR_RANK_SWAPS = {"A": "8", "8": "A", "6": "9", "9": "6"}
     if board_cards and hero_cards:
-        board_set = set(board_cards)
-        fixed_hero = list(hero_cards)
-        for i, hc in enumerate(fixed_hero):
-            if hc in board_set and len(hc) == 2:
-                rank, suit = hc[0], hc[1]
-                alt_rank = _OCR_RANK_SWAPS.get(rank)
-                if alt_rank:
-                    alt_card = alt_rank + suit
-                    if alt_card not in board_set:
-                        log.info(
-                            f"Hero card conflict: {hc} in board — "
-                            f"swapping to {alt_card}"
-                        )
-                        fixed_hero[i] = alt_card
-        hero_cards = fixed_hero
-
-    if board_cards:
-        all_cards = board_cards + (hero_cards or [])
+        all_cards = board_cards + hero_cards
         if len(set(all_cards)) < len(all_cards):
             log.warning(
                 f"Duplicate cards detected: board={board_cards} "
