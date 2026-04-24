@@ -301,29 +301,17 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
     return []
 
 
-def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
-    """Find and identify hero's hole cards.
+def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
 
-    Strategy:
-    1. Crop hero area (bottom center of table)
-    2. Find the card pair blob at multiple threshold levels
-    3. If blob is too tall, retry at higher threshold for tighter fit
-    4. Split blob at ~48% mark with small overlap
-    5. OCR each card for rank (multiple attempts + template fallback)
-    6. Detect suit by BGR color + template matching
-
-    Returns:
-        (cards, confidence) where confidence 0.0-1.0 reflects detection quality.
-        High confidence (>0.7): rank found on early OCR attempts.
-        Low confidence (<0.5): rank found via template matching or late fallback.
+    Pure localization — no rank/suit detection. Same blob logic currently
+    used inside _find_hero_cards.
     """
-    from .ocr_utils import ocr_full_image
-
     h, w = table_region.shape[:2]
     hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
     ah, aw = hero.shape[:2]
     if ah < 20 or aw < 20:
-        return [], 0.0
+        return []
 
     gray = cv2.cvtColor(hero, cv2.COLOR_BGR2GRAY)
 
@@ -366,15 +354,46 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                 break
 
     if not best_blob:
-        return [], 0.0
+        return []
 
     x, y, cw, ch_, _ = best_blob
-    blob_ratio = cw / ch_ if ch_ > 0 else 2.0
 
     # Split at 48% (left card slightly narrower due to overlap rendering)
     split = int(cw * 0.48)
     card1 = hero[y:y + ch_, x:x + split + 3]
     card2 = hero[y:y + ch_, x + split - 3:x + cw]
+    return [card1, card2]
+
+
+def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
+    """Find and identify hero's hole cards.
+
+    Strategy:
+    1. Crop hero area (bottom center of table)
+    2. Find the card pair blob at multiple threshold levels
+    3. If blob is too tall, retry at higher threshold for tighter fit
+    4. Split blob at ~48% mark with small overlap
+    5. OCR each card for rank (multiple attempts + template fallback)
+    6. Detect suit by BGR color + template matching
+
+    Returns:
+        (cards, confidence) where confidence 0.0-1.0 reflects detection quality.
+        High confidence (>0.7): rank found on early OCR attempts.
+        Low confidence (<0.5): rank found via template matching or late fallback.
+    """
+    from .ocr_utils import ocr_full_image
+
+    crops = _locate_hero_cards(table_region)
+    if not crops:
+        return [], 0.0
+    card1, card2 = crops
+
+    # Recompute blob_ratio from crop shapes (card1.w + card2.w - 6 == original cw)
+    blob_ratio = (card1.shape[1] + card2.shape[1] - 6) / max(card1.shape[0], 1)
+
+    h, w = table_region.shape[:2]
+    hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
+    gray = cv2.cvtColor(hero, cv2.COLOR_BGR2GRAY)
 
     # When blob ratio < 1.5 (too tall), find a tighter blob at higher
     # threshold for suit detection — tall blobs include card artwork that

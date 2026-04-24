@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 
 from scripts.ocr.region_detector import detect_regions
-from scripts.ocr.table_parser import _locate_hero_cards, _locate_board_cards
+from scripts.ocr.table_parser import _locate_hero_cards
 
 
 SNAPSHOT = Path(__file__).parent / "snapshots" / "H2491" / "input.jpeg"
@@ -33,6 +33,7 @@ def test_locate_hero_cards_returns_crops(table_region):
 
 def test_locate_board_cards_returns_crops(table_region):
     # H2491 has a full flop+turn+river in expected.json → exactly 5 board cards
+    from scripts.ocr.table_parser import _locate_board_cards  # noqa: PLC0415
     crops = _locate_board_cards(table_region)
     assert isinstance(crops, list)
     assert len(crops) == 5
