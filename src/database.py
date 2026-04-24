@@ -288,20 +288,23 @@ class Database:
                             source_type: str, user_input: str | None,
                             image_data: bytes | None,
                             parsed_json: dict, gto_text: str,
-                            gto_compact: str | None = None):
+                            gto_compact: str | None = None,
+                            classifier_conf: float | None = None):
         """Save analysis snapshot. Upsert by hand_id (idempotent)."""
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO analysis_snapshots
                     (hand_id, chat_id, source_type, user_input, image_data,
-                     parsed_json, gto_text, gto_compact)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     parsed_json, gto_text, gto_compact, classifier_conf)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (hand_id) DO UPDATE SET
-                    parsed_json = $6, gto_text = $7, gto_compact = $8
+                    parsed_json = $6, gto_text = $7, gto_compact = $8,
+                    classifier_conf = COALESCE($9, analysis_snapshots.classifier_conf)
                 """,
                 hand_id, chat_id, source_type, user_input, image_data,
                 json.dumps(parsed_json), gto_text, gto_compact,
+                classifier_conf,
             )
 
     async def update_snapshot_coaching(self, hand_id: str, coaching_text: str):

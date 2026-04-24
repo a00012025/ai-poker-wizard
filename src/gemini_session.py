@@ -814,7 +814,8 @@ class GeminiSessionManager:
     async def _save_snapshot(self, hand_id: str, chat_id: int,
                               source_type: str, user_input: str | None,
                               image_data: bytes | None,
-                              parsed_json: dict, context: dict):
+                              parsed_json: dict, context: dict,
+                              *, classifier_conf: float | None = None):
         """Fire-and-forget: save analysis snapshot to DB."""
         if not self.db or not hand_id:
             return
@@ -827,6 +828,7 @@ class GeminiSessionManager:
                 parsed_json=parsed_json,
                 gto_text=context.get("text", ""),
                 gto_compact=context.get("text_compact"),
+                classifier_conf=classifier_conf,
             )
         except Exception as e:
             self._logger.warning(f"[chat={chat_id}] Failed to save snapshot: {e}")
@@ -1363,6 +1365,9 @@ class GeminiSessionManager:
 
             # Handle possible_ft flag — extract before saving/analysis
             possible_ft = hand_json.pop("possible_ft", False)
+            # Strip OCR conf off the hand dict so it doesn't leak into
+            # downstream analysis or DB columns other than classifier_conf.
+            ocr_conf_for_hand: float | None = hand_json.pop("__ocr_conf__", None)
 
             # Save parsed hand to DB and get hand_id
             hand_id = None
@@ -1399,7 +1404,8 @@ class GeminiSessionManager:
             import asyncio as _aio
             _aio.create_task(self._save_snapshot(
                 hand_id, chat_id, "image", user_text or "[screenshot]",
-                image_bytes, hand_json, context))
+                image_bytes, hand_json, context,
+                classifier_conf=ocr_conf_for_hand))
             # Extract deviations for leak detection (fire-and-forget)
             _aio.create_task(self._extract_deviations(
                 chat_id, hand_id, hand_json, context))
@@ -1552,6 +1558,7 @@ class GeminiSessionManager:
                         self._logger.info(f"[chat={chat_id}] Using OCR result (conf={ocr_conf:.2f})")
                         self._normalize_cards(hand)
                         self._fix_folded_players(hand)
+                        hand["__ocr_conf__"] = float(ocr_conf)
                         return hand
 
                 if 0.1 <= ocr_conf and ocr_result.get("hints"):
@@ -1646,6 +1653,11 @@ class GeminiSessionManager:
                             f"[chat={chat_id}] OCR vs Gemini diffs: {'; '.join(diffs)}"
                         )
 
+                # Record the OCR confidence even when Gemini produced the
+                # final hand — the number lets weekly_report track the
+                # classifier's population conf distribution over time.
+                if ocr_result is not None:
+                    hand["__ocr_conf__"] = float(ocr_result.get("confidence", 0.0))
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(
