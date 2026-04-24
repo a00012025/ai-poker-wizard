@@ -47,6 +47,9 @@ tests/snapshots/gto_cache/
 .tokens.json
 scripts/_tmp.py
 
+# Claude Code harness runtime state
+.claude/
+
 # OCR template raw crops
 scripts/ocr/templates/raw/
 .game_modes_cache.json
