@@ -60,7 +60,7 @@ def train(
     weight_decay: float = 1e-4,
     val_frac: float = 0.2,
     seed: int = 0,
-    patience: int = 10,
+    patience: int = 30,
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -87,6 +87,9 @@ def train(
     device = "cpu"  # production runs CPU-only
     net = CardCNN().to(device)
     opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=epochs, eta_min=lr * 1e-2
+    )
 
     best_val_loss = float("inf")
     best_state = None
@@ -100,6 +103,7 @@ def train(
             loss = F.cross_entropy(rl, r) + F.cross_entropy(sl, s)
             loss.backward()
             opt.step()
+        sched.step()
 
         net.eval()
         val_loss = 0.0
@@ -170,7 +174,7 @@ if __name__ == "__main__":
     ap.add_argument("--data", default=str(DEFAULT_DATA))
     ap.add_argument("--ckpt", default=str(DEFAULT_CKPT))
     ap.add_argument("--meta", default=str(DEFAULT_META))
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=150)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()

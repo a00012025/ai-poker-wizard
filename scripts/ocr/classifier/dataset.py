@@ -12,23 +12,19 @@ from torch.utils.data import Dataset
 
 from .model import RANK_CLASSES, SUIT_CLASSES
 
-INPUT_H, INPUT_W = 48, 64
+INPUT_H, INPUT_W = 192, 128
 _RANK_TO_IDX = {r: i for i, r in enumerate(RANK_CLASSES)}
 _SUIT_TO_IDX = {s: i for i, s in enumerate(SUIT_CLASSES)}
 _FILENAME_RE = re.compile(r"^(?P<hand>[A-Za-z0-9]+)_(?P<src>hero|board)_(?P<slot>\d+)\.png$")
 
 
 def _letterbox(img: np.ndarray, h: int = INPUT_H, w: int = INPUT_W) -> np.ndarray:
-    """Resize + pad to (h, w) preserving aspect ratio, BGR."""
-    ih, iw = img.shape[:2]
-    scale = min(h / ih, w / iw)
-    nh, nw = max(1, int(ih * scale)), max(1, int(iw * scale))
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-    canvas = np.zeros((h, w, 3), dtype=np.uint8)
-    top = (h - nh) // 2
-    left = (w - nw) // 2
-    canvas[top:top + nh, left:left + nw] = resized
-    return canvas
+    """Resize to (h, w), stretching aspect — cards have similar aspect ratios
+    (~0.7 w/h) so the small distortion beats wasting pixels on black padding
+    (v3 with letterbox plateaued at 90% rank acc because the rank glyph after
+    padding + resize was ~10px). Name kept as `_letterbox` for API stability;
+    the behavior is now stretch-resize."""
+    return cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
 
 
 def _to_tensor(img_bgr: np.ndarray) -> torch.Tensor:
@@ -37,10 +33,9 @@ def _to_tensor(img_bgr: np.ndarray) -> torch.Tensor:
 
 
 def _apply_aug(img: np.ndarray) -> np.ndarray:
-    dx, dy = random.randint(-2, 2), random.randint(-2, 2)
-    M = np.float32([[1, 0, dx], [0, 1, dy]])
-    img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]),
-                         borderMode=cv2.BORDER_REPLICATE)
+    # No translation — the rank glyph is tiny (~10px) and ±2px shifts
+    # destroyed rank signal in v1 (rank acc 0.35). Brightness + mild blur
+    # are safe because they don't move the glyph.
     scale = random.uniform(0.9, 1.1)
     img = np.clip(img.astype(np.float32) * scale, 0, 255).astype(np.uint8)
     if random.random() < 0.2:
