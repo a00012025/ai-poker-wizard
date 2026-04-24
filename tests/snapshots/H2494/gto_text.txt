@@ -83,4 +83,4 @@ Hero ATs 牌型: Ace high
     Bet 7（64% pot）: 8.8%（0.0 combos） EV 0.85bb
   → 實際行動: HJ R6.2 6.2bb（solver code: R7）
 
-⏱ Discovery: 1.6s | Analysis: 5.0s | Total: 6.6s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

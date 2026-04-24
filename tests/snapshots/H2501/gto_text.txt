@@ -33,4 +33,4 @@ Hero Q9o 牌型: 順子 (Q-J-T-9-8)
 （無 solver 數據）
   → 實際行動: BB R8.4 8.4bb（solver code: X）
 
-⏱ Discovery: 4.3s | Analysis: 0.5s | Total: 4.8s
+⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

@@ -77,4 +77,4 @@ Hero AJo 牌型: 頂對 (A)
     Bet 13（61% pot）: 5.3%（0.0 combos） EV 19.72bb
   → 實際行動: BTN R89.9 89.9bb（solver code: RAI）
 
-⏱ Discovery: 2.2s | Analysis: 8.4s | Total: 10.6s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

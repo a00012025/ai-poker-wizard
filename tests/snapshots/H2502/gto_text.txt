@@ -73,4 +73,4 @@ Hero A4s 牌型: 三條 (A)
     Call: 100.0%（0.2 combos） EV 3.12bb
   → 實際行動: CO C 5.9bb（solver code: C）
 
-⏱ Discovery: 2.0s | Analysis: 8.8s | Total: 10.8s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

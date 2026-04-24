@@ -66,4 +66,4 @@ Hero 22 牌型: 口袋對 (22) < 牌面
   EV: 0.00bb | Equity: 0.0%
   → 實際行動: LJ F（solver code: F）
 
-⏱ Discovery: 1.9s | Analysis: 18.7s | Total: 20.6s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

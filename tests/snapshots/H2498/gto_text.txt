@@ -71,4 +71,4 @@ Hero AQs 牌型: Ace high + 卡順聽牌
   EV: 0.00bb | Equity: 0.0%
   → 實際行動: LJ F（solver code: F）
 
-⏱ Discovery: 1.9s | Analysis: 4.8s | Total: 6.7s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

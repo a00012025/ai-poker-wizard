@@ -1626,6 +1626,50 @@ def test_postflop_pct_bet_still_detected():
     assert_eq(result, "R6.6")
 
 
+@test
+def test_find_action_by_pot_pct_maps_real_50pct_to_solver_61pct():
+    """Action matching: when solver's normalized preflop inflates the pot
+    (e.g. 35bb MTT where user's R2 becomes R2.2), a real 50%-pot river
+    bet must still match the solver's 61% option — not the 36% option
+    that would win by raw-bb distance against the inflated pot.
+
+    H2767 regression: hero bet 4.6bb into real pot 9.1bb (50% pot).
+    Solver pot inflated to 9.8bb by preflop R2→R2.2 rewrite. Absolute
+    bb matching: |4.6-3.5|=1.1 < |4.6-6|=1.4 → wrongly picks R3.5.
+    Pot-pct matching with actual_pot=9.1: target_pct=50.5% → closest
+    solver pct is 61% → correctly picks R6.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    # H2767-exact available actions on the river with solver pot 9.8
+    available = [
+        {"action": {"code": "X", "betsize": "0", "allin": False}},
+        {"action": {"code": "R3.5", "betsize": "3.5", "allin": False, "betsize_by_pot": "0.36"}},
+        {"action": {"code": "R6",   "betsize": "6.0", "allin": False, "betsize_by_pot": "0.61"}},
+        {"action": {"code": "R8.5", "betsize": "8.5", "allin": False, "betsize_by_pot": "0.87"}},
+        {"action": {"code": "R14.5","betsize": "14.5","allin": False, "betsize_by_pot": "1.48"}},
+        {"action": {"code": "RAI",  "betsize": "34.6","allin": True,  "betsize_by_pot": "3.53"}},
+    ]
+
+    # Real pot 9.1bb (user's actual preflop R2 without solver inflation)
+    assert_eq(_find_action_by_pot_pct(available, 4.6, 9.1), "R6")
+
+    # Sanity: 20% pot bet (1.82bb) → solver R3.5 (36%), the closest
+    assert_eq(_find_action_by_pot_pct(available, 1.82, 9.1), "R3.5")
+
+    # Overbet 110% pot (10bb into 9.1bb real) → solver 87% is closer in
+    # pot-pct terms (|110-87|=23pp < |110-148|=38pp).
+    assert_eq(_find_action_by_pot_pct(available, 10.0, 9.1), "R8.5")
+
+    # Guard: percentage-shaped input (bet_size=50 meaning "50% pot", which
+    # OCR/LLM parsers sometimes emit unconverted). target_pct > 2.0 so the
+    # helper must defer to find_closest_action_postflop which detects the
+    # percentage and resolves it to the right raise code, not an all-in.
+    result = _find_action_by_pot_pct(available, 50, 9.1)
+    assert_eq(result, "R6",
+              f"bet_size=50 (interpreted as 50% pot) should match R6 (61%); got {result}")
+
+
 # ── Hand Eval Tests ──
 
 @test

@@ -56,51 +56,44 @@ Hero A9s 牌型: 頂對 (A) + 堅果花聽牌
     Check: 99.9%（0.4 combos） EV 5.49bb
   → 實際行動: BB X（solver code: X）
 
-【BB 在 Turn AhQs3dJd】底池 9.250bb
-  Fold: 15.9%（31 combos）
-  Call: 69.7%（135 combos）
-  RAISE 5.1（33% pot）: 11.9%（23 combos）
-  All-in 10.900: 2.5%（5 combos）
+【BB 在 Turn AhQs3dJd】底池 10.250bb
+  Fold: 25.1%（49 combos）
+  Call: 62.8%（122 combos）
+  RAISE 6.75（33% pot）: 11.3%（22 combos）
+  All-in 10.900: 0.8%（2 combos）
 
 【BB A9s】
   Range 頻率: 11.7%（0.4/3 combos）
-  EV: 2.74bb | Equity: 54.1%
+  EV: 4.59bb | Equity: 59.0%
   策略:
-    Call: 71.4%（0.2 combos） EV 2.42bb
-    RAISE 5.1（33% pot）: 27.8%（0.1 combos） EV 3.06bb
-    Fold: 0.7%（0.0 combos） EV -0.00bb
-    All-in: 0.2%（0.0 combos） EV 2.18bb
-  花色差異:
-    Ad9d: Call 47%, RAISE 5.1（33% pot） 53%（EV 4.5bb）
-    As9s: Fold 1%, Call 98%（EV 0.8bb）
-⚠ EV 損失 1.19bb（Call 3.85bb vs RAISE 5.1（33% pot） 5.04bb）
+    Call: 70.1%（0.2 combos） EV 4.59bb
+    All-in: 16.3%（0.1 combos） EV 4.52bb
+    RAISE 6.75（33% pot）: 13.6%（0.0 combos） EV 4.57bb
   → 實際行動: BB C 2.0bb（solver code: C）
 
 
 ==================================================
 【River: 3c（Board: Qs3dAhJd3c）】
 Hero A9s 牌型: 頂對 (A)
-【BB 在 River AhQs3dJd3c】底池 10.800bb
-  Check: 98.3%（132 combos）
-  All-in 9.350: 1.7%（2 combos）
+【BB 在 River AhQs3dJd3c】底池 12.800bb
+  Check: 100.0%（121 combos）
 
 【BB A9s】
-  Range 頻率: 8.3%（0.2/3 combos）
-  EV: -0.00bb | Equity: 0.0%
+  Range 頻率: 8.2%（0.2/3 combos）
+  EV: 7.57bb | Equity: 64.2%
   策略:
-    Check: 99.3%（0.2 combos） EV 0.00bb
-    All-in: 0.7%（0.0 combos） EV -0.00bb
+    Check: 100.0%（0.2 combos） EV 7.57bb
   → 實際行動: BB X（solver code: X）
 
-【BB 在 River AhQs3dJd3c】底池 16.800bb
-  Fold: 100.0%（132 combos）
+【BB 在 River AhQs3dJd3c】底池 21.150bb
+  Fold: 40.9%（50 combos）
+  Call: 59.1%（72 combos）
 
 【BB A9s】
-  Range 頻率: 8.3%（0.2/3 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 8.2%（0.2/3 combos）
+  EV: 4.60bb | Equity: 43.9%
   策略:
-    Fold: 100.0%（0.2 combos） EV 0.00bb
-⚠ EV 損失 6.00bb（Call -6.00bb vs Fold 0.00bb）
+    Call: 100.0%（0.2 combos） EV 4.60bb
   → 實際行動: BB C 6.4bb（solver code: C）
 
-⏱ Discovery: 2.2s | Analysis: 2.7s | Total: 4.9s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

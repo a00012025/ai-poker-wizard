@@ -371,9 +371,21 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     """Find closest action by pot percentage rather than absolute size.
 
     Computes the hero/villain bet as a fraction of the actual pot, then
-    converts to the solver's pot context for matching.
+    converts to the solver's pot context for matching. Guarded against
+    bet_size values that are actually percentages (LLM sometimes emits
+    "R size=40" meaning 40% pot): if bet_size/actual_pot exceeds 2.0
+    the value is almost certainly not raw bb, so defer to
+    find_closest_action_postflop which has percentage-detection logic.
     """
     target_pct = bet_size / actual_pot
+
+    # Guard: bet_size that looks like a percentage rather than raw bb.
+    # Real raw-bb bets top out around 100%-200% pot (overbets); anything
+    # above 200% of actual_pot is overwhelmingly a percentage the parser
+    # forgot to convert. find_closest_action_postflop already handles
+    # this case by auto-detecting and converting.
+    if target_pct > 2.0:
+        return find_closest_action_postflop(available_actions, bet_size)
 
     # Compute solver pot from any available raise action's betsize_by_pot
     solver_pot = None
@@ -799,9 +811,14 @@ def _run_analysis(hand: dict) -> dict:
             depth = adjusted_depth
         chipev_depth = adjusted_depth
 
-    # Compute actual pot from original preflop for pot-percentage bet matching
-    # (only needed for multiway where simplified pot differs from actual pot)
-    actual_pot = _compute_preflop_pot(hand["preflop_actions"], hand["effective_bb"]) if multiway_note else 0
+    # Compute actual pot from original preflop for pot-percentage bet matching.
+    # Used anywhere the solver normalizes raise sizes differently from the
+    # user's actual sizes. Previously gated on multiway only; that missed HU
+    # hands at depths where the solver offers sparse raise codes (e.g. 35bb
+    # MTTGeneral CO opens R2.2 — user's R2 gets mapped to R2.2, inflating
+    # every downstream pot by ~0.7bb, which misroutes a 4.6bb river bet
+    # from the 50%-pot bucket to the 36%-pot bucket. H2767 regression.)
+    actual_pot = _compute_preflop_pot(hand["preflop_actions"], hand["effective_bb"])
 
     # Normalize preflop actions
     # For ICM, use ICM gametype for preflop normalization

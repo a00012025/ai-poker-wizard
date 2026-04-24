@@ -88,4 +88,4 @@ Hero 88 牌型: 口袋對 (88)
 ⚠ EV 損失 0.03bb（Check 5.36bb vs Bet 2.5（44% pot） 5.39bb）
   → 實際行動: CO X（solver code: X）
 
-⏱ Discovery: 1.0s | Analysis: 6.8s | Total: 7.8s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

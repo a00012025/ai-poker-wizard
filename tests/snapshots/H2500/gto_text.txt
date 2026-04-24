@@ -100,4 +100,4 @@ Hero KQo 牌型: 兩對 (K, Q)
     KcQh: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.6bb）
   → 實際行動: CO R22.4 22.4bb（solver code: R20.5）
 
-⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
+⏱ Discovery: 0.0s | Analysis: 0.3s | Total: 0.3s
