@@ -14,10 +14,10 @@
     "UTG1": "UTG+1", "UTG2": "UTG+2"
   },
   "confidence_weights": {
-    "pot_consistency": 0.30,
-    "player_tracking": 0.25,
-    "ocr_confidence": 0.25,
-    "card_confidence": 0.20
+    "pot_consistency": 0.20,
+    "player_tracking": 0.20,
+    "ocr_confidence": 0.20,
+    "card_confidence": 0.40
   },
   "confidence_threshold": 0.85
 }

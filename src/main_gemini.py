@@ -48,7 +48,7 @@ async def post_init(application):
     else:
         logger.warning("SUPABASE_CONN not set — running without database")
 
-    # Preload EasyOCR model to avoid cold start on first image
+    # Preload EasyOCR model + CardClassifier to avoid cold start on first image
     if os.getenv("OCR_ENABLED", "false").lower() in ("true", "1", "yes"):
         try:
             from ocr.ocr_utils import _get_reader
@@ -56,6 +56,12 @@ async def post_init(application):
             logger.info("OCR model preloaded")
         except Exception as e:
             logger.warning(f"OCR model preload failed: {e}")
+        try:
+            from ocr.classifier.infer import CardClassifier
+            CardClassifier()._warm()
+            logger.info("CardClassifier preloaded")
+        except Exception as e:
+            logger.warning(f"CardClassifier preload failed: {e}")
 
     # Schedule weekly leak report (Sunday 10:00 AM Taipei time)
     if db.pool and application.job_queue:

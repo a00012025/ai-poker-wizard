@@ -7,17 +7,6 @@ from the upper (table) region of an N8 replay screenshot.
 import cv2
 import numpy as np
 
-from .card_matcher import CardMatcher
-
-_matcher = None
-
-
-def _get_matcher() -> CardMatcher:
-    global _matcher
-    if _matcher is None:
-        _matcher = CardMatcher()
-    return _matcher
-
 
 def _detect_table_color(table_region: np.ndarray) -> str:
     """Detect table felt color to distinguish normal vs Final Table.
@@ -162,39 +151,11 @@ def _find_bright_row(region: np.ndarray, thresh_val: int = 160,
     return (x, y, w, h)
 
 
-def _identify_cards(region: np.ndarray, card_rects: list[tuple],
-                    min_conf: float = 0.15) -> list[str]:
-    """Identify cards using multi-strategy OCR for rank + BGR for suit.
+def _locate_board_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return list of individual board card crops (BGR), left-to-right.
 
-    Uses the same robust _ocr_card_rank pipeline as hero cards.
-
-    Returns:
-        List of card strings like ["Ks", "9d", "3d"].
-    """
-    from .ocr_utils import ocr_full_image
-
-    cards = []
-    for (x, y, w, h) in card_rects:
-        card_img = region[y:y + h, x:x + w]
-        if card_img.size == 0:
-            cards.append("??")
-            continue
-
-        rank, _conf = _ocr_card_rank(card_img, ocr_full_image)
-        suit = _detect_suit_bgr(card_img)
-        if rank:
-            cards.append(f"{rank}{suit}")
-        else:
-            cards.append("??")
-    return cards
-
-
-def _find_board_cards(table_region: np.ndarray) -> list[str]:
-    """Find and identify board cards in the center of the table.
-
-    Two strategies:
-    1. Find individual card contours (works on wood/dark themes where cards are separated)
-    2. Find merged bright row and split (works on green theme where cards touch)
+    Returns empty list if no board detected. Pure localization — no OCR,
+    no suit detection, no classification.
     """
     h, w = table_region.shape[:2]
     y1, y2 = int(h * 0.15), int(h * 0.55)
@@ -204,10 +165,12 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
     # Strategy 1: Find individual card contours
     rects = _find_individual_card_contours(center)
     if rects and len(rects) >= 3:
-        cards = _identify_cards(center, rects)
-        valid = [c for c in cards if c != "??"]
-        if len(valid) >= 3:
-            return valid
+        crops = []
+        for (x, y, cw, ch) in rects:
+            crop = center[y:y + ch, x:x + cw]
+            if crop.size > 0:
+                crops.append(crop)
+        return crops
 
     # Strategy 2: Find merged bright row and split
     row = _find_bright_row(center, thresh_val=160, min_height=30)
@@ -223,8 +186,12 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
     rx, ry, rw, rh = row
 
     if rw <= rh * 1.2:
-        cards = _identify_cards(center, [row])
-        return [c for c in cards if c != "??"]
+        crops = []
+        for (x, y, cw, ch) in [row]:
+            crop = center[y:y + ch, x:x + cw]
+            if crop.size > 0:
+                crops.append(crop)
+        return crops
 
     rects = _split_card_row(center, rx, ry, rw, rh)
     if not rects:
@@ -238,8 +205,23 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
         rects = rects[:5]
         rects.sort(key=lambda r: r[0])
 
-    cards = _identify_cards(center, rects)
-    return [c for c in cards if c != "??"]
+    crops = []
+    for (x, y, cw, ch) in rects:
+        crop = center[y:y + ch, x:x + cw]
+        if crop.size > 0:
+            crops.append(crop)
+    return crops
+
+
+def _find_board_cards(table_region: np.ndarray) -> list[str]:
+    """Find and identify board cards in the center of the table via CardCNN."""
+    from .classifier.infer import CardClassifier
+
+    crops = _locate_board_cards(table_region)
+    if not crops:
+        return []
+    results = CardClassifier().classify_batch(crops)
+    return [f"{r}{s}" for r, s, _ in results if r and s]
 
 
 def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
@@ -301,29 +283,17 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
     return []
 
 
-def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
-    """Find and identify hero's hole cards.
+def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
 
-    Strategy:
-    1. Crop hero area (bottom center of table)
-    2. Find the card pair blob at multiple threshold levels
-    3. If blob is too tall, retry at higher threshold for tighter fit
-    4. Split blob at ~48% mark with small overlap
-    5. OCR each card for rank (multiple attempts + template fallback)
-    6. Detect suit by BGR color + template matching
-
-    Returns:
-        (cards, confidence) where confidence 0.0-1.0 reflects detection quality.
-        High confidence (>0.7): rank found on early OCR attempts.
-        Low confidence (<0.5): rank found via template matching or late fallback.
+    Pure localization — no rank/suit detection. Same blob logic currently
+    used inside _find_hero_cards.
     """
-    from .ocr_utils import ocr_full_image
-
     h, w = table_region.shape[:2]
     hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
     ah, aw = hero.shape[:2]
     if ah < 20 or aw < 20:
-        return [], 0.0
+        return []
 
     gray = cv2.cvtColor(hero, cv2.COLOR_BGR2GRAY)
 
@@ -366,982 +336,33 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
                 break
 
     if not best_blob:
-        return [], 0.0
+        return []
 
     x, y, cw, ch_, _ = best_blob
-    blob_ratio = cw / ch_ if ch_ > 0 else 2.0
 
     # Split at 48% (left card slightly narrower due to overlap rendering)
     split = int(cw * 0.48)
     card1 = hero[y:y + ch_, x:x + split + 3]
     card2 = hero[y:y + ch_, x + split - 3:x + cw]
-
-    # When blob ratio < 1.5 (too tall), find a tighter blob at higher
-    # threshold for suit detection — tall blobs include card artwork that
-    # confuses the center suit shape analysis.
-    suit_card1, suit_card2 = card1, card2
-    if blob_ratio < 1.5:
-        tighter = None
-        for tv in range(240, 195, -5):
-            _, thresh = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel,
-                                      iterations=2)
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                xc, yc, cwc, chc = cv2.boundingRect(c)
-                ac = cwc * chc
-                rc = cwc / chc if chc > 0 else 0
-                if (ac > 1500 and chc > 25 and cwc > 60 and rc >= 1.5):
-                    if tighter is None or ac > tighter[4]:
-                        tighter = (xc, yc, cwc, chc, ac)
-            if tighter:
-                break
-        if tighter:
-            tx, ty, tcw, tch, _ = tighter
-            tsplit = int(tcw * 0.48)
-            suit_card1 = hero[ty:ty + tch, tx:tx + tsplit + 3]
-            suit_card2 = hero[ty:ty + tch, tx + tsplit - 3:tx + tcw]
-
-    results = []
-    rank_confs = []
-    _wp_spade_flags = []  # track which cards were confirmed ♠ by width-profile
-    for card, suit_card in [(card1, suit_card1), (card2, suit_card2)]:
-        # When a tighter blob is available (face cards with artwork in tall
-        # blob), try rank OCR on it first — the tighter crop excludes card
-        # artwork that confuses OCR.  Fall back to the original tall crop.
-        if suit_card is not card:
-            rank, rank_conf = _ocr_card_rank(suit_card, ocr_full_image)
-            if not rank:
-                rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
-        else:
-            rank, rank_conf = _ocr_card_rank(card, ocr_full_image)
-        suit = _detect_suit_bgr(suit_card)
-
-        _wp_confirmed = False
-        # Cross-check suit for hero cards using multiple signals.
-        # Hero cards are small; the center contour analysis in _detect_suit_bgr
-        # can pick up wrong shapes.  Use 3-way vote to correct.
-        if rank and suit_card is not None:
-            h_sc, w_sc = suit_card.shape[:2]
-            sample_sc = suit_card[2:int(h_sc * 0.75), 2:int(w_sc * 0.6)]
-            if sample_sc.size > 0:
-                g_sc = cv2.cvtColor(sample_sc, cv2.COLOR_BGR2GRAY)
-                _, dm_sc = cv2.threshold(g_sc, 120, 255,
-                                         cv2.THRESH_BINARY_INV)
-                _, bm_sc = cv2.threshold(g_sc, 160, 255,
-                                         cv2.THRESH_BINARY)
-                ink_sc = cv2.bitwise_and(
-                    dm_sc, cv2.dilate(bm_sc, None, iterations=3))
-                ink_px = sample_sc[ink_sc > 0] if np.sum(ink_sc > 0) >= 5 \
-                    else sample_sc[dm_sc > 0]
-                if len(ink_px) >= 5:
-                    ir = float(np.mean(ink_px[:, 2]))
-                    ig = float(np.mean(ink_px[:, 1]))
-                    ib = float(np.mean(ink_px[:, 0]))
-                    is_red = ir > ib + 20 and ir > ig + 20
-                else:
-                    is_red = suit in ("h", "d")
-
-                # Cross-check with suit template matching (high margin only).
-                # Reliably corrects red suits (h↔d, margin ~0.4).
-                tmpl_suit, tmpl_margin = _suit_template_match(
-                    suit_card, is_red, return_margin=True)
-                if tmpl_suit and tmpl_suit != suit:
-                    allow_override = True
-                    # For red h→d overrides with low margin: the template
-                    # crop captures the rank digit (e.g. "9"), not the
-                    # suit icon, causing false diamond detections.
-                    # Verify with hull defects + green channel before
-                    # allowing.  High-margin overrides (>= 0.35) are
-                    # always reliable.
-                    if (is_red and suit == "h" and tmpl_suit == "d"
-                            and tmpl_margin < 0.35):
-                        # green_says_heart: high green in sample red
-                        # pixels indicates diamond color regime.
-                        hsv_gsh = cv2.cvtColor(sample_sc,
-                                               cv2.COLOR_BGR2HSV)
-                        rm1_g = cv2.inRange(hsv_gsh,
-                                            np.array([0, 50, 50]),
-                                            np.array([15, 255, 255]))
-                        rm2_g = cv2.inRange(hsv_gsh,
-                                            np.array([165, 50, 50]),
-                                            np.array([180, 255, 255]))
-                        rms_g = cv2.bitwise_or(rm1_g, rm2_g)
-                        rp_g = sample_sc[rms_g > 0]
-                        green_mean = (float(np.mean(rp_g[:, 1]))
-                                      if len(rp_g) >= 5 else 0.0)
-                        gsh = green_mean > 60
-                        if gsh:
-                            # Very high green (>90) often indicates
-                            # card background glow contaminating the
-                            # sample, not actual diamond color.  Check
-                            # hull shape: norm>40 confirms heart
-                            # concavity — block the override.
-                            if green_mean > 90:
-                                _hull_norm = _hero_hull_norm(suit_card)
-                                if _hull_norm > 40:
-                                    allow_override = False
-                        else:
-                            # Green doesn't support diamond.  Check
-                            # hull defects — concavity (norm>47)
-                            # confirms heart shape.  Threshold 47
-                            # sits between known diamonds (H2554:
-                            # 3♦ norm=45.1) and hearts (H2668:
-                            # Q♥ norm=49.8, H2587: 9♥ norm=103.7).
-                            _hull_norm = _hero_hull_norm(suit_card)
-                            if _hull_norm > 47:
-                                allow_override = False
-                    if allow_override:
-                        suit = tmpl_suit
-
-                # For black suits: use width-profile of the mini suit symbol.
-                # Spade ♠ = narrow at top (point), wide at bottom (belly).
-                # Club ♣ = wide at top (lobes), narrower at bottom.
-                # Measures top-third / bottom-third width ratio in the suit
-                # symbol area at the bottom of the card.
-                if not is_red and suit in ("s", "c") and rank not in (
-                        "K", "Q", "J"):
-                    h_sc, w_sc = suit_card.shape[:2]
-                    # For small rank "T" (10) cards (h < 55): the normal
-                    # height gate skips the check entirely, and the
-                    # center contour in _detect_suit_bgr picks up the
-                    # "0" digit (hollow → club-like).  Use a lower
-                    # crop start (82%) to isolate the suit symbol from
-                    # the rank digits, and lower the height gate.
-                    _sb_top = 0.82 if rank == "T" and h_sc < 55 else 0.72
-                    _sb_hmin = 40 if rank == "T" and h_sc < 55 else 55
-                    suit_bot = suit_card[int(h_sc * _sb_top):int(h_sc * 0.95),
-                                         int(w_sc * 0.08):int(w_sc * 0.48)]
-                    if suit_bot.size > 0 and h_sc >= _sb_hmin:
-                        sb_up = cv2.resize(suit_bot, None, fx=10, fy=10,
-                                           interpolation=cv2.INTER_CUBIC)
-                        sb_gray = cv2.cvtColor(sb_up, cv2.COLOR_BGR2GRAY)
-                        _, sb_bin = cv2.threshold(
-                            sb_gray, 110, 255, cv2.THRESH_BINARY_INV)
-                        sb_h = sb_bin.shape[0]
-                        if sb_h > 9:
-                            top3 = sum(
-                                np.sum(sb_bin[r] > 0)
-                                for r in range(sb_h // 3)
-                            ) / max(1, sb_h // 3)
-                            bot3 = sum(
-                                np.sum(sb_bin[r] > 0)
-                                for r in range(2 * sb_h // 3, sb_h)
-                            ) / max(1, sb_h // 3)
-                            # Both top3 and bot3 must have meaningful pixels
-                            # to avoid noise (e.g., bot3≈0 → ratio=20+).
-                            # Exception: top3 ≈ 0 with bot3 substantial
-                            # is the strongest possible spade signal
-                            # (point at top, belly at bottom).
-                            if top3 < 5 and bot3 > 20:
-                                suit = "s"
-                                _wp_confirmed = True
-                            elif bot3 > 10 and top3 > 10:
-                                wp_ratio = top3 / bot3
-                                # Guard: when the suit_bot crop is mostly
-                                # dark (>35%), it likely captured the large
-                                # center card symbol rather than the mini
-                                # corner suit icon.  The center symbol can
-                                # invert the width-profile — e.g. the
-                                # bottom half of a central ♣ produces
-                                # wp_ratio < 0.40 even though the card is
-                                # a club.  Discriminate real small ♠ from
-                                # center-♣ artifact by smoothness: a real
-                                # spade bottom (point→belly→base) is
-                                # monotonic with max row-to-row jump ≤0.22,
-                                # while a center-♣ bottom has a sharp
-                                # stem→base transition (jump ≥0.3) or is
-                                # broken by lobe gaps (multiple decreases).
-                                dark_pct = np.sum(sb_bin > 0) / sb_bin.size
-                                step_p = max(1, sb_h // 10)
-                                prof = [float(np.sum(sb_bin[r] > 0)) /
-                                        max(sb_bin.shape[1], 1)
-                                        for r in range(0, sb_h, step_p)]
-                                if len(prof) >= 3:
-                                    max_jump_p = max(
-                                        abs(prof[i + 1] - prof[i])
-                                        for i in range(len(prof) - 1))
-                                    n_dec = sum(
-                                        1 for i in range(len(prof) - 1)
-                                        if prof[i + 1] < prof[i] - 0.05)
-                                else:
-                                    max_jump_p = 0.0
-                                    n_dec = 0
-                                sb_is_smooth = (max_jump_p < 0.22
-                                                and n_dec <= 1)
-                                if wp_ratio < 0.40 and sb_is_smooth:
-                                    suit = "s"  # spade: narrow top
-                                    _wp_confirmed = True
-                                elif wp_ratio > 2.0 and dark_pct < 0.35:
-                                    suit = "c"  # club: wide top
-
-        _wp_spade_flags.append(_wp_confirmed)
-        if rank:
-            results.append(f"{rank}{suit}")
-            rank_confs.append(rank_conf)
-        else:
-            results.append(None)
-
-    # Filter out None results
-    results = [r for r in results if r is not None]
-
-    # Suit consistency: when one card was confirmed ♠ by width-profile
-    # and the other is ♣, unify to ♠. Only for non-pairs (pairs must
-    # have different suits). Don't unify when neither has width-profile
-    # confirmation — could be legitimate ♠♣ offsuit.
-    if len(results) == 2 and any(_wp_spade_flags):
-        r1, r2 = results[0][:-1], results[1][:-1]
-        s1, s2 = results[0][-1], results[1][-1]
-        if r1 != r2 and {s1, s2} == {"s", "c"}:
-            results = [r[:-1] + "s" for r in results]
-
-    # Overall confidence = min of individual card confidences (weakest link)
-    card_conf = min(rank_confs) if rank_confs else 0.0
-    return results, card_conf
+    return [card1, card2]
 
 
-def _ocr_card_rank(card: np.ndarray, ocr_full_image) -> tuple[str | None, float]:
-    """OCR a single card image for rank, with template matching fallback.
+def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
+    """Find and identify hero's hole cards via CardCNN.
 
-    Tries multiple strategies in order:
-    1. OCR on top-left rank crop (avoids suit symbol misreads)
-    2. OCR on upscaled full card
-    3. OCR on inverted binary rank crop
-    4. OCR on 2x further upscaled rank crop
-    5. OCR on inverted binary full card
-    6. OCR on sharpened image
-    7. Template matching via CardMatcher
-
-    Returns:
-        (rank, confidence) — confidence decreases with later attempts.
+    Returns (cards, confidence) where confidence is min over all card
+    predictions (min of rank_softmax_max and suit_softmax_max per card).
+    Low confidence naturally triggers the Gemini fallback in gemini_session.
     """
-    _RANK_CHARS = {"2", "3", "4", "5", "6", "7", "8", "9", "10",
-                   "J", "Q", "K", "A"}
-    _RANK_MAP = {
-        "10": "T", "1O": "T", "IO": "T", "l0": "T", "I0": "T",
-    }
-    # Characters that EasyOCR produces for Q (standalone, not part of "10")
-    _Q_CHARS = {"0", "O"}
-
-    if card is None or card.size == 0 or card.shape[0] < 10:
-        return None, 0.0
-
-    # Upscale aggressively for small cards
-    target_h = 360
-    scale = max(3, target_h // max(card.shape[0], 1))
-    scale = min(scale, 8)
-    card_up = cv2.resize(card, None, fx=scale, fy=scale,
-                         interpolation=cv2.INTER_CUBIC)
-
-    def _extract_rank(ocr_results, allow_q_from_zero=True):
-        # First pass: look for definitive rank characters across ALL
-        # results before considering the lossy "0"→Q fallback.  A crop
-        # that overlaps a "$0.75" prize banner can produce multiple
-        # detections like [('0', 0.95), ('75', 1.0), ('3', 1.0)] — the
-        # actual rank (3) must win over the banner's "0" triggering the
-        # 0→Q mapping.  Regression for H2758 where 3♠ was read as Q♠
-        # because '0' appeared before '3' in the results list.
-        for r in ocr_results:
-            t = r["text"].strip()
-            tu = t.upper()
-            if t in _RANK_CHARS:
-                return _RANK_MAP.get(t, t)
-            if tu in _RANK_CHARS:
-                return _RANK_MAP.get(tu, tu)
-            if tu in _RANK_MAP:
-                return _RANK_MAP[tu]
-            if len(t) == 1 and tu in "23456789JQKA":
-                return tu
-        # Second pass: "0" / "O" → Q fallback (EasyOCR misreads Q).
-        # Only reached when no definitive rank was found above.
-        if allow_q_from_zero:
-            for r in ocr_results:
-                t = r["text"].strip()
-                tu = t.upper()
-                conf = r.get("conf", 0)
-                if tu in _Q_CHARS and len(t) == 1 and conf > 0.7:
-                    return "Q"
-        return None
-
-    # Attempt 1: OCR on top-left rank crop — highest confidence (0.9)
-    ch, cw_up = card_up.shape[:2]
-    rh = int(ch * 0.50)
-    rw = int(cw_up * 0.60)
-    rank_crop_rank = None
-    rank_crop_via_zero = False  # True if rank was derived from "0"→Q mapping
-    rank_crop_conf = 0.0
-    rank_crop = None
-    if rh > 10 and rw > 10:
-        rank_crop = card_up[0:rh, 0:rw]
-        rank_crop_ocr = ocr_full_image(rank_crop)
-        rank_crop_conf = max((r.get("conf", 0) for r in rank_crop_ocr), default=0)
-        # Check if we'd get Q only via 0→Q mapping
-        rank_crop_rank = _extract_rank(rank_crop_ocr)
-        rank_crop_strict = _extract_rank(rank_crop_ocr, allow_q_from_zero=False)
-        if rank_crop_rank == "Q" and rank_crop_strict is None:
-            rank_crop_via_zero = True
-        # Also flag fragile if Q came only from lowercase 'q' (no uppercase
-        # 'Q' in the OCR results). Lowercase 'q' is OCR-confusable with '9',
-        # especially when overlays (e.g. WIN badge) obscure part of the card.
-        if rank_crop_rank == "Q" and not rank_crop_via_zero:
-            has_upper_q = any(
-                r["text"].strip() == "Q" for r in rank_crop_ocr
-            )
-            if not has_upper_q:
-                rank_crop_via_zero = True
-
-    # Attempt 1b: on very small cards the rank digit extends past 50% of
-    # the card height; a taller rank crop (0.70) recovers it when the
-    # first attempt returned nothing.  Must not run when attempt 1 found
-    # a rank — the tighter crop is preferred to avoid picking up the
-    # suit symbol.
-    if not rank_crop_rank:
-        rh2 = int(ch * 0.70)
-        rw2 = int(cw_up * 0.60)
-        if rh2 > 10 and rw2 > 10:
-            rank_crop2 = card_up[0:rh2, 0:rw2]
-            rank_crop2_ocr = ocr_full_image(rank_crop2)
-            conf2 = max((r.get("conf", 0) for r in rank_crop2_ocr), default=0)
-            rank2 = _extract_rank(rank_crop2_ocr)
-            rank2_strict = _extract_rank(rank_crop2_ocr, allow_q_from_zero=False)
-            if rank2 and conf2 > 0.70:
-                rank_crop_rank = rank2
-                rank_crop_conf = conf2
-                rank_crop = rank_crop2
-                if rank2 == "Q" and rank2_strict is None:
-                    rank_crop_via_zero = True
-
-    # Attempt 1c: shifted-down rank crop for cards whose blob includes
-    # a prize-money banner ("$0.75", "$1.12", …) overlapping the card
-    # top.  The banner consumes the top ~20% of the blob, pushing the
-    # rank digit into y[0.25:0.50] instead of y[0:0.45].  Standard
-    # crops (attempts 1 and 1b) then see only the banner text, which
-    # _extract_rank correctly rejects as non-rank.  A crop starting at
-    # y=0.30 excludes the banner entirely and isolates the rank.
-    # Regression for H2759 J♥ where "$0.75" masked the 'J' on every
-    # top-anchored crop and attempt 2 also saw only "1.75".
-    if not rank_crop_rank:
-        rh3_lo = int(ch * 0.30)
-        rh3_hi = int(ch * 0.80)
-        rw3 = int(cw_up * 0.60)
-        if rh3_hi - rh3_lo > 20 and rw3 > 10:
-            rank_crop3 = card_up[rh3_lo:rh3_hi, 0:rw3]
-            rank_crop3_ocr = ocr_full_image(rank_crop3)
-            conf3 = max((r.get("conf", 0) for r in rank_crop3_ocr), default=0)
-            rank3 = _extract_rank(rank_crop3_ocr)
-            rank3_strict = _extract_rank(rank_crop3_ocr, allow_q_from_zero=False)
-            if rank3 and conf3 > 0.80:
-                rank_crop_rank = rank3
-                rank_crop_conf = conf3
-                rank_crop = rank_crop3
-                if rank3 == "Q" and rank3_strict is None:
-                    rank_crop_via_zero = True
-
-    # Attempt 2: OCR on upscaled full card (0.85)
-    full_card_ocr = ocr_full_image(card_up)
-    full_card_rank = _extract_rank(full_card_ocr)
-    full_card_conf = max((r.get("conf", 0) for r in full_card_ocr), default=0)
-
-    if rank_crop_rank and full_card_rank:
-        if rank_crop_rank == full_card_rank:
-            return rank_crop_rank, 0.9
-        # When rank_crop got Q via fragile "0"→Q mapping, check full_card.
-        # For actual 9, full_card reads "9" with conf >0.45.
-        # For actual Q, full_card reads "9" with conf <0.35.
-        if rank_crop_via_zero and full_card_rank != "Q" and full_card_conf > 0.45:
-            return full_card_rank, 0.85
-        # When rank_crop has very low confidence (<0.3), trust full_card.
-        # E.g., rank_crop misreads Q as "10"(conf 0.14) but full_card sees "Q".
-        if rank_crop_conf < 0.3 and full_card_conf > rank_crop_conf:
-            return full_card_rank, 0.85
-        # For direct reads at decent confidence, only trust full card at
-        # very high confidence (>0.999) to avoid false corrections.
-        if full_card_conf > 0.999:
-            return full_card_rank, 0.85
-        return rank_crop_rank, 0.85
-    if rank_crop_rank:
-        return rank_crop_rank, 0.9
-    if full_card_rank:
-        return full_card_rank, 0.85
-
-    # Attempt 3: Inverted binary on rank crop (0.7)
-    if rh > 10 and rw > 10:
-        gray_rc = cv2.cvtColor(rank_crop, cv2.COLOR_BGR2GRAY)
-        _, bin_rc = cv2.threshold(gray_rc, 0, 255,
-                                  cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        inv_rc = cv2.bitwise_not(bin_rc)
-        rank = _extract_rank(ocr_full_image(inv_rc))
-        if rank:
-            return rank, 0.7
-
-    # Attempt 4: Further 2x upscale on rank crop (0.6)
-    if rh > 10 and rw > 10:
-        rank_crop_2x = cv2.resize(rank_crop, None, fx=2, fy=2,
-                                  interpolation=cv2.INTER_CUBIC)
-        rank = _extract_rank(ocr_full_image(rank_crop_2x))
-        if rank:
-            return rank, 0.6
-
-    # Attempt 5: Inverted binary on full card (0.5)
-    gray_card = cv2.cvtColor(card_up, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray_card, 0, 255,
-                              cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    inverted = cv2.bitwise_not(binary)
-    rank = _extract_rank(ocr_full_image(inverted))
-    if rank:
-        return rank, 0.5
-
-    # Attempt 6: Sharpened image (0.4)
-    sharpen_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    sharpened = cv2.filter2D(card_up, -1, sharpen_kernel)
-    rank = _extract_rank(ocr_full_image(sharpened))
-    if rank:
-        return rank, 0.4
-
-    # Attempt 7: CLAHE enhanced (0.35)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray_card)
-    rank = _extract_rank(ocr_full_image(enhanced))
-    if rank:
-        return rank, 0.35
-
-    # Attempt 8: Red-minus-blue channel isolation (0.3)
-    if card is not None and card.size > 0 and len(card.shape) == 3:
-        rb_up = cv2.resize(card, None, fx=4, fy=4,
-                           interpolation=cv2.INTER_CUBIC)
-        rb_uh, rb_uw = rb_up.shape[:2]
-        for (y1f, y2f, xf) in [(0.0, 0.50, 0.55),
-                                (0.25, 0.60, 0.60)]:
-            rb_y1 = int(rb_uh * y1f)
-            rb_y2 = int(rb_uh * y2f)
-            rb_xw = int(rb_uw * xf)
-            if rb_y2 - rb_y1 > 10 and rb_xw > 10:
-                rb_crop = rb_up[rb_y1:rb_y2, 0:rb_xw]
-                b_ch, _g_ch, r_ch = cv2.split(rb_crop)
-                rb_diff = cv2.subtract(r_ch, b_ch)
-                _, rb_bin = cv2.threshold(rb_diff, 20, 255,
-                                          cv2.THRESH_BINARY)
-                rb_inv = cv2.bitwise_not(rb_bin)
-                rank = _extract_rank(ocr_full_image(rb_inv))
-                if rank:
-                    return rank, 0.3
-
-    # Attempt 9: Template matching as final fallback (0.2)
-    matcher = _get_matcher()
-    r, _s, conf = matcher.match(card)
-    if r and conf > 0.05:
-        return r, 0.2
-
-    return None, 0.0
-
-
-def _hero_hull_norm(card_img: np.ndarray) -> float:
-    """Compute hull defect norm for the center red suit symbol.
-
-    Used to verify heart vs diamond: hearts have deep concavity
-    (norm > 70) from the top dip.  Returns 0 if no red contour found.
-    """
-    scale_up = 4
-    up = cv2.resize(card_img, None, fx=scale_up, fy=scale_up,
-                    interpolation=cv2.INTER_CUBIC)
-    uh, uw = up.shape[:2]
-    center = up[int(uh * 0.45):int(uh * 0.85),
-                int(uw * 0.15):int(uw * 0.85)]
-    if center.size == 0:
-        return 0.0
-    hsv_c = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
-    rm1 = cv2.inRange(hsv_c, np.array([0, 50, 50]),
-                      np.array([15, 255, 255]))
-    rm2 = cv2.inRange(hsv_c, np.array([165, 50, 50]),
-                      np.array([180, 255, 255]))
-    rmask = cv2.bitwise_or(rm1, rm2)
-    rc, _ = cv2.findContours(rmask, cv2.RETR_EXTERNAL,
-                             cv2.CHAIN_APPROX_SIMPLE)
-    rc = [c for c in rc if cv2.contourArea(c) > 20]
-    if not rc:
-        return 0.0
-    big = max(rc, key=cv2.contourArea)
-    ca = cv2.contourArea(big)
-    hull_idx = cv2.convexHull(big, returnPoints=False)
-    if len(hull_idx) <= 3:
-        return 0.0
-    defects = cv2.convexityDefects(big, hull_idx)
-    if defects is None or len(defects) == 0:
-        return 0.0
-    max_defect = max(d[0][3] for d in defects)
-    return max_defect / (ca ** 0.5) if ca > 0 else 0.0
-
-
-def _suit_template_match(card_img: np.ndarray, is_red: bool,
-                         min_margin: float = 0.19,
-                         return_margin: bool = False,
-                         ) -> str | None | tuple[str | None, float]:
-    """Determine suit via template matching on the mini suit symbol.
-
-    Matches the suit crop region (below rank, top-left of card) against
-    suit templates, restricted to the correct color (red: h/d, black: s/c).
-    Returns the best-matching suit or None if inconclusive.
-    When return_margin=True, returns (suit, margin) tuple.
-    """
-    h, w = card_img.shape[:2]
-    scale = max(3, 360 // max(h, 1))
-    scale = min(scale, 8)
-    up = cv2.resize(card_img, None, fx=scale, fy=scale,
-                    interpolation=cv2.INTER_CUBIC)
-    uh, uw = up.shape[:2]
-    # Suit symbol region: below rank character
-    suit_crop = up[int(uh * 0.30):int(uh * 0.65), 0:int(uw * 0.55)]
-    if suit_crop.size == 0:
-        return None
-    gray = cv2.cvtColor(suit_crop, cv2.COLOR_BGR2GRAY)
-    sh, sw = suit_crop.shape[:2]
-    if sh < 5 or sw < 5:
-        return None
-
-    matcher = _get_matcher()
-    candidates = ("h", "d") if is_red else ("s", "c")
-    scores = {}
-    for sname in candidates:
-        tmpl = matcher.suit_templates.get(sname)
-        if tmpl is None:
-            continue
-        resized = cv2.resize(tmpl, (sw, sh))
-        gt = (cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-              if len(resized.shape) == 3 else resized)
-        result = cv2.matchTemplate(gray, gt, cv2.TM_CCOEFF_NORMED)
-        scores[sname] = result.max()
-
-    if not scores:
-        return (None, 0.0) if return_margin else None
-    best = max(scores, key=scores.get)
-    second = min(scores, key=scores.get)
-    margin = scores[best] - scores[second]
-    # Require strong margin to avoid false positives.
-    # Genuine corrections show large margin (e.g., d=0.35 vs h=-0.09 = 0.44).
-    # False corrections show small margin (e.g., d=0.35 vs h=0.30 = 0.05).
-    if margin < min_margin:
-        return (None, margin) if return_margin else None
-    if scores[best] < 0.10:
-        return (None, margin) if return_margin else None
-    return (best, margin) if return_margin else best
-
-
-def _detect_suit_bgr(card_img: np.ndarray) -> str:
-    """Detect suit by analyzing BGR color of dark (ink) pixels on the card.
-
-    Step 1: Determine red vs black from ink pixel BGR values.
-    Step 2a (red): Use convex hull defects of center suit contour — hearts
-                   have a deep concavity (top dip), diamonds are fully convex.
-                   Falls back to green channel when center crop is poor.
-    Step 2b (black): Use solidity of center suit symbol — spades are more
-                     solid (>0.88), clubs have lower solidity from lobes.
-    """
-    h, w = card_img.shape[:2]
-    # Sample top portion where rank + suit symbol are
-    sample = card_img[2:int(h * 0.75), 2:int(w * 0.6)]
-    if sample.size == 0:
-        return "s"
-
-    gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
-    _, dark_mask = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
-
-    # Filter to card-ink pixels: dark pixels near bright card face.
-    # On dark tables, table background pixels (dark green) contaminate
-    # the sample and dilute red ink colors. Mask to dark pixels that
-    # are adjacent to bright (card face) pixels.
-    _, bright_mask = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
-    card_ink_mask = cv2.bitwise_and(
-        dark_mask, cv2.dilate(bright_mask, None, iterations=3))
-    card_ink_pixels = sample[card_ink_mask > 0]
-
-    # Use card-ink pixels if enough; fall back to all dark pixels
-    if len(card_ink_pixels) >= 5:
-        dark_pixels = card_ink_pixels
-    else:
-        dark_pixels = sample[dark_mask > 0]
-
-    if len(dark_pixels) < 5:
-        return "s"
-
-    avg_r = float(np.mean(dark_pixels[:, 2]))  # BGR → R is index 2
-    avg_g = float(np.mean(dark_pixels[:, 1]))
-    avg_b = float(np.mean(dark_pixels[:, 0]))
-
-    # Pre-check: when a tiny hero card crop includes green-felt bleed
-    # at the overlap seam, ink-BGR averaging can be green-dominated
-    # even on clearly red cards.  Count pure saturated-red HSV pixels
-    # in an INNER region (y[0.25:0.72], x[0.10:0.55]) that excludes
-    # (a) the top 25% where a "$0.75" prize-money banner overlays the
-    # card and contaminates the ink-BGR mean, (b) the left seam to
-    # adjacent cards (which leaks green felt on red-suit cards), and
-    # (c) the right edge where a neighbor card's red can bleed onto a
-    # black card (H2587 K♣ next to 9♥).  Tight H/S/V thresholds
-    # (H≤10 / ≥170, S≥120, V≥80) exclude orange/yellow chip-glow and
-    # the banner's own yellow pixels.  Threshold 0.05 gives a clean
-    # gap: real red cards score ≥ 0.08 (H2759 J♥ at 0.088 is the
-    # tightest), real black cards score ≤ 0.016.
-    h_card, w_card = card_img.shape[:2]
-    inner = card_img[int(h_card * 0.25):int(h_card * 0.72),
-                     int(w_card * 0.10):int(w_card * 0.55)]
-    if inner.size > 0:
-        hsv_pre = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
-        rp_m1 = cv2.inRange(hsv_pre, np.array([0, 120, 80]),
-                            np.array([10, 255, 255]))
-        rp_m2 = cv2.inRange(hsv_pre, np.array([170, 120, 80]),
-                            np.array([180, 255, 255]))
-        red_pure_pct = float(np.sum(cv2.bitwise_or(rp_m1, rp_m2) > 0)) / max(
-            inner.shape[0] * inner.shape[1], 1)
-    else:
-        red_pure_pct = 0.0
-
-    is_red = (avg_r > avg_b + 20 and avg_r > avg_g + 20) or red_pure_pct > 0.05
-
-    if is_red:
-        # Hearts vs Diamonds: hull defects approach.
-        # Heart ♥ has a concave dip at top → convex hull defect > 1500.
-        # Diamond ♦ is fully convex → all defects < 1000.
-        # Also use green channel as secondary signal.
-        hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
-        red_mask1 = cv2.inRange(hsv, np.array([0, 50, 50]),
-                                np.array([15, 255, 255]))
-        red_mask2 = cv2.inRange(hsv, np.array([165, 50, 50]),
-                                np.array([180, 255, 255]))
-        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
-        red_pixels = sample[red_mask > 0]
-
-        green_says_heart = False
-        if len(red_pixels) >= 5:
-            red_avg_g = float(np.mean(red_pixels[:, 1]))
-            green_says_heart = red_avg_g > 60
-
-        # Analyze center suit symbol shape via hull defects
-        scale_up = 4
-        card_up = cv2.resize(card_img, None, fx=scale_up, fy=scale_up,
-                             interpolation=cv2.INTER_CUBIC)
-        uh, uw = card_up.shape[:2]
-        center = card_up[int(uh * 0.45):int(uh * 0.85),
-                         int(uw * 0.15):int(uw * 0.85)]
-        if center.size > 0:
-            hsv_c = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
-            rm1 = cv2.inRange(hsv_c, np.array([0, 50, 50]),
-                              np.array([15, 255, 255]))
-            rm2 = cv2.inRange(hsv_c, np.array([165, 50, 50]),
-                              np.array([180, 255, 255]))
-            rmask = cv2.bitwise_or(rm1, rm2)
-            rc, _ = cv2.findContours(rmask, cv2.RETR_EXTERNAL,
-                                     cv2.CHAIN_APPROX_SIMPLE)
-            rc = [c for c in rc if cv2.contourArea(c) > 20]
-            if rc:
-                ch_c, cw_c = center.shape[:2]
-                center_area = ch_c * cw_c
-                big = max(rc, key=cv2.contourArea)
-                big_area = cv2.contourArea(big)
-
-                # On face cards (K/Q/J) the biggest contour can be
-                # the card artwork, not the suit symbol.  When that
-                # contour exceeds 25% of the center crop, look for a
-                # smaller, suit-shaped contour instead.  The
-                # replacement must be large enough to be a real suit
-                # symbol (area > 800 after 4x upscale) to avoid
-                # picking tiny noise contours.
-                #
-                # However, for Aces and number cards the center suit
-                # symbol IS the biggest contour and naturally fills
-                # >25% of the crop.  Check big contour's hull defects
-                # first — if conclusive, use it directly.
-                target = big
-                if big_area / center_area > 0.25 and len(rc) > 1:
-                    # Check if big contour's hull defects are conclusive
-                    big_hull_idx = cv2.convexHull(big, returnPoints=False)
-                    big_max_defect = 0
-                    if len(big_hull_idx) > 3:
-                        big_defects = cv2.convexityDefects(
-                            big, big_hull_idx)
-                        if big_defects is not None:
-                            big_max_defect = max(
-                                d[0][3] for d in big_defects)
-                    big_norm = (big_max_defect / (big_area ** 0.5)
-                                if big_area > 0 else 0)
-                    # If big contour clearly heart or diamond, keep it
-                    if big_norm > 22 or big_norm < 12:
-                        pass  # target stays as big
-                    else:
-                        # Ambiguous — try a smaller contour
-                        for c in sorted(rc, key=cv2.contourArea,
-                                        reverse=True):
-                            ca_c = cv2.contourArea(c)
-                            if ca_c / center_area > 0.25:
-                                continue
-                            bx, by, bw_, bh_ = cv2.boundingRect(c)
-                            asp = bw_ / bh_ if bh_ > 0 else 0
-                            if 0.6 < asp < 1.4 and ca_c > 800:
-                                target = c
-                                break
-
-                hll = cv2.convexHull(target)
-                ha = cv2.contourArea(hll)
-                ca = cv2.contourArea(target)
-                csol = ca / ha if ha > 0 else 1.0
-
-                # Hull defects normalized by sqrt(area) for scale
-                # independence.  Hearts norm > 22, diamonds norm < 18.
-                hull_idx = cv2.convexHull(target, returnPoints=False)
-                max_defect = 0
-                if len(hull_idx) > 3:
-                    defects = cv2.convexityDefects(target, hull_idx)
-                    if defects is not None:
-                        max_defect = max(d[0][3] for d in defects)
-
-                norm = max_defect / (ca ** 0.5) if ca > 0 else 0
-
-                # Hull defects are only reliable when the contour is
-                # well-formed (csol > 0.80).  Fragmented contours
-                # (e.g. H2659: norm 117-178 on ♦ cards with
-                # solidity 0.64-0.73) produce spurious high defects
-                # that misclassify diamonds as hearts.  When solidity
-                # is low, skip hull-based decisions entirely and fall
-                # through to the G/R color ratio path.
-                # Hull defects need cross-checking for small contours.
-                # Three failure modes seen:
-                #  1. Fragmented (csol < 0.80): spurious high norms
-                #     (H2659: norm 117-178, csol 0.64-0.73 on ♦)
-                #  2. Tiny with diamond color (H2660: norm 26.1,
-                #     ca 1100, G/R 0.34 on A♦ misread as ♥)
-                # For small contours (ca < 4000), cross-check hull
-                # defects against G/R color.  If G/R > 0.28 (diamond
-                # color) and green channel doesn't confirm heart,
-                # don't trust the hull defect.
-                if norm > 22 and csol > 0.80:
-                    if ca >= 4000:
-                        return "h"
-                    # Small contour: cross-check with color
-                    _cr_px = center[rmask > 0]
-                    _skip = False
-                    if len(_cr_px) >= 5:
-                        _cg = float(np.mean(_cr_px[:, 1]))
-                        _cr = float(np.mean(_cr_px[:, 2]))
-                        _gr = _cg / _cr if _cr > 0 else 0
-                        if _gr > 0.30 and not green_says_heart:
-                            _skip = True
-                    if not _skip:
-                        return "h"
-
-                # Very high hull-defect norm declares heart even when
-                # solidity is low.  Face cards (J/Q/K) merge the rank
-                # character into the red-mask center contour,
-                # fragmenting it (csol drops to ~0.63) and blocking the
-                # strict `norm > 22 and csol > 0.80` check above.
-                # Threshold 150 cleanly separates observed samples:
-                #   H2759 J♥ (real heart): norm=214, csol=0.63
-                #   H2659 fragmented diamonds: norm=129-135, csol=0.70-0.73
-                # Requires ca > 1500 to reject tiny noise contours.
-                if norm >= 150 and ca > 1500 and csol <= 0.80:
-                    return "h"
-
-                if ca >= 4000 and csol > 0.80:
-                    if norm < 18:
-                        return "d"
-                    # Ambiguous zone (18-22): prefer green channel,
-                    # then solidity.
-                    if green_says_heart:
-                        return "h"
-                    if csol >= 0.95:
-                        return "d"
-                    if csol < 0.90:
-                        return "h"
-
-                if ca < 4000 or csol <= 0.80:
-                    # Small or fragmented contour: hull defects are
-                    # unreliable at this scale/quality.  Use
-                    # center suit pixel color instead.  In N8 rendering
-                    # hearts are a purer red (lower green component)
-                    # than diamonds.
-                    # Two color regimes exist across screenshots:
-                    #   Regime A (cool reds): hearts G/R < 0.093,
-                    #                         diamonds G/R > 0.10
-                    #   Regime B (warm reds): hearts G/R 0.186-0.198,
-                    #                         diamonds G/R > 0.22
-                    center_red_px = center[rmask > 0]
-                    if len(center_red_px) >= 5:
-                        cg = float(np.mean(center_red_px[:, 1]))
-                        cr = float(np.mean(center_red_px[:, 2]))
-                        gr = cg / cr if cr > 0 else 0
-                        if gr < 0.15:
-                            # Regime A: dark/cool reds
-                            return "h" if gr < 0.093 else "d"
-                        else:
-                            # Regime B: warm reds.
-                            # G/R 0.19-0.22 is ambiguous — consult
-                            # template matching with relaxed margin to
-                            # break the tie (e.g. diamond at G/R 0.207).
-                            if 0.19 <= gr <= 0.22:
-                                tmpl = _suit_template_match(
-                                    card_img, is_red=True,
-                                    min_margin=0.12)
-                                if tmpl is not None:
-                                    return tmpl
-                            return "h" if gr < 0.21 else "d"
-
-        if green_says_heart:
-            return "h"
-        return "d"
-    else:
-        # Spades vs Clubs: multi-feature voting on center suit symbol.
-        # A single solidity threshold is fragile (spade hero cards can
-        # have solidity 0.93-0.95 which overlaps with clubs).
-        # Instead, use three features with weighted voting:
-        #   1. top_ratio  — width of top 25% vs middle 40% of contour.
-        #      Spade has a narrow point at top (ratio < 0.45),
-        #      club has wide lobes (ratio > 0.55).  Best discriminator.
-        #   2. solidity   — contour area / convex hull area.
-        #      Spade > 0.93, club < 0.93 (with overlap zone).
-        #   3. n_defects  — number of significant convex hull defects.
-        #      Club lobes create more defects (>= 3), spade fewer.
-        scale = 4
-        card_up = cv2.resize(card_img, None, fx=scale, fy=scale,
-                             interpolation=cv2.INTER_CUBIC)
-        uh, uw = card_up.shape[:2]
-
-        center_suit = card_up[int(uh * 0.45):int(uh * 0.85),
-                              int(uw * 0.15):int(uw * 0.85)]
-        if center_suit.size == 0:
-            return "s"
-
-        gray_cs = cv2.cvtColor(center_suit, cv2.COLOR_BGR2GRAY)
-        _, dark_cs = cv2.threshold(gray_cs, 130, 255,
-                                   cv2.THRESH_BINARY_INV)
-        cs_contours, _ = cv2.findContours(dark_cs, cv2.RETR_EXTERNAL,
-                                          cv2.CHAIN_APPROX_SIMPLE)
-        cs_contours = [c for c in cs_contours
-                       if cv2.contourArea(c) > 20]
-
-        if cs_contours:
-            biggest_cs = max(cs_contours, key=cv2.contourArea)
-            hull = cv2.convexHull(biggest_cs)
-            hull_area = cv2.contourArea(hull)
-            cont_area = cv2.contourArea(biggest_cs)
-            sol = cont_area / hull_area if hull_area > 0 else 1.0
-            bx, by, bw, bh = cv2.boundingRect(biggest_cs)
-
-            # Feature 1: top_ratio — top width vs middle width.
-            # Spade: narrow point at top -> ratio 0.27-0.44.
-            # Club: wide lobes at top -> ratio 0.56-0.66.
-            top_slice = dark_cs[by:by + max(1, int(bh * 0.25)),
-                                bx:bx + bw]
-            mid_slice = dark_cs[by + int(bh * 0.3):by + int(bh * 0.7),
-                                bx:bx + bw]
-            top_w = np.mean(np.sum(top_slice > 0, axis=1)) \
-                if top_slice.size > 0 else 0
-            mid_w = np.mean(np.sum(mid_slice > 0, axis=1)) \
-                if mid_slice.size > 0 else 0
-            top_ratio = top_w / mid_w if mid_w > 0 else 1.0
-
-            # Feature 2: solidity (already computed above).
-            # Feature 3: significant convex hull defects.
-            hull_idx = cv2.convexHull(biggest_cs, returnPoints=False)
-            n_sig_defects = 0
-            if len(hull_idx) > 3:
-                defects = cv2.convexityDefects(biggest_cs, hull_idx)
-                if defects is not None:
-                    thresh = (cont_area ** 0.5) * 5
-                    n_sig_defects = sum(
-                        1 for d in defects if d[0][3] > thresh)
-
-            # Weighted vote: positive -> spade, negative -> club.
-            # top_ratio is strongest signal (weight 3).
-            score = 0.0
-            if top_ratio < 0.45:
-                score += 3.0   # strongly spade
-            elif top_ratio > 0.55:
-                score -= 3.0   # strongly club
-
-            if sol > 0.96:
-                score += 1.5   # lean spade
-            elif sol < 0.92:
-                score -= 1.5   # lean club
-            elif sol > 0.94:
-                score += 0.5
-            elif sol < 0.94:
-                score -= 0.5
-
-            if n_sig_defects >= 3:
-                score -= 1.0   # lean club
-            elif n_sig_defects <= 1:
-                score += 1.0   # lean spade
-
-            return "s" if score >= 0 else "c"
-
-        # No contours: default spade
-        return "s"
-
-
-def _detect_suit_at(image: np.ndarray, x: int, y: int, radius: int = 20) -> str:
-    """Detect card suit by sampling color near and around the rank character.
-
-    Samples the rank character itself AND the area below it (where suit symbol is).
-    Red = hearts(h) or diamonds(d), Black = spades(s) or clubs(c).
-
-    N8 uses red for hearts and diamonds, black for spades and clubs.
-    The rank character itself is colored (red rank = red suit, black rank = black suit).
-    """
-    h, w = image.shape[:2]
-
-    # Sample a larger area around the rank character
-    y1 = max(0, y - 10)
-    y2 = min(h, y + radius + 15)
-    x1 = max(0, x - 15)
-    x2 = min(w, x + 15)
-
-    sample = image[y1:y2, x1:x2]
-    if sample.size == 0:
-        return "s"
-
-    hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
-    # Red detection — generous range
-    red_mask1 = cv2.inRange(hsv, np.array([0, 60, 60]), np.array([12, 255, 255]))
-    red_mask2 = cv2.inRange(hsv, np.array([168, 60, 60]), np.array([180, 255, 255]))
-    red_pixels = np.sum(red_mask1 > 0) + np.sum(red_mask2 > 0)
-    total_pixels = max(sample.shape[0] * sample.shape[1], 1)
-    red_ratio = red_pixels / total_pixels
-
-    if red_ratio > 0.08:
-        # Red suit: distinguish heart vs diamond by suit symbol shape
-        # Heart ♥ has a wider top, diamond ♦ is pointy
-        # Simple heuristic: check the suit symbol area below rank
-        suit_y1 = min(h, y + 10)
-        suit_y2 = min(h, y + radius + 10)
-        suit_x1 = max(0, x - 12)
-        suit_x2 = min(w, x + 12)
-        suit_area = image[suit_y1:suit_y2, suit_x1:suit_x2]
-        if suit_area.size > 0:
-            suit_hsv = cv2.cvtColor(suit_area, cv2.COLOR_BGR2HSV)
-            red_s = cv2.inRange(suit_hsv, np.array([0, 60, 60]), np.array([12, 255, 255]))
-            red_s2 = cv2.inRange(suit_hsv, np.array([168, 60, 60]), np.array([180, 255, 255]))
-            red_suit_mask = cv2.bitwise_or(red_s, red_s2)
-            # Find contour of suit symbol
-            contours, _ = cv2.findContours(red_suit_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                biggest = max(contours, key=cv2.contourArea)
-                _, _, sw, sh = cv2.boundingRect(biggest)
-                # Diamond is taller than wide, heart is wider than tall
-                if sh > 0 and sw / sh < 0.85:
-                    return "d"
-                else:
-                    return "h"
-        # Default red: use green channel to decide heart vs diamond.
-        # Hearts in N8 rendering have higher green component.
-        red_combined = cv2.bitwise_or(red_mask1, red_mask2)
-        rp = sample[red_combined > 0]
-        if len(rp) >= 5 and float(np.mean(rp[:, 1])) > 60:
-            return "h"
-        return "d"
-    else:
-        # Black suit: distinguish spade vs club
-        # Spade ♠ is pointy at top, club ♣ has round lobes
-        # Simple: default to spade (more common)
-        return "s"
+    from .classifier.infer import CardClassifier
+
+    crops = _locate_hero_cards(table_region)
+    if not crops:
+        return [], 0.0
+    results = CardClassifier().classify_batch(crops)
+    cards = [f"{r}{s}" for r, s, _ in results if r and s]
+    conf = min((c for _, _, c in results), default=0.0)
+    return cards, conf
 
 
 def _find_player_stacks(table_region: np.ndarray) -> list[float]:
