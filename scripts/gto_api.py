@@ -260,6 +260,14 @@ def find_closest_action_postflop(available_actions: list[dict], target_size: flo
     if allin_size > 0 and abs(allin_size - target_size) / max(target_size, 1) < 0.15:
         return abs_code
 
+    # Target with a non-trivial fractional part is almost always an absolute bb
+    # amount from OCR (e.g. 26.6, 17.1) — percentage-style inputs from LLMs are
+    # virtually always whole numbers (40, 50, 75, 100). If target exceeds
+    # solver's all-in (hero's real stack > solver-modeled effective stack, an
+    # overbet clamped to all-in in the solver context), keep the all-in match.
+    if abs(target_size - round(target_size)) > 0.05 and target_size > allin_size:
+        return abs_code
+
     # Compute solver pot from any action with betsize_by_pot
     solver_pot = None
     for entry in available_actions:

@@ -16,4 +16,4 @@ GTO: Check 98%
 ─── River: 8s ───
 🎯 Ace high
 GTO: All-in 100%
-→ Hero bet 37% pot ❌ (GTO建議 all-in)
+→ Hero all-in ✅

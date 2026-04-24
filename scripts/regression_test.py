@@ -519,6 +519,40 @@ def test_api_postflop_percentage_detection():
 
 
 @test
+def test_api_postflop_overbet_clamps_to_allin():
+    """API: hero's all-in bet that overshoots solver's modeled all-in
+    (hero stack > opponent stack, so real all-in > solver's effective
+    all-in) must still match RAI — not get re-interpreted as a pot%.
+
+    Regression for H2760 where hero bet 26.6bb into a 27.3bb river
+    pot (solver all-in = 17.35bb, capped by shorter SB). The bet was
+    mis-matched to R9.5 (35% pot) via the percentage-interpretation
+    fallback, hiding the fact that hero's action WAS the all-in
+    recommended by GTO. Also regresses H2492 (R27.6 → was R6.5, now RAI).
+    """
+    from gto_api import find_closest_action_postflop
+    avail = [
+        {"action": {"code": "X", "betsize": "0.000", "betsize_by_pot": None, "allin": False}},
+        {"action": {"code": "R2.5", "betsize": "2.500", "betsize_by_pot": "0.09157509", "allin": False}},
+        {"action": {"code": "R9.5", "betsize": "9.500", "betsize_by_pot": "0.34798535", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "17.350", "betsize_by_pot": "0.63553114", "allin": True}},
+    ]
+    # Hero's real all-in 26.6bb > solver all-in 17.35bb; fractional .6 is
+    # an OCR-native absolute bb, not an LLM percentage → keep RAI.
+    assert_eq(find_closest_action_postflop(avail, 26.6), "RAI",
+              "fractional overbet past all-in must match RAI")
+    # H2492: 27.6bb fractional overbet
+    assert_eq(find_closest_action_postflop(avail, 27.6), "RAI",
+              "27.6bb fractional overbet must match RAI")
+    # Integer percentages (from LLM) should still use the pct path
+    assert_eq(find_closest_action_postflop(avail, 40), "R9.5",
+              "integer 40 treated as 40% pot → R9.5")
+    # Target within 15% of all-in → always RAI (existing behavior)
+    assert_eq(find_closest_action_postflop(avail, 17.1), "RAI",
+              "17.1bb close to all-in 17.35 → RAI")
+
+
+@test
 def test_chip_ev_percentage_size_analysis():
     """ChipEV: analysis handles percentage-based bet sizes without errors."""
     from analyze_hand import analyze_hand

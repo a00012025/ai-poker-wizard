@@ -76,6 +76,6 @@ Hero A6s 牌型: Ace high
   EV: 1.92bb | Equity: 18.7%
   策略:
     All-in: 100.0%（0.0 combos）
-  → 實際行動: UTG R27.6 27.6bb（solver code: R6.5）
+  → 實際行動: UTG R27.6 27.6bb（solver code: RAI）
 
-⏱ Discovery: 1.9s | Analysis: 3.4s | Total: 5.4s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
