@@ -159,3 +159,34 @@ def test_classify_batch_accepts_variable_sizes():
     ]
     results = clf.classify_batch(crops)
     assert len(results) == 3
+
+
+# ── train (smoke) ──
+
+def test_train_smoke(tmp_path):
+    """End-to-end: tiny synthetic dataset → 2 epochs → ckpt+meta exist."""
+    from scripts.ocr.classifier.train import train as _train
+    # 13 ranks × 4 suits × 3 hands = 156 crops, 3 different hand_ids
+    for r in RANK_CLASSES:
+        for s in SUIT_CLASSES:
+            for hi in range(3):
+                p = tmp_path / r / s / f"H{hi}_hero_0.png"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                img = np.random.default_rng(hash((r, s, hi)) & 0xFFFF).integers(
+                    0, 255, (48, 64, 3), dtype=np.uint8)
+                cv2.imwrite(str(p), img)
+    out_ckpt = tmp_path / "model.pt"
+    out_meta = tmp_path / "model.json"
+    _train(
+        data_root=tmp_path, out_ckpt=out_ckpt, out_meta=out_meta,
+        epochs=2, batch_size=16, seed=0,
+    )
+    assert out_ckpt.exists()
+    assert out_meta.exists()
+    meta = json.loads(out_meta.read_text())
+    assert "val_accuracy_rank" in meta
+    assert "val_accuracy_suit" in meta
+    assert "data_hash" in meta
+    assert len(meta["data_hash"]) == 16
+    assert meta["class_map"]["rank"] == RANK_CLASSES
+    assert meta["class_map"]["suit"] == SUIT_CLASSES
