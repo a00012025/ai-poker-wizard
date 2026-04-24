@@ -53,3 +53,6 @@ scripts/_tmp.py
 # OCR template raw crops
 scripts/ocr/templates/raw/
 .game_modes_cache.json
+
+# Card classifier training crops (rebuildable via extract_crops.py)
+data/cards/
