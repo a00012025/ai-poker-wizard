@@ -189,12 +189,11 @@ def _identify_cards(region: np.ndarray, card_rects: list[tuple],
     return cards
 
 
-def _find_board_cards(table_region: np.ndarray) -> list[str]:
-    """Find and identify board cards in the center of the table.
+def _locate_board_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return list of individual board card crops (BGR), left-to-right.
 
-    Two strategies:
-    1. Find individual card contours (works on wood/dark themes where cards are separated)
-    2. Find merged bright row and split (works on green theme where cards touch)
+    Returns empty list if no board detected. Pure localization — no OCR,
+    no suit detection, no classification.
     """
     h, w = table_region.shape[:2]
     y1, y2 = int(h * 0.15), int(h * 0.55)
@@ -204,10 +203,12 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
     # Strategy 1: Find individual card contours
     rects = _find_individual_card_contours(center)
     if rects and len(rects) >= 3:
-        cards = _identify_cards(center, rects)
-        valid = [c for c in cards if c != "??"]
-        if len(valid) >= 3:
-            return valid
+        crops = []
+        for (x, y, cw, ch) in rects:
+            crop = center[y:y + ch, x:x + cw]
+            if crop.size > 0:
+                crops.append(crop)
+        return crops
 
     # Strategy 2: Find merged bright row and split
     row = _find_bright_row(center, thresh_val=160, min_height=30)
@@ -223,8 +224,12 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
     rx, ry, rw, rh = row
 
     if rw <= rh * 1.2:
-        cards = _identify_cards(center, [row])
-        return [c for c in cards if c != "??"]
+        crops = []
+        for (x, y, cw, ch) in [row]:
+            crop = center[y:y + ch, x:x + cw]
+            if crop.size > 0:
+                crops.append(crop)
+        return crops
 
     rects = _split_card_row(center, rx, ry, rw, rh)
     if not rects:
@@ -238,8 +243,29 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
         rects = rects[:5]
         rects.sort(key=lambda r: r[0])
 
-    cards = _identify_cards(center, rects)
-    return [c for c in cards if c != "??"]
+    crops = []
+    for (x, y, cw, ch) in rects:
+        crop = center[y:y + ch, x:x + cw]
+        if crop.size > 0:
+            crops.append(crop)
+    return crops
+
+
+def _find_board_cards(table_region: np.ndarray) -> list[str]:
+    """Find and identify board cards in the center of the table."""
+    from .ocr_utils import ocr_full_image
+
+    crops = _locate_board_cards(table_region)
+    if not crops:
+        return []
+
+    cards = []
+    for crop in crops:
+        rank, _ = _ocr_card_rank(crop, ocr_full_image)
+        suit = _detect_suit_bgr(crop)
+        if rank:
+            cards.append(f"{rank}{suit}")
+    return cards
 
 
 def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
