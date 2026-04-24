@@ -388,7 +388,13 @@ def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
         return [], 0.0
     card1, card2 = crops
 
-    # Recompute blob_ratio from crop shapes (card1.w + card2.w - 6 == original cw)
+    # Recompute blob_ratio from crop shapes (card1.w + card2.w - 6 == original cw).
+    # Safe only because the hero crop is large enough that blob bounding boxes
+    # never clip its right edge — the blob filter requires cw > 60 and the
+    # available hero width is ~0.40 * image_width, so with the split+3/-3
+    # overlap margins the width-sum identity holds exactly. If a future change
+    # ever shrinks the hero crop or relaxes cw > 60, return (crops, bbox) from
+    # _locate_hero_cards and use raw geometry here instead.
     blob_ratio = (card1.shape[1] + card2.shape[1] - 6) / max(card1.shape[0], 1)
 
     h, w = table_region.shape[:2]
