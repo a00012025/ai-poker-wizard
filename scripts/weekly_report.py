@@ -598,6 +598,48 @@ async def _fetch_period_totals(
         return None
 
 
+async def _log_classifier_health(pool: asyncpg.Pool) -> None:
+    """Out-of-distribution (OOD) monitor for the CardCNN classifier.
+
+    Computes a 7-day rolling mean hand-level confidence + share of low-confidence
+    hands and logs them. If the CNN's inputs drift (e.g., Natural8 re-skins the
+    table, adds new overlays, etc.) the mean conf drops first and the low-conf
+    share rises — this is our leading indicator before users start reporting
+    misclassifications. Baselines (from Phase 1 production traffic):
+        mean_conf    expected >= 0.90
+        low_conf_pct expected < 10% (hands with any card conf < 0.5)
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  AVG(classifier_conf) AS mean_conf,
+                  COUNT(*) FILTER (WHERE classifier_conf < 0.5) AS low_conf_count,
+                  COUNT(*) AS total
+                FROM analysis_snapshots
+                WHERE classifier_conf IS NOT NULL
+                  AND created_at > NOW() - INTERVAL '7 days'
+                """
+            )
+    except Exception as e:
+        logger.warning(f"classifier_health: query failed: {e}")
+        return
+
+    if not row or not row["total"]:
+        logger.info("classifier_health: no samples in the last 7d — skipping")
+        return
+
+    total = int(row["total"])
+    mean = float(row["mean_conf"] or 0.0)
+    low_pct = 100.0 * int(row["low_conf_count"] or 0) / total
+    logger.info(
+        "classifier_health: 7d mean_conf=%.3f (baseline >=0.90) "
+        "low_conf_share=%.1f%% (baseline <10%%) n=%d",
+        mean, low_pct, total,
+    )
+
+
 async def send_weekly_reports(
     pool: asyncpg.Pool,
     bot: Any,
@@ -607,6 +649,8 @@ async def send_weekly_reports(
 
     Returns the count of reports sent.
     """
+    await _log_classifier_health(pool)
+
     async with pool.acquire() as conn:
         users = await conn.fetch(
             """
