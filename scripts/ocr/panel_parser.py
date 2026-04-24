@@ -48,6 +48,48 @@ def normalize_position(pos: str) -> str:
     return _POSITION_ALIASES.get(pos, pos)
 
 
+# EasyOCR frequently misreads the digit "1" as the letter "T" / "I" / "L"
+# on small Natural8 position badges (confidence ~0.40-0.55). Map the
+# corrupt reads back to the correct position before the substring matcher
+# sees them — otherwise "UTGT" silently falls through to the substring
+# rule and matches "UTG" (the shorter prefix), collapsing UTG+1 hero
+# entries into UTG. Regression for H2766 where BBJordan's UTG1 badge
+# was OCR'd as "UTGT" (conf 0.54) producing hero_position="UTG" in the
+# parsed hand → wrong multiway simplification → missing turn solver data.
+# Canonical form (whitespace-stripped, uppercased) → corrected badge text.
+# EasyOCR frequently misreads the digit "1" as T / I / L on small badges.
+_OCR_POSITION_CORRECTIONS = {
+    "UTGT": "UTG1",  # digit 1 → letter T
+    "UTGI": "UTG1",  # digit 1 → letter I
+    "UTGL": "UTG1",  # digit 1 → letter L
+    "UTGZ": "UTG2",  # digit 2 → letter Z
+}
+
+
+def _preprocess_ocr_position(text: str) -> str:
+    """Map OCR-corrupted position reads back to canonical badge text.
+
+    Whitespace-collapses and upper-cases the input before lookup, so "UTG 1",
+    "utg1", "UTGt" all hit the same entries. Pure text→text; does not touch
+    the _POSITION_ALIASES table. Returns the original (stripped) string
+    unchanged when no known corruption matches.
+
+    Regression for H2766 where BBJordan's UTG1 panel badge was OCR'd as
+    "UTGT" (confidence 0.54) and the substring matcher silently fell
+    through to "UTG".
+    """
+    if not text:
+        return text
+    stripped = text.strip()
+    canon = re.sub(r"\s+", "", stripped).upper()
+    if canon in _OCR_POSITION_CORRECTIONS:
+        return _OCR_POSITION_CORRECTIONS[canon]
+    # A stray space inside an otherwise-correct read ("UTG 1") — collapse it.
+    if canon in ("UTG1", "UTG2") and " " in stripped:
+        return canon.replace("UTG", "UTG")  # e.g. "UTG1"
+    return stripped
+
+
 def split_columns(panel_image: np.ndarray) -> list[dict]:
     """Split the action panel into 5 street columns.
 
@@ -350,9 +392,11 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
 
     # Detect position — try exact match first, then longest substring
     # to avoid "UTG" matching "UTG1" before "UTG1" itself.
+    # Preprocess each OCR text through _preprocess_ocr_position so known
+    # corrupt reads (UTGT → UTG1) don't fall through to the substring rule.
     position = None
     for t in group:
-        text_upper = t["text"].strip().upper()
+        text_upper = _preprocess_ocr_position(t["text"]).upper()
         # Exact match first
         for pos in _POSITIONS:
             if pos.upper() == text_upper:

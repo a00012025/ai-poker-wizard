@@ -2375,6 +2375,34 @@ def test_ocr_position_alias_mapping():
 
 
 @test
+def test_ocr_position_corrupt_digit_to_letter():
+    """OCR: UTG1 badge misread as UTGT/UTGI/UTGL should still resolve to UTG+1.
+
+    Regression for H2766 where BBJordan's UTG1 panel badge was OCR'd
+    as 'UTGT' (digit 1 misread as letter T, conf=0.54). The substring
+    matcher used to fall through to 'UTG', collapsing hero's position
+    to UTG+0 and cascading into a wrong multiway simplification that
+    dropped turn solver data entirely.
+    """
+    from ocr.panel_parser import _preprocess_ocr_position, normalize_position
+    # Digit 1 misread variants → canonical UTG1
+    assert_eq(_preprocess_ocr_position("UTGT"), "UTG1")
+    assert_eq(_preprocess_ocr_position("UTGI"), "UTG1")
+    assert_eq(_preprocess_ocr_position("UTGL"), "UTG1")
+    assert_eq(_preprocess_ocr_position("UTGt"), "UTG1")
+    assert_eq(_preprocess_ocr_position("UTG 1"), "UTG1")
+    # UTG2 corrupt reads
+    assert_eq(_preprocess_ocr_position("UTGZ"), "UTG2")
+    assert_eq(_preprocess_ocr_position("UTG 2"), "UTG2")
+    # Untouched when the text is already correct
+    assert_eq(_preprocess_ocr_position("UTG"), "UTG")
+    assert_eq(_preprocess_ocr_position("UTG1"), "UTG1")
+    assert_eq(_preprocess_ocr_position("CO"), "CO")
+    # End-to-end: corrupt badge → canonical → aliased position
+    assert_eq(normalize_position(_preprocess_ocr_position("UTGT")), "UTG+1")
+
+
+@test
 def test_ocr_table_parser_board_cards():
     """OCR: table parser finds board cards."""
     import cv2
