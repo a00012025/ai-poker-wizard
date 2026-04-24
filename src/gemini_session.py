@@ -843,6 +843,94 @@ class GeminiSessionManager:
         except Exception as e:
             self._logger.warning(f"[chat={chat_id}] Failed to update snapshot coaching: {e}")
 
+    async def _cross_check_ocr_vs_gemini(self, chat_id: int, image_bytes: bytes,
+                                           mime_type: str, user_text: str,
+                                           ocr_hand: dict, ocr_conf: float):
+        """Medium-tier safety net: call Gemini on the same image, compare
+        hero/board cards, and log any disagreement as a labeled example for
+        future classifier retraining. Fire-and-forget; never raises.
+
+        The user-facing flow has already returned the OCR hand by the time
+        this runs. We are not fixing this analysis — we are building the
+        corpus that will fix the NEXT analysis after a retrain.
+        """
+        try:
+            prompt_text = IMAGE_PARSE_PROMPT
+            if user_text.strip():
+                prompt_text += f"\n\n用戶留言：{user_text.strip()}"
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.image_parse_model,
+                    contents=[
+                        types.Content(role="user", parts=[
+                            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                            types.Part(text=prompt_text),
+                        ]),
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0,
+                        thinking_config=types.ThinkingConfig(thinking_budget=4096),
+                    ),
+                ),
+                timeout=300,
+            )
+            text = response.text or ""
+            m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+            gemini_hand = (json.loads(m.group(1)) if m else json.loads(text.strip())).get("hand")
+            if not gemini_hand:
+                return
+            self._normalize_cards(gemini_hand)
+        except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] cross-check Gemini call failed: {e}")
+            return
+
+        disagreement = self._cards_disagreement(ocr_hand, gemini_hand)
+        if not disagreement:
+            self._logger.info(f"[chat={chat_id}] cross-check OK (OCR==Gemini)")
+            return
+
+        self._logger.info(
+            f"[chat={chat_id}] cross-check DISAGREEMENT "
+            f"(conf={ocr_conf:.2f}): {disagreement}"
+        )
+        if not self.db:
+            return
+        try:
+            await self.db.log_classifier_disagreement(
+                chat_id=chat_id,
+                ocr_hand=ocr_hand,
+                gemini_hand=gemini_hand,
+                ocr_conf=ocr_conf,
+                diff=disagreement,
+            )
+        except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] Failed to log classifier disagreement: {e}")
+
+    @staticmethod
+    def _cards_disagreement(ocr_hand: dict, gemini_hand: dict) -> dict | None:
+        """Compare hero_hand + per-street board cards. Return a small dict
+        describing the disagreement, or None if the two parses agree on
+        every card."""
+        diffs: dict = {}
+        o_hero = ocr_hand.get("hero_hand")
+        g_hero = gemini_hand.get("hero_hand")
+        if o_hero != g_hero:
+            diffs["hero"] = {"ocr": o_hero, "gemini": g_hero}
+        o_streets = ocr_hand.get("streets") or []
+        g_streets = gemini_hand.get("streets") or []
+        for i in range(max(len(o_streets), len(g_streets))):
+            o = o_streets[i] if i < len(o_streets) else {}
+            g = g_streets[i] if i < len(g_streets) else {}
+            o_board = o.get("board", o.get("card", ""))
+            g_board = g.get("board", g.get("card", ""))
+            if o_board != g_board:
+                diffs.setdefault("streets", {})[str(i)] = {
+                    "ocr": o_board, "gemini": g_board,
+                }
+        return diffs or None
+
     async def _extract_deviations(self, chat_id: int, hand_id: str | None,
                                     hand_json: dict, context: dict):
         """Fire-and-forget: extract deviations from analysis and store in DB.
@@ -1529,14 +1617,23 @@ class GeminiSessionManager:
                                        mime_type: str = "image/jpeg",
                                        user_text: str = "",
                                        usage_acc: dict | None = None) -> dict | None:
-        """Parse hand from a screenshot image.
+        """Parse hand from a screenshot image with a tiered confidence gate.
 
-        Attempts OCR-based parsing first, falling back to Gemini vision:
-        - OCR confidence > 0.85: return OCR result directly
-        - OCR confidence 0.1-0.85: append OCR hints to Gemini prompt
-        - OCR confidence 0.0: pure Gemini (unchanged)
+        Three tiers (configurable via OCR_FAST_TIER_MIN / OCR_MEDIUM_TIER_MIN):
+        - `>= OCR_FAST_TIER_MIN`  (default 0.95): trust OCR, skip Gemini.
+        - `>= OCR_MEDIUM_TIER_MIN` (default 0.80): use OCR synchronously, AND
+          fire a Gemini cross-check asynchronously to log disagreements to
+          `classifier_disagreement_log`. User waits only for OCR; future
+          retrain uses the disagreements as labeled examples.
+        - below medium: fall back to Gemini synchronously, exactly as before.
+
+        Confidence 0.1..medium: OCR's partial hand/hints are still passed
+        into the Gemini prompt to anchor the parse.
         """
         self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
+
+        FAST_TIER_MIN = float(os.getenv("OCR_FAST_TIER_MIN", "0.95"))
+        MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
 
         # Step 1: Try OCR-based parsing (feature switch: OCR_ENABLED env var)
         ocr_result = None
@@ -1552,14 +1649,44 @@ class GeminiSessionManager:
                     f"{json.dumps(ocr_result.get('hand'), ensure_ascii=False, default=str)[:500] if ocr_result.get('hand') else 'no hand'}"
                 )
 
-                if ocr_conf > 0.85 and ocr_result.get("hand"):
+                hand_ok = (
+                    ocr_result.get("hand")
+                    and ocr_result["hand"].get("hero_position")
+                    and ocr_result["hand"].get("preflop_actions")
+                    and ocr_result["hand"].get("hero_hand")
+                )
+
+                if hand_ok and ocr_conf >= FAST_TIER_MIN:
                     hand = ocr_result["hand"]
-                    if hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
-                        self._logger.info(f"[chat={chat_id}] Using OCR result (conf={ocr_conf:.2f})")
-                        self._normalize_cards(hand)
-                        self._fix_folded_players(hand)
-                        hand["__ocr_conf__"] = float(ocr_conf)
-                        return hand
+                    self._logger.info(
+                        f"[chat={chat_id}] Using OCR result (FAST tier conf={ocr_conf:.2f})"
+                    )
+                    self._normalize_cards(hand)
+                    self._fix_folded_players(hand)
+                    hand["__ocr_conf__"] = float(ocr_conf)
+                    return hand
+
+                if hand_ok and ocr_conf >= MEDIUM_TIER_MIN:
+                    hand = ocr_result["hand"]
+                    self._logger.info(
+                        f"[chat={chat_id}] Using OCR result (MEDIUM tier conf={ocr_conf:.2f}, "
+                        f"dispatching async Gemini cross-check)"
+                    )
+                    self._normalize_cards(hand)
+                    self._fix_folded_players(hand)
+                    hand["__ocr_conf__"] = float(ocr_conf)
+                    # Fire-and-forget cross-check — user sees OCR result
+                    # immediately; disagreements become training data.
+                    import asyncio as _aio
+                    _aio.create_task(self._cross_check_ocr_vs_gemini(
+                        chat_id=chat_id,
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        user_text=user_text,
+                        ocr_hand=hand,
+                        ocr_conf=float(ocr_conf),
+                    ))
+                    return hand
 
                 if 0.1 <= ocr_conf and ocr_result.get("hints"):
                     ocr_hints = ocr_result["hints"]

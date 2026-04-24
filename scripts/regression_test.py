@@ -2973,13 +2973,15 @@ def _register_snapshot_tests():
                     from ocr.n8_parser import parse_n8_screenshot
                     result = parse_n8_screenshot(bytes(s["image_data"]))
                     conf = float(result.get("confidence", 0.0))
-                    # Mirror production: anything under the 0.85 fast-path
-                    # threshold would fall back to Gemini in the real bot.
-                    # A low-conf wrong parse is not a regression — it's the
-                    # system correctly signalling uncertainty.
-                    OCR_FAST_PATH_THRESHOLD = 0.85
+                    # Mirror production's tiered gate: anything under the
+                    # medium-tier floor (default 0.80) would fall back to
+                    # Gemini in the real bot. A low-conf wrong parse is not
+                    # a regression — it's the system correctly signalling
+                    # uncertainty. The medium-tier band (0.80..0.95) still
+                    # surfaces OCR to the user so mismatches there are real.
+                    MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
                     if not result.get("hand"):
-                        if conf < OCR_FAST_PATH_THRESHOLD:
+                        if conf < MEDIUM_TIER_MIN:
                             return  # low-conf no-hand → fallback territory, OK
                         assert_true(False,
                                     f"OCR returned no hand (confidence={conf:.2f})")
@@ -2999,7 +3001,7 @@ def _register_snapshot_tests():
                             e_board = es.get("board", es.get("card", ""))
                             assert_eq(p_board, e_board, f"street[{i}] board mismatch")
                     except AssertionError:
-                        if conf < OCR_FAST_PATH_THRESHOLD:
+                        if conf < MEDIUM_TIER_MIN:
                             return  # low-conf mismatch → fallback territory, OK
                         raise
                 _test.__name__ = f"test_snapshot_l1_ocr_{h}"

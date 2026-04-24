@@ -307,6 +307,35 @@ class Database:
                 classifier_conf,
             )
 
+    async def log_classifier_disagreement(
+        self,
+        chat_id: int,
+        ocr_hand: dict,
+        gemini_hand: dict,
+        ocr_conf: float,
+        diff: dict,
+    ):
+        """Insert one row into classifier_disagreement_log.
+
+        These rows feed the future relabel audit: where OCR and Gemini both
+        looked at the same screenshot and gave different card reads, one of
+        them is wrong and the snapshot is a candidate for human review +
+        expected_json override.
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO classifier_disagreement_log
+                    (chat_id, ocr_hand, gemini_hand, ocr_conf, diff)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                chat_id,
+                json.dumps(ocr_hand, ensure_ascii=False),
+                json.dumps(gemini_hand, ensure_ascii=False),
+                float(ocr_conf),
+                json.dumps(diff, ensure_ascii=False),
+            )
+
     async def update_snapshot_coaching(self, hand_id: str, coaching_text: str):
         """Update coaching text for an existing snapshot."""
         async with self.pool.acquire() as conn:

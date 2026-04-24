@@ -107,11 +107,13 @@ def _compare_parse_fields(parsed: dict, expected: dict) -> list[str]:
 def run_layer1_ocr(snapshot: dict) -> tuple[bool, str]:
     """Layer 1: Re-parse image with OCR and compare to expected_json.
 
-    Mirrors the production fallback gate in gemini_session.py: when OCR
-    confidence is below 0.85, production falls back to Gemini vision rather
-    than trusting the OCR output. Low-confidence mismatches are therefore
-    expected behavior, not regressions — the system correctly signaled
-    uncertainty. Only high-confidence mismatches are real failures.
+    Mirrors the production tiered gate in gemini_session.py. A parse is
+    only surfaced to the user when OCR confidence is >= OCR_MEDIUM_TIER_MIN
+    (default 0.80). Below that, production falls back to Gemini vision —
+    a wrong OCR parse in that band is not user-visible and therefore not
+    a regression. At or above the medium-tier floor the user sees the OCR
+    result directly, so mismatches there are real failures (the async
+    cross-check logs them but does not repair this analysis).
     """
     image_data = snapshot.get("image_data")
     if not image_data:
@@ -126,16 +128,16 @@ def run_layer1_ocr(snapshot: dict) -> tuple[bool, str]:
         return False, f"OCR error: {e}"
 
     conf = float(result.get("confidence", 0))
-    OCR_FAST_PATH_THRESHOLD = 0.85  # matches gemini_session.py
+    MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
 
     if not result.get("hand"):
-        if conf < OCR_FAST_PATH_THRESHOLD:
+        if conf < MEDIUM_TIER_MIN:
             return True, f"LOW_CONF_FALLBACK (confidence={conf:.2f}, no hand)"
         return False, f"OCR returned no hand (confidence={conf:.2f})"
 
     errors = _compare_parse_fields(result["hand"], expected)
     if errors:
-        if conf < OCR_FAST_PATH_THRESHOLD:
+        if conf < MEDIUM_TIER_MIN:
             return True, f"LOW_CONF_FALLBACK (confidence={conf:.2f}, would defer to Gemini)"
         return False, f"Parse mismatch (confidence={conf:.2f}):\n" + "\n".join(errors)
 
