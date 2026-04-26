@@ -2462,6 +2462,69 @@ def test_ocr_table_parser_board_cards():
 
 
 @test
+def test_ocr_card_confidence_surfaced_separately():
+    """OCR: parse_n8_screenshot exposes card_confidence on the result so
+    the gemini_session tiered gate can apply a hard card-conf floor.
+
+    Regression for H2772: card_confidence=0.66 (CardCNN classified hero K
+    as 8 with rank conf 0.56) but the blended overall confidence reached
+    0.86 thanks to good action tracking, slipping through the MEDIUM
+    gate. We need card_confidence to be visible to the gate so it can be
+    treated as a hard floor independent of action-tracking quality.
+    """
+    # Synthetic check: the field is wired through. Real CardCNN
+    # behavior is exercised via the snapshot tests.
+    from ocr.n8_parser import _compute_confidence
+    parts = {
+        "pot_consistency": 1.0, "player_tracking": 1.0,
+        "ocr_confidence": 1.0, "card_confidence": 0.55,
+    }
+    blended = _compute_confidence(parts)
+    # Sanity: blended can mask a weak card_confidence.
+    assert_true(blended > 0.80,
+                f"action-tracking should mask weak card_conf; got {blended}")
+    # The fix is gemini_session checking card_confidence directly, so the
+    # parser must surface it on its return dict.
+    import inspect
+    src = inspect.getsource(__import__("ocr.n8_parser", fromlist=["_dummy"]))
+    assert_in('"card_confidence":', src)
+
+
+@test
+def test_ocr_hero_card_suits_hint_emitted():
+    """OCR: high-conf suit predictions are surfaced as hero_card_suits hint
+    even when ranks are uncertain or hero_cards got cleared.
+
+    Regression for H2768: CardCNN predicted (9h, 9h) — same rank twice due
+    to 8↔9 confusion — but suit-head conf was 0.97 for both. The duplicate
+    triggered hero_cards clearing, which dropped the only suit signal
+    Gemini had. After the fix, _build_hints emits hero_card_suits=['h', 'h']
+    so Gemini's prompt can fix the rank without re-guessing the suit.
+    """
+    from ocr.n8_parser import _build_hints
+    table_result = {
+        "board_cards": ["6d", "Qh", "5d", "Jd", "Qd"],
+        "hero_cards": [],   # cleared by hero/board duplicate resolution
+        "hero_card_details": [
+            {"rank": "9", "rank_conf": 0.62, "suit": "h", "suit_conf": 0.97,
+             "conf": 0.62},
+            {"rank": "9", "rank_conf": 0.51, "suit": "h", "suit_conf": 0.97,
+             "conf": 0.51},
+        ],
+    }
+    hints = _build_hints(table_result, [], None)
+    assert_eq(hints.get("hero_card_suits"), ["h", "h"])
+
+    # Sanity: when suit confidence is below threshold, no hint is emitted.
+    table_result["hero_card_details"][0]["suit_conf"] = 0.55
+    hints2 = _build_hints(table_result, [], None)
+    assert_true(
+        "hero_card_suits" not in (hints2 or {}),
+        "low-conf suits should NOT emit hero_card_suits hint",
+    )
+
+
+@test
 def test_ocr_table_color_detection():
     """OCR: table parser detects table color."""
     import cv2

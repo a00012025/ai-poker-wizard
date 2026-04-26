@@ -128,17 +128,24 @@ def run_layer1_ocr(snapshot: dict) -> tuple[bool, str]:
         return False, f"OCR error: {e}"
 
     conf = float(result.get("confidence", 0))
+    card_conf = float(result.get("card_confidence", 0))
     MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
+    MIN_CARD_CONF = float(os.getenv("OCR_MIN_CARD_CONF", "0.70"))
+    # Production demotes to Gemini when card_conf is below the hard floor,
+    # regardless of overall — mirror that here.
+    would_demote = card_conf < MIN_CARD_CONF
 
     if not result.get("hand"):
-        if conf < MEDIUM_TIER_MIN:
-            return True, f"LOW_CONF_FALLBACK (confidence={conf:.2f}, no hand)"
+        if conf < MEDIUM_TIER_MIN or would_demote:
+            return True, (f"LOW_CONF_FALLBACK (confidence={conf:.2f}, "
+                          f"card_conf={card_conf:.2f}, no hand)")
         return False, f"OCR returned no hand (confidence={conf:.2f})"
 
     errors = _compare_parse_fields(result["hand"], expected)
     if errors:
-        if conf < MEDIUM_TIER_MIN:
-            return True, f"LOW_CONF_FALLBACK (confidence={conf:.2f}, would defer to Gemini)"
+        if conf < MEDIUM_TIER_MIN or would_demote:
+            return True, (f"LOW_CONF_FALLBACK (confidence={conf:.2f}, "
+                          f"card_conf={card_conf:.2f}, would defer to Gemini)")
         return False, f"Parse mismatch (confidence={conf:.2f}):\n" + "\n".join(errors)
 
     return True, f"OK (confidence={conf:.2f})"

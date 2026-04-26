@@ -347,22 +347,26 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     return [card1, card2]
 
 
-def _find_hero_cards(table_region: np.ndarray) -> tuple[list[str], float]:
+def _find_hero_cards(
+    table_region: np.ndarray,
+) -> tuple[list[str], float, list[dict]]:
     """Find and identify hero's hole cards via CardCNN.
 
-    Returns (cards, confidence) where confidence is min over all card
-    predictions (min of rank_softmax_max and suit_softmax_max per card).
-    Low confidence naturally triggers the Gemini fallback in gemini_session.
+    Returns (cards, confidence, details) where confidence is min over all
+    card predictions, and details is a list of per-card dicts with rank,
+    rank_conf, suit, suit_conf, conf. Low confidence naturally triggers
+    the Gemini fallback in gemini_session.
     """
     from .classifier.infer import CardClassifier
 
     crops = _locate_hero_cards(table_region)
     if not crops:
-        return [], 0.0
-    results = CardClassifier().classify_batch(crops)
-    cards = [f"{r}{s}" for r, s, _ in results if r and s]
-    conf = min((c for _, _, c in results), default=0.0)
-    return cards, conf
+        return [], 0.0, []
+    details = CardClassifier().classify_batch_detailed(crops)
+    cards = [f"{d['rank']}{d['suit']}" for d in details
+             if d["rank"] and d["suit"]]
+    conf = min((d["conf"] for d in details), default=0.0)
+    return cards, conf, details
 
 
 def _find_player_stacks(table_region: np.ndarray) -> list[float]:
@@ -451,7 +455,7 @@ def parse_table(table_region: np.ndarray) -> dict:
 
     table_color = _detect_table_color(table_region)
     board_cards = _find_board_cards(table_region)
-    hero_cards, hero_card_conf = _find_hero_cards(table_region)
+    hero_cards, hero_card_conf, hero_card_details = _find_hero_cards(table_region)
     all_stacks_named = _find_all_stacks(table_region)
     hero_stack = _find_hero_stack(table_region)
 
@@ -462,6 +466,7 @@ def parse_table(table_region: np.ndarray) -> dict:
         "board_cards": board_cards,
         "hero_cards": hero_cards,
         "hero_card_conf": hero_card_conf,
+        "hero_card_details": hero_card_details,
         "hero_stack": hero_stack,
         "player_stacks": all_stacks,
         "named_stacks": all_stacks_named,

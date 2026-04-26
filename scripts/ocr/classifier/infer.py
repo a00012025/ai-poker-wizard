@@ -81,10 +81,23 @@ class CardClassifier:
     def classify_batch(
         self, crops: list[np.ndarray]
     ) -> list[tuple[Optional[str], Optional[str], float]]:
+        return [(d["rank"], d["suit"], d["conf"])
+                for d in self.classify_batch_detailed(crops)]
+
+    def classify_batch_detailed(
+        self, crops: list[np.ndarray]
+    ) -> list[dict]:
+        """Same as classify_batch but exposes rank_conf and suit_conf separately.
+
+        Returned dict keys: rank, rank_conf, suit, suit_conf, conf
+        (conf = min(rank_conf, suit_conf)). When the checkpoint is missing,
+        returns dicts with None ranks/suits and 0.0 confidences.
+        """
         if not crops:
             return []
         if not self._ensure_loaded():
-            return [(None, None, 0.0)] * len(crops)
+            return [{"rank": None, "rank_conf": 0.0,
+                     "suit": None, "suit_conf": 0.0, "conf": 0.0}] * len(crops)
         from .model import RANK_CLASSES, SUIT_CLASSES
         x = self._torch.stack([self._to_tensor(self._letterbox(c)) for c in crops])
         with self._torch.no_grad():
@@ -95,5 +108,9 @@ class CardClassifier:
         for i in range(x.shape[0]):
             r_idx = int(r_probs[i].argmax()); r_c = float(r_probs[i, r_idx])
             s_idx = int(s_probs[i].argmax()); s_c = float(s_probs[i, s_idx])
-            out.append((RANK_CLASSES[r_idx], SUIT_CLASSES[s_idx], min(r_c, s_c)))
+            out.append({
+                "rank": RANK_CLASSES[r_idx], "rank_conf": r_c,
+                "suit": SUIT_CLASSES[s_idx], "suit_conf": s_c,
+                "conf": min(r_c, s_c),
+            })
         return out

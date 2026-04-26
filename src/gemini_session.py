@@ -228,6 +228,9 @@ IMAGE_PARSE_PROMPT = """\
 - 牌面記號：rank 用單字元 2-9, T, J, Q, K, A（十=T，不是10！）
   suit 用 c♣ d♦ h♥ s♠，如 "AsKc", "Ts4h"
 - hero_hand: 兩張牌，如 "AsKc"
+  如果 OCR 預處理提示包含 hero_card_suits（如 ["h", "h"]），代表 OCR 的 suit 分類器
+  對 hero 兩張牌的花色有高度信心（>0.9），請直接採用這兩個 suits，只從圖像確認 rank。
+  hero_card_suits 是依「畫面從左到右」的順序給出，hero_hand 須以 rank 大者排前。
 - streets: flop 用 "board"（如 "6cQs9d"），turn/river 用 "card"。不要加 "street" key，只用 "board"/"card" + "actions"
 - 翻牌後 action: X=Check, C=Call, F=Fold, R{size}=Bet/Raise（size 為 bb 絕對值）
 - 翻牌後行動順序：靠近 SB 的位置先行動
@@ -1634,6 +1637,12 @@ class GeminiSessionManager:
 
         FAST_TIER_MIN = float(os.getenv("OCR_FAST_TIER_MIN", "0.95"))
         MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
+        # Hard floor on hero card-classifier confidence: even when the
+        # blended overall score is high (good action tracking can mask a
+        # bad rank prediction), force Gemini fallback when CardCNN itself
+        # is shaky on hero. Regression: H2772 (overall=0.86, K rank
+        # classified as 8 at 0.56 — overall passed MEDIUM, hand was wrong).
+        MIN_CARD_CONF = float(os.getenv("OCR_MIN_CARD_CONF", "0.70"))
 
         # Step 1: Try OCR-based parsing (feature switch: OCR_ENABLED env var)
         ocr_result = None
@@ -1644,8 +1653,10 @@ class GeminiSessionManager:
                 from ocr.n8_parser import parse_n8_screenshot
                 ocr_result = parse_n8_screenshot(image_bytes)
                 ocr_conf = ocr_result.get("confidence", 0.0)
+                card_conf = ocr_result.get("card_confidence", 0.0)
                 self._logger.info(
-                    f"[chat={chat_id}] OCR result (conf={ocr_conf:.2f}): "
+                    f"[chat={chat_id}] OCR result (conf={ocr_conf:.2f}, "
+                    f"card_conf={card_conf:.2f}): "
                     f"{json.dumps(ocr_result.get('hand'), ensure_ascii=False, default=str)[:500] if ocr_result.get('hand') else 'no hand'}"
                 )
 
@@ -1655,6 +1666,16 @@ class GeminiSessionManager:
                     and ocr_result["hand"].get("preflop_actions")
                     and ocr_result["hand"].get("hero_hand")
                 )
+
+                # Hard card-confidence gate — overrides FAST and MEDIUM tiers.
+                if hand_ok and card_conf < MIN_CARD_CONF:
+                    self._logger.info(
+                        f"[chat={chat_id}] Demoting to Gemini fallback "
+                        f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
+                        f"overall={ocr_conf:.2f}) — bad hero card prediction "
+                        f"shouldn't pass even when actions look fine"
+                    )
+                    hand_ok = False
 
                 if hand_ok and ocr_conf >= FAST_TIER_MIN:
                     hand = ocr_result["hand"]

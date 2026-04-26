@@ -111,6 +111,7 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
         "hand": hand if confidence > 0.3 else None,
         "hints": hints,
         "confidence": confidence,
+        "card_confidence": confidence_parts.get("card_confidence", 0.0),
     }
 
 
@@ -1235,6 +1236,18 @@ def _build_hints(table_result: dict, columns: list[dict],
     hero = table_result.get("hero_cards", [])
     if hero:
         hints["hero_cards"] = hero
+
+    # Surface high-confidence suit predictions even when the rank head was
+    # uncertain (or the cards were cleared as duplicates due to a rank
+    # confusion). The CNN's suit head is far more reliable than the rank
+    # head, so handing Gemini an authoritative suit list lets it focus
+    # only on resolving the ranks.
+    hero_details = table_result.get("hero_card_details") or []
+    if len(hero_details) == 2 and all(
+        d.get("suit") and d.get("suit_conf", 0.0) >= 0.90
+        for d in hero_details
+    ):
+        hints["hero_card_suits"] = [d["suit"] for d in hero_details]
 
     color = table_result.get("table_color", "unknown")
     if color != "unknown":
