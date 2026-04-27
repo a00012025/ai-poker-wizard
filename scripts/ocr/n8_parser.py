@@ -920,10 +920,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     if stacks and len(stacks) == players_at_table:
         hand["player_stacks"] = stacks
 
-    # Final Table detection
-    if table_color == "purple":
-        hand["tournament_type"] = "icm"
-        hand["phase"] = "FT"
+    # Final Table detection (temporarily disabled — purple-felt heuristic
+    # was over-triggering ICM analysis. Users can still opt in via text
+    # keywords like "FT/決賽桌" handled in gemini_session parsing.)
+    # if table_color == "purple":
+    #     hand["tournament_type"] = "icm"
+    #     hand["phase"] = "FT"
 
     # Pot consistency check
     conf_parts["pot_consistency"] = _check_pot_consistency(columns)
