@@ -387,6 +387,23 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     if target_pct > 2.0:
         return find_closest_action_postflop(available_actions, bet_size)
 
+    # Exact-match shortcut: if target equals one of the available betsizes
+    # closely, use it directly. Pot-pct conversion is only needed when the
+    # solver's pot context drifts from actual_pot (e.g. preflop R2→R2.2
+    # normalization). When hero's bb amount lands on an available bucket
+    # exactly, that's the answer regardless of pot accounting — and it
+    # avoids midpoint ties caused by missing antes (regression H2797:
+    # actual_pot=2.0 missing ante → target_pct=0.5 → tie between R1/R2,
+    # float tips to R2 even though hero bet exactly the R1 betsize).
+    for entry in available_actions:
+        action = entry["action"]
+        code = action["code"]
+        if code in ("X", "F"):
+            continue
+        size = float(action.get("betsize") or 0)
+        if size > 0 and abs(size - bet_size) / max(size, bet_size) < 0.05:
+            return code
+
     # Compute solver pot from any available raise action's betsize_by_pot
     solver_pot = None
     for entry in available_actions:

@@ -1670,6 +1670,41 @@ def test_find_action_by_pot_pct_maps_real_50pct_to_solver_61pct():
               f"bet_size=50 (interpreted as 50% pot) should match R6 (61%); got {result}")
 
 
+@test
+def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
+    """When hero's bb amount equals an available betsize exactly, return it
+    even if pot-pct conversion would tie at a midpoint.
+
+    H2797 regression: 7-max MTT, hero limped SB and bet 1bb into the 3bb
+    flop pot. Solver pot 3.0 (with ante), but the local actual_pot
+    computation excludes ante and lands at 2.0. Pot-pct math:
+    target_pct = 1.0/2.0 = 0.5 → solver_bet = 0.5 * 3.0 = 1.5, dead
+    midpoint between R1 (1bb, 33%) and R2 (2bb, 67%). Float error tipped
+    the tie to R2, falsely flagging hero's standard 33% c-bet as a 67%
+    bet. The exact-betsize shortcut returns R1 directly.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    # H2797 flop: 12bb solver, SB cbets 1bb into pot 3.0
+    available = [
+        {"action": {"code": "X", "betsize": "0", "allin": False}},
+        {"action": {"code": "R1", "betsize": "1.0", "allin": False, "betsize_by_pot": "0.33333333"}},
+        {"action": {"code": "R2", "betsize": "2.0", "allin": False, "betsize_by_pot": "0.66666667"}},
+        {"action": {"code": "R3", "betsize": "3.0", "allin": False, "betsize_by_pot": "1.00000000"}},
+        {"action": {"code": "RAI", "betsize": "11.0", "allin": True, "betsize_by_pot": "3.66666667"}},
+    ]
+
+    # actual_pot=2.0 (missing ante) — exact betsize match should win
+    assert_eq(_find_action_by_pot_pct(available, 1.0, 2.0), "R1")
+    # Same with the correct actual_pot=3.0
+    assert_eq(_find_action_by_pot_pct(available, 1.0, 3.0), "R1")
+    # 5% tolerance: 1.04bb still matches R1
+    assert_eq(_find_action_by_pot_pct(available, 1.04, 2.0), "R1")
+    # Outside tolerance: 1.3bb falls through to pot-pct logic
+    # target=1.3, actual_pot=2.0 → pct=0.65 → solver_bet=1.95 → R2
+    assert_eq(_find_action_by_pot_pct(available, 1.3, 2.0), "R2")
+
+
 # ── Hand Eval Tests ──
 
 @test
