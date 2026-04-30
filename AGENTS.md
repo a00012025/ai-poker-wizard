@@ -1,0 +1,223 @@
+# AI Poker Wizard - Shared Agent Guidelines
+
+This file is the shared repo-local agent guidance for both Codex and Claude Code.
+`CLAUDE.md` should point to this file so both surfaces read the same project instructions.
+
+## Project Structure
+
+```
+src/
+  gemini_session.py    — Gemini LLM session manager (parse hand → analyze → coach)
+  main_gemini.py       — Telegram bot entry point
+  telegram_bot/bot.py  — Telegram message handler (.txt/.zip uploads, follow-up by hand_id)
+scripts/
+  analyze_hand.py      — Multi-street GTO analysis orchestration
+  gto_api.py           — GTO Wizard API client (next-actions, spot-solution)
+  gto_formatter.py     — Solver JSON → natural language + combo-level breakdown
+  gto_token.py         — JWT auth & token refresh (.tokens.json)
+  icm_modes.py         — ICM game mode discovery and stack matching
+  hand_eval.py         — Deterministic hand type evaluation
+  hh_parser.py         — Parse GGPoker HH files → analyze_hand_full() input JSON
+  hh_deviation_check.py — Direct GTO API deviation checking per hand
+  hh_deviation_report.py — analyze_hands() + format_deviation_report()
+  spot_categorizer.py  — Classify hero decisions into ~15 spot buckets + board texture
+  leak_service.py      — DB queries for leak detection (shared by LLM tools + weekly job)
+  weekly_report.py     — Weekly leak report generation + session narrative + tilt detection
+  backfill_deviations.py — One-time backfill of deviations from existing hand_histories
+  e2e_test.py          — CLI E2E test (no Telegram needed)
+  regression_test.py   — Regression test suite
+```
+
+## Key Architecture
+
+- **Flow**: User message → Gemini Flash (parse hand JSON) → `analyze_hand_full()` → Gemini Pro (coaching)
+- **Follow-ups**: use `query_gto`/`query_next_actions` tools for LLM to query solver on demand
+- **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
+- **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
+- **Leak Detection**: Deviations extracted after each analysis (fire-and-forget), stored in `deviations` table. LLM has 4 leak tools: `query_my_leaks`, `query_my_stats`, `get_training_plan`, `get_progress`
+
+## Leak Detection & Coaching Memory
+
+- **Spot Categories** (~15 buckets): open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot, cbet_ip, cbet_oop, facing_cbet_ip, facing_cbet_oop, probe, facing_probe, donk, check_raise
+- **Board Texture**: classified as paired > monotone > wet > dry (priority order)
+- **Deviation Extraction**: Fires as `asyncio.create_task()` after coaching response, same pattern as snapshot saving
+- **Weekly Report**: PTB JobQueue runs Sunday 10:00 AM Taipei time, sends to all active users with deviations data
+- **Tilt Detection**: Overall deviation rate across all spots in a moving window (default 10 decisions, minimum 5)
+- **Ranking**: `deviation_rate * sample_count` (no EV numbers in reports)
+- **DB Tables**: `deviations` (UNIQUE on hand_history_id + street + action_index), `leak_reports` (UNIQUE on chat_id + report_period + spot_category)
+
+## GTO Wizard API Details
+
+- **Depth format**: `bb + 0.125` (e.g., 30bb → `"30.125"`)
+- **ICM stacks**: dash-separated with .125 suffix (e.g., `"50.125-30.125-..."`)
+- **Raise codes** are position-dependent in ICM (UTG: R2, CO: R2.1) — must discover via next-actions API
+- **API returns** 204 for no solution, 403 for forbidden config — both return `None`
+- **1326 Combo Index** (postflop): cards `23456789TJQKA` × suits `cdhs`, outer `j=1..51`, inner `i=0..j-1`
+- **169 Hand Index** (preflop): all 169 hand names sorted by ASCII string comparison
+  - Hand names: higher rank first, pair=`AA`, suited=`AKs`, offsuit=`AKo`
+  - Build: `sorted(all_169_names)` (digits before letters in ASCII: `2,3,...,9,A,J,K,Q,T`)
+
+## Formatter Details
+
+- `_compress_range()`: `+` only when range reaches top kicker, dash notation for partial ranges
+- Suit diff triggers when: dominant action differs between combos AND some action spread > 35pp
+- Specific combo queries (e.g., `Ah8h`) show that combo's strategy prominently, not aggregated `A8s`
+
+## ICM Support
+
+- Triggered when `hand["tournament_type"] == "icm"`
+- **Phases**: START/EARLY, PCT75, PCT50, PCT25, PCT10, PCT5, BUBBLEEARLY, BUBBLEMID, BUBBLELATE, FT, T2, T3
+- `find_icm_params()` is the high-level entry: returns gametype, depth, stacks, approximation_note
+- GGPoker HH files do NOT contain total entries or players remaining — must infer or ask user
+
+## Docker & Deployment
+
+- `.tokens.json` is bind-mounted — do NOT replace the file inode when updating it
+- To update tokens: write directly into container via `docker compose exec bot sh -c 'cat > /app/.tokens.json ...'`
+- Also update host file with in-place write (`open('...', 'r+')` + `truncate()`)
+- Deploy: `bash scripts/deploy.sh` (git pull → supabase db push → docker compose build+up)
+
+## Database (Supabase)
+
+- **users**: `user_id` (bigint PK), `username`, `name`, `is_active`, `created_at`, `gto_refresh_token` (text)
+  - Token column is `gto_refresh_token`, NOT `refresh_token`
+- **analysis_snapshots**: `hand_id` (unique), `chat_id`, `source_type`, `user_input`, `image_data` (bytea), `parsed_json`, `expected_json`, `gto_text`, `gto_compact`, `coaching_text`, `is_regression` (bool)
+  - Auto-captured on every analysis; used for E2E regression testing
+- Migrations: `supabase/migrations/` — always use `supabase db push`, never raw psql
+
+## Git Worktree 開發流程
+
+多個 feature 可以同時在不同 worktree 中平行開發，各自在獨立 branch 上改，完成後發 PR review。
+
+### 開始新 feature
+
+```bash
+# 1. 確保 main 是最新的
+cd ~/ai-poker-wizard
+git fetch origin main && git pull origin main
+
+# 2. 建立 worktree（放在 ~/ai-poker-wizard-{feature} 目錄）
+BRANCH="feat/leak-detection"
+git worktree add ~/ai-poker-wizard-leak-detection -b $BRANCH
+
+# 3. 在 worktree 中工作
+cd ~/ai-poker-wizard-leak-detection
+```
+
+### Worktree 命名規範
+
+- 目錄: `~/ai-poker-wizard-{feature-slug}`
+- Branch: `feat/{feature}`, `fix/{bug}`, `refactor/{scope}`
+- 例: `~/ai-poker-wizard-leak-detection` → `feat/leak-detection`
+
+### 完成後
+
+```bash
+# 1. 在 worktree 中 commit + push
+git push -u origin feat/leak-detection
+
+# 2. 建立 PR
+gh pr create --title "feat: leak detection pipeline" --body "..."
+
+# 3. Review 後 merge，然後清理 worktree
+cd ~/ai-poker-wizard
+git worktree remove ~/ai-poker-wizard-leak-detection
+```
+
+### 注意事項
+
+- 每個 worktree 共享同一個 `.git` — branch 之間不會衝突
+- `.env` 和 `.tokens.json` 在 main repo 中，worktree 需要 symlink 或複製：
+  ```bash
+  ln -s ~/ai-poker-wizard/.env ~/ai-poker-wizard-leak-detection/.env
+  ln -s ~/ai-poker-wizard/.tokens.json ~/ai-poker-wizard-leak-detection/.tokens.json
+  ```
+- Supabase migrations 在任何 worktree 中都可以跑 `supabase db push`
+- `regression_test.py` 在每個 worktree 中獨立執行
+
+## Ad-hoc Python Scripts
+
+When running ad-hoc Python snippets for debugging/testing, write them to `scripts/_tmp.py` (gitignored) instead of inline `python -c`. This keeps one-off code reviewable and reusable.
+
+```bash
+python scripts/_tmp.py
+```
+
+## E2E Testing
+
+```bash
+set -a && source .env && set +a && python scripts/e2e_test.py "有效 50bb, co open ..."
+python scripts/e2e_test.py -i "..."  # Interactive mode (multi-turn)
+```
+
+## Bug Fix Standards (MANDATORY)
+
+When the user reports a bug with expected values (e.g., "hero hand is Ts9d"), you MUST fix it completely:
+- **Every field matters** — rank AND suit, board AND actions, position AND player count. Never dismiss suit errors as "secondary" or "less impactful".
+- **No deferring** — never say "known limitation", "hard to fix", or "less impactful". Find a way and fix it.
+- **Fix until it matches** — the snapshot test must pass with the EXACT expected values the user provided.
+- **Exhaust all approaches** — if one approach fails, try another. Debug deeper. Add new detection strategies. The fix is not done until OCR output matches expected.
+
+## Regression Tests (REQUIRED)
+
+When modifying any of these core analysis files, you MUST run the regression test suite before committing:
+
+- `scripts/analyze_hand.py` — Hand analysis orchestration
+- `scripts/gto_api.py` — GTO Wizard API client
+- `scripts/gto_formatter.py` — Solver data formatter
+- `scripts/icm_modes.py` — ICM game mode discovery
+- `src/gemini_session.py` — Gemini session manager (tool execution, query building)
+
+### How to run
+
+```bash
+python scripts/regression_test.py
+```
+
+All tests must pass. If a test fails, fix the issue before committing.
+
+### What the tests cover
+
+- **Chip EV**: basic preflop, multi-street, re-raise detection, depth mapping
+- **Positions**: position orders for 2-9 player tables
+- **Range compression**: pair notation (22+), all kickers (AXs), plus notation (K3o+), dash notation (Q2s-Q4s), mixed frequencies (K2o(28%))
+- **GTO API**: next_actions, spot_solution, action matching, stacks param, 204/403 handling
+- **Formatter**: action summary, hand detail, range by action, hand name normalization
+- **ICM**: gametype lookup, stack matching, full preflop analysis, symmetric stacks, 6-max FT, postflop chip EV fallback
+
+### Adding new tests
+
+When adding new features to core analysis logic, add corresponding regression tests to `scripts/regression_test.py`. Use the `@test` decorator and assertion helpers (`assert_eq`, `assert_in`, `assert_true`).
+
+**IMPORTANT: Every bug fix MUST include a regression test.** If it broke once, add a test so it can't break again. This is non-negotiable for all bug reports and fixes.
+
+## Snapshot Regression Tests (E2E)
+
+Snapshots auto-capture every hand analysis to `analysis_snapshots` DB table (input + parsed JSON + GTO output + coaching text). Image bytes stored as bytea for portability.
+
+### Bug fix workflow
+
+1. User reports: `H2489 has problem, T9s not T9o`
+2. Check snapshot: `python scripts/snapshot_test.py --list`
+3. Set corrected parse: `python scripts/snapshot_test.py --set-expected H2489 '{"hero_hand":"T9s"}'`
+4. Fix the code (OCR/parse/analysis)
+5. Update expected GTO output: `python scripts/snapshot_test.py --update H2489`
+6. Flag for regression: `python scripts/snapshot_test.py --add H2489`
+7. Verify: `python scripts/snapshot_test.py H2489`
+8. Run full suite: `python scripts/snapshot_test.py`
+
+### CLI commands
+
+```bash
+python scripts/snapshot_test.py                    # Run all regression tests
+python scripts/snapshot_test.py H2489              # Run specific hand
+python scripts/snapshot_test.py --list             # List regression snapshots
+python scripts/snapshot_test.py --add H2489        # Flag + store expected output
+python scripts/snapshot_test.py --update H2489     # Re-run analysis, update expected
+python scripts/snapshot_test.py --set-expected H2489 '{"hero_hand":"T9s"}'
+```
+
+### Test layers
+
+- **Layer 1 (Parse)**: Image → OCR re-parse → compare key fields with expected_json. Text → Gemini re-parse → compare.
+- **Layer 2 (GTO)**: `analyze_hand_full(expected_json)` → exact match with stored `gto_text`. Fully deterministic.
