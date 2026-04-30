@@ -48,7 +48,10 @@ tests/snapshots/gto_cache/
 scripts/_tmp.py
 
 # Claude Code harness runtime state
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**/
+!.claude/skills/**/SKILL.md
 
 # OCR template raw crops
 scripts/ocr/templates/raw/
