@@ -280,6 +280,23 @@ JSON 格式（決賽桌 ICM）：
 只回覆 JSON。如果截圖不是撲克手牌，回覆 {"hand": null}。
 如果截圖不清楚某些資訊，用最合理的猜測。"""
 
+HERO_HAND_ONLY_PROMPT = """\
+你是撲克截圖讀牌器。OCR pipeline 已經解析出位置、籌碼、動作序列等結構化資訊，
+但 hero（畫面底部中央的玩家）兩張牌的卡片分類器信心度不足，需要你重新識別 hero 的兩張牌。
+
+只需要回 hero 的兩張底牌：
+- rank 用單字元：2 3 4 5 6 7 8 9 T J Q K A（十=T，不是 10！）
+- suit 用單字元：c=梅花♣ d=方塊♦ h=愛心♥ s=黑桃♠
+- 兩張牌依「畫面從左到右」順序，最後輸出 hero_hand 字串時把 rank 較大的放前面（同 rank 任意順序）
+- 例如左邊是 2♠、右邊是 T♥ → hero_hand = "Th2s"
+
+只回覆 JSON：
+```json
+{"hero_hand": "Th2s"}
+```
+
+不要回覆其他欄位，不要重新分析位置或行動。如果完全無法辨識 hero 的牌，回覆 {"hero_hand": null}。"""
+
 COACH_SYSTEM = """\
 你是專業 MTT 撲克教練 AI Poker Wizard。用繁體中文回覆。
 花色中文：s=黑桃, c=梅花, h=愛心, d=方塊。
@@ -910,6 +927,118 @@ class GeminiSessionManager:
         except Exception as e:
             self._logger.warning(
                 f"[chat={chat_id}] Failed to log classifier disagreement: {e}")
+
+    async def _gemini_hero_hand_only(
+        self, chat_id: int, image_bytes: bytes, mime_type: str,
+        ocr_hand: dict, hints: dict | None = None,
+        usage_acc: dict | None = None,
+    ) -> str | None:
+        """Cards-only Gemini call: returns hero_hand string or None.
+
+        Used when OCR's structural fields (position, stacks, actions) look
+        reliable but the card classifier's hero prediction was below
+        threshold. Avoids the full IMAGE_PARSE_PROMPT, so Gemini cannot
+        override OCR's hero_position / stacks / actions.
+        """
+        prompt_text = HERO_HAND_ONLY_PROMPT
+        ctx = {
+            "hero_position": ocr_hand.get("hero_position"),
+            "players_at_table": ocr_hand.get("players_at_table"),
+        }
+        prompt_text += (
+            f"\n\nOCR 已確定的上下文（請僅作為定位 hero 的參考，不要重新判斷）："
+            f"{json.dumps(ctx, ensure_ascii=False)}"
+        )
+        if hints and hints.get("hero_card_suits"):
+            suits = hints["hero_card_suits"]
+            prompt_text += (
+                f"\n\nCardCNN suit 分類器對 hero 兩張牌花色高信心，"
+                f"由左至右為 {suits}（hero_hand 須以 rank 大者排前）。"
+            )
+
+        response = None
+        for attempt in range(3):
+            try:
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.image_parse_model,
+                        contents=[
+                            types.Content(role="user", parts=[
+                                types.Part.from_bytes(
+                                    data=image_bytes, mime_type=mime_type),
+                                types.Part(text=prompt_text),
+                            ]),
+                        ],
+                        config=types.GenerateContentConfig(
+                            temperature=0,
+                            thinking_config=types.ThinkingConfig(
+                                thinking_budget=2048),
+                        ),
+                    ),
+                    timeout=180,
+                )
+                break
+            except genai_errors.ServerError as e:
+                if attempt == 2:
+                    raise
+                backoff = 2 ** attempt
+                self._logger.warning(
+                    f"[chat={chat_id}] Cards-only Gemini transient error "
+                    f"(attempt {attempt + 1}/3): {e}. Retrying in {backoff}s"
+                )
+                await asyncio.sleep(backoff)
+        if response is None:
+            return None
+        if usage_acc is not None:
+            self._accumulate_usage(usage_acc, self._extract_usage(response))
+
+        text = response.text or ""
+        m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        json_str = m.group(1) if m else text.strip()
+        try:
+            result = json.loads(json_str)
+        except (json.JSONDecodeError, AttributeError) as e:
+            self._logger.warning(
+                f"[chat={chat_id}] Cards-only Gemini JSON parse failed: {e}; "
+                f"raw: {text[:200]}"
+            )
+            return None
+        hero_hand = result.get("hero_hand") if isinstance(result, dict) else None
+        if not hero_hand or not isinstance(hero_hand, str):
+            return None
+        # Sanity: must be 4 chars (RsRs format) and only valid rank/suit chars
+        if len(hero_hand) != 4:
+            self._logger.warning(
+                f"[chat={chat_id}] Cards-only Gemini returned malformed "
+                f"hero_hand: {hero_hand!r}"
+            )
+            return None
+        ranks = set("23456789TJQKA")
+        suits = set("cdhs")
+        if (hero_hand[0] not in ranks or hero_hand[2] not in ranks
+                or hero_hand[1] not in suits or hero_hand[3] not in suits):
+            self._logger.warning(
+                f"[chat={chat_id}] Cards-only Gemini returned non-card chars: "
+                f"{hero_hand!r}"
+            )
+            return None
+        return hero_hand
+
+    @staticmethod
+    def _merge_ocr_with_gemini_hero_hand(
+        ocr_hand: dict, gemini_hero_hand: str
+    ) -> dict:
+        """Take OCR's full hand parse, replace only hero_hand.
+
+        Used when card_conf < threshold but structural_conf is high enough
+        that we trust OCR's hero_position/stacks/actions/streets. Keeps the
+        rest of OCR's parse intact so Gemini can't override blind-based
+        position detection (regression: H2790, where Gemini's visual
+        position read flipped SB → BB).
+        """
+        merged = dict(ocr_hand)
+        merged["hero_hand"] = gemini_hero_hand
+        return merged
 
     @staticmethod
     def _cards_disagreement(ocr_hand: dict, gemini_hand: dict) -> dict | None:
@@ -1668,9 +1797,54 @@ class GeminiSessionManager:
                 )
 
                 # Hard card-confidence gate — overrides FAST and MEDIUM tiers.
+                # Before fully demoting, try a cards-only Gemini call when
+                # OCR's structural fields look reliable: keep OCR's
+                # hero_position/stacks/actions, only ask Gemini to re-read
+                # hero_hand. Regression: H2790 — full Gemini fallback was
+                # flipping the correct OCR-detected SB to BB because
+                # IMAGE_PARSE_PROMPT lets Gemini re-decide every field.
                 if hand_ok and card_conf < MIN_CARD_CONF:
+                    parts = ocr_result.get("confidence_parts") or {}
+                    structural_conf = (
+                        parts.get("pot_consistency", 0.0)
+                        + parts.get("player_tracking", 0.0)
+                        + parts.get("ocr_confidence", 0.0)
+                    ) / 3.0
+                    STRUCTURAL_MIN = float(
+                        os.getenv("OCR_STRUCTURAL_MIN", "0.85")
+                    )
+                    if structural_conf >= STRUCTURAL_MIN:
+                        self._logger.info(
+                            f"[chat={chat_id}] Cards-only Gemini fallback "
+                            f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
+                            f"structural_conf={structural_conf:.2f} >= "
+                            f"{STRUCTURAL_MIN:.2f}) — keeping OCR's structural "
+                            f"parse, asking Gemini for hero_hand only"
+                        )
+                        gemini_hero_hand = None
+                        try:
+                            gemini_hero_hand = await self._gemini_hero_hand_only(
+                                chat_id, image_bytes, mime_type,
+                                ocr_hand=ocr_result["hand"],
+                                hints=ocr_result.get("hints"),
+                                usage_acc=usage_acc,
+                            )
+                        except Exception as e:
+                            self._logger.warning(
+                                f"[chat={chat_id}] Cards-only Gemini failed: {e}; "
+                                f"falling through to full Gemini parse"
+                            )
+                        if gemini_hero_hand:
+                            hand = self._merge_ocr_with_gemini_hero_hand(
+                                ocr_result["hand"], gemini_hero_hand
+                            )
+                            self._normalize_cards(hand)
+                            self._fix_folded_players(hand)
+                            hand["__ocr_conf__"] = float(ocr_conf)
+                            return hand
+                        # else fall through to full Gemini parse below
                     self._logger.info(
-                        f"[chat={chat_id}] Demoting to Gemini fallback "
+                        f"[chat={chat_id}] Demoting to full Gemini fallback "
                         f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
                         f"overall={ocr_conf:.2f}) — bad hero card prediction "
                         f"shouldn't pass even when actions look fine"
