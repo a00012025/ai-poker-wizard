@@ -2576,6 +2576,287 @@ def test_ocr_hero_card_suits_hint_emitted():
 
 
 @test
+def test_find_hero_stack_prefers_bb_suffix():
+    """Two-pass scan: prefer any 'XX.X BB' match over a plain number.
+
+    Regression: H2798 — hero crop OCR returned 5 text regions:
+      ['gorj', '24', 'B', 'cbd191320', '11.5 BB']
+    Per-result fallback latched onto '24' (a fragment from an adjacent UI
+    element) at conf 0.87 because it matched the plain-number regex,
+    returning 24.0 and never seeing the real '11.5 BB' entry that came
+    later. Effective_bb cascaded to 26.0 instead of 13.5.
+    """
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ocr.table_parser as _tp
+
+    fake_results = [
+        {"text": "gorj",       "conf": 1.00},
+        {"text": "24",         "conf": 0.87},
+        {"text": "B",          "conf": 1.00},
+        {"text": "cbd191320",  "conf": 1.00},
+        {"text": "11.5 BB",    "conf": 1.00},
+    ]
+    orig = _tp.ocr_full_image if hasattr(_tp, "ocr_full_image") else None
+    # The function imports ocr_full_image lazily, so patch the source module.
+    import ocr.ocr_utils as _ou
+    orig = _ou.ocr_full_image
+    _ou.ocr_full_image = lambda img: fake_results
+    try:
+        # Any non-empty image will do; ocr_full_image is mocked.
+        fake_img = np.zeros((100, 200, 3), dtype=np.uint8) + 1
+        got = _tp._find_hero_stack(fake_img)
+    finally:
+        _ou.ocr_full_image = orig
+    assert_eq(got, 11.5,
+              "should prefer '11.5 BB' over the plain '24' fragment")
+
+
+@test
+def test_find_hero_stack_falls_back_to_plain_number():
+    """When NO 'XX.X BB' string is present, fall back to the highest-conf
+    plain number in the plausible range — not the FIRST plain number, which
+    can be noise like a name fragment.
+    """
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ocr.table_parser as _tp
+    import ocr.ocr_utils as _ou
+
+    fake_results = [
+        {"text": "gorj",   "conf": 1.00},   # not numeric
+        {"text": "24",     "conf": 0.60},   # plausible number, lower conf
+        {"text": "12.5",   "conf": 0.95},   # plausible number, higher conf
+    ]
+    orig = _ou.ocr_full_image
+    _ou.ocr_full_image = lambda img: fake_results
+    try:
+        fake_img = np.zeros((100, 200, 3), dtype=np.uint8) + 1
+        got = _tp._find_hero_stack(fake_img)
+    finally:
+        _ou.ocr_full_image = orig
+    # Highest-conf plain number wins.
+    assert_eq(got, 12.5)
+
+
+@test
+def test_ocr_confidence_parts_exposed():
+    """OCR: parse_n8_screenshot exposes confidence_parts so callers can read
+    structural confidence (pot/player/ocr) separately from card_confidence.
+
+    Required by the field-level Gemini fallback: when card_conf is below
+    threshold but the structural components are strong, we want to do a
+    cards-only Gemini call instead of letting the full IMAGE_PARSE_PROMPT
+    re-decide hero_position/stacks/actions.
+    """
+    import inspect
+    src = inspect.getsource(__import__("ocr.n8_parser", fromlist=["_dummy"]))
+    assert_in('"confidence_parts":', src)
+
+
+@test
+def test_merge_ocr_with_gemini_hero_hand_keeps_structural():
+    """Field-level merge replaces ONLY hero_hand and leaves every structural
+    field (hero_position, stacks, actions, streets) intact.
+
+    Regression: H2790 — when card_conf < MIN_CARD_CONF the full Gemini
+    fallback was used, and Gemini's IMAGE_PARSE_PROMPT let it re-decide
+    hero_position visually. It flipped the correct OCR-detected SB to BB.
+    The field-level merge keeps OCR's blind-based position read.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    ocr_hand = {
+        "gametype": "MTTGeneral",
+        "players_at_table": 6,
+        "hero_position": "SB",
+        "hero_hand": "Th4s",
+        "effective_bb": 63,
+        "player_stacks": [71.5, 90.9, 77.1, 76.5, 62.9, 84.4],
+        "preflop_actions": "F-F-F-F-C-X",
+        "streets": [{"board": "8cQs9c", "actions": [
+            {"size": 1.0, "action": "R1", "position": "SB"},
+            {"action": "C", "position": "BB"},
+        ]}],
+    }
+    merged = GeminiSessionManager._merge_ocr_with_gemini_hero_hand(
+        ocr_hand, "Th2s"
+    )
+    assert_eq(merged["hero_hand"], "Th2s")
+    assert_eq(merged["hero_position"], "SB")
+    assert_eq(merged["effective_bb"], 63)
+    assert_eq(merged["player_stacks"], [71.5, 90.9, 77.1, 76.5, 62.9, 84.4])
+    assert_eq(merged["preflop_actions"], "F-F-F-F-C-X")
+    assert_eq(merged["streets"], ocr_hand["streets"])
+    assert_eq(merged["players_at_table"], 6)
+    # OCR hand must NOT be mutated.
+    assert_eq(ocr_hand["hero_hand"], "Th4s")
+
+
+@test
+def test_field_level_fallback_used_when_structural_high():
+    """When card_conf < MIN_CARD_CONF but structural_conf >= STRUCTURAL_MIN,
+    _parse_hand_from_image should call _gemini_hero_hand_only and merge the
+    result — never reaching the full Gemini parse path that would override
+    hero_position.
+    """
+    import asyncio as _aio
+    import logging as _l
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    ocr_hand = {
+        "gametype": "MTTGeneral",
+        "players_at_table": 6,
+        "hero_position": "SB",
+        "hero_hand": "Th4s",
+        "effective_bb": 63,
+        "player_stacks": [71.5, 90.9, 77.1, 76.5, 62.9, 84.4],
+        "preflop_actions": "F-F-F-F-C-X",
+        "streets": [],
+    }
+    fake_ocr_result = {
+        "hand": ocr_hand,
+        "hints": None,
+        "confidence": 0.72,
+        "card_confidence": 0.30,
+        "confidence_parts": {
+            "pot_consistency": 1.0,
+            "player_tracking": 1.0,
+            "ocr_confidence": 0.95,
+            "card_confidence": 0.30,
+        },
+    }
+
+    import ocr.n8_parser as _np
+    orig_parse = _np.parse_n8_screenshot
+    _np.parse_n8_screenshot = lambda b: fake_ocr_result
+
+    cards_only_calls = []
+    async def _fake_cards_only(self, *a, **k):
+        cards_only_calls.append(k)
+        return "Th2s"
+    orig_cards_only = GeminiSessionManager._gemini_hero_hand_only
+    GeminiSessionManager._gemini_hero_hand_only = _fake_cards_only
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session._logger = _l.getLogger("test_field_level_fallback")
+    session._logger.setLevel(_l.WARNING)
+    # client=None makes any full-Gemini path explode — proves we never get there
+    session.client = None
+    session.image_parse_model = "fake-model"
+
+    prev_enabled = os.environ.get("OCR_ENABLED")
+    prev_struct = os.environ.get("OCR_STRUCTURAL_MIN")
+    os.environ["OCR_ENABLED"] = "true"
+    os.environ.pop("OCR_STRUCTURAL_MIN", None)
+    try:
+        result = _aio.run(session._parse_hand_from_image(
+            chat_id=1, image_bytes=b"\x00", mime_type="image/jpeg"
+        ))
+    finally:
+        _np.parse_n8_screenshot = orig_parse
+        GeminiSessionManager._gemini_hero_hand_only = orig_cards_only
+        if prev_enabled is None:
+            os.environ.pop("OCR_ENABLED", None)
+        else:
+            os.environ["OCR_ENABLED"] = prev_enabled
+        if prev_struct is not None:
+            os.environ["OCR_STRUCTURAL_MIN"] = prev_struct
+
+    assert_true(result is not None, "should return a merged hand, not None")
+    assert_eq(result["hero_position"], "SB")
+    assert_eq(result["hero_hand"], "Th2s")
+    assert_eq(result["effective_bb"], 63)
+    assert_eq(len(cards_only_calls), 1)
+
+
+@test
+def test_field_level_fallback_skipped_when_structural_low():
+    """When BOTH card_conf and structural_conf are below threshold,
+    _parse_hand_from_image must NOT take the cards-only branch (the
+    structural fields aren't trustworthy). Should fall through to the
+    existing full Gemini parse path.
+    """
+    import asyncio as _aio
+    import logging as _l
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    ocr_hand = {
+        "gametype": "MTTGeneral",
+        "players_at_table": 6,
+        "hero_position": "SB",
+        "hero_hand": "Th4s",
+        "preflop_actions": "F-F-F-F-C-X",
+    }
+    fake_ocr_result = {
+        "hand": ocr_hand,
+        "hints": None,
+        "confidence": 0.40,
+        "card_confidence": 0.30,
+        "confidence_parts": {
+            "pot_consistency": 0.30,
+            "player_tracking": 0.40,
+            "ocr_confidence": 0.50,
+            "card_confidence": 0.30,
+        },
+    }
+
+    import ocr.n8_parser as _np
+    orig_parse = _np.parse_n8_screenshot
+    _np.parse_n8_screenshot = lambda b: fake_ocr_result
+
+    cards_only_calls = []
+    async def _fake_cards_only(self, *a, **k):
+        cards_only_calls.append(k)
+        return "Th2s"
+    orig_cards_only = GeminiSessionManager._gemini_hero_hand_only
+    GeminiSessionManager._gemini_hero_hand_only = _fake_cards_only
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session._logger = _l.getLogger("test_field_level_skipped")
+    session._logger.setLevel(_l.CRITICAL)
+    # Patch the full-Gemini path: client.aio.models.generate_content must be
+    # reached. We make it raise a sentinel so the test knows the full path
+    # was hit instead of the cards-only branch.
+    class _Sentinel(Exception): pass
+    class _FakeModels:
+        async def generate_content(self, **kw):
+            raise _Sentinel("full Gemini path reached as expected")
+    class _FakeAio:
+        models = _FakeModels()
+    class _FakeClient:
+        aio = _FakeAio()
+    session.client = _FakeClient()
+    session.image_parse_model = "fake-model"
+
+    prev_enabled = os.environ.get("OCR_ENABLED")
+    os.environ["OCR_ENABLED"] = "true"
+    sentinel_hit = False
+    try:
+        try:
+            _aio.run(session._parse_hand_from_image(
+                chat_id=1, image_bytes=b"\x00", mime_type="image/jpeg"
+            ))
+        except _Sentinel:
+            sentinel_hit = True
+    finally:
+        _np.parse_n8_screenshot = orig_parse
+        GeminiSessionManager._gemini_hero_hand_only = orig_cards_only
+        if prev_enabled is None:
+            os.environ.pop("OCR_ENABLED", None)
+        else:
+            os.environ["OCR_ENABLED"] = prev_enabled
+
+    assert_eq(len(cards_only_calls), 0,
+              "cards-only fallback must NOT fire when structural_conf is low")
+    assert_true(sentinel_hit,
+                "full Gemini path should be reached when structural_conf is low")
+
+
+@test
 def test_ocr_table_color_detection():
     """OCR: table parser detects table color."""
     import cv2
@@ -4859,7 +5140,7 @@ def test_generate_cluster_narratives_happy_path():
         "practice_hint": "練 1/3 pot 頻率",
     }])
     mock = _MockGenAIClient([raw])
-    out = _asyncio.get_event_loop().run_until_complete(
+    out = _asyncio.run(
         generate_cluster_narratives([cluster], model_client=mock)
     )
     assert_eq(len(out), 1)
@@ -4887,7 +5168,7 @@ def test_generate_cluster_narratives_retry_then_succeed():
         "practice_hint": "練習",
     }])
     mock = _MockGenAIClient([bad, good])
-    out = _asyncio.get_event_loop().run_until_complete(
+    out = _asyncio.run(
         generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
     )
     assert_eq(len(out), 1)
@@ -4909,7 +5190,7 @@ def test_generate_cluster_narratives_two_fails_falls_back():
         "practice_hint": "hint",
     }])
     mock = _MockGenAIClient([bad, bad])
-    out = _asyncio.get_event_loop().run_until_complete(
+    out = _asyncio.run(
         generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
     )
     assert_eq(len(out), 1)
@@ -4923,7 +5204,7 @@ def test_generate_cluster_narratives_no_client():
     import asyncio as _asyncio
     from weekly_report import generate_cluster_narratives
     clusters = [_make_test_cluster(), _make_test_cluster(spot_category="cbet_oop")]
-    out = _asyncio.get_event_loop().run_until_complete(
+    out = _asyncio.run(
         generate_cluster_narratives(clusters, model_client=None)
     )
     assert_eq(len(out), 2)

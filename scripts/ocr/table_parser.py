@@ -577,24 +577,38 @@ def _find_hero_stack(table_region: np.ndarray) -> float | None:
         return None
 
     results = ocr_full_image(stack_area)
+    import re
+
+    # Two-pass scan: prefer any "XX.X BB" match (much more reliable signal)
+    # over a plain number. Regression: H2798 — hero crop area picked up
+    # noise like '24' (a fragment from an adjacent UI element, no BB
+    # suffix) BEFORE '11.5 BB' in the result list. Per-result fallback to
+    # plain-number regex returned the first noisy number it saw and never
+    # reached the real "11.5 BB" entry that came later.
     for r in results:
         text = r["text"].strip().upper()
-        # Look for "XX.X BB" or just a number near "BB"
-        import re
         m = re.search(r"(\d+\.?\d*)\s*BB", text)
         if m:
             try:
                 return float(m.group(1))
             except ValueError:
                 continue
-        # Just a number
-        m = re.search(r"(\d+\.?\d+)", text)
-        if m and r["conf"] > 0.5:
-            try:
-                val = float(m.group(1))
-                if 0.5 < val < 500:
-                    return val
-            except ValueError:
-                continue
 
-    return None
+    # Fallback only when no "BB"-suffixed value was found anywhere in the
+    # crop. Pick the highest-confidence plain number in the plausible
+    # range so we don't latch onto noise like 'gorj' fragments.
+    best = None
+    for r in results:
+        text = r["text"].strip().upper()
+        m = re.search(r"(\d+\.?\d+)", text)
+        if not m or r["conf"] <= 0.5:
+            continue
+        try:
+            val = float(m.group(1))
+        except ValueError:
+            continue
+        if not (0.5 < val < 500):
+            continue
+        if best is None or r["conf"] > best[1]:
+            best = (val, r["conf"])
+    return best[0] if best else None

@@ -112,6 +112,7 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
         "hints": hints,
         "confidence": confidence,
         "card_confidence": confidence_parts.get("card_confidence", 0.0),
+        "confidence_parts": confidence_parts,
     }
 
 
