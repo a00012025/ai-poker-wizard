@@ -453,6 +453,22 @@ def test_api_get_next_actions():
 
 
 @test
+def test_api_next_actions_endpoint_path():
+    """API: next-actions URL pinned to /v4/game-points/ (was /v1/poker/, moved 2026-05-02)."""
+    import inspect
+    import gto_api
+    src = inspect.getsource(gto_api.get_next_actions)
+    assert_true(
+        "/v4/game-points/next-actions/" in src,
+        "get_next_actions must call /v4/game-points/next-actions/",
+    )
+    assert_true(
+        "/v1/poker/next-actions/" not in src,
+        "old /v1/poker/next-actions/ path is dead — must not be used",
+    )
+
+
+@test
 def test_api_get_spot_solution():
     """API: spot_solution returns valid data for basic preflop spot."""
     from gto_api import get_spot_solution

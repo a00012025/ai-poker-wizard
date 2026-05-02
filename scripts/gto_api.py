@@ -99,7 +99,7 @@ def get_next_actions(
     if cached is not SENTINEL:
         return cached
     r = _get_with_retry(
-        f"{API_BASE}/v1/poker/next-actions/",
+        f"{API_BASE}/v4/game-points/next-actions/",
         params=params,
     )
     r.raise_for_status()
