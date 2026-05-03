@@ -1789,12 +1789,20 @@ class GeminiSessionManager:
                     f"{json.dumps(ocr_result.get('hand'), ensure_ascii=False, default=str)[:500] if ocr_result.get('hand') else 'no hand'}"
                 )
 
-                hand_ok = (
+                # Structural fields don't depend on hero_hand — track
+                # separately so we can still cards-only-fallback when OCR
+                # cleared a duplicate-CNN hero (e.g. Ts9s misread as TcTc
+                # → _resolve_hero_board_conflict drops both → hero_hand="").
+                struct_ok = (
                     ocr_result.get("hand")
                     and ocr_result["hand"].get("hero_position")
                     and ocr_result["hand"].get("preflop_actions")
+                )
+                hero_hand_present = bool(
+                    ocr_result.get("hand")
                     and ocr_result["hand"].get("hero_hand")
                 )
+                hand_ok = struct_ok and hero_hand_present
 
                 # Hard card-confidence gate — overrides FAST and MEDIUM tiers.
                 # Before fully demoting, try a cards-only Gemini call when
@@ -1803,7 +1811,17 @@ class GeminiSessionManager:
                 # hero_hand. Regression: H2790 — full Gemini fallback was
                 # flipping the correct OCR-detected SB to BB because
                 # IMAGE_PARSE_PROMPT lets Gemini re-decide every field.
-                if hand_ok and card_conf < MIN_CARD_CONF:
+                # Also fires when hero_hand is empty: production has hit
+                # cases where the CNN gave both hero crops the same label
+                # (e.g. spades→clubs misclassification on Ts9s) so the
+                # duplicate guard cleared hero_cards. Without this branch
+                # we'd skip straight to full Gemini parse, which itself
+                # has failed on those screenshots — the cards-only prompt
+                # is more focused and reliable.
+                cards_need_fallback = (
+                    not hero_hand_present or card_conf < MIN_CARD_CONF
+                )
+                if struct_ok and cards_need_fallback:
                     parts = ocr_result.get("confidence_parts") or {}
                     structural_conf = (
                         parts.get("pot_consistency", 0.0)
@@ -1811,13 +1829,19 @@ class GeminiSessionManager:
                         + parts.get("ocr_confidence", 0.0)
                     ) / 3.0
                     STRUCTURAL_MIN = float(
-                        os.getenv("OCR_STRUCTURAL_MIN", "0.85")
+                        os.getenv("OCR_STRUCTURAL_MIN", "0.80")
                     )
                     if structural_conf >= STRUCTURAL_MIN:
+                        reason = (
+                            "hero_hand missing"
+                            if not hero_hand_present
+                            else f"card_conf={card_conf:.2f} < "
+                                 f"{MIN_CARD_CONF:.2f}"
+                        )
                         self._logger.info(
                             f"[chat={chat_id}] Cards-only Gemini fallback "
-                            f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
-                            f"structural_conf={structural_conf:.2f} >= "
+                            f"({reason}, structural_conf="
+                            f"{structural_conf:.2f} >= "
                             f"{STRUCTURAL_MIN:.2f}) — keeping OCR's structural "
                             f"parse, asking Gemini for hero_hand only"
                         )
@@ -1846,6 +1870,7 @@ class GeminiSessionManager:
                     self._logger.info(
                         f"[chat={chat_id}] Demoting to full Gemini fallback "
                         f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
+                        f"hero_hand_present={hero_hand_present}, "
                         f"overall={ocr_conf:.2f}) — bad hero card prediction "
                         f"shouldn't pass even when actions look fine"
                     )
