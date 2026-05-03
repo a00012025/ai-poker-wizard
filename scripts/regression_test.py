@@ -6027,6 +6027,84 @@ def test_field_level_fallback_fires_on_empty_hero_hand():
               "must trigger cards-only when hero_hand is empty")
 
 
+@test
+def test_postflop_position_reconciliation_with_preflop_index():
+    """n8_parser: postflop entries inherit the preflop's index-assigned
+    canonical positions when player_name matches.
+
+    Regression for H2810 (7-max). N8's badges were UTG, UTG+1, MP, CO,
+    BTN, SB, BB but our 7-max pos_order is [UTG, LJ, HJ, CO, BTN, SB,
+    BB]. The MP-badged third entry (h3scar) got aliased to LJ in the
+    panel parser. Preflop reassigned by index pushed it to HJ, but the
+    flop entries kept LJ. preflop_actions then said LJ folded, so
+    _fix_folded_players stripped h3scar's flop bet/fold entries — leaving
+    only [BB X, BB R4.8] as the flop and producing analysis that showed
+    bet/check options for hero's second decision (open) instead of the
+    correct call/raise/fold (facing a bet).
+
+    This unit test exercises just the reconciliation block: a flop entry
+    keyed by the same player_name as a preflop entry must be rewritten
+    to the preflop's canonical position.
+    """
+    from ocr.n8_parser import _assemble_hand
+    columns = [
+        {"name": "Blinds", "pot": None, "entries": []},
+        {"name": "Pre-Flop", "pot": 2.0, "entries": [
+            {"type": "opponent", "position": "UTG", "action": "Fold",
+             "size": None, "player_name": "Kony"},
+            {"type": "opponent", "position": "UTG+1", "action": "Fold",
+             "size": None, "player_name": "lily"},
+            {"type": "opponent", "position": "LJ", "action": "Raise",
+             "size": 2.0, "player_name": "h3scar"},
+            {"type": "opponent", "position": "CO", "action": "Fold",
+             "size": None, "player_name": "L189"},
+            {"type": "opponent", "position": "BTN", "action": "Fold",
+             "size": None, "player_name": "yeying"},
+            {"type": "opponent", "position": "SB", "action": "Fold",
+             "size": None, "player_name": "Zy"},
+            {"type": "hero", "position": "BB", "action": "Call",
+             "size": None},
+        ]},
+        {"name": "Flop", "pot": 5.5, "entries": [
+            {"type": "hero", "position": None, "action": "Check",
+             "size": None},
+            {"type": "opponent", "position": "LJ", "action": "Bet",
+             "size": 1.3, "player_name": "h3scar"},
+            {"type": "hero", "position": "BB", "action": "Raise",
+             "size": 4.8},
+            {"type": "opponent", "position": "LJ", "action": "Fold",
+             "size": None, "player_name": "h3scar"},
+        ]},
+        {"name": "Turn", "pot": 8.0, "entries": []},
+        {"name": "River", "pot": 8.0, "entries": []},
+    ]
+    table_result = {
+        "board_cards": ["Th", "6c", "3c"],
+        "hero_cards": ["Qc", "Js"],
+        "hero_card_conf": 0.97,
+        "table_color": "green",
+        "named_stacks": [],
+    }
+    hand, _ = _assemble_hand(table_result, columns)
+    assert_true(hand is not None, "hand must be assembled")
+    flop_actions = hand["streets"][0]["actions"]
+    # The opponent's flop bet must be present and tagged with the same
+    # canonical position the preflop string uses.
+    opp_actions = [a for a in flop_actions if a.get("position") != "BB"]
+    assert_eq(len(opp_actions), 2,
+              "h3scar's flop bet AND fold must both survive reconciliation")
+    for a in opp_actions:
+        assert_true(
+            a["position"] != "LJ",
+            f"flop opponent position must not stay LJ: got {a['position']}",
+        )
+    # Preflop_actions string places the raiser at index 2 → HJ for 7-max
+    # (pos_order [UTG, LJ, HJ, CO, BTN, SB, BB]). Reconciliation must
+    # propagate that exact position to the flop entries.
+    assert_eq(opp_actions[0]["position"], "HJ",
+              "h3scar's flop position must match preflop reassignment")
+
+
 
 
 if __name__ == "__main__":

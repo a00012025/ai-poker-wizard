@@ -842,6 +842,40 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         if action == "fold" and pos and pos in active_positions:
             active_positions.remove(pos)
 
+    # Reconcile postflop entry positions with preflop's index-assigned ones.
+    # Regression for H2810 (7-max): N8 used badges {UTG, UTG+1, MP, CO, BTN,
+    # SB, BB} but our 7-max pos_order is [UTG, LJ, HJ, CO, BTN, SB, BB], so
+    # the third entry's badge alias landed on LJ while the index assignment
+    # promoted it to HJ. The flop column kept the LJ badge alias, but the
+    # preflop_actions string treated LJ as folded — so _fix_folded_players
+    # later stripped the opponent's flop bet/fold entries entirely, leaving
+    # only the hero's two actions and producing nonsense GTO advice.
+    #
+    # Build a player_name → canonical-position map from the (already
+    # reassigned) preflop entries and apply it to every postflop entry that
+    # carries the same name. Names come from the panel's avatar text and
+    # can drift slightly across columns, so use the existing fuzzy matcher.
+    name_to_pos: list[tuple[str, str]] = []
+    for entry in action_entries[:players_at_table]:
+        if entry.get("type") == "hero":
+            continue
+        nm = (entry.get("player_name") or "").strip()
+        pos = entry.get("position")
+        if nm and pos:
+            name_to_pos.append((nm, pos))
+    if name_to_pos:
+        for col in street_cols:
+            for sub_entry in col.get("entries", []):
+                if sub_entry.get("type") == "hero":
+                    continue
+                sub_name = (sub_entry.get("player_name") or "").strip()
+                if not sub_name:
+                    continue
+                for ref_name, ref_pos in name_to_pos:
+                    if _fuzzy_name_match(sub_name, ref_name):
+                        sub_entry["position"] = ref_pos
+                        break
+
     # Build streets with position context
     streets = _build_streets(street_cols, board_cards, pos_order,
                              hero_position, active_positions)
