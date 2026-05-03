@@ -5951,6 +5951,82 @@ def test_resolve_hero_board_conflict_unresolvable_clears_hero():
     assert_eq(new_hero, [], "hero must be cleared on unresolvable conflict")
 
 
+@test
+def test_mask_win_overlay_whitens_large_lower_blob():
+    """table_parser._mask_win_overlay paints out the orange WIN sticker.
+
+    Regression for H2806: the K♣ T♣ hero crop had the N8 win sticker
+    bleeding orange/yellow into the lower half of the cards. CardCNN
+    read those red-leaning hues as a red suit (Kh, suit_conf=0.587),
+    routing past the field-level fallback. After masking the sticker
+    pixels to white, the classifier sees a clean card.
+    """
+    import numpy as np
+    from ocr.table_parser import _mask_win_overlay
+
+    # Synthetic crop: white card body with a big orange blob in the
+    # lower half (BGR for orange ≈ (50, 165, 255)).
+    crop = np.full((60, 60, 3), 255, dtype=np.uint8)
+    crop[35:55, 10:50] = (50, 165, 255)
+    out = _mask_win_overlay(crop)
+    # Sticker pixels must be whitened.
+    assert_true(
+        bool((out[40:50, 20:40] == 255).all()),
+        "WIN sticker region should be whitened to 255",
+    )
+
+
+@test
+def test_mask_win_overlay_skips_small_top_banner():
+    """No-op when the only orange is a thin top-edge banner.
+
+    Regression: a previous version of the mask was too aggressive and
+    whitened the small `$0.50` price banner at the top of cash-game
+    crops. That changed pixels the CardCNN was already handling
+    correctly and degraded a clean Ts9s read into a misclassification.
+    The mask must leave the crop untouched in that case.
+    """
+    import numpy as np
+    from ocr.table_parser import _mask_win_overlay
+
+    crop = np.full((60, 60, 3), 255, dtype=np.uint8)
+    # A 4-px-tall orange strip pinned to the top — far smaller than the
+    # WIN sticker would be, and located above the lower-half gate.
+    crop[0:4, 5:55] = (50, 165, 255)
+    out = _mask_win_overlay(crop)
+    assert_true(
+        bool(np.array_equal(crop, out)),
+        "small top-edge orange strip must NOT trigger the mask",
+    )
+
+
+@test
+def test_field_level_fallback_fires_on_empty_hero_hand():
+    """gemini_session: cards-only Gemini fallback gate triggers when OCR
+    cleared hero_cards (hero_hand="") but structural fields are good.
+
+    Regression for the Ts9s screenshot where CardCNN labeled both hero
+    crops as Tc with high confidence; _resolve_hero_board_conflict's
+    duplicate guard cleared hero_cards, leaving hero_hand="". The old
+    gate required hero_hand non-empty (`hand_ok`) before considering
+    the cards-only fallback, so the path was skipped entirely and we
+    fell through to the full IMAGE_PARSE_PROMPT — which has separately
+    failed in production on similar inputs, returning the
+    "無法從截圖中辨識出撲克手牌" rejection.
+
+    This test verifies the source code surfaces the empty-hero gate so
+    a future refactor can't silently re-tighten it back to hand_ok.
+    """
+    import inspect
+    src = inspect.getsource(__import__("gemini_session", fromlist=["_dummy"]))
+    assert_in("hero_hand_present", src,
+              "gate variable name should appear in source")
+    assert_in("cards_need_fallback", src,
+              "fallback condition should track empty hero_hand")
+    assert_in("not hero_hand_present", src,
+              "must trigger cards-only when hero_hand is empty")
+
+
 
 
 if __name__ == "__main__":

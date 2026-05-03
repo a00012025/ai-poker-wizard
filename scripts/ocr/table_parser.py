@@ -347,6 +347,57 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     return [card1, card2]
 
 
+def _mask_win_overlay(crop: np.ndarray) -> np.ndarray:
+    """Whiten the orange/yellow `WIN` sticker that N8 paints over winning cards.
+
+    The sticker bleeds into the lower half of the hero card crop, and the
+    CardCNN reads its red-leaning hue as a red suit (e.g. K♣ → Kh on H2806,
+    suit_conf 0.587). Training data has no sticker examples, so masking
+    those pixels to white gives the classifier a clean card to read.
+
+    The WIN letterforms render as scattered small orange specks (each
+    stroke is its own blob), so we dilate the raw orange mask aggressively
+    before measuring connected components — the W/I/N strokes coalesce
+    into one cluster. We only fire when a cluster (a) covers >= 4% of the
+    crop and (b) sits mostly in the lower half — that's where the sticker
+    paints. Skips incidental orange like the `$0.50` price banner at the
+    top of cash-game crops, which previously degraded a clean Ts9s crop.
+    """
+    out = crop.copy()
+    h, w = out.shape[:2]
+    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
+    raw = cv2.inRange(hsv, np.array([10, 100, 100]),
+                      np.array([35, 255, 255]))
+    if int(raw.sum()) == 0:
+        return out
+    cluster_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    clustered = cv2.dilate(raw, cluster_kernel, iterations=2)
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        clustered, connectivity=8
+    )
+    crop_area = h * w
+    sticker_labels: list[int] = []
+    for lab in range(1, n_labels):
+        blob_area = int(stats[lab, cv2.CC_STAT_AREA])
+        blob_top = int(stats[lab, cv2.CC_STAT_TOP])
+        blob_height = int(stats[lab, cv2.CC_STAT_HEIGHT])
+        blob_bottom = blob_top + blob_height
+        if blob_area / crop_area < 0.04:
+            continue
+        center_y = blob_top + blob_height / 2
+        if center_y < h * 0.40:
+            continue
+        sticker_labels.append(lab)
+    if not sticker_labels:
+        return out
+    sticker_mask = np.isin(labels, sticker_labels).astype(np.uint8) * 255
+    sticker_mask = cv2.bitwise_and(sticker_mask, raw)
+    edge_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    sticker_mask = cv2.dilate(sticker_mask, edge_kernel, iterations=2)
+    out[sticker_mask > 0] = (255, 255, 255)
+    return out
+
+
 def _find_hero_cards(
     table_region: np.ndarray,
 ) -> tuple[list[str], float, list[dict]]:
@@ -362,6 +413,7 @@ def _find_hero_cards(
     crops = _locate_hero_cards(table_region)
     if not crops:
         return [], 0.0, []
+    crops = [_mask_win_overlay(c) for c in crops]
     details = CardClassifier().classify_batch_detailed(crops)
     cards = [f"{d['rank']}{d['suit']}" for d in details
              if d["rank"] and d["suit"]]
