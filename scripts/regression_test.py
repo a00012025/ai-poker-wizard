@@ -2582,6 +2582,57 @@ def test_ocr_bails_when_raise_size_missing():
 
 
 @test
+def test_multiway_simplification_remaps_dropped_opponent_bets():
+    """Multiway HU simplification: when the postflop bettor is the dropped
+    third player (not in {hero, kept_villain}), remap their bet/raise onto
+    the kept villain so hero's response matches a real solver spot.
+
+    Regression for H2830: 6-max SB ATo, HJ opens, SB+BB cold-call. Flop
+    is SB X, BB X, HJ R2.3, SB C, HJ C. The simplifier kept SB+BB and
+    dropped HJ. Without remapping, the action loop produced
+    flop_actions="X-X-C" — hero "calling" a non-existent bet — and
+    every hero spot from the call onward returned no solver data.
+    """
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral",
+        "hero_hand": "AsTc",
+        "effective_bb": 52.5,
+        "hero_position": "SB",
+        "preflop_actions": "F-R2-F-F-C-C",
+        "players_at_table": 6,
+        "hero_starting_stack": 72.3,
+        "streets": [
+            {"board": "5d6cAd", "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "X", "position": "BB"},
+                {"size": 2.3, "action": "R2.3", "position": "HJ"},
+                {"size": 2.3, "action": "C", "position": "SB"},
+                {"size": 2.3, "action": "C", "position": "HJ"},
+            ]},
+            {"card": "5s", "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "X", "position": "BB"},
+                {"size": 10.3, "action": "R10.3", "position": "HJ"},
+                {"size": 10.3, "action": "C", "position": "SB"},
+                {"action": "F", "position": "HJ"},
+            ]},
+            {"card": "9s", "actions": [
+                {"action": "X", "position": "SB"},
+                {"action": "F", "position": "SB"},
+            ]},
+        ],
+    }
+    text = analyze_hand_full(hand)["text"]
+    flop_section = text.split("【Flop:")[1].split("==")[0]
+    assert_true("無 solver 數據" not in flop_section,
+                "Flop should have solver data after multiway remap")
+    turn_section = text.split("【Turn:")[1].split("==")[0]
+    assert_true("無 solver 數據" not in turn_section,
+                "Turn should have solver data after multiway remap")
+
+
+@test
 def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     """OCR: _find_hero_cards classifies both raw and masked crops, taking
     rank from the raw prediction (rank corner sits at the top — masking
