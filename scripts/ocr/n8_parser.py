@@ -662,12 +662,15 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     board_cards, hero_cards = _resolve_hero_board_conflict(
         board_cards, hero_cards)
 
-    # Card confidence — use actual detection quality from table parser
+    # Card confidence — use actual hero detection quality from table parser.
+    # Don't boost based on board legibility: CardCNN runs hero and board
+    # crops independently, so board cards being clear says nothing about
+    # hero rank reliability. Regression: H2822 — hero 8s/8d classified at
+    # 0.611, +0.1 board boost pushed it to 0.711 (just above the 0.70
+    # MIN_CARD_CONF gate), letting the wrong "9s8d" prediction ship.
     hero_card_conf = table_result.get("hero_card_conf", 0.0)
     if hero_cards and len(hero_cards) == 2:
         conf_parts["card_confidence"] = hero_card_conf
-    if board_cards and len(board_cards) >= 3:
-        conf_parts["card_confidence"] = min(1.0, conf_parts["card_confidence"] + 0.1)
 
     # Find the PreFlop and Blinds columns
     blinds_col = None
@@ -809,6 +812,25 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     )
 
     if not preflop_actions:
+        return None, conf_parts
+
+    # Bail out when any raise/bet entry came back with no size — the
+    # panel cell's "Raise N BB" text didn't OCR cleanly. We used to
+    # silently substitute a min-raise placeholder ("R2") in
+    # _action_to_code, which corrupts pot accounting and makes the
+    # solver-side action mapping route the next bet to RAI. Better to
+    # surface this as a structural failure so gemini_session falls back
+    # to a full Gemini parse. Regression: H2823 — CO 3-bet "Raise 7 BB"
+    # came back size=null, default R2 ate the rest of the analysis
+    # (turn/river dropped because flop_actions resolved to X-RAI-C and
+    # the API rejected anything beyond it).
+    missing_raise_sizes = sum(
+        1 for e in action_entries
+        if (e.get("action") or "").lower() in ("raise", "bet")
+        and e.get("size") is None
+    )
+    if missing_raise_sizes:
+        conf_parts["ocr_confidence"] = 0.0
         return None, conf_parts
 
     # Build hero_hand — sort by rank (higher first), standard poker notation

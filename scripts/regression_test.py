@@ -2542,6 +2542,96 @@ def test_ocr_card_confidence_surfaced_separately():
 
 
 @test
+def test_ocr_bails_when_raise_size_missing():
+    """OCR: _assemble_hand returns hand=None when any preflop raise/bet
+    entry has size=None.
+
+    Regression for H2823: panel cell "Raise 7 BB" had its size lost in
+    OCR. _action_to_code silently substituted the "R2" min-raise default,
+    which corrupted _compute_preflop_pot (5.5bb instead of 15.5bb), and
+    _find_action_by_pot_pct mapped the next 8bb flop bet to RAI (145%
+    of the fake pot). flop_actions ended up "X-RAI-C" — the solver tree
+    treated that as terminal so turn/river dropped out and the API
+    rejected the spot-solution call. Returning None forces full Gemini
+    fallback which can re-read the panel.
+    """
+    from ocr.n8_parser import _assemble_hand
+    table_result = {
+        "board_cards": ["9s", "Ad", "7s"],
+        "hero_cards": ["Ac", "4c"],
+        "hero_card_conf": 0.95,
+        "hero_card_details": [],
+        "table_color": "green",
+        "action_entries": [
+            {"type": "opponent", "position": "UTG", "action": "Fold", "size": None},
+            {"type": "opponent", "position": "UTG+1", "action": "Fold", "size": None},
+            {"type": "hero", "position": "HJ", "action": "Raise", "size": 2.2},
+            {"type": "opponent", "position": "CO", "action": "Raise", "size": None},  # missing
+            {"type": "opponent", "position": "BTN", "action": "Fold", "size": None},
+        ],
+    }
+    columns = [
+        {"name": "Pre-Flop", "pot": 2.6, "entries": table_result["action_entries"]},
+        {"name": "Flop", "pot": 16.6, "entries": []},
+    ]
+    hand, conf_parts = _assemble_hand(table_result, columns)
+    assert_true(hand is None,
+                f"_assemble_hand should return None when a raise has no size; got {hand}")
+    assert_eq(conf_parts["ocr_confidence"], 0.0,
+              "ocr_confidence should be zeroed when a raise size is missing")
+
+
+@test
+def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
+    """OCR: _find_hero_cards classifies both raw and masked crops, taking
+    rank from the raw prediction (rank corner sits at the top — masking
+    the bottom WIN sticker can only confuse the rank head) and suit from
+    the masked prediction (orange WIN pixels bleed red, flipping ♣→♥).
+
+    Regression for H2829: Q♣ was misread as A at rank_conf 0.95 because
+    the WIN mask whitened the bottom half of the crop, removing the Q's
+    distinctive lower-right tail. Raw rank head correctly read Q at 0.75.
+    The mask still helps suit, so we keep it for that head only.
+    """
+    import inspect
+    from ocr import table_parser
+    src = inspect.getsource(table_parser._find_hero_cards)
+    assert_in("classify_batch_detailed(crops)", src,
+              "_find_hero_cards should classify the raw crops too")
+    assert_in("classify_batch_detailed(masked_crops)", src,
+              "_find_hero_cards should classify the masked crops too")
+    # Sanity: rank pulled from raw, suit from masked.
+    assert_in('rank = raw["rank"]', src)
+    assert_in('suit = masked["suit"]', src)
+
+
+@test
+def test_ocr_card_confidence_not_boosted_by_board():
+    """OCR: card_confidence in _assemble_hand reflects raw hero CardCNN
+    confidence — no synthetic boost from board legibility.
+
+    Regression for H2822: hero 8s8d misclassified as 9s8d at 0.611. A
+    legacy +0.1 board-cards boost lifted card_confidence to 0.711, just
+    above the 0.70 MIN_CARD_CONF gate in gemini_session, so the
+    cards-only Gemini fallback never fired and the wrong hand shipped.
+    Board CardCNN predictions are independent of hero predictions, so
+    boosting hero confidence based on board legibility is invalid.
+    """
+    from ocr.n8_parser import _assemble_hand
+    table_result = {
+        "board_cards": ["6d", "Td", "5c", "3c", "5h"],  # full 5-card board
+        "hero_cards": ["9s", "8d"],
+        "hero_card_conf": 0.611,                          # weak hero CNN
+        "hero_card_details": [],
+        "table_color": "green",
+    }
+    _hand, conf_parts = _assemble_hand(table_result, columns=[])
+    assert_eq(conf_parts["card_confidence"], 0.611,
+              "card_confidence should equal raw hero_card_conf, not get a "
+              "+0.1 boost from board-cards being legible")
+
+
+@test
 def test_ocr_hero_card_suits_hint_emitted():
     """OCR: high-conf suit predictions are surfaced as hero_card_suits hint
     even when ranks are uncertain or hero_cards got cleared.

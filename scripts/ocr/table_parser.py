@@ -407,14 +407,37 @@ def _find_hero_cards(
     card predictions, and details is a list of per-card dicts with rank,
     rank_conf, suit, suit_conf, conf. Low confidence naturally triggers
     the Gemini fallback in gemini_session.
+
+    Strategy with the WIN sticker mask: classify both the raw and the
+    masked crop, then take RANK from the raw prediction (the rank corner
+    sits at the top-left of the card, well above where the sticker
+    paints — masking can only hurt by removing context, see H2829: Q♣
+    raw=Q@0.75, masked=A@0.95 because masking the lower half made the
+    rank head guess A) and take SUIT from the masked prediction (orange
+    WIN pixels bleed red, flipping ♣→♥ on raw — the original purpose of
+    the mask, see H2806). When the WIN mask is a no-op (no orange
+    detected), masked == raw and this collapses to a single prediction.
     """
     from .classifier.infer import CardClassifier
 
     crops = _locate_hero_cards(table_region)
     if not crops:
         return [], 0.0, []
-    crops = [_mask_win_overlay(c) for c in crops]
-    details = CardClassifier().classify_batch_detailed(crops)
+    masked_crops = [_mask_win_overlay(c) for c in crops]
+    clf = CardClassifier()
+    raw_details = clf.classify_batch_detailed(crops)
+    masked_details = clf.classify_batch_detailed(masked_crops)
+    details: list[dict] = []
+    for raw, masked in zip(raw_details, masked_details):
+        rank = raw["rank"]
+        rank_conf = raw["rank_conf"]
+        suit = masked["suit"]
+        suit_conf = masked["suit_conf"]
+        details.append({
+            "rank": rank, "rank_conf": rank_conf,
+            "suit": suit, "suit_conf": suit_conf,
+            "conf": min(rank_conf, suit_conf),
+        })
     cards = [f"{d['rank']}{d['suit']}" for d in details
              if d["rank"] and d["suit"]]
     conf = min((d["conf"] for d in details), default=0.0)
