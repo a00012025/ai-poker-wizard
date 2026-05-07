@@ -828,6 +828,47 @@ def _run_analysis(hand: dict) -> dict:
             depth = adjusted_depth
         chipev_depth = adjusted_depth
 
+    # Preprocess streets when multiway is simplified to HU. The action
+    # loop below skips actions from positions outside multiway_positions,
+    # but that's wrong when the dropped player was the postflop bettor —
+    # hero ends up "calling" a non-existent bet, the params snapshot
+    # captures e.g. flop_actions=X-X with action_type=C, the API has no
+    # solution for it, and the spot prints "（無 solver 數據）".
+    # Regression: H2830 — 3-way SB/BB/HJ flop, HJ bets, SB calls; the
+    # simplifier kept SB+BB and dropped HJ entirely, so every postflop
+    # hero spot from the call onward had no solver data.
+    # Fix: remap any non-tracked opponent's bet/raise onto the kept
+    # villain (the simplified game only has hero + one opponent), drop
+    # non-tracked checks/folds (no signal in the HU sim), then collapse
+    # an immediately-preceding villain X — checking and then betting on
+    # the same street is invalid HU, the X is a remnant of the original
+    # multiway action order.
+    if multiway_positions:
+        villain = next(iter(multiway_positions - {hero_pos}))
+        new_streets = []
+        for s in streets:
+            new_acts: list[dict] = []
+            for act in s.get("actions", []):
+                pos = act.get("position")
+                atype = act.get("action") or ""
+                if pos in multiway_positions:
+                    new_acts.append(dict(act))
+                elif atype.startswith(("R", "AI", "B")):
+                    remapped = dict(act)
+                    remapped["position"] = villain
+                    new_acts.append(remapped)
+            cleaned: list[dict] = []
+            for a in new_acts:
+                if (a["position"] == villain
+                        and (a.get("action") or "").startswith(("R", "AI", "B"))
+                        and cleaned
+                        and cleaned[-1]["position"] == villain
+                        and cleaned[-1].get("action") == "X"):
+                    cleaned.pop()
+                cleaned.append(a)
+            new_streets.append({**s, "actions": cleaned})
+        streets = new_streets
+
     # Compute actual pot from original preflop for pot-percentage bet matching.
     # Used anywhere the solver normalizes raise sizes differently from the
     # user's actual sizes. Previously gated on multiway only; that missed HU
