@@ -29,10 +29,37 @@ _POSITIONS = {
     "LJ", "HJ", "CO", "BTN", "SB", "BB",
 }
 _ACTIONS = {"Fold", "Check", "Call", "Bet", "Raise", "All-In"}
+# All-In tolerates "ll" being misread as "II" / "1I" / "I1" / "11" — the
+# Natural8 sticker uses a font where lowercase l and uppercase I are nearly
+# identical. EasyOCR routinely returns "AII-In" / "AlI-In" / "AII-1n", so
+# accept any 2-character mix of [lI1] in the middle and any of [InOoUu] for
+# the trailing "in" (lowercase n sometimes lifts to "u").
+# Regression: H2842 — hero flop all-in was OCR'd as "AII-In" (group fell
+# through as a name-only entry, attached as player_name to the next "Call
+# 7 BB" entry → final flop action mis-recorded as hero call instead of jam).
 _ACTION_PATTERNS = re.compile(
-    r"(Fold|Check|Call|Bet|Raise|All.?In|All.?in|FOLD|CHECK|CALL|BET|RAISE)",
+    r"(Fold|Check|Call|Bet|Raise|A[lI1]{2}.?[Ii1][nNuU]|FOLD|CHECK|CALL|BET|RAISE)",
     re.IGNORECASE,
 )
+# Strips position badges, BB amounts, and stand-alone numbers so the
+# residue check after an All-In match sees only alphabetic noise. Used by
+# the username-vs-action disambiguation in _classify_group.
+_ACTION_RESIDUE_STRIP_RE = re.compile(
+    r"(\bUTG\+?\d?\b|\bMP\d?\b|\bEP\d?\b|\bLJ\b|\bHJ\b|\bCO\b|\bBTN\b|"
+    r"\bSB\b|\bBB\b|\d+\.?\d*)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_allin_match(matched: str) -> bool:
+    """True when an action regex hit looks like the All-In branch.
+
+    The Fold/Check/Call/Bet/Raise branches all start with distinct letters,
+    so the All-In branch is the only one whose residue check we need.
+    """
+    return matched[:1].lower() == "a"
+
+
 _BB_PATTERN = re.compile(r"(\d+\.?\d*)\s*BB", re.IGNORECASE)
 _NUMBER_PATTERN = re.compile(r"(\d+\.?\d*)")
 
@@ -239,6 +266,46 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
             pending_name = None
         entries.append(entry)
 
+    # Post-pass: hero can't act twice after going all-in, so any subsequent
+    # entry tagged "hero" must be the villain calling/folding to the jam.
+    # The HSV detector latches onto the yellow Call sticker even when the
+    # avatar sits below (showdown layout — N8 puts the calling player's
+    # avatar under the sticker so the hole-card reveal lines up). Without
+    # this flip, the all-in resolution gets walked as a phantom second
+    # hero action. Regression: H2842.
+    hero_allin_idx = None
+    for i, entry in enumerate(entries):
+        action = entry.get("action") or ""
+        if entry.get("type") == "hero" and action == "All-In":
+            hero_allin_idx = i
+            continue
+        if hero_allin_idx is not None and entry.get("type") == "hero":
+            entry["type"] = "opponent"
+
+    # The All-In sticker carries no number, so the entry leaves size=None.
+    # Downstream stack inference (_calculate_starting_stacks) replaces
+    # hero_street with the all-in size; without one, hero's full stack
+    # contribution drops to 0 and effective_bb collapses (H2842 fell from
+    # 30bb to 7.8bb). Recover the size from the called amount: villain's
+    # last raise sets the price, and their subsequent call adds the
+    # remainder = hero's jam total.
+    if hero_allin_idx is not None and entries[hero_allin_idx].get("size") is None:
+        last_villain_to = 0.0
+        for prev in entries[:hero_allin_idx]:
+            if prev.get("type") == "opponent":
+                act = (prev.get("action") or "").lower()
+                if act in ("raise", "bet", "all-in"):
+                    last_villain_to = prev.get("size") or last_villain_to
+        next_call_size = 0.0
+        if hero_allin_idx + 1 < len(entries):
+            nxt = entries[hero_allin_idx + 1]
+            if (nxt.get("type") == "opponent"
+                    and (nxt.get("action") or "").lower() == "call"):
+                next_call_size = nxt.get("size") or 0.0
+        inferred = last_villain_to + next_call_size
+        if inferred > 0:
+            entries[hero_allin_idx]["size"] = inferred
+
     return entries
 
 
@@ -350,6 +417,17 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
 
     # Detect action
     action_match = _ACTION_PATTERNS.search(full_text)
+
+    # Guard against player usernames that embed "All-In" as a substring
+    # (e.g. "All-In Steed" → OCR'd as "AIl-In Steed"). The OCR-tolerant
+    # pattern A[lI1]{2}.?[Ii1][nNuU] matches such names too. A real action
+    # sticker stands alone — once the matched text and any position/BB/
+    # number tokens are stripped, no alphabetic remainder should be left.
+    if action_match and _looks_like_allin_match(action_match.group(1)):
+        residue = full_text.replace(action_match.group(0), " ", 1)
+        residue = _ACTION_RESIDUE_STRIP_RE.sub(" ", residue)
+        if re.search(r"[A-Za-z]{2,}", residue):
+            action_match = None
     if not action_match:
         # No action found — this might be a player name group.
         # Name groups: 1-2 text items, no action keyword, not a position,
@@ -446,6 +524,17 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
     avg_y = int(sum(t["center_y"] for t in group) / len(group))
     entry_type = _detect_entry_type(column_region, avg_y)
 
+    # The All-In sticker is red, not yellow, so the HSV-based hero detector
+    # always returns "opponent" for it. When the group has no opponent
+    # markers (no position badge, no leading player name, no size number)
+    # the sticker is the centered hero variant — flip back to hero.
+    # Regression: H2842 — hero went all-in on the flop after a 3-bet line;
+    # the red sticker was solo with no badge but was tagged opponent and
+    # then dropped from the hero spot list.
+    if action == "All-In" and entry_type == "opponent":
+        if not position and not player_name and size is None:
+            entry_type = "hero"
+
     result = {
         "type": entry_type,
         "position": position,
@@ -472,6 +561,10 @@ def _normalize_action(action_raw: str) -> str:
     elif "raise" in lower:
         return "Raise"
     elif "all" in lower:
+        return "All-In"
+    # Match the same shape the OCR-tolerant action regex catches: "AII-In",
+    # "Al1-In", "AII-1n", etc. — same font-confusion pattern, lowercased.
+    if re.match(r"^a[li1]{2}.?[i1][nu]$", lower):
         return "All-In"
     return action.capitalize()
 

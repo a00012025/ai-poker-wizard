@@ -2498,6 +2498,53 @@ def test_ocr_position_corrupt_digit_to_letter():
 
 
 @test
+def test_ocr_action_pattern_allin_misread():
+    """OCR: All-In sticker tolerates 'll'→'II' / '1l' / 'lI' misreads but
+    rejects player usernames that embed 'All-In' as a substring.
+
+    Regression for H2842 where the hero's flop all-in sticker was OCR'd as
+    'AII-In' and dropped (silently treated as a player_name on the next
+    Call entry, mis-recording the final action as a hero call). The fix
+    broadens the action regex to accept 'A[lI1]{2}.?[Ii1][nNuU]', then
+    guards against false positives like H2774's 'AIl-In Steed' username
+    by checking that no extra alphabetic word remains after stripping the
+    matched action and standard position/BB/number tokens.
+    """
+    from ocr.panel_parser import (
+        _ACTION_PATTERNS, _ACTION_RESIDUE_STRIP_RE, _looks_like_allin_match,
+        _normalize_action,
+    )
+    import re
+
+    def is_real(text: str) -> bool:
+        m = _ACTION_PATTERNS.search(text)
+        if not m:
+            return False
+        if not _looks_like_allin_match(m.group(1)):
+            return True
+        residue = text.replace(m.group(0), " ", 1)
+        residue = _ACTION_RESIDUE_STRIP_RE.sub(" ", residue)
+        return not re.search(r"[A-Za-z]{2,}", residue)
+
+    # Real action stickers
+    assert_true(is_real("All-In"), "All-In should match")
+    assert_true(is_real("AII-In"), "AII-In (OCR ll→II) should match")
+    assert_true(is_real("AIl-In"), "AIl-In (OCR ll→Il) should match")
+    assert_true(is_real("All-in"), "All-in (lowercase n) should match")
+    # Player names that contain All-In as a substring must NOT match
+    assert_true(not is_real("AIl-In Steed"),
+                "username 'AIl-In Steed' must not match")
+    assert_true(not is_real("All-In Cowboy"),
+                "username 'All-In Cowboy' must not match")
+    assert_true(not is_real("AllInHero"),
+                "no-hyphen camel-case username must not match (no boundary)")
+    # _normalize_action recovers the canonical label even from corrupt reads
+    assert_eq(_normalize_action("AII-In"), "All-In")
+    assert_eq(_normalize_action("AIl-In"), "All-In")
+    assert_eq(_normalize_action("All-In"), "All-In")
+
+
+@test
 def test_ocr_table_parser_board_cards():
     """OCR: table parser finds board cards."""
     import cv2
