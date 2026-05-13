@@ -63,12 +63,13 @@ async def post_init(application):
         except Exception as e:
             logger.warning(f"CardClassifier preload failed: {e}")
 
-    # Schedule weekly leak report (Sunday 10:00 AM Taipei time)
+    # Schedule weekly leak report (Sunday 10:00 AM Taipei time).
+    # PTB v20+ uses cron-style day numbering: 0=Sun, 1=Mon, ..., 6=Sat.
     if db.pool and application.job_queue:
         application.job_queue.run_daily(
             _weekly_report_job,
             time=dt_time(hour=10, minute=0, tzinfo=TZ_TAIPEI),
-            days=(6,),  # Sunday = 6
+            days=(0,),
             name="weekly_leak_report",
         )
         logger.info("Weekly leak report job scheduled (Sunday 10:00 AM Taipei)")

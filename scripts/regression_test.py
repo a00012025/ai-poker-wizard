@@ -6295,6 +6295,64 @@ def test_postflop_position_reconciliation_with_preflop_index():
 
 
 
+@test
+def test_weekly_report_schedule_fires_on_sunday():
+    """Bug regression: PTB v20+ remapped run_daily day_of_week to cron-style
+    (0=Sun … 6=Sat). The old value `days=(6,)` was Saturday, not Sunday, so
+    the weekly leak report never fired on the intended day. This test parses
+    the actual scheduling call in src/main_gemini.py and asserts the next
+    fire lands on a Sunday at 10:00 Taipei.
+    """
+    import ast
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    src = Path(__file__).resolve().parent.parent / "src" / "main_gemini.py"
+    tree = ast.parse(src.read_text())
+
+    days_tuple = None
+    hour = minute = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run_daily"):
+            for kw in node.keywords:
+                if kw.arg == "days" and isinstance(kw.value, ast.Tuple):
+                    days_tuple = tuple(
+                        e.value for e in kw.value.elts
+                        if isinstance(e, ast.Constant)
+                    )
+                if kw.arg == "time" and isinstance(kw.value, ast.Call):
+                    for tkw in kw.value.keywords:
+                        if tkw.arg == "hour" and isinstance(tkw.value, ast.Constant):
+                            hour = tkw.value.value
+                        if tkw.arg == "minute" and isinstance(tkw.value, ast.Constant):
+                            minute = tkw.value.value
+            break
+
+    assert_true(days_tuple is not None, "could not locate run_daily(days=...) in main_gemini.py")
+    assert_eq(hour, 10, "weekly job hour must be 10")
+    assert_eq(minute, 0, "weekly job minute must be 0")
+
+    from apscheduler.triggers.cron import CronTrigger
+    import telegram.ext._jobqueue as jq
+
+    cron_days = ",".join([jq.JobQueue._CRON_MAPPING[d] for d in days_tuple])
+    assert_eq(cron_days, "sun",
+              f"weekly job must fire on Sunday (cron 'sun'); got {cron_days!r} "
+              f"from days={days_tuple!r}. Note: in PTB v20+, 0=Sun, 6=Sat.")
+
+    tz = ZoneInfo("Asia/Taipei")
+    trigger = CronTrigger(
+        day_of_week=cron_days, hour=hour, minute=minute, second=0, timezone=tz,
+    )
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=tz)  # Wednesday
+    next_fire = trigger.get_next_fire_time(None, now)
+    assert_eq(next_fire.weekday(), 6,
+              f"next fire must be Sunday (weekday=6); got {next_fire} (weekday={next_fire.weekday()})")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
