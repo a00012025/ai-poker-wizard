@@ -266,6 +266,36 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
             pending_name = None
         entries.append(entry)
 
+    # Pre-pass: drop a duplicate "All-In" entry that's just the sticker on
+    # top of the same player's just-recorded bet/raise. N8 paints "All-In"
+    # as a small red badge overlaid on the bet sticker when the wager is
+    # for all chips. Two stickers, one action. Symptom (H2852 river):
+    # the same `type` is hero/opponent on both consecutive entries; the
+    # second has action=All-In, size=None, no player_name. Removing it lets
+    # the bet-size carry through stack/EV accounting; without it the All-In
+    # entry overwrites hero_street with size=0 and effective_bb collapses
+    # from 31bb to 20bb, making the solver think the bet is the only chip
+    # hero has left and labeling a 50% pot bet as all-in.
+    cleaned: list[dict] = []
+    for e in entries:
+        if cleaned:
+            prev = cleaned[-1]
+            same_side = e.get("type") and e.get("type") == prev.get("type")
+            is_dup_allin = (
+                (e.get("action") or "") == "All-In"
+                and e.get("size") is None
+                and not e.get("player_name")
+                and (prev.get("action") or "").lower() in ("bet", "raise", "all-in")
+            )
+            if same_side and is_dup_allin:
+                # Promote the previous bet/raise to All-In so downstream
+                # labeling (the "All-In" tag in summaries) is preserved.
+                if (prev.get("action") or "").lower() in ("bet", "raise"):
+                    prev["action"] = "All-In"
+                continue
+        cleaned.append(e)
+    entries = cleaned
+
     # Post-pass: hero can't act twice after going all-in, so any subsequent
     # entry tagged "hero" must be the villain calling/folding to the jam.
     # The HSV detector latches onto the yellow Call sticker even when the

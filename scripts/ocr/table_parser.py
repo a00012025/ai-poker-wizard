@@ -347,6 +347,39 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     return [card1, card2]
 
 
+def _trim_above_card_edge(crop: np.ndarray) -> np.ndarray:
+    """Strip pot-UI rows that sometimes sit above the actual card.
+
+    The hero blob detector can latch onto bright pot labels (e.g.
+    "$0.50 / 35.5 BB") rendered just above the hero cards. When that
+    happens the crop's top ~30% is N8 chrome instead of card, and the
+    CardCNN — letterboxed to square — reads the noisy header as part of
+    the rank and confidently misclassifies (H2851: 5d5c → 9d9c at
+    rank_conf 0.97).
+
+    Heuristic: scan from the top for the first row whose next 4 rows
+    each have ≥55% bright pixels (the white card body). If that row is
+    well below the top (≥6 rows), assume the rows above are pot UI and
+    chop them. No-op when the crop already starts at the card top, so
+    clean hero crops are untouched.
+    """
+    h, w = crop.shape[:2]
+    if h < 20 or w < 10:
+        return crop
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    bright = (gray >= 200).sum(axis=1) / float(w)
+    needed = 4
+    threshold = 0.55
+    edge = None
+    for y in range(h - needed):
+        if (bright[y:y + needed] >= threshold).all():
+            edge = y
+            break
+    if edge is None or edge < 6:
+        return crop
+    return crop[edge:]
+
+
 def _mask_win_overlay(crop: np.ndarray) -> np.ndarray:
     """Whiten the orange/yellow `WIN` sticker that N8 paints over winning cards.
 
@@ -423,6 +456,7 @@ def _find_hero_cards(
     crops = _locate_hero_cards(table_region)
     if not crops:
         return [], 0.0, []
+    crops = [_trim_above_card_edge(c) for c in crops]
     masked_crops = [_mask_win_overlay(c) for c in crops]
     clf = CardClassifier()
     raw_details = clf.classify_batch_detailed(crops)

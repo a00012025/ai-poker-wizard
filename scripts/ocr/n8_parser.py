@@ -514,6 +514,18 @@ def _compute_effective_bb(
                     hero_perm += hero_street
                     opp_perm += opp_street
                 else:
+                    # Opp's Call size sometimes can't be read when an
+                    # "All-In" badge overlaps the size sticker. Without
+                    # a size we'd count opp_street=0 and undercount hero
+                    # via min(hero, opp). Per the call definition, a Call
+                    # covers the outstanding bet, so assume opp matched
+                    # hero when the call entry has no explicit size.
+                    # Regression: H2852 river — hero jammed 11, OCR
+                    # missed opp's call size, hero_perm dropped 11bb and
+                    # effective_bb collapsed from 31 to 20.
+                    last_entry_size = last_entry.get("size")
+                    if last_entry_size is None and opp_street < hero_street:
+                        opp_street = hero_street
                     opp_perm += opp_street
                     hero_perm += min(hero_street, opp_street)
             else:
