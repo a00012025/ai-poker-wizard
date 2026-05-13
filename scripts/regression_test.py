@@ -3926,10 +3926,36 @@ def test_board_texture_wet():
 
 @test
 def test_board_texture_dry():
-    """Board texture: dry (no pair, no flush draw, no connectivity)."""
+    """Board texture: dry (no pair, no flush draw, no straight draw).
+
+    Aligned with GTOW's flop_connectedness vocab: a board needs a gap of 1
+    between adjacent sorted ranks to count as having straight-draw potential
+    (so Q94 rainbow is dry, not wet — its smallest gap is 3).
+    """
     from spot_categorizer import classify_board_texture
-    # All different suits, ranks far apart
+    # All different suits, large gaps
     assert_eq(classify_board_texture("Ah8c2d"), "dry")
+    # Q94 rainbow — smallest gap is 3 (Q-9). GTOW would call this
+    # 'disconnected'; we follow the same convention.
+    assert_eq(classify_board_texture("Qd9h4s"), "dry")
+    # K72 rainbow — gaps 5, 5. Disconnected.
+    assert_eq(classify_board_texture("Kd7h2s"), "dry")
+
+
+@test
+def test_board_texture_wet_via_straight_draw():
+    """A flop with any gap of 1 in adjacent sorted ranks is wet (matches
+    GTOW's oesd_possible bucket). Boards previously over-tagged as wet
+    because the threshold was gap<=3 should now be 'dry'."""
+    from spot_categorizer import classify_board_texture
+    # 78T rainbow — gaps [1, 2]. oesd_possible → wet.
+    assert_eq(classify_board_texture("7h8c Td".replace(" ", "")), "wet")
+    # 234 rainbow — gaps [1, 1]. connected → wet.
+    assert_eq(classify_board_texture("2h3c4d"), "wet")
+    # 235 rainbow — gaps [1, 2]. wet.
+    assert_eq(classify_board_texture("2h3c5d"), "wet")
+    # 8h2c3d — gaps from sorted [2,3,8] are [1, 5]. wet (low end straight draws).
+    assert_eq(classify_board_texture("8h2c3d"), "wet")
 
 @test
 def test_board_texture_empty():

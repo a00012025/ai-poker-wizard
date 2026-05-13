@@ -68,21 +68,21 @@ def classify_board_texture(board: str | None) -> str | None:
     if any(v >= 3 for v in suit_counts.values()):
         return "monotone"
 
-    # Check wet: flush draw possible (2+ same suit) OR 2+ connected cards within 3 ranks
+    # Check wet: flush draw possible (≥2 same suit) OR straight draws live.
+    # Straight-draw test mirrors GTOW's flop_connectedness vocab so the
+    # cluster's texture label agrees with the practice-URL board params:
+    #     gaps == [1,1]           → connected (e.g. 789)
+    #     any gap of 1            → oesd_possible (e.g. 78T, 235)
+    #     otherwise (all gaps ≥2) → disconnected
+    # Both 'connected' and 'oesd_possible' classify as wet; only fully
+    # disconnected rainbow boards (e.g. Q94r, K72r) are dry.
     has_flush_draw = any(v >= 2 for v in suit_counts.values())
+    sorted_ranks_3 = sorted(ranks)[:3]
+    gaps = [sorted_ranks_3[i + 1] - sorted_ranks_3[i]
+            for i in range(len(sorted_ranks_3) - 1)]
+    has_straight_potential = 1 in gaps
 
-    # Check connectivity: sort ranks, check if any two are within 3 of each other
-    sorted_ranks = sorted(ranks)
-    has_connectivity = False
-    for i in range(len(sorted_ranks)):
-        for j in range(i + 1, len(sorted_ranks)):
-            if sorted_ranks[j] - sorted_ranks[i] <= 3:
-                has_connectivity = True
-                break
-        if has_connectivity:
-            break
-
-    if has_flush_draw or has_connectivity:
+    if has_flush_draw or has_straight_potential:
         return "wet"
 
     return "dry"

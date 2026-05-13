@@ -95,8 +95,10 @@ async def backfill(pool: asyncpg.Pool, *, chat_id: int | None,
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
 
-    changes: list[tuple[int, str, str]] = []  # (deviation_id, old, new)
-    transitions: Counter = Counter()
+    spot_changes: list[tuple[int, str, str]] = []   # (dev_id, old, new)
+    tex_changes:  list[tuple[int, str | None, str | None]] = []
+    spot_transitions: Counter = Counter()
+    tex_transitions:  Counter = Counter()
     skipped_no_street = 0
     unchanged = 0
 
@@ -124,28 +126,46 @@ async def backfill(pool: asyncpg.Pool, *, chat_id: int | None,
             continue
 
         old_cat = r["spot_category"]
-        if new_cat and new_cat != old_cat:
-            changes.append((r["id"], old_cat, new_cat))
-            transitions[(old_cat, new_cat)] += 1
-        else:
+        spot_dirty = bool(new_cat) and new_cat != old_cat
+        if spot_dirty:
+            spot_changes.append((r["id"], old_cat, new_cat))
+            spot_transitions[(old_cat, new_cat)] += 1
+
+        # Recompute board_texture (independent of spot_category).
+        new_tex = classify_board_texture(_board_for_street(hd, r["street"]))
+        old_tex = r["board_texture"]
+        tex_dirty = (new_tex != old_tex)
+        if tex_dirty:
+            tex_changes.append((r["id"], old_tex, new_tex))
+            tex_transitions[(old_tex, new_tex)] += 1
+
+        if not spot_dirty and not tex_dirty:
             unchanged += 1
 
-    if not dry_run and changes:
+    if not dry_run:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                for dev_id, _old, new_cat in changes:
+                for dev_id, _old, new_cat in spot_changes:
                     await conn.execute(
                         "UPDATE deviations SET spot_category = $1 WHERE id = $2",
                         new_cat, dev_id,
                     )
+                for dev_id, _old, new_tex in tex_changes:
+                    await conn.execute(
+                        "UPDATE deviations SET board_texture = $1 WHERE id = $2",
+                        new_tex, dev_id,
+                    )
 
     return {
-        "scanned":           len(rows),
-        "changed":           len(changes),
-        "unchanged":         unchanged,
-        "skipped_no_street": skipped_no_street,
-        "transitions":       transitions,
-        "samples":           changes[:5],
+        "scanned":            len(rows),
+        "spot_changed":       len(spot_changes),
+        "tex_changed":        len(tex_changes),
+        "unchanged":          unchanged,
+        "skipped_no_street":  skipped_no_street,
+        "spot_transitions":   spot_transitions,
+        "tex_transitions":    tex_transitions,
+        "spot_samples":       spot_changes[:5],
+        "tex_samples":        tex_changes[:5],
     }
 
 
@@ -167,16 +187,20 @@ async def main():
         await pool.close()
 
     print(f"scanned:           {result['scanned']}")
-    print(f"would_change:      {result['changed']}" if args.dry_run
-          else f"changed:           {result['changed']}")
+    verb = "would_change" if args.dry_run else "changed"
+    print(f"{verb} spot_category:  {result['spot_changed']}")
+    print(f"{verb} board_texture:  {result['tex_changed']}")
     print(f"unchanged:         {result['unchanged']}")
     print(f"skipped_no_street: {result['skipped_no_street']}")
-    print("\ntop transitions:")
-    for (old, new), n in result["transitions"].most_common(20):
+    print("\ntop spot transitions:")
+    for (old, new), n in result["spot_transitions"].most_common(20):
         print(f"  {old or '-':>16} → {new:<16} {n}")
-    if result["samples"]:
-        print("\nsample changes (dev_id, old → new):")
-        for s in result["samples"]:
+    print("\ntop texture transitions:")
+    for (old, new), n in result["tex_transitions"].most_common(20):
+        print(f"  {old or '-':>10} → {(new or '-'):<10} {n}")
+    if result["spot_samples"]:
+        print("\nsample spot changes (dev_id, old → new):")
+        for s in result["spot_samples"]:
             print(f"  {s[0]}: {s[1]} → {s[2]}")
 
 
