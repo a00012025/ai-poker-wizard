@@ -54,3 +54,6 @@ scripts/ocr/templates/raw/
 
 # Card classifier training crops (rebuildable via extract_crops.py)
 data/cards/
+
+
+.claude/scheduled_tasks.lock
