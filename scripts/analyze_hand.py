@@ -1068,6 +1068,9 @@ def _run_analysis(hand: dict) -> dict:
         street_investments = {}
         _prev_allin = False
         _acted_this_street = set()  # track who has acted (for misparsed dup detection)
+        # Ordered list of (position, action_code, size) the categorizer needs
+        # to distinguish cbet vs facing-donk/probe vs facing-check-raise.
+        _street_actions_so_far: list[dict] = []
 
         # Postflop uses chip EV for ICM modes (preflop_only)
         post_gametype = chipev_gametype if is_icm else gametype
@@ -1186,6 +1189,11 @@ def _run_analysis(hand: dict) -> dict:
                     "params": params,
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
                     "taken_code": taken_code,
+                    # Snapshot of every prior action on this street so the
+                    # spot categorizer can tell a fresh c-bet apart from a
+                    # response to a donk/probe/check-raise. Copy because
+                    # _street_actions_so_far keeps growing for later spots.
+                    "street_actions_before_hero": list(_street_actions_so_far),
                 })
                 street_first_hero = False
             else:
@@ -1234,6 +1242,15 @@ def _run_analysis(hand: dict) -> dict:
                 turn_acts = f"{turn_acts}-{taken_code}" if turn_acts else taken_code
             elif street_idx == 2:
                 river_acts = f"{river_acts}-{taken_code}" if river_acts else taken_code
+
+            # Record this action for later hero spots on the same street.
+            # Use the raw action_type (X/C/F/R<size>/AI*) so the categorizer
+            # sees actual bet/raise semantics, not the solver-mapped code.
+            _street_actions_so_far.append({
+                "position": pos,
+                "action": action_type,
+                "size":   target_size,
+            })
 
             # Detect all-in called — use normalized taken_code (RAI) since
             # the original action_type might be "R7" that got normalized to RAI
@@ -1300,12 +1317,21 @@ def _run_analysis(hand: dict) -> dict:
                 street_label = (f"{street_name.capitalize()}: "
                                 f"{display_card}" if display_card
                                 else f"{street_name.capitalize()}: {full_board}")
+                # Hero hasn't acted on this final street — every recorded
+                # action on it is "before hero" for categorization purposes.
+                actions_before_hero = [
+                    {"position": a.get("position"),
+                     "action":   a.get("action"),
+                     "size":     a.get("size", 0)}
+                    for a in last_acts
+                ]
                 hero_spots.append({
                     "street": street_name,
                     "header": street_label,
                     "params": params,
                     "action_desc": f"→ Hero 的決策點",
                     "taken_code": None,  # hero hasn't acted
+                    "street_actions_before_hero": actions_before_hero,
                 })
 
     t_phase1 = time.time()

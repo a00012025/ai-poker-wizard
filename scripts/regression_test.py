@@ -6296,6 +6296,67 @@ def test_postflop_position_reconciliation_with_preflop_index():
 
 
 @test
+def test_hero_spots_carry_street_actions_before_hero_for_facing_donk():
+    """Bug regression: H2755 was an LJ-opens / SB-calls / SB-donks-into-LJ
+    spot but every hero deviation got tagged spot_category='cbet_ip'. Root
+    cause was that hero_spots was built without `street_actions_before_hero`,
+    so the categorizer never saw the SB donk and defaulted to cbet_ip for
+    every postflop decision by the PF aggressor.
+
+    This test mimics H2755 in the small via the spot_categorizer directly:
+      preflop: F-R2.2-F-F-F-C-F   (7-max: LJ opens, SB calls)
+      flop:    SB R4.8 (donk) → LJ to act
+    The hero's flop spot must be categorized as 'facing_probe', not 'cbet_ip'.
+    """
+    from spot_categorizer import categorize_spot
+
+    hand = {
+        "players_at_table": 7,
+        "hero_position":    "LJ",
+        "preflop_actions":  "F-R2.2-F-F-F-C-F",
+        "streets": [{"street": "flop", "board": "JsAsQh", "actions": []}],
+    }
+    cat, tex = categorize_spot(
+        hand, street="flop", action_index=0,
+        street_actions_before_hero=[
+            {"position": "SB", "action": "R4.8", "size": 4.8},
+        ],
+    )
+    assert_eq(cat, "facing_probe",
+              "LJ facing SB donk-lead must be facing_probe, not cbet_ip")
+    assert_eq(tex, "wet", "JsAsQh is a wet board")
+
+    # Sanity check the inverse: with NO actions before hero, the same hand
+    # is genuinely a c-bet decision and must be cbet_ip.
+    cat_cbet, _ = categorize_spot(
+        hand, street="flop", action_index=0,
+        street_actions_before_hero=[],
+    )
+    assert_eq(cat_cbet, "cbet_ip",
+              "PF aggressor first to act with no prior bet must be cbet_ip")
+
+
+@test
+def test_analyze_hand_attaches_street_actions_before_hero():
+    """The fix only works if analyze_hand.py actually populates the new key
+    on every hero_spot it builds. Static-check the source to guarantee that.
+    """
+    from pathlib import Path
+    src = Path(__file__).resolve().parent / "analyze_hand.py"
+    text = src.read_text()
+    assert_in("street_actions_before_hero", text,
+              "analyze_hand.py must populate street_actions_before_hero "
+              "on hero_spots so _extract_deviations can categorize correctly")
+    # And it must appear inside an hero_spots.append(...) literal — count the
+    # occurrences as a crude proxy. We expect at least 2 sites (one per
+    # spot-append path: in-loop postflop and Phase 1.5 'hero hasn't acted').
+    appends_with_key = text.count("\"street_actions_before_hero\"")
+    assert_true(appends_with_key >= 2,
+                f"expected ≥2 hero_spots appends to set street_actions_before_hero "
+                f"(found {appends_with_key})")
+
+
+@test
 def test_weekly_report_schedule_fires_on_sunday():
     """Bug regression: PTB v20+ remapped run_daily day_of_week to cron-style
     (0=Sun … 6=Sat). The old value `days=(6,)` was Saturday, not Sunday, so
