@@ -28,6 +28,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Layer-1 text re-parse imports gemini_session, which lives in src/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import asyncpg
 

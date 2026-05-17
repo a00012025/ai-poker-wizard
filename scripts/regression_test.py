@@ -657,6 +657,75 @@ def test_formatter_range_by_action_categorized():
 
 
 @test
+def test_solver_grounding_intent_gate():
+    """Follow-up gate: strategy/range/hypothetical questions must be detected
+    so a solver tool call can be hard-forced (anti-hallucination, H2873).
+
+    Regression for: bot answered 'which hands bet/check on this turn' from
+    poker theory (claimed AA → check for pot control) with 0 tool calls.
+    """
+    from gemini_session import _needs_solver_grounding as g
+    must_fire = [
+        "在這種雙花面 turn hero 如果拿梅花 or 方塊 suited "
+        "如何決定整體範圍哪些牌要下注哪些要過牌？",   # the exact H2873 follow-up
+        "BB 在 turn 的 check-raise 範圍是什麼？",
+        "如果 flop 用 33% pot 下注會怎樣？",
+        "對手 3-bet 的話 KQo 應該怎麼打？",
+        "AA 在這個 turn 是 bet 還是 check？",
+        "為什麼 AJo 要 check？",
+    ]
+    for q in must_fire:
+        assert_true(g(q), f"gate must fire for strategy/range question: {q!r}")
+    must_not_fire = ["謝謝教練", "你好", "看一下我上週的漏洞",
+                     "我的訓練計畫是什麼", "給我看 progress report"]
+    for q in must_not_fire:
+        assert_true(not g(q), f"gate must NOT fire for: {q!r}")
+
+
+@test
+def test_h2873_turn_AA_is_bet_not_check():
+    """Ground truth guard (H2873): on the HJ turn JcTd5c8d, AA is ~100% bet,
+    NOT check. The bot must answer range questions from THIS data, never from
+    'overpair → pot control' theory. Guards solver wiring + categorization so
+    the data feeding the LLM (system-prompt range breakdown) stays correct.
+    """
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral", "hero_hand": "Kd4d", "effective_bb": 30,
+        "hero_position": "HJ", "preflop_actions": "F-F-F-R2-F-F-F-C",
+        "players_at_table": 8,
+        "streets": [
+            {"board": "5cJcTd", "street": "flop", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 2.5, "action": "R2.5", "position": "HJ"},
+                {"action": "C", "position": "BB"}]},
+            {"card": "8d", "street": "turn", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 8.5, "action": "R8.5", "position": "HJ"},
+                {"action": "F", "position": "BB"}]},
+        ],
+    })
+    turn_sols = [s for s, spot in zip(result["solutions"], result["hero_spots"])
+                 if spot["street"] == "turn" and s is not None]
+    assert_true(len(turn_sols) > 0, "turn should have solver data")
+    sol = turn_sols[0]
+    pi = next((p for p in sol["players_info"]
+               if p["player"]["position"] == "HJ"), None)
+    assert_true(pi is not None, "HJ player_info must exist in turn solution")
+    aa = pi["simple_hand_counters"].get("AA")
+    assert_true(aa is not None, "AA must be present in HJ turn range")
+    freqs = aa.get("actions_total_frequencies", {})
+    check_freq = freqs.get("X", 0.0)
+    bet_raise_freq = sum(v for k, v in freqs.items()
+                         if k.upper().startswith("R"))
+    assert_true(check_freq < 0.10,
+                f"AA check freq must be ~0 (was {check_freq:.4f}); "
+                f"'AA checks for pot control' is a hallucination")
+    assert_true(bet_raise_freq > 0.85,
+                f"AA must be ~100% bet/raise (was {bet_raise_freq:.4f})")
+
+
+@test
 def test_formatter_normalize_hand_name():
     """Formatter: normalize_hand_name handles various input formats."""
     from gto_formatter import normalize_hand_name

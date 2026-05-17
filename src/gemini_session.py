@@ -351,14 +351,29 @@ COACH_SYSTEM = """\
   不要依賴你的撲克知識來猜測範圍組成，你經常猜錯（例如 A2s-A5s 在某些場景是 100% call 而不是 raise）
   正確做法：先用 query_gto 查詢位置的整體策略（會回傳 range 組成），然後根據回傳的真實數據列舉手牌
 
+範圍組成問題（最高優先級，違反 = 嚴重錯誤）：
+- 凡是「哪些手牌下注/過牌/加注/棄牌」「整體範圍怎麼分」「某類牌（超對/頂對/聽牌/同花）怎麼打」
+  「在這種牌面上 X 類牌該 bet 還是 check」這類問題，答案只能逐一對照 solver 的「策略分佈」數據
+  （系統提示中已提供的該街該位置 range breakdown，或 query_gto 回傳的結果），數據怎麼分類你就怎麼說。
+- 絕對禁止用撲克理論（攤牌價值、pot control、平衡、阻斷牌、equity 實現）自行推導某類手牌該下注還是過牌！
+  你用理論推出來的分類經常與 solver 相反，這正是最常見的嚴重錯誤來源。理論永遠服從數據。
+- 只要不確定，或上下文沒有該街/該位置的策略分佈 → 必須先呼叫 query_gto（指定 street + position）
+  取得真實數據再回答。寧可查詢也不要猜；絕對不可憑記憶或理論先回答、再「事後合理化」。
+- 反例（絕對不要犯）：solver 顯示 AA/KK/QQ 在某 turn 是 ~100% bet，
+  你卻因為「超對要 pot control / 控制底池」的理論而說它們應該 check —— 這是嚴重錯誤。
+  正確：看策略分佈，AA 列在哪個動作組（Bet/Check），就照那個說。
+
 Solver 數據是 ground truth（最高原則，絕對不可違反！）：
 - Solver 的頻率和 EV 數字永遠是正確的，你的推理可能會錯，但數字不會錯
 - 當用戶質疑你的解釋時，只修正你的推理邏輯，絕對不要改變或否定 solver 的數字！
 - 絕對不要說「工具數據有誤」「數據似乎不正確」——solver 數據不會出錯，出錯的永遠是你的推理
 - 如果你無法解釋 solver 為什麼這樣建議，誠實回答：「Solver 數據顯示 [具體數字]，這是正確的策略。我之前的解釋有誤，讓我重新查詢數據來給出正確的分析。」然後用 query_gto 重新查詢
 - 當用戶指出你的解釋有錯（例如錯誤的聽牌判斷），先承認推理錯誤，然後重新用 query_gto 查詢相關數據，基於新數據重新解釋，而不是憑空編造新的理論
-- 如果訊息中已經包含「GTO Solver 數據」，這就是真實的 solver 分析結果！必須先根據這些數據分析 hero 的策略，不需要再用工具重複查詢
-- 只有用戶的額外問題（如「對手範圍？」「不同位置的策略？」）才需要用 query_gto 工具查詢
+- 如果訊息中已經包含「GTO Solver 數據」，這是 hero 行動分析用的真實數據，分析 hero 自己的策略時不需要重複查詢
+- 但該「GTO Solver 數據」區塊只含整體動作頻率與 hero 這一手牌，不含其他手牌類別的範圍組成！
+  任何「哪些手牌下注/過牌」「某類牌怎麼打」「對手範圍」「不同位置策略」「如果改成…」的問題，
+  必須改用「策略分佈」range breakdown 數據回答；若上下文沒有對應街/位置的策略分佈，必須先 query_gto，
+  絕對不可因為「訊息已含 GTO 數據」就改用理論回答範圍組成
 - 「無 solver 數據」的街直接跳過，不要猜測或推斷該街的 GTO 策略
 - 如果所有街都沒有 solver 數據，只簡短說明無法分析，不要輸出任何策略建議
 - 極重要：怎麼判斷 hero 某手牌 preflop 打得對不對？
@@ -410,6 +425,48 @@ ICM 近似解說明規則：
 1. 每條街的 GTO vs Hero 對比（只講有意義的差異）
 2. 如果 hero 有明顯錯誤：指出最關鍵的 1 個錯誤 + 為什麼 + 一句改進建議
 3. 如果 hero 全部打對：不需要「最關鍵的錯誤」或「改進建議」段落，直接結束即可"""
+
+
+# ── Solver-grounding intent gate ──
+# When a follow-up question is about GTO strategy / range composition /
+# hypotheticals, we HARD-FORCE a solver tool call (Gemini tool_config
+# mode=ANY) so the model physically cannot answer from poker theory and
+# hallucinate a range (the AA-checks-for-pot-control failure mode). A miss
+# falls back to the hardened COACH_SYSTEM rule; a false positive only costs
+# one (usually cached) query_gto call, so the gate is intentionally broad.
+_GROUNDING_PATTERNS = re.compile(
+    r"(範圍|range|哪些(手)?牌|哪些 ?combo|怎麼打|怎麼玩|該怎麼|如何(決定|打|玩)|"
+    r"下注|過牌|加注|棄牌|跟注|全下|all[- ]?in|\bbet\b|\bcheck\b|\braise\b|\bfold\b|\bcall\b|"
+    r"3 ?bet|4 ?bet|squeeze|open|c-?bet|cbet|probe|donk|check[- ]?raise|"
+    r"頻率|frequency|機率|策略|strategy|gto|solver|"
+    r"如果|假設|假如|換成|改成|what ?if|"
+    r"對手|villain|超對|頂對|中對|底對|聽牌|同花聽|順聽|overpair|top ?pair|\bdraw\b|"
+    r"equity|阻斷|blocker|\bev\b|"
+    r"\b(utg|lj|hj|co|btn|sb|bb)\b|preflop|flop|turn|river|翻牌|轉牌|河牌|"
+    r"為什麼.*(check|bet|raise|fold|過牌|下注|加注|棄牌))",
+    re.IGNORECASE,
+)
+
+# Pure leak/stat questions have their own dedicated tools — don't hijack
+# them with a forced query_gto.
+_LEAK_ONLY_PATTERNS = re.compile(
+    r"(漏洞|弱點|leak|訓練計畫|training ?plan|我的(進步|統計|數據|表現)|progress|my ?stats)",
+    re.IGNORECASE,
+)
+
+
+def _needs_solver_grounding(text: str) -> bool:
+    """Does this user message ask a GTO strategy/range/hypothetical question
+    that must be grounded in solver data (vs. poker theory)?"""
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 2:
+        return False
+    if _LEAK_ONLY_PATTERNS.search(t) and not _GROUNDING_PATTERNS.search(t):
+        return False
+    return bool(_GROUNDING_PATTERNS.search(t))
+
 
 # ── Gemini tool schema for GTO queries ──
 
@@ -1376,6 +1433,7 @@ class GeminiSessionManager:
                         chat_id, coaching_prompt, on_status=on_status,
                         user_id=user_id, refresh_token=refresh_token,
                         usage_acc=usage_acc,
+                        force_tool_eligible=False,
                     )
                     result, followups = self._extract_followups(result)
                     if followups:
@@ -1475,6 +1533,7 @@ class GeminiSessionManager:
                             chat_id, coaching_prompt, on_status=on_status,
                             user_id=user_id, refresh_token=refresh_token,
                             usage_acc=usage_acc,
+                            force_tool_eligible=False,
                         )
                         break
                     except genai_errors.ServerError as e:
@@ -1697,6 +1756,7 @@ class GeminiSessionManager:
                         chat_id, coaching_prompt,
                         user_id=user_id, refresh_token=refresh_token,
                         usage_acc=usage_acc,
+                        force_tool_eligible=False,
                         disable_tools=True,
                     )
                     break
@@ -2267,8 +2327,16 @@ class GeminiSessionManager:
                                 user_id: int | None = None,
                                 refresh_token: str | None = None,
                                 usage_acc: dict | None = None,
+                                force_tool_eligible: bool = True,
                                 disable_tools: bool = False) -> str:
-        """Chat with GTO tools for data-driven follow-up answers."""
+        """Chat with GTO tools for data-driven follow-up answers.
+
+        force_tool_eligible: when True (the follow-up path), strategy/range
+        questions are detected by _needs_solver_grounding and the first
+        generation round is hard-forced to a solver tool call (Gemini
+        tool_config mode=ANY). Coaching/FT-switch callers pass False so the
+        initial analysis isn't disturbed (its data is already computed).
+        """
         declarations = [
             QUERY_NEXT_ACTIONS_DECLARATION,
             QUERY_GTO_DECLARATION,
@@ -2298,6 +2366,22 @@ class GeminiSessionManager:
         max_rounds = 8
         tools_called = 0
 
+        # Intent gate: hard-force a solver tool call on round 0 for
+        # strategy/range/hypothetical follow-ups so the model can't answer
+        # from poker theory. Played-line range queries resolve against the
+        # cached solution (no extra API latency). After the first tool runs
+        # we revert to AUTO so the model synthesizes the grounded answer.
+        force_tools = (
+            force_tool_eligible
+            and not disable_tools
+            and _needs_solver_grounding(user_text)
+        )
+        if force_tools:
+            self._logger.info(
+                f"[chat={chat_id}] Solver-grounding gate matched — "
+                f"forcing tool call on round 0 (mode=ANY)"
+            )
+
         async def _status(msg: str):
             if on_status:
                 r = on_status(msg)
@@ -2305,14 +2389,26 @@ class GeminiSessionManager:
                     await r
 
         for round_num in range(max_rounds):
+            gen_kwargs = dict(
+                system_instruction=system,
+                tools=[] if disable_tools else [tool],
+            )
+            # Hard-force only until the first tool has actually executed;
+            # subsequent rounds use AUTO so the model can return prose.
+            if force_tools and tools_called == 0 and not disable_tools:
+                gen_kwargs["tool_config"] = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=types.FunctionCallingConfigMode.ANY,
+                        allowed_function_names=[
+                            "query_gto", "query_next_actions", "evaluate_hand",
+                        ],
+                    )
+                )
             response = await asyncio.wait_for(
                 self.client.aio.models.generate_content(
                     model=self.model,
                     contents=messages,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        tools=[] if disable_tools else [tool],
-                    ),
+                    config=types.GenerateContentConfig(**gen_kwargs),
                 ),
                 timeout=120,
             )
@@ -2452,6 +2548,17 @@ class GeminiSessionManager:
             result_text = response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
 
         self._logger.debug(f"[chat={chat_id}] Chat+tools response ({len(result_text)} chars):\n{result_text}")
+
+        # ── Phase-2 reserved interface: post-answer grounding re-check ──
+        # If a later phase enables it: when the gate matched but the answer
+        # still enumerates hand-class → action with tools_called == 0 (model
+        # ignored a forced call / gate missed), reject and re-ask with a
+        # forced tool call. Intentionally a no-op for now.
+        #
+        #   if force_tools and tools_called == 0 \
+        #           and self._answer_enumerates_hand_actions(result_text):
+        #       result_text = await self._regrounded_retry(
+        #           chat_id, user_text, messages, system, usage_acc)
 
         # Update history (user text only, not tool calls)
         history = self.histories.get(chat_id, [])
@@ -3368,7 +3475,11 @@ class GeminiSessionManager:
             try:
                 rb = format_range_by_action(sol, hero_pos)
                 if rb:
-                    lines.append(f"\n{street.capitalize()} range breakdown:")
+                    lines.append(
+                        f"\n{street.capitalize()} 策略分佈（回答「哪些手牌下注/過牌/加注」"
+                        f"「某類牌怎麼打」類問題的唯一依據——必須照此分類回答，"
+                        f"不可用撲克理論覆蓋）："
+                    )
                     lines.append(rb)
             except Exception:
                 pass
