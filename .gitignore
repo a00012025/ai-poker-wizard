@@ -26,8 +26,9 @@ config/local.yaml
 *.log
 logs/
 
-# GTO API file cache
-.gto_cache/
+# GTO API file cache (dir in main repo, symlink in worktrees — no trailing
+# slash so both forms are ignored)
+.gto_cache
 
 # Telegram bot token
 bot_token.txt
