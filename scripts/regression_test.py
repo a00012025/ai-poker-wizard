@@ -6616,6 +6616,59 @@ def test_weekly_report_schedule_fires_on_sunday():
               f"next fire must be Sunday (weekday=6); got {next_fire} (weekday={next_fire.weekday()})")
 
 
+@test
+def test_normalize_terms_deterministic():
+    """Output-terminology safety net (_normalize_terms): the zero-false-
+    positive corrections must apply with correct ordering, be idempotent,
+    and must NOT touch ambiguous terms left to the prompt (看牌面, English
+    river/range/equity)."""
+    from gemini_session import _normalize_terms as n
+
+    # core corrections
+    assert_eq(n("這手要彩池控制"), "這手要控制底池")
+    assert_eq(n("建議控制彩池"), "建議控制底池")
+    assert_eq(n("彩池 12bb"), "底池 12bb")
+    assert_eq(n("池底 12bb"), "底池 12bb")
+    assert_eq(n("這是純唬牌"), "這是純詐唬")
+    assert_eq(n("用 c-bet 施壓"), "用 cbet 施壓")
+    assert_eq(n("C-Bet 30%"), "cbet 30%")
+
+    # ordering: compound forms replaced before the 彩池 substring
+    # (must not leave a 底池控制 artifact)
+    assert_eq(n("用彩池控制讓對手棄牌"), "用控制底池讓對手棄牌")
+    assert_true("彩池" not in n("彩池控制 彩池 控制彩池 池底"),
+                "no 彩池 may survive")
+    assert_true("底池控制" not in n("彩池控制"),
+                "compound must map to 控制底池, not 底池控制")
+
+    # idempotent — safe to apply more than once
+    once = n("彩池控制讓對手唬牌 c-bet")
+    assert_eq(n(once), once, "normalize must be idempotent")
+
+    # zero false positives — these must pass through UNCHANGED
+    for s in ("放棄這條線", "精彩的一手", "底池 8bb", "看牌面很濕",
+              "river 很危險", "他的 range 很寬", "equity 不夠", "cbet 兩次"):
+        assert_eq(n(s), s, f"must not alter {s!r}")
+
+    assert_eq(n(""), "")
+
+
+@test
+def test_coach_system_terminology_rule():
+    """Guard: the COACH_SYSTEM 術語規範 section must stay in place so the
+    no-bilingual-gloss / canonical-term rules can't be silently dropped,
+    and the prompt body must not reproduce a gloss it bans by example."""
+    from gemini_session import COACH_SYSTEM as cs
+
+    assert_in("術語規範", cs, "terminology section header missing")
+    assert_in("禁止中英對照翻譯", cs, "no-bilingual-gloss rule missing")
+    assert_in("不要用「彩池」", cs, "彩池→底池 canonical rule missing")
+    assert_in("詐唬（不要用「唬牌」）", cs, "唬牌→詐唬 canonical rule missing")
+    assert_in("all-in", cs, "English-abbreviation whitelist missing")
+    assert_true("pot control / 控制底池" not in cs,
+                "prompt body still contains a banned bilingual gloss")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
