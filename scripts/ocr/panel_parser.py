@@ -218,6 +218,106 @@ def _find_header_end(gray: np.ndarray) -> int:
     return int(h * 0.10)
 
 
+def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
+    """Disambiguate who shoved vs who called in an all-in street.
+
+    N8 paints a red "All-In" badge on the all-in player's bet/raise
+    sticker. In the showdown layout it re-renders that player's
+    avatar+hole-cards directly below the responder's call sticker, so the
+    full-column OCR can split the bare red badge into its own nameless
+    entry — sometimes on the *other* player's side and with a garbled
+    size (the sum of two adjacent "X BB" stickers). That fabricates a
+    phantom raise/all-in for the player who really just called.
+
+    Two invariants make this recoverable, regardless of which side is
+    short and regardless of stack depths (the caller can cover the shover
+    or be covered by it — the money is the same, but the attribution is
+    not):
+
+    1. A bare "All-In" entry (no ``player_name``) that sits on top of a
+       *named* bet/raise is that bet's badge, not a separate action — it
+       marks the bettor as all-in. Promote the bet to "All-In", drop the
+       badge. (Generalises the same-side dedup pre-pass in
+       ``detect_entries`` to the cross-side showdown layout.)
+    2. Once a player is all-in they cannot act again on that street; the
+       only remaining decision is a single Call or Fold by the *other*
+       player. Collapse every post-shove fragment (split call stickers,
+       a call mis-read as a raise) into one responder entry on the
+       opposite side. A response that matches an all-in is a Call, never
+       a Raise — even when the responder is themselves all-in for it
+       ("call-while-all-in"); that is still a Call for solver purposes,
+       and effective-stack accounting is handled downstream from the
+       displayed stacks.
+
+    Scoped to the hero-vs-one-opponent postflop line this codebase
+    solves; multiway postflop already falls back elsewhere.
+    """
+    if not entries:
+        return entries
+
+    # 1. Fold a bare All-In badge into the adjacent prior shove (any side).
+    collapsed: list[dict] = []
+    for e in entries:
+        is_bare_allin = (
+            (e.get("action") or "") == "All-In"
+            and not e.get("player_name")
+        )
+        if is_bare_allin and collapsed:
+            prev = collapsed[-1]
+            prev_act = (prev.get("action") or "").lower()
+            if prev_act in ("bet", "raise", "all-in") and prev.get("size"):
+                prev["action"] = "All-In"
+                continue
+        collapsed.append(e)
+    entries = collapsed
+
+    # 2. Find the all-in shove (last all-in carrying a real size).
+    shove_idx = None
+    for i, e in enumerate(entries):
+        if (e.get("action") or "").lower() == "all-in" and e.get("size"):
+            shove_idx = i
+    if shove_idx is None:
+        return entries
+
+    shove = entries[shove_idx]
+    post = entries[shove_idx + 1:]
+    if not post:
+        return entries
+
+    # 3. Collapse everything after the shove into one responder decision
+    #    by the opposite side.
+    responder_type = "opponent" if shove.get("type") == "hero" else "hero"
+    has_fold = any((p.get("action") or "").lower() == "fold" for p in post)
+    has_match = any(
+        (p.get("action") or "").lower() in ("call", "raise", "bet", "all-in")
+        for p in post
+    )
+    if has_match or not has_fold:
+        responder = {
+            "type": responder_type,
+            "position": None,
+            "action": "Call",
+            "size": shove.get("size"),
+        }
+    else:
+        responder = {
+            "type": responder_type,
+            "position": None,
+            "action": "Fold",
+            "size": None,
+        }
+    # Carry an opponent responder's position from the fragments (hero
+    # responders get hero_position assigned downstream regardless).
+    if responder_type == "opponent":
+        for p in post:
+            pos = p.get("position")
+            if pos and pos != shove.get("position"):
+                responder["position"] = pos
+                break
+
+    return entries[: shove_idx + 1] + [responder]
+
+
 def detect_entries(column_region: np.ndarray) -> list[dict]:
     """Detect action entries in a column using full-column OCR.
 
@@ -335,6 +435,12 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
         inferred = last_villain_to + next_call_size
         if inferred > 0:
             entries[hero_allin_idx]["size"] = inferred
+
+    # Final pass: settle who shoved vs who called. Runs after the
+    # hero-specific dedup/flip/size-recovery above so it sees their
+    # output and also catches the cross-side showdown layout they miss
+    # (opponent shoves, hero calls deeper — H2881).
+    entries = _resolve_allin_attribution(entries)
 
     return entries
 
