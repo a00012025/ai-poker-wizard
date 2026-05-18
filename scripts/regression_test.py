@@ -2614,6 +2614,113 @@ def test_ocr_action_pattern_allin_misread():
 
 
 @test
+def test_resolve_allin_attribution_opp_shoves_hero_calls_deeper():
+    """panel_parser: opponent donk-shoves all-in, hero calls with the
+    deeper stack — hero must be the CALLER, never re-classified as the
+    raiser/all-in aggressor.
+
+    Regression for H2881 (river). N8's showdown layout stacks the
+    short-stack's "Bet 11 / All-In" sticker, then the hero's "Call 11"
+    sticker, then the all-in player's avatar+cards reveal. OCR splits
+    the bare red All-In badge into its own nameless entry (with a
+    garbled size = 11+11 = 22) sitting between the real shove and the
+    real call, fabricating a phantom "hero All-In 22". The bot then
+    told the coach hero RAISED all-in (a "serious mistake") when hero
+    in fact just called the shove with a much bigger stack. The two
+    money outcomes are equivalent because hero covers villain, but the
+    action attribution — and therefore the coaching narrative — must
+    distinguish who shoved vs who called.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    raw = [
+        {"type": "opponent", "position": "SB", "action": "Bet",
+         "size": 11.0, "player_name": "Ciulo84"},
+        {"type": "hero", "position": None, "action": "All-In",
+         "size": 22.0},
+        {"type": "opponent", "position": "BB", "action": "Call",
+         "size": 11.0},
+    ]
+    out = _resolve_allin_attribution(raw)
+
+    assert_eq(len(out), 2,
+              "phantom All-In + split Call must collapse to shove + 1 call")
+    shove, resp = out
+    # The short stack (SB) is the one who is all-in.
+    assert_eq(shove["type"], "opponent", "SB is the shover")
+    assert_eq(shove["position"], "SB", "shover position preserved")
+    assert_eq((shove["action"] or "").lower(), "all-in",
+              "the donk bet that carried the red badge IS the all-in")
+    assert_eq(shove["size"], 11.0, "shove size is the real 11bb, not 22")
+    # Hero is the caller — NOT a raiser, NOT all-in (hero covers villain).
+    assert_eq(resp["type"], "hero", "hero is the responder")
+    assert_eq(resp["action"], "Call",
+              "hero called the shove; must never be Raise/All-In")
+    assert_eq(resp["size"], 11.0, "hero call matches the 11bb shove")
+
+
+@test
+def test_resolve_allin_attribution_hero_shoves_opp_calls_unchanged():
+    """panel_parser: hero shoves all-in and opponent calls — the canonical
+    [shover All-In, responder Call] shape must survive unchanged (guards
+    the H2842/H2852 hero-all-in path against the new resolver)."""
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    raw = [
+        {"type": "hero", "position": None, "action": "All-In", "size": 11.0},
+        {"type": "opponent", "position": "SB", "action": "Call",
+         "size": 11.0, "player_name": "Villain"},
+    ]
+    out = _resolve_allin_attribution(raw)
+    assert_eq(len(out), 2, "shape preserved")
+    assert_eq((out[0]["action"] or "").lower(), "all-in", "hero still all-in")
+    assert_eq(out[0]["type"], "hero")
+    assert_eq(out[1]["action"], "Call", "opponent still calling")
+    assert_eq(out[1]["type"], "opponent")
+    assert_eq(out[1]["size"], 11.0)
+
+
+@test
+def test_resolve_allin_attribution_opp_shoves_hero_folds():
+    """panel_parser: opponent bet carries the All-In badge, hero folds —
+    collapse to [opponent All-In, hero Fold] (no phantom call)."""
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    raw = [
+        {"type": "opponent", "position": "BTN", "action": "Bet",
+         "size": 8.0, "player_name": "Shover"},
+        {"type": "opponent", "position": None, "action": "All-In",
+         "size": None},
+        {"type": "hero", "position": None, "action": "Fold", "size": None},
+    ]
+    out = _resolve_allin_attribution(raw)
+    assert_eq(len(out), 2, "bare badge collapses into the bet")
+    assert_eq((out[0]["action"] or "").lower(), "all-in",
+              "opponent bet promoted to all-in by its badge")
+    assert_eq(out[0]["type"], "opponent")
+    assert_eq(out[0]["size"], 8.0)
+    assert_eq(out[1]["action"], "Fold", "hero folded to the shove")
+    assert_eq(out[1]["type"], "hero")
+
+
+@test
+def test_resolve_allin_attribution_normal_line_untouched():
+    """panel_parser: a normal bet/call line with no all-in must pass
+    through the resolver completely unchanged (no over-collapsing)."""
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    raw = [
+        {"type": "opponent", "position": "SB", "action": "Check",
+         "size": None, "player_name": "V"},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 5.0},
+        {"type": "opponent", "position": "SB", "action": "Call",
+         "size": 5.0, "player_name": "V"},
+    ]
+    out = _resolve_allin_attribution(raw)
+    assert_eq(out, raw, "no all-in → resolver is a no-op")
+
+
+@test
 def test_ocr_table_parser_board_cards():
     """OCR: table parser finds board cards."""
     import cv2
