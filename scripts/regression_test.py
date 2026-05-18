@@ -2721,6 +2721,73 @@ def test_resolve_allin_attribution_normal_line_untouched():
 
 
 @test
+def test_ocr_collapse_preflop_raise_jam():
+    """OCR: bare preflop All-In overlay collapses onto the preceding raise.
+
+    Regression for H2878. N8 stamps a small red "All-In" badge on a
+    preflop raise sticker when the raise is for all chips. Full-column
+    OCR splits it into a separate entry (no name, no position, no size)
+    that the red-sticker heuristic mis-tags `hero`. Left alone it shifts
+    index-based position assignment (hero parsed as BTN instead of BB)
+    and trips the all-in post-pass into flipping the real hero's call to
+    opponent. The overlay must fold into the raiser, promoting it to
+    All-In and keeping its size. Genuine jams (which carry a position
+    badge) and standalone jams (no preceding raise) must be left intact.
+    """
+    from ocr.panel_parser import _collapse_preflop_raise_jam
+
+    # H2878 preflop entries as produced just before the collapse:
+    # CO raise-jam 3.5, SB raise-jam 11.1, hero (BB) calls. Both bare
+    # All-In overlays were mis-tagged hero by the red-sticker heuristic.
+    entries = [
+        {"type": "opponent", "player_name": "Papito alva .", "action": "Fold", "position": "UTG", "size": None},
+        {"type": "opponent", "player_name": "AKSyang8899", "action": "Fold", "position": "LJ", "size": None},
+        {"type": "opponent", "player_name": "bronice", "action": "Raise", "position": "CO", "size": 3.5},
+        {"type": "hero", "player_name": None, "action": "All-In", "position": None, "size": None},
+        {"type": "opponent", "player_name": "Robl297", "action": "Fold", "position": "BTN", "size": None},
+        {"type": "opponent", "player_name": "DCP1975", "action": "Raise", "position": "SB", "size": 11.1},
+        {"type": "hero", "player_name": None, "action": "All-In", "position": None, "size": None},
+        {"type": "hero", "player_name": None, "action": "Call", "position": "BB", "size": 10.1},
+    ]
+    out = _collapse_preflop_raise_jam(entries)
+    assert_eq(len(out), 6, "two overlay badges dropped")
+    assert_eq(out[2]["action"], "All-In", "CO raise promoted to All-In")
+    assert_eq(out[2]["size"], 3.5, "CO all-in size preserved")
+    assert_eq(out[4]["action"], "All-In", "SB raise promoted to All-In")
+    assert_eq(out[4]["size"], 11.1, "SB all-in size preserved")
+    last = out[-1]
+    assert_eq(last["type"], "hero", "real hero call survives, still hero")
+    assert_eq(last["action"], "Call", "real hero action unchanged")
+    assert_eq(last["position"], "BB", "real hero position unchanged")
+    assert_true(
+        not any(e.get("action") == "All-In" and not e.get("player_name")
+                for e in out),
+        "no nameless All-In overlay remains",
+    )
+
+    # Negative: a genuine jam-over-raise carries a position badge — the
+    # raiser must NOT be collapsed (villain 3-bet jam stays a distinct
+    # action).
+    villain_jam = [
+        {"type": "opponent", "player_name": "opener", "action": "Raise", "position": "CO", "size": 2.0},
+        {"type": "opponent", "player_name": None, "action": "All-In", "position": "BTN", "size": None},
+    ]
+    out2 = _collapse_preflop_raise_jam(villain_jam)
+    assert_eq(len(out2), 2, "positioned jam is not an overlay — kept")
+    assert_eq(out2[0]["action"], "Raise", "opener raise left intact")
+
+    # Negative: a standalone jam with no preceding raise (first aggressor)
+    # must not be folded into a fold entry.
+    standalone = [
+        {"type": "opponent", "player_name": "u", "action": "Fold", "position": "UTG", "size": None},
+        {"type": "hero", "player_name": None, "action": "All-In", "position": None, "size": None},
+    ]
+    out3 = _collapse_preflop_raise_jam(standalone)
+    assert_eq(len(out3), 2, "no preceding raise — jam kept")
+    assert_eq(out3[1]["action"], "All-In", "standalone jam preserved")
+
+
+@test
 def test_ocr_table_parser_board_cards():
     """OCR: table parser finds board cards."""
     import cv2

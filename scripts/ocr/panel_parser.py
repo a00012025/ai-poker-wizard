@@ -318,11 +318,64 @@ def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
     return entries[: shove_idx + 1] + [responder]
 
 
-def detect_entries(column_region: np.ndarray) -> list[dict]:
+def _collapse_preflop_raise_jam(entries: list[dict]) -> list[dict]:
+    """Collapse N8's bare "All-In" overlay onto the preceding named raise.
+
+    When a preflop raise is for all chips, N8 stamps a small red "All-In"
+    badge on the raise sticker. Full-column OCR splits it into its own
+    entry: action=All-In, no player_name, no position badge, no size (the
+    badge carries no number). The red-sticker hero heuristic in
+    `_classify_group` then mis-tags it `hero`, which (a) shifts index-based
+    position assignment downstream and (b) trips the all-in post-pass into
+    flipping the *real* hero's call to opponent.
+
+    The badge always belongs to the immediately-preceding named raiser, so
+    drop it and promote that raise to All-In (keeping its size). Side-
+    agnostic — the badge's mis-detected hero/opponent type is irrelevant.
+
+    Preflop-only (caller-gated): every N8 preflop sticker, including hero's
+    own blind, carries a position badge, so a positionless/sizeless/nameless
+    bare All-In can only be this overlay. Postflop hero jams legitimately
+    have no badge and are handled by the H2842 passes in `detect_entries`.
+    Regression: H2878 — CO raise-jam 3.5bb + SB raise-jam 11.1bb, hero BB
+    call; was parsed as BTN A2o facing a CO open.
+    """
+    out: list[dict] = []
+    for e in entries:
+        if out:
+            prev = out[-1]
+            is_overlay = (
+                (e.get("action") or "").lower() in ("all-in", "allin", "all in")
+                and not e.get("player_name")
+                and not e.get("position")
+                and e.get("size") is None
+            )
+            prev_named_aggro = (
+                bool(prev.get("player_name"))
+                and (prev.get("action") or "").lower()
+                in ("bet", "raise", "all-in")
+            )
+            if is_overlay and prev_named_aggro:
+                if (prev.get("action") or "").lower() in ("bet", "raise"):
+                    prev["action"] = "All-In"
+                continue
+        out.append(e)
+    return out
+
+
+def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> list[dict]:
     """Detect action entries in a column using full-column OCR.
 
     OCRs the entire column body once, then groups text results by
     Y-position into entries. Uses background color to classify hero/opponent.
+
+    Args:
+        column_region: cropped image of one street column body.
+        is_preflop: True for the Pre-Flop column. Enables the raise-jam
+            overlay collapse (see below) — preflop-only because N8 renders
+            every preflop sticker with a position badge, so the bare red
+            "All-In" overlay is unambiguous there; postflop hero jams have
+            no badge and would be misread as an overlay.
 
     Returns:
         List of {"type", "position", "action", "size"} dicts
@@ -365,6 +418,10 @@ def detect_entries(column_region: np.ndarray) -> list[dict]:
             entry["player_name"] = pending_name
             pending_name = None
         entries.append(entry)
+
+    # Preflop raise-jam overlay collapse (see _collapse_preflop_raise_jam).
+    if is_preflop:
+        entries = _collapse_preflop_raise_jam(entries)
 
     # Pre-pass: drop a duplicate "All-In" entry that's just the sticker on
     # top of the same player's just-recorded bet/raise. N8 paints "All-In"
@@ -747,7 +804,9 @@ def parse_panel(panel_image: np.ndarray) -> dict:
 
     result_columns = []
     for col in columns:
-        entries = detect_entries(col["region"])
+        entries = detect_entries(
+            col["region"], is_preflop=(col["name"] == "Pre-Flop")
+        )
         result_columns.append({
             "name": col["name"],
             "pot": col["pot"],
