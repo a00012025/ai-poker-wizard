@@ -73,10 +73,15 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
     tournament_id_m = re.search(r"Tournament #(\d+)", header)
     tournament_id = tournament_id_m.group(1) if tournament_id_m else ""
 
-    level_m = re.search(r"Level\d+\(([\d,]+)/([\d,]+)\)", header)
+    # Level format is "Level14(400/800)" or, once antes kick in,
+    # "Level14(400/800(100))" — the trailing "(100)" is the ante.
+    level_m = re.search(
+        r"Level\d+\(([\d,]+)/([\d,]+)(?:\(([\d,]+)\))?\)", header
+    )
     if not level_m:
         return None
     bb_size = _parse_amount(level_m.group(2))
+    ante_size = _parse_amount(level_m.group(3)) if level_m.group(3) else 0
 
     # ── Table info ──
     table_line = lines[1]

@@ -6669,6 +6669,111 @@ def test_coach_system_terminology_rule():
                 "prompt body still contains a banned bilingual gloss")
 
 
+# ── HH Parser (ground-truth oracle) ──
+
+# Real GGPoker tournament hand: blinds 400/800 with a 100 ante. The ante is
+# rendered inside the level as "Level14(400/800(100))" — the regex used to
+# require "(400/800)" and returned None for every anted hand, silently
+# zeroing ground-truth coverage for ~all late-tournament hands.
+_HH_ANTE_HAND = """\
+Poker Hand #TM5963540471: Tournament #284938542, Daily Turbo $3 Hold'em No Limit - Level14(400/800(100)) - 2026/05/17 17:27:30
+Table '20' 8-max Seat #6 is the button
+Seat 1: Hero (8,063 in chips)
+Seat 2: 89fa3636 (4,660 in chips)
+Seat 3: 27448217 (16,567 in chips)
+Seat 4: d7153fd2 (40,398 in chips)
+Seat 5: a84236c (5,358 in chips)
+Seat 6: 1021c65b (50,149 in chips)
+Seat 7: 36a75840 (18,017 in chips)
+1021c65b: posts the ante 100
+89fa3636: posts the ante 100
+36a75840: posts the ante 100
+Hero: posts the ante 100
+a84236c: posts the ante 100
+d7153fd2: posts the ante 100
+27448217: posts the ante 100
+36a75840: posts small blind 400
+Hero: posts big blind 800
+*** HOLE CARDS ***
+Dealt to Hero [9c Th]
+Dealt to 89fa3636
+Dealt to 27448217
+Dealt to d7153fd2
+Dealt to a84236c
+Dealt to 1021c65b
+Dealt to 36a75840
+89fa3636: folds
+27448217: folds
+d7153fd2: folds
+a84236c: folds
+1021c65b: folds
+36a75840: raises 800 to 1,600
+Hero: calls 800
+*** FLOP *** [3c 6c 7c]
+36a75840: bets 3,200
+Hero: raises 3,163 to 6,363 and is all-in
+36a75840: calls 3,163
+Hero: shows [9c Th] (Ten high)
+36a75840: shows [5h 6s] (a pair of Sixes)
+*** TURN *** [3c 6c 7c] [Kh]
+*** RIVER *** [3c 6c 7c Kh] [4s]
+*** SHOWDOWN ***
+36a75840 collected 16,626 from pot
+*** SUMMARY ***
+Total pot 16,626 | Rake 0 | Jackpot 0 | Bingo 0 | Fortune 0 | Tax 0
+Board [3c 6c 7c Kh 4s]
+"""
+
+_HH_NO_ANTE_HAND = """\
+Poker Hand #TM5963540999: Tournament #284938542, Daily Turbo $3 Hold'em No Limit - Level1(100/200) - 2026/05/17 15:00:00
+Table '20' 3-max Seat #1 is the button
+Seat 1: Hero (10,000 in chips)
+Seat 2: villainA (10,000 in chips)
+Seat 3: villainB (10,000 in chips)
+villainA: posts small blind 100
+villainB: posts big blind 200
+*** HOLE CARDS ***
+Dealt to Hero [Ah Ks]
+Hero: raises 200 to 400
+villainA: folds
+villainB: calls 200
+*** FLOP *** [2d 7h Jc]
+villainB: checks
+Hero: bets 300
+villainB: folds
+*** SUMMARY ***
+Total pot 1,100
+"""
+
+
+@test
+def test_hh_parser_ante_level_format():
+    """Anted level 'Level14(400/800(100))' must parse (bb=800, not None)."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_ANTE_HAND, include_folds=True)
+    assert_true(gt is not None, "anted hand parsed to None (Level regex regression)")
+    assert_eq(gt["hand_id"], "TM5963540471", "hand_id")
+    assert_eq(gt["hero_position"], "BB", "hero_position")
+    assert_eq(gt["hero_hand"], "9cTh", "hero_hand")
+    # 8,063 / 800 = 10.07 → 10.1 (effective vs the all-in opponent)
+    assert_eq(gt["effective_bb"], 10.1, "effective_bb (bb_size must be 800)")
+    assert_eq(gt["preflop_actions"], "F-F-F-F-F-R2.0-C", "preflop_actions")
+    assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop street missing")
+
+
+@test
+def test_hh_parser_no_ante_level_still_works():
+    """Non-anted level 'Level1(100/200)' must still parse (no regression)."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_NO_ANTE_HAND, include_folds=True)
+    assert_true(gt is not None, "non-anted hand parsed to None")
+    assert_eq(gt["hero_hand"], "AhKs", "hero_hand")
+    assert_eq(gt["hero_position"], "BTN", "hero_position (3-max button)")
+    assert_eq(gt["effective_bb"], 50.0, "effective_bb (10000/200)")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
