@@ -74,9 +74,9 @@ def click_ref(ref: str) -> bool:
 
 def raw_mouse_click(x: int, y: int) -> None:
     ab("mouse", "move", str(x), str(y))
-    time.sleep(0.4)
+    time.sleep(0.12)
     ab("mouse", "down", "left")
-    time.sleep(0.3)
+    time.sleep(0.1)
     ab("mouse", "up", "left")
 
 
@@ -113,26 +113,44 @@ def clear_overlay() -> bool:
     return _overlay_gone()
 
 
+def _gh_open() -> bool:
+    return ev(_HAND_TABLE_JS) and json.loads(ev(_HAND_TABLE_JS))["k"] >= 0
+
+
 def open_game_history(row_i: int) -> bool:
-    """Select tournament row_i and open its Game History tab."""
+    """Ensure tournament row_i is selected and its Game History tab is open.
+
+    Idempotent: a tournament row toggles selection, so blindly clicking can
+    DEselect an already-open tournament. Clear any selection first, then
+    select row_i and open Game History, verifying the hand table appears.
+    """
     clear_overlay()
-    # Resolve the date cell of row_i by position in table[0].
+    # Deselect anything currently selected so the row click reliably selects.
+    ev("""(()=>{for(const tr of (document.querySelectorAll(
+      'table')[0]?.querySelectorAll('tbody tr')||[])){
+      const cb=tr.querySelector('input[type=checkbox]');
+      if(cb&&cb.checked) cb.click();}})()""")
+    time.sleep(0.6)
     cell = ev(f"""(()=>{{const t=document.querySelectorAll('table')[0];
       const r=[...t.querySelectorAll('tbody tr')][{row_i}];
-      if(!r) return ''; const td=r.children[1];
-      td.setAttribute('data-scrape','1'); return (td.innerText||'').trim();}})()""")
+      if(!r) return ''; r.scrollIntoView({{block:'center'}});
+      return (r.children[1]?.innerText||'').trim();}})()""")
     if not cell:
         return False
-    ref = snap_ref(re.escape(cell) + r'.*\[ref=e\d+')
-    if not click_ref(ref):
-        return False
-    time.sleep(2.5)
-    gh = snap_ref(r'"Game History".*\[ref=e\d+')
-    if not gh:
-        return False
-    click_ref(gh)
-    time.sleep(3)
-    return True
+    for _ in range(3):
+        ref = snap_ref(re.escape(cell) + r'.*\[ref=e\d+')
+        if not ref or not click_ref(ref):
+            time.sleep(1)
+            continue
+        time.sleep(2.5)
+        gh = snap_ref(r'"Game History".*\[ref=e\d+')
+        if gh:
+            click_ref(gh)
+            time.sleep(3)
+            if _gh_open():
+                return True
+        time.sleep(1)
+    return _gh_open()
 
 
 _HAND_TABLE_JS = """(()=>{const ts=[...document.querySelectorAll('table')];
@@ -181,12 +199,14 @@ def open_hand_modal(hand_id: str) -> bool:
 
 
 def set_bb_view() -> bool:
-    """Raw-click the BB header button until #hand-scene re-renders in BB."""
-    before = ev("(()=>{const i=document.getElementById('hand-scene');"
-                "window.__s=i?i.src:'';return window.__s.length;})()")
+    """Raw-click the BB header button until #hand-scene re-renders in BB.
+
+    Fast path: 1 click then poll every 0.25s; the re-render lands in <1s.
+    """
     pos = ev("""(()=>{const m=document.querySelector('app-hand-scene-modal');
       if(!m) return ''; const b=[...m.querySelectorAll('button')][2];
-      if(!b) return ''; const r=b.getBoundingClientRect();
+      if(!b) return ''; const i=document.getElementById('hand-scene');
+      window.__s=i?i.src:''; const r=b.getBoundingClientRect();
       return JSON.stringify([Math.round(r.x+r.width/2),
                              Math.round(r.y+r.height/2)]);})()""")
     if not pos:
@@ -194,14 +214,143 @@ def set_bb_view() -> bool:
     x, y = json.loads(pos)
     for _ in range(3):
         raw_mouse_click(x, y)
-        time.sleep(2)
-        st = ev("""(()=>{const m=document.querySelector('app-hand-scene-modal');
-          const b=m?[...m.querySelectorAll('button')][2]:null;
-          const i=document.getElementById('hand-scene');
-          return JSON.stringify({act:b?b.getAttribute('active'):null,
-            changed:i?(i.src!==window.__s):false});})()""")
-        s = json.loads(st)
-        if s["act"] == "true" and s["changed"]:
+        for _ in range(8):
+            time.sleep(0.25)
+            s = json.loads(ev(
+                "(()=>{const m=document.querySelector('app-hand-scene-modal');"
+                "const b=m?[...m.querySelectorAll('button')][2]:null;"
+                "const i=document.getElementById('hand-scene');"
+                "return JSON.stringify({act:b?b.getAttribute('active'):null,"
+                "changed:i?(i.src!==window.__s):false});})()"))
+            if s["act"] == "true" and s["changed"]:
+                return True
+    return False
+
+
+def set_page_size_max() -> int:
+    """Best-effort: pick the largest rows-per-page (fewer pages to walk).
+
+    Never fatal — any leftover Material menu overlay is force-closed so a
+    failed attempt can't block the run; the scraper then just paginates the
+    default 10/page.
+    """
+    try:
+        pos = ev("""(()=>{const b=document.querySelector(
+          '.pagination .mat-menu-trigger'); if(!b) return '';
+          b.scrollIntoView({block:'center'}); const r=b.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2),
+            y:Math.round(r.y+r.height/2)});})()""")
+        if not pos:
+            return 0
+        o = json.loads(pos)
+        raw_mouse_click(o["x"], o["y"])
+        time.sleep(1)
+        opts = ev("""(()=>{const it=[...document.querySelectorAll(
+          '.cdk-overlay-container button,.mat-menu-panel button,'
+          +'.mat-menu-item,[role=menuitem]')]
+          .map(i=>{const r=i.getBoundingClientRect();
+            const m=(i.innerText||'').match(/^\\s*(\\d+)\\s*$/);
+            return (m&&r.width)?{n:+m[1],x:Math.round(r.x+r.width/2),
+              y:Math.round(r.y+r.height/2)}:null;}).filter(Boolean);
+          return JSON.stringify(it);})()""")
+        items = json.loads(opts) if opts else []
+        if not items:
+            return 0
+        best = max(items, key=lambda d: d["n"])
+        raw_mouse_click(best["x"], best["y"])
+        time.sleep(1.5)
+        return best["n"]
+    except Exception:
+        return 0
+    finally:
+        # Force any leftover Material menu shut (Escape closes mat-menu)
+        # so a failed attempt can't block subsequent clicks.
+        ab("press", "Escape")
+        time.sleep(0.3)
+        ab("press", "Escape")
+        time.sleep(0.3)
+
+
+def collect_list_ids() -> list[str]:
+    """Read every Game-History hand id in display order across all pages.
+
+    Pure DOM reads + pager clicks — no modals — so this is cheap. The
+    in-modal right arrow walks hands in this same order, so image #k maps
+    to ids[k] (per the tournament's hand sequence)."""
+    ids: list[str] = []
+    seen_pages = 0
+    while True:
+        page = json.loads(ev(_HAND_TABLE_JS))["ids"]
+        ids.extend(h for h in page if h)
+        seen_pages += 1
+        if seen_pages > 60 or not hand_pager_next():
+            break
+    return ids
+
+
+def pager_to_first() -> None:
+    """Click the pager's prev arrow until back on page 1."""
+    for _ in range(60):
+        o = json.loads(ev("""(()=>{const p=document.querySelector('.pagination');
+          if(!p) return JSON.stringify({done:true});
+          const cur=p.querySelector('.current-page');
+          if(cur && cur.textContent.trim()==='1')
+            return JSON.stringify({done:true});
+          const prev=[...p.querySelectorAll('button')].find(b=>
+            b.querySelector('i.fa-angle-left'));
+          if(!prev||prev.disabled) return JSON.stringify({done:true});
+          prev.scrollIntoView({block:'center'});
+          const r=prev.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2),
+            y:Math.round(r.y+r.height/2)});})()"""))
+        if o.get("done"):
+            return
+        raw_mouse_click(o["x"], o["y"])
+        time.sleep(0.6)
+
+
+def open_hand_by_id(hand_id: str) -> bool:
+    """Open the replay modal for hand_id (anchor; once per tournament).
+
+    Uses the proven path: scroll the row into view so it lands in the a11y
+    snapshot, then a Playwright click on the cell ref (raw-mouse coords on
+    this Angular cell were unreliable; the ref click opens it every time).
+    """
+    for _ in range(4):
+        if not _overlay_gone():
+            clear_overlay()
+        ev(f"""(()=>{{for(const tb of document.querySelectorAll('table')){{
+          for(const r of tb.querySelectorAll('tbody tr')){{
+            if(r.innerText.includes('{hand_id}')){{
+              r.scrollIntoView({{block:'center'}}); return 1;}}}}}}
+          return 0;}})()""")
+        time.sleep(0.5)
+        ref = snap_ref(rf'cell "{hand_id}".*\[ref=e\d+')
+        if ref and click_ref(ref):
+            for _ in range(20):
+                time.sleep(0.25)
+                if ev("!!document.getElementById('hand-scene')") in (
+                        "true", True):
+                    return True
+        time.sleep(0.6)
+    return False
+
+
+def nav_right() -> bool:
+    """Raw-click the in-modal right arrow; True once #hand-scene advances."""
+    o = json.loads(ev("""(()=>{const n=document.querySelector('.navigator-right');
+      const i=document.getElementById('hand-scene');
+      if(!n||!i) return JSON.stringify({err:1});
+      window.__p=i.src; const r=n.getBoundingClientRect();
+      return JSON.stringify({x:Math.round(r.x+r.width/2),
+        y:Math.round(r.y+r.height/2)});})()"""))
+    if o.get("err"):
+        return False
+    raw_mouse_click(o["x"], o["y"])
+    for _ in range(20):
+        time.sleep(0.25)
+        if ev("(()=>{const i=document.getElementById('hand-scene');"
+              "return i&&i.src!==window.__p;})()") in ("true", True):
             return True
     return False
 
@@ -303,41 +452,45 @@ def main() -> int:
             print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: "
                   f"could not open Game History; skip")
             continue
-        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}")
-        seen_pages = 0
-        while True:
-            ht = hand_table()
-            ids = [h for h in ht["ids"] if h]
-            if not ids:
+        # 1. Maximise rows-per-page so there are far fewer pages to walk.
+        size = set_page_size_max()
+        # 2. Read the tournament's full hand-id order from the list (cheap:
+        #    pure DOM + pager, no modals). Ends on the last page.
+        ids = collect_list_ids()
+        if not ids:
+            print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: no hands")
+            continue
+        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} "
+              f"— {len(ids)} hands (page size {size or 10})")
+        # 3. Page the list LEFT back to page 1 (re-selecting the tournament
+        #    would toggle it OFF), then anchor the modal on hand #0.
+        pager_to_first()
+        if not open_hand_by_id(ids[0]):
+            print(f"   could not open first hand {ids[0]}; skip tournament")
+            clear_overlay()
+            continue
+        # 3. Walk every hand with the right arrow. image at step k == ids[k]
+        #    (the tournament's hand order). Skipped hands are still stepped
+        #    past so the image↔id alignment never drifts.
+        for k, hid in enumerate(ids):
+            if k > 0 and not nav_right():
+                print(f"   arrow stalled at k={k}; {len(ids)-k} unreached")
                 break
-            for hid in ids:
-                if hid in done:
-                    continue
-                if gt_ids is not None and hid not in gt_ids:
-                    continue
-                if not open_hand_modal(hid):
-                    print(f"   {hid}: modal failed")
-                    continue
-                if not set_bb_view():
-                    print(f"   {hid}: BB toggle failed (saving chip view)")
-                ok = grab_scene(imgs / f"{hid}.png")
-                close_modal()
-                if ok:
-                    done.add(hid)
-                    total += 1
-                    man.write(json.dumps(
-                        {"hand_id": hid, "tournament": tr["name"],
-                         "date": tr["date"]}, ensure_ascii=False) + "\n")
-                    man.flush()
-                    if total % 20 == 0:
-                        print(f"   ... {total} new images "
-                              f"({len(done)} total)")
-            seen_pages += 1
-            if not hand_pager_next():
-                break
-            time.sleep(2.5)
-            if seen_pages > 40:  # safety
-                break
+            if hid in done or (gt_ids is not None and hid not in gt_ids):
+                continue
+            if not set_bb_view():
+                print(f"   {hid}: BB toggle failed (saving chip view)")
+            if grab_scene(imgs / f"{hid}.png"):
+                done.add(hid)
+                total += 1
+                man.write(json.dumps(
+                    {"hand_id": hid, "tournament": tr["name"],
+                     "date": tr["date"], "order_index": k},
+                    ensure_ascii=False) + "\n")
+                man.flush()
+                if total % 25 == 0:
+                    print(f"   ... {total} new images ({len(done)} total)")
+        close_modal()
     man.close()
     print(f"[done] {total} new images this run; "
           f"{len(list(imgs.glob('*.png')))} total in {imgs}")
