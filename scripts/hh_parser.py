@@ -278,10 +278,16 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
         if not include_folds:
             return None
 
-    # Check if hero had no decision (walk — everyone folded before hero acted)
+    # Check if hero had no decision (walk — everyone folded before hero acted).
+    # A non-acting seat (e.g. a short stack all-in from the ante, which emits
+    # no preflop action line) shortens preflop_parts and would otherwise push
+    # hero_preflop_idx past its end and false-trigger this gate. A genuine
+    # walk has no raise and never goes postflop, so only skip when hero truly
+    # took no preflop action and the hand never reached a flop.
+    hero_acted_preflop = any(p == hero_position for p, _ in preflop_actions_ordered)
     if hero_preflop_idx >= len(preflop_parts):
-        # Hero's position was never reached (everyone folded)
-        return None
+        if not hero_acted_preflop and not board_flop:
+            return None
 
     # ── Parse postflop streets ──
     streets = []

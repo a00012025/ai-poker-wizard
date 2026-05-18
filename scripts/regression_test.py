@@ -6762,6 +6762,77 @@ def test_hh_parser_ante_level_format():
     assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop street missing")
 
 
+# A short stack all-in from the ante ("posts the ante 4,942" with only 4,942
+# chips) emits no preflop action line, so its position is absent from
+# preflop_parts. That used to push hero_preflop_idx past the list end and
+# false-trigger the "walk" skip, dropping every anted hand with a sub-ante
+# stack. parse_hand must still return the hand (hero fields intact).
+_HH_ANTE_ALLIN_HAND = """\
+Poker Hand #TM5901976430: Tournament #280457497, Phase-L: 25 Zodiac Million Festival [Final] Hold'em No Limit - Level16(20,000/40,000(5,000)) - 2026/05/03 22:46:45
+Table '73' 8-max Seat #8 is the button
+Seat 1: 87514188 (1,318,736 in chips)
+Seat 2: Hero (1,283,487 in chips)
+Seat 3: 7edf0999 (650,858 in chips)
+Seat 4: 2dcb0bd9 (95,921 in chips)
+Seat 5: 35d9f56f (1,118,439 in chips)
+Seat 6: 15f641ed (4,942 in chips)
+Seat 7: b34ff918 (1,033,228 in chips)
+Seat 8: c1fd42c9 (472,515 in chips)
+15f641ed: posts the ante 4,942
+7edf0999: posts the ante 5,000
+2dcb0bd9: posts the ante 5,000
+Hero: posts the ante 5,000
+b34ff918: posts the ante 5,000
+35d9f56f: posts the ante 5,000
+c1fd42c9: posts the ante 5,000
+87514188: posts the ante 5,000
+87514188: posts small blind 20,000
+Hero: posts big blind 40,000
+*** HOLE CARDS ***
+Dealt to 87514188
+Dealt to Hero [5c Kc]
+Dealt to 7edf0999
+Dealt to 2dcb0bd9
+Dealt to 35d9f56f
+Dealt to 15f641ed
+Dealt to b34ff918
+Dealt to c1fd42c9
+7edf0999: folds
+2dcb0bd9: folds
+35d9f56f: folds
+b34ff918: folds
+c1fd42c9: folds
+87514188: raises 100,000 to 140,000
+Hero: calls 100,000
+*** FLOP *** [Th 8d 9h]
+87514188: bets 76,787
+Hero: folds
+Uncalled bet (76,787) returned to 87514188
+*** TURN *** [Th 8d 9h] [5d]
+*** RIVER *** [Th 8d 9h 5d] [7h]
+*** SHOWDOWN ***
+87514188 collected 319,942 from pot
+*** SUMMARY ***
+Total pot 319,942
+Board [Th 8d 9h 5d 7h]
+"""
+
+
+@test
+def test_hh_parser_ante_allin_does_not_false_walk():
+    """Sub-ante all-in seat must not drop the whole hand via the walk gate."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_ANTE_ALLIN_HAND, include_folds=True)
+    assert_true(gt is not None,
+                "ante-all-in hand parsed to None (walk-gate false positive)")
+    assert_eq(gt["hand_id"], "TM5901976430", "hand_id")
+    assert_eq(gt["hero_position"], "BB", "hero_position")
+    assert_eq(gt["hero_hand"], "5cKc", "hero_hand")
+    assert_eq(gt["preflop_actions"], "F-F-F-F-F-R3.5-C", "preflop_actions")
+    assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop missing")
+
+
 @test
 def test_hh_parser_no_ante_level_still_works():
     """Non-anted level 'Level1(100/200)' must still parse (no regression)."""
