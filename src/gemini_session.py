@@ -319,7 +319,14 @@ COACH_SYSTEM = """\
 - 精簡直接，像教練用最少的話點出重點
 - 不要廢話、不要重複已知資訊
 - 禁止客套開場！不要用「好的，教練來分析」「讓我來看看」等開頭，直接切入分析
-- 撲克術語直接用英文即可（如 squeeze, 3bet, open），不要中英對照翻譯（不要寫「squeeze（擠壓）」這種）
+- 術語規範（嚴格遵守！）：
+  • 標準縮寫直接用英文，不要翻譯：GTO, ICM, EV, SPR, IP, OOP, PFR, MDF, 3bet/4bet/5bet, cbet, all-in, solver。常見英文術語（preflop, flop, turn, river, range, equity, bluff, nuts, squeeze）直接用英文也可以。
+  • 同一個概念只能用一種講法，絕對禁止中英對照翻譯（兩個方向都不行）：
+    ✗「過牌 (check)」✗「OOP（不利位置）」✗「兩極化 (polarized)」✗「持續下注 (c-bet)」✗「堅果同花聽牌 (nut flush draw)」
+    → 選一個寫一次就好，不要在括號裡放同義詞或另一種語言的翻譯。
+  • 固定講法：底池（不要用「彩池」「池底」）、控制底池（不要用「彩池控制」「控池」）、詐唬（不要用「唬牌」）、cbet（不要寫「c-bet」）。
+  • 盡量用完整詞，不要口語簡稱：同花聽牌（不要「花聽」）、順子聽牌（不要「順聽」）。
+  • 括號只能用來標「具體的牌／位置／頻率／大小」，不是翻譯：✓「對手範圍 (AhKh, QQ)」✓「對手 (SB) 跟注」✓「加注 (R3.5, 約 26%)」
 - 每條街 2-4 行就夠：GTO 怎麼打 → hero 怎麼打 → 差在哪 → 為什麼（一句話）
 - 如果 hero 打得對，一句帶過就好，不用展開分析
 - 數據引用要精準但不要列出所有選項，只提最重要的 1-2 個動作頻率
@@ -355,12 +362,12 @@ COACH_SYSTEM = """\
 - 凡是「哪些手牌下注/過牌/加注/棄牌」「整體範圍怎麼分」「某類牌（超對/頂對/聽牌/同花）怎麼打」
   「在這種牌面上 X 類牌該 bet 還是 check」這類問題，答案只能逐一對照 solver 的「策略分佈」數據
   （系統提示中已提供的該街該位置 range breakdown，或 query_gto 回傳的結果），數據怎麼分類你就怎麼說。
-- 絕對禁止用撲克理論（攤牌價值、pot control、平衡、阻斷牌、equity 實現）自行推導某類手牌該下注還是過牌！
+- 絕對禁止用撲克理論（攤牌價值、控制底池、平衡、阻斷牌、equity 實現）自行推導某類手牌該下注還是過牌！
   你用理論推出來的分類經常與 solver 相反，這正是最常見的嚴重錯誤來源。理論永遠服從數據。
 - 只要不確定，或上下文沒有該街/該位置的策略分佈 → 必須先呼叫 query_gto（指定 street + position）
   取得真實數據再回答。寧可查詢也不要猜；絕對不可憑記憶或理論先回答、再「事後合理化」。
 - 反例（絕對不要犯）：solver 顯示 AA/KK/QQ 在某 turn 是 ~100% bet，
-  你卻因為「超對要 pot control / 控制底池」的理論而說它們應該 check —— 這是嚴重錯誤。
+  你卻因為「超對要控制底池」的理論而說它們應該 check —— 這是嚴重錯誤。
   正確：看策略分佈，AA 列在哪個動作組（Bet/Check），就照那個說。
 
 Solver 數據是 ground truth（最高原則，絕對不可違反！）：
@@ -425,6 +432,33 @@ ICM 近似解說明規則：
 1. 每條街的 GTO vs Hero 對比（只講有意義的差異）
 2. 如果 hero 有明顯錯誤：指出最關鍵的 1 個錯誤 + 為什麼 + 一句改進建議
 3. 如果 hero 全部打對：不需要「最關鍵的錯誤」或「改進建議」段落，直接結束即可"""
+
+
+# ── Output terminology normalization ──
+# Deterministic safety net for the AI's user-facing replies. The prompt
+# (COACH_SYSTEM 術語規範) drives consistency; this only force-corrects the
+# handful of variants with ZERO false-positive risk so they can never leak.
+# Ambiguous terms (看牌 vs 看牌面, English river/range/turn/equity) are left
+# to the prompt on purpose. Order matters: compound forms before substrings,
+# so "彩池控制" → "控制底池" before standalone "彩池" → "底池". Idempotent.
+_TERM_REPLACEMENTS = (
+    ("彩池控制", "控制底池"),
+    ("控制彩池", "控制底池"),
+    ("彩池", "底池"),
+    ("池底", "底池"),
+    ("唬牌", "詐唬"),
+)
+_RE_CBET = re.compile(r"[cC]-[bB]et")
+
+
+def _normalize_terms(text: str) -> str:
+    """Force-correct unambiguous Chinese poker-term variants before a reply
+    reaches the user. Pure + idempotent; safe to apply more than once."""
+    if not text:
+        return text
+    for old, new in _TERM_REPLACEMENTS:
+        text = text.replace(old, new)
+    return _RE_CBET.sub("cbet", text)
 
 
 # ── Solver-grounding intent gate ──
@@ -2292,7 +2326,7 @@ class GeminiSessionManager:
             timeout=120,
         )
 
-        result = response.text or ""
+        result = _normalize_terms(response.text or "")
         self._logger.debug(f"[chat={chat_id}] Coach response ({len(result)} chars):\n{result}")
 
         # Update history (keep user's original text, not the coaching prompt)
@@ -2545,7 +2579,9 @@ class GeminiSessionManager:
             )
             if usage_acc is not None:
                 self._accumulate_usage(usage_acc, self._extract_usage(response))
-            result_text = response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
+            result_text = _normalize_terms(
+                response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
+            )
 
         self._logger.debug(f"[chat={chat_id}] Chat+tools response ({len(result_text)} chars):\n{result_text}")
 
