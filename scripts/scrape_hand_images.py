@@ -98,18 +98,26 @@ def tournament_rows() -> list[dict]:
         "return {i,date:c[1]||'',name:c[2]||''};}));})()"))
 
 
-def clear_overlay() -> bool:
-    """Dismiss any open replay modal so the page is clickable.
+def _dismiss() -> None:
+    """Close the PokerCraft replay modal.
 
-    The Material dialog's OK button ignores synthesized element clicks (same
-    as the BB button) and sits off the viewport bottom, but the dialog closes
-    on Escape — so just press Escape until the overlay is gone.
+    The hand-modal is a CDK overlay (.cdk-overlay-pane.hand-modal). Its OK
+    button is inert/off-viewport and Escape does NOT close it — but a click
+    on the .cdk-overlay-backdrop does (verified). A stranded backdrop is
+    fatal: agent-browser snapshots then only see the overlay, so every
+    subsequent table ref click fails. This is the single reliable close.
     """
+    ev("(()=>{const b=document.querySelector('.cdk-overlay-backdrop');"
+       "if(b){b.click();return 1;}return 0;})()")
+    ab("press", "Escape")  # belt-and-braces for any non-backdrop popup
+
+
+def clear_overlay() -> bool:
     for _ in range(10):
         if _overlay_gone():
             return True
-        ab("press", "Escape")
-        time.sleep(0.8)
+        _dismiss()
+        time.sleep(0.6)
     return _overlay_gone()
 
 
@@ -167,7 +175,7 @@ def hand_table() -> dict:
 
 def _overlay_gone() -> bool:
     return ev("(()=>{return !document.getElementById('hand-scene') && "
-              "!document.querySelector('app-hand-scene-modal') && "
+              "!document.querySelector('.cdk-overlay-pane.hand-modal') && "
               "!document.querySelector('.cdk-overlay-backdrop');})()") in (
         "true", True)
 
@@ -288,25 +296,50 @@ def collect_list_ids() -> list[str]:
     return ids
 
 
+def _cur_page() -> str:
+    return str(ev("(()=>{const c=document.querySelector('.pagination "
+                  ".current-page');return c?c.textContent.trim():'';})()"))
+
+
+def _pager_click(arrow: str) -> str:
+    """Tag the pager prev/next button with an aria-label, then Playwright-
+    click it by ref. The pager (unlike BB/OK) DOES honour ref clicks, so
+    this is reliable; raw-mouse on these tiny off-viewport buttons was not.
+
+    Returns 'last' (button absent/disabled) or the page number before click.
+    """
+    icon = "fa-angle-right" if arrow == "next" else "fa-angle-left"
+    o = json.loads(ev(f"""(()=>{{const p=document.querySelector('.pagination');
+      if(!p) return JSON.stringify({{last:true}});
+      const cur=p.querySelector('.current-page');
+      const b=[...p.querySelectorAll('button')].find(x=>
+        x.querySelector('i.{icon}'));
+      if(!b || b.disabled || b.getAttribute('disabled')!==null)
+        return JSON.stringify({{last:true}});
+      b.setAttribute('aria-label','SCRAPE_PAGER');
+      b.scrollIntoView({{block:'center'}});
+      return JSON.stringify({{cur:(cur?cur.textContent.trim():'')}});}})()"""))
+    if o.get("last"):
+        return "last"
+    cur = o["cur"]
+    ref = snap_ref(r'SCRAPE_PAGER.*\[ref=e\d+')
+    if ref:
+        click_ref(ref)
+    return cur
+
+
 def pager_to_first() -> None:
-    """Click the pager's prev arrow until back on page 1."""
-    for _ in range(60):
-        o = json.loads(ev("""(()=>{const p=document.querySelector('.pagination');
-          if(!p) return JSON.stringify({done:true});
-          const cur=p.querySelector('.current-page');
-          if(cur && cur.textContent.trim()==='1')
-            return JSON.stringify({done:true});
-          const prev=[...p.querySelectorAll('button')].find(b=>
-            b.querySelector('i.fa-angle-left'));
-          if(!prev||prev.disabled) return JSON.stringify({done:true});
-          prev.scrollIntoView({block:'center'});
-          const r=prev.getBoundingClientRect();
-          return JSON.stringify({x:Math.round(r.x+r.width/2),
-            y:Math.round(r.y+r.height/2)});})()"""))
-        if o.get("done"):
+    """Page LEFT until back on page 1 (never re-selects the tournament)."""
+    for _ in range(80):
+        if _cur_page() in ("1", ""):
             return
-        raw_mouse_click(o["x"], o["y"])
-        time.sleep(0.6)
+        cur = _pager_click("prev")
+        if cur == "last":
+            return
+        for _ in range(10):
+            time.sleep(0.3)
+            if _cur_page() != cur:
+                break
 
 
 def open_hand_by_id(hand_id: str) -> bool:
@@ -327,11 +360,20 @@ def open_hand_by_id(hand_id: str) -> bool:
         time.sleep(0.5)
         ref = snap_ref(rf'cell "{hand_id}".*\[ref=e\d+')
         if ref and click_ref(ref):
-            for _ in range(20):
-                time.sleep(0.25)
-                if ev("!!document.getElementById('hand-scene')") in (
-                        "true", True):
+            # The modal opens immediately as a .hand-modal CDK pane, but the
+            # replay <img id=hand-scene> is rendered asynchronously and on
+            # the first hand can take well over 5s. As long as the pane is
+            # up, keep waiting (don't clear/retry, which races the render).
+            for _ in range(60):
+                time.sleep(0.5)
+                st = json.loads(ev(
+                    "(()=>JSON.stringify({s:!!document.getElementById("
+                    "'hand-scene'),m:!!document.querySelector("
+                    "'.cdk-overlay-pane.hand-modal')}))()"))
+                if st["s"]:
                     return True
+                if not st["m"] and _ > 6:
+                    break  # pane never appeared / vanished — retry
         time.sleep(0.6)
     return False
 
@@ -370,41 +412,19 @@ def close_modal() -> None:
     for _ in range(10):
         if _overlay_gone():
             return
-        ab("press", "Escape")
-        time.sleep(0.7)
+        _dismiss()
+        time.sleep(0.5)
 
 
 def hand_pager_next() -> bool:
-    """Advance the Game-History hand table to the next page.
-
-    The pager is <div.pagination> with a prev button (i.fa-angle-left,
-    disabled on page 1), a <span.current-page>, and a next button
-    (i.fa-angle-right, disabled on the last page). Like the other PokerCraft
-    controls it ignores synthesized clicks, so raw-mouse-click the next
-    button's centre and confirm <span.current-page> incremented.
-    """
-    info = ev("""(()=>{const p=document.querySelector('.pagination');
-      if(!p) return JSON.stringify({err:'no pager'});
-      const cur=p.querySelector('.current-page');
-      const next=[...p.querySelectorAll('button')].find(b=>
-        b.querySelector('i.fa-angle-right'));
-      if(!next) return JSON.stringify({err:'no next'});
-      if(next.disabled || next.getAttribute('disabled')!==null)
-        return JSON.stringify({last:true});
-      next.scrollIntoView({block:'center'});
-      const r=next.getBoundingClientRect();
-      return JSON.stringify({cur:(cur?cur.textContent.trim():''),
-        x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});})()""")
-    o = json.loads(info)
-    if o.get("err") or o.get("last"):
+    """Advance the hand list to the next page (Playwright ref click)."""
+    cur = _pager_click("next")
+    if cur == "last":
         return False
-    raw_mouse_click(o["x"], o["y"])
-    for _ in range(12):
-        time.sleep(0.5)
-        now = ev("(()=>{const c=document.querySelector('.pagination "
-                 ".current-page');return c?c.textContent.trim():'';})()")
-        if str(now) != str(o["cur"]):
-            time.sleep(1.5)  # let the new page's rows render
+    for _ in range(14):
+        time.sleep(0.4)
+        if _cur_page() != cur:
+            time.sleep(1.0)  # let the new page's rows render
             return True
     return False
 
@@ -448,49 +468,46 @@ def main() -> int:
     man = man_path.open("a", encoding="utf-8")
     total = 0
     for ti, tr in enumerate(tours):
+        # Re-pin the tab each tournament so any drift (a stray tab switch
+        # between tournaments) self-corrects without per-hand cost.
+        ab("tab", args.tab)
+        time.sleep(0.3)
         if not open_game_history(tr["i"]):
             print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: "
                   f"could not open Game History; skip")
             continue
-        # 1. Maximise rows-per-page so there are far fewer pages to walk.
-        size = set_page_size_max()
-        # 2. Read the tournament's full hand-id order from the list (cheap:
-        #    pure DOM + pager, no modals). Ends on the last page.
-        ids = collect_list_ids()
-        if not ids:
-            print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: no hands")
-            continue
-        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} "
-              f"— {len(ids)} hands (page size {size or 10})")
-        # 3. Page the list LEFT back to page 1 (re-selecting the tournament
-        #    would toggle it OFF), then anchor the modal on hand #0.
-        pager_to_first()
-        if not open_hand_by_id(ids[0]):
-            print(f"   could not open first hand {ids[0]}; skip tournament")
-            clear_overlay()
-            continue
-        # 3. Walk every hand with the right arrow. image at step k == ids[k]
-        #    (the tournament's hand order). Skipped hands are still stepped
-        #    past so the image↔id alignment never drifts.
-        for k, hid in enumerate(ids):
-            if k > 0 and not nav_right():
-                print(f"   arrow stalled at k={k}; {len(ids)-k} unreached")
+        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}")
+        # Row-anchored, page by page. Every image is labelled straight from
+        # its Game-History row (the modal carries no TM id), so pairing is
+        # correct by construction. The arrow/anchor design kept failing
+        # integration; this open→BB→grab→Escape→next loop reliably produced
+        # images in testing and the pager now uses a Playwright ref click.
+        page = 0
+        while True:
+            ids = [h for h in json.loads(ev(_HAND_TABLE_JS))["ids"] if h]
+            for hid in ids:
+                if hid in done or (gt_ids is not None and hid not in gt_ids):
+                    continue
+                if not open_hand_by_id(hid):
+                    print(f"   {hid}: open failed")
+                    clear_overlay()
+                    continue
+                if not set_bb_view():
+                    print(f"   {hid}: BB toggle failed (saving chip view)")
+                ok = grab_scene(imgs / f"{hid}.png")
+                close_modal()
+                if ok:
+                    done.add(hid)
+                    total += 1
+                    man.write(json.dumps(
+                        {"hand_id": hid, "tournament": tr["name"],
+                         "date": tr["date"]}, ensure_ascii=False) + "\n")
+                    man.flush()
+                    if total % 25 == 0:
+                        print(f"   ... {total} new ({len(done)} total)")
+            page += 1
+            if page > 80 or not hand_pager_next():
                 break
-            if hid in done or (gt_ids is not None and hid not in gt_ids):
-                continue
-            if not set_bb_view():
-                print(f"   {hid}: BB toggle failed (saving chip view)")
-            if grab_scene(imgs / f"{hid}.png"):
-                done.add(hid)
-                total += 1
-                man.write(json.dumps(
-                    {"hand_id": hid, "tournament": tr["name"],
-                     "date": tr["date"], "order_index": k},
-                    ensure_ascii=False) + "\n")
-                man.flush()
-                if total % 25 == 0:
-                    print(f"   ... {total} new images ({len(done)} total)")
-        close_modal()
     man.close()
     print(f"[done] {total} new images this run; "
           f"{len(list(imgs.glob('*.png')))} total in {imgs}")
