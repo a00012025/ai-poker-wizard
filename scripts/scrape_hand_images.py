@@ -479,7 +479,14 @@ def main() -> int:
     imgs.mkdir(parents=True, exist_ok=True)
     man_path = out / "manifest.jsonl"
     done = {p.stem for p in imgs.glob("*.png")}
-    print(f"[resume] {len(done)} images already scraped")
+    # Tournaments confirmed fully covered (every GT hand already imaged) are
+    # recorded so a resume skips them WITHOUT opening Game History or paging
+    # — otherwise each token window is wasted re-walking finished events.
+    dt_path = out / "done_tournaments.json"
+    done_tours: set[str] = set(
+        json.loads(dt_path.read_text())) if dt_path.exists() else set()
+    print(f"[resume] {len(done)} images, "
+          f"{len(done_tours)} tournaments already complete")
 
     pin_tab(args.tab)
     if not clear_overlay():
@@ -492,6 +499,9 @@ def main() -> int:
     man = man_path.open("a", encoding="utf-8")
     total = 0
     for ti, tr in enumerate(tours):
+        tkey = f"{tr['date']}|{tr['name']}"
+        if tkey in done_tours:
+            continue  # already fully covered — skip without opening it
         # Re-pin the tab each tournament so any drift (a stray tab switch
         # between tournaments) self-corrects without per-hand cost.
         ab("tab", args.tab)
@@ -511,6 +521,8 @@ def main() -> int:
         print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} "
               f"(page size {size})")
         pageno = 0
+        want_seen = 0
+        errored = False
         while True:
             pageno += 1
             page_ids = [h for h in json.loads(ev(_HAND_TABLE_JS))["ids"] if h]
@@ -518,10 +530,12 @@ def main() -> int:
                 break
             want = [h for h in page_ids
                     if h not in done and (gt_ids is None or h in gt_ids)]
+            want_seen += len(want)
             if want:
                 if not open_hand_by_id(page_ids[0]):
                     print(f"   p{pageno}: could not open first hand "
                           f"{page_ids[0]}")
+                    errored = True
                     clear_overlay()
                 else:
                     set_bb_view()
@@ -531,6 +545,7 @@ def main() -> int:
                             if not nav_right():
                                 print(f"   p{pageno}: arrow stalled at k={k};"
                                       f" {len(page_ids)-k} unreached")
+                                errored = True
                                 break
                             if bb_persists is None:
                                 bb_persists = bb_active()
@@ -556,6 +571,13 @@ def main() -> int:
                     close_modal()
             if not hand_pager_next():
                 break
+        # Nothing was left to grab anywhere in this tournament and no step
+        # failed → it is fully covered; record it so future resumes skip it
+        # outright (no Game History open, no paging).
+        if want_seen == 0 and not errored:
+            done_tours.add(tkey)
+            dt_path.write_text(json.dumps(sorted(done_tours),
+                                          ensure_ascii=False))
     man.close()
     print(f"[done] {total} new images this run; "
           f"{len(list(imgs.glob('*.png')))} total in {imgs}")
