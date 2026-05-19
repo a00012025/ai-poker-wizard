@@ -667,6 +667,65 @@ def _fix_collapsed_streets(streets: list) -> list:
     return result
 
 
+def _rederive_postflop_codes(
+    params: dict,
+    flop_board: str, turn_board: str, river_board: str,
+    old_flop: str, old_turn: str, old_river: str,
+) -> tuple[str, str, str]:
+    """Re-match opponent bet/raise codes against the solver bet grid at
+    ``params``' depth.
+
+    Used by the off-range depth-escalation retry: a code like ``R4.25``
+    valid at the original depth may not exist at the escalated depth.  The
+    GTO API silently collapses an unmatched action string to the street
+    *root* node — so a hero-facing-bet spot turns into the opponent's
+    first-action node (wrong player to act, wrong strategy shown).
+
+    Each street's codes are re-walked segment by segment so the accumulated
+    (re-matched) prefix is the context for the next segment.  Simple codes
+    (X/C/F) and all-in (RAI) are depth-stable and pass through unchanged.
+    """
+    base = dict(gametype=params.get("gametype"), depth=params.get("depth"),
+                preflop_actions=params.get("preflop_actions", ""))
+
+    def _rematch(board: str, prefix_kw: dict, street_key: str, old_str: str) -> str:
+        if not old_str:
+            return ""
+        new_codes: list[str] = []
+        for code in old_str.split("-"):
+            if code in ("X", "C", "F", "RAI") or not code.startswith("R"):
+                new_codes.append(code)
+                continue
+            try:
+                target = float(code[1:])
+            except ValueError:
+                new_codes.append(code)
+                continue
+            kw = dict(base, board=board, **prefix_kw)
+            kw[street_key] = "-".join(new_codes)
+            resp = get_next_actions(**kw)
+            avail = ((resp or {}).get("next_actions") or {}).get(
+                "available_actions", [])
+            if avail:
+                new_codes.append(find_closest_action_postflop(avail, target))
+            else:
+                new_codes.append(code)
+        return "-".join(new_codes)
+
+    new_flop = _rematch(
+        flop_board, {"turn_actions": "", "river_actions": ""},
+        "flop_actions", old_flop)
+    new_turn = _rematch(
+        turn_board or flop_board,
+        {"flop_actions": new_flop, "river_actions": ""},
+        "turn_actions", old_turn)
+    new_river = _rematch(
+        river_board or turn_board or flop_board,
+        {"flop_actions": new_flop, "turn_actions": new_turn},
+        "river_actions", old_river)
+    return new_flop, new_turn, new_river
+
+
 def _run_analysis(hand: dict) -> dict:
     """Core analysis: walk hand, discover bet codes, fetch spot solutions.
 
@@ -1600,6 +1659,11 @@ def _run_analysis(hand: dict) -> dict:
                     # there's R9.35).  For each hero spot, update depth
                     # and preflop, then re-match any raise/bet actions.
                     import re as _re_mod
+                    _fb = streets[0].get("board", "") if streets else ""
+                    _tb = _fb + (streets[1].get("card", "")
+                                 if len(streets) > 1 else "")
+                    _rb = _tb + (streets[2].get("card", "")
+                                 if len(streets) > 2 else "")
                     for i, (spot, _) in enumerate(zip(hero_spots, solutions)):
                         if spot["street"] == "preflop":
                             continue
@@ -1607,6 +1671,21 @@ def _run_analysis(hand: dict) -> dict:
                         retry_params = dict(spot["params"],
                                             depth=try_depth,
                                             preflop_actions=renorm_pf)
+                        # Opponent bet/raise codes in the spot's postflop
+                        # action strings were matched against the OLD depth's
+                        # bet grid.  At the new depth those codes may not
+                        # exist; an unmatched action string silently collapses
+                        # the API to the street-root node (wrong player to
+                        # act).  Re-derive them against the new depth.
+                        _nf, _nt, _nr = _rederive_postflop_codes(
+                            retry_params, _fb, _tb, _rb,
+                            retry_params.get("flop_actions", ""),
+                            retry_params.get("turn_actions", ""),
+                            retry_params.get("river_actions", ""),
+                        )
+                        retry_params["flop_actions"] = _nf
+                        retry_params["turn_actions"] = _nt
+                        retry_params["river_actions"] = _nr
                         # Check if old action code needs re-matching
                         _desc = spot.get("action_desc", "")
                         _orig_is_raise = (" R" in _desc and "bb" in _desc)

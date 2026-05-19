@@ -535,6 +535,43 @@ def test_api_postflop_percentage_detection():
 
 
 @test
+def test_rederive_postflop_codes_remaps_stale_bet():
+    """Off-range depth escalation must re-match opponent bet codes to the
+    new depth's bet grid.
+
+    H2890: KQs flatted a 3-bet (off-range at 30bb), escalating postflop to
+    35bb.  SB's flop bet was coded 'R4.25' at 30bb; that code does not
+    exist at 35bb, so the API silently collapsed the flop to SB's
+    first-action root node — showing SB's Check/Bet strategy instead of
+    HJ's facing-bet (Call/Fold/Raise) decision.
+    """
+    from analyze_hand import _rederive_postflop_codes
+    from gto_api import get_next_actions
+
+    params = {
+        "gametype": "MTTGeneral", "depth": 35.125,
+        "preflop_actions": "F-F-F-R2.2-F-F-R8.3-F-C",
+    }
+    nf, nt, nr = _rederive_postflop_codes(
+        params, "Ts8d8h", "Ts8d8hAs", "",
+        "R4.25", "", "",
+    )
+    assert_true(nf != "R4.25", "stale 30bb bet code R4.25 must be remapped")
+    resp = get_next_actions(
+        gametype="MTTGeneral", depth=35.125,
+        preflop_actions="F-F-F-R2.2-F-F-R8.3-F-C",
+        board="Ts8d8h", flop_actions="",
+    )
+    codes = [a["action"]["code"]
+             for a in resp["next_actions"]["available_actions"]]
+    assert_in(nf, codes,
+              f"re-derived flop code {nf} must be a real 35bb action {codes}")
+    # Simple codes on later streets pass through untouched
+    assert_eq(nt, "", "no turn actions in → empty out")
+    assert_eq(nr, "", "no river actions in → empty out")
+
+
+@test
 def test_api_postflop_overbet_clamps_to_allin():
     """API: hero's all-in bet that overshoots solver's modeled all-in
     (hero stack > opponent stack, so real all-in > solver's effective
