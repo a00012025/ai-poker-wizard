@@ -235,48 +235,53 @@ def set_bb_view() -> bool:
     return False
 
 
-def set_page_size_max() -> int:
-    """Best-effort: pick the largest rows-per-page (fewer pages to walk).
+def bb_active() -> bool:
+    """True if the modal's BB toggle is currently on (image is BB-view)."""
+    return ev("(()=>{const m=document.querySelector('.cdk-overlay-pane"
+              ".hand-modal,app-hand-scene-modal');const b=m?"
+              "[...m.querySelectorAll('button')][2]:null;"
+              "return !!b && b.getAttribute('active')==='true';})()") in (
+        "true", True)
 
-    Never fatal — any leftover Material menu overlay is force-closed so a
-    failed attempt can't block the run; the scraper then just paginates the
-    default 10/page.
+
+def set_page_size_max() -> int:
+    """Pick the largest rows-per-page so there are far fewer pages to walk.
+
+    The trigger is a normal button ("10 Rows") and the menu items are
+    buttons/menuitems — all honour Playwright ref clicks (like the pager),
+    so use snap_ref+click_ref, not raw mouse (which stranded the overlay).
+    Returns the chosen size, or 0 if unchanged (caller falls back to 10).
     """
-    try:
-        pos = ev("""(()=>{const b=document.querySelector(
-          '.pagination .mat-menu-trigger'); if(!b) return '';
-          b.scrollIntoView({block:'center'}); const r=b.getBoundingClientRect();
-          return JSON.stringify({x:Math.round(r.x+r.width/2),
-            y:Math.round(r.y+r.height/2)});})()""")
-        if not pos:
-            return 0
-        o = json.loads(pos)
-        raw_mouse_click(o["x"], o["y"])
-        time.sleep(1)
-        opts = ev("""(()=>{const it=[...document.querySelectorAll(
-          '.cdk-overlay-container button,.mat-menu-panel button,'
-          +'.mat-menu-item,[role=menuitem]')]
-          .map(i=>{const r=i.getBoundingClientRect();
-            const m=(i.innerText||'').match(/^\\s*(\\d+)\\s*$/);
-            return (m&&r.width)?{n:+m[1],x:Math.round(r.x+r.width/2),
-              y:Math.round(r.y+r.height/2)}:null;}).filter(Boolean);
-          return JSON.stringify(it);})()""")
-        items = json.loads(opts) if opts else []
-        if not items:
-            return 0
-        best = max(items, key=lambda d: d["n"])
-        raw_mouse_click(best["x"], best["y"])
-        time.sleep(1.5)
-        return best["n"]
-    except Exception:
+    cur = ev("""(()=>{const b=document.querySelector(
+      '.pagination .mat-menu-trigger'); if(!b) return '';
+      b.scrollIntoView({block:'center'});
+      b.setAttribute('aria-label','SCRAPE_PGSIZE');
+      return (b.innerText||'').trim();})()""")
+    if not cur:
         return 0
-    finally:
-        # Force any leftover Material menu shut (Escape closes mat-menu)
-        # so a failed attempt can't block subsequent clicks.
+    ref = snap_ref(r'SCRAPE_PGSIZE.*\[ref=e\d+')
+    if not ref or not click_ref(ref):
+        return 0
+    time.sleep(1.0)
+    # Tag each numeric menu option, then ref-click the largest.
+    opts = json.loads(ev("""(()=>{const it=[...document.querySelectorAll(
+      '.cdk-overlay-container [role=menuitem],.cdk-overlay-container button,'
+      +'.mat-menu-panel button')]
+      .map(e=>{const m=(e.textContent||'').match(/(\\d+)/);
+        return m?{n:+m[1],e}:null;}).filter(Boolean);
+      it.forEach((o,i)=>o.e.setAttribute('aria-label','SCRAPE_OPT_'+o.n));
+      return JSON.stringify(it.map(o=>o.n));})()""") or "[]")
+    if not opts:
         ab("press", "Escape")
-        time.sleep(0.3)
-        ab("press", "Escape")
-        time.sleep(0.3)
+        return 0
+    best = max(opts)
+    ref = snap_ref(rf'SCRAPE_OPT_{best}\b.*\[ref=e\d+')
+    if ref:
+        click_ref(ref)
+        time.sleep(1.5)
+        return best
+    ab("press", "Escape")
+    return 0
 
 
 def collect_list_ids() -> list[str]:
@@ -476,38 +481,55 @@ def main() -> int:
             print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: "
                   f"could not open Game History; skip")
             continue
-        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}")
-        # Row-anchored, page by page. Every image is labelled straight from
-        # its Game-History row (the modal carries no TM id), so pairing is
-        # correct by construction. The arrow/anchor design kept failing
-        # integration; this open→BB→grab→Escape→next loop reliably produced
-        # images in testing and the pager now uses a Playwright ref click.
-        page = 0
-        while True:
-            ids = [h for h in json.loads(ev(_HAND_TABLE_JS))["ids"] if h]
-            for hid in ids:
-                if hid in done or (gt_ids is not None and hid not in gt_ids):
-                    continue
-                if not open_hand_by_id(hid):
-                    print(f"   {hid}: open failed")
-                    clear_overlay()
-                    continue
-                if not set_bb_view():
-                    print(f"   {hid}: BB toggle failed (saving chip view)")
-                ok = grab_scene(imgs / f"{hid}.png")
-                close_modal()
-                if ok:
-                    done.add(hid)
-                    total += 1
-                    man.write(json.dumps(
-                        {"hand_id": hid, "tournament": tr["name"],
-                         "date": tr["date"]}, ensure_ascii=False) + "\n")
-                    man.flush()
-                    if total % 25 == 0:
-                        print(f"   ... {total} new ({len(done)} total)")
-            page += 1
-            if page > 80 or not hand_pager_next():
-                break
+        # Fast flow: max page size → record every hand id in time order
+        # across pages → page back to 1 → open hand #0, BB once → then just
+        # press the right arrow per hand. image #k == ids[k] (the modal has
+        # no TM id, but the in-modal arrow walks the same order the list
+        # shows). BB is re-applied only if it didn't persist across the
+        # arrow — checked once, then trusted, with a cheap per-hand guard.
+        size = set_page_size_max()
+        ids = collect_list_ids()
+        if not ids:
+            print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: no hands")
+            continue
+        wanted = [h for h in ids
+                  if h not in done and (gt_ids is None or h in gt_ids)]
+        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} — "
+              f"{len(ids)} hands, {len(wanted)} to grab (page size {size or 10})")
+        if not wanted:
+            continue  # whole tournament already scraped
+        pager_to_first()
+        if not open_hand_by_id(ids[0]):
+            print(f"   could not open first hand {ids[0]}; skip")
+            clear_overlay()
+            continue
+        set_bb_view()
+        bb_persists: bool | None = None
+        for k, hid in enumerate(ids):
+            if k > 0:
+                if not nav_right():
+                    print(f"   arrow stalled at k={k}; "
+                          f"{len(ids)-k} hands unreached")
+                    break
+                if bb_persists is None:        # learn once per tournament
+                    bb_persists = bb_active()
+                if not bb_persists and not bb_active():
+                    set_bb_view()
+            if hid in done or (gt_ids is not None and hid not in gt_ids):
+                continue
+            if not bb_active():                # cheap guarantee of BB view
+                set_bb_view()
+            if grab_scene(imgs / f"{hid}.png"):
+                done.add(hid)
+                total += 1
+                man.write(json.dumps(
+                    {"hand_id": hid, "tournament": tr["name"],
+                     "date": tr["date"], "order_index": k},
+                    ensure_ascii=False) + "\n")
+                man.flush()
+                if total % 25 == 0:
+                    print(f"   ... {total} new ({len(done)} total)")
+        close_modal()
     man.close()
     print(f"[done] {total} new images this run; "
           f"{len(list(imgs.glob('*.png')))} total in {imgs}")
