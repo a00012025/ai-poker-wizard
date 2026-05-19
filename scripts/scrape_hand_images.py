@@ -139,14 +139,20 @@ def open_game_history(row_i: int) -> bool:
       const cb=tr.querySelector('input[type=checkbox]');
       if(cb&&cb.checked) cb.click();}})()""")
     time.sleep(0.6)
-    cell = ev(f"""(()=>{{const t=document.querySelectorAll('table')[0];
+    # Tag the target row's date cell with a stable aria-label and click it
+    # by ref. Matching on the cell's innerText is unreliable: many rows
+    # render a garbled multi-cell concatenation ("Apr 19, 20:00Apr 1920:00
+    # $35 Mega…Buy-in…") that never equals the clean a11y label, so those
+    # tournaments were silently skipped (the 0%-coverage older events).
+    ok = ev(f"""(()=>{{const t=document.querySelectorAll('table')[0];
       const r=[...t.querySelectorAll('tbody tr')][{row_i}];
-      if(!r) return ''; r.scrollIntoView({{block:'center'}});
-      return (r.children[1]?.innerText||'').trim();}})()""")
-    if not cell:
+      if(!r) return 0; r.scrollIntoView({{block:'center'}});
+      const c=r.children[1]||r.children[0];
+      c.setAttribute('aria-label','SCRAPE_ROW'); return 1;}})()""")
+    if ok not in (1, "1"):
         return False
     for _ in range(3):
-        ref = snap_ref(re.escape(cell) + r'.*\[ref=e\d+')
+        ref = snap_ref(r'SCRAPE_ROW.*\[ref=e\d+')
         if not ref or not click_ref(ref):
             time.sleep(1)
             continue
@@ -156,8 +162,13 @@ def open_game_history(row_i: int) -> bool:
             click_ref(gh)
             time.sleep(3)
             if _gh_open():
+                ev("(()=>{const e=document.querySelector("
+                   "'[aria-label=SCRAPE_ROW]');if(e)"
+                   "e.removeAttribute('aria-label');})()")
                 return True
         time.sleep(1)
+    ev("(()=>{const e=document.querySelector('[aria-label=SCRAPE_ROW]');"
+       "if(e)e.removeAttribute('aria-label');})()")
     return _gh_open()
 
 
