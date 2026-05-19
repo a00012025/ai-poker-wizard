@@ -384,21 +384,29 @@ def open_hand_by_id(hand_id: str) -> bool:
 
 
 def nav_right() -> bool:
-    """Raw-click the in-modal right arrow; True once #hand-scene advances."""
-    o = json.loads(ev("""(()=>{const n=document.querySelector('.navigator-right');
-      const i=document.getElementById('hand-scene');
-      if(!n||!i) return JSON.stringify({err:1});
-      window.__p=i.src; const r=n.getBoundingClientRect();
-      return JSON.stringify({x:Math.round(r.x+r.width/2),
-        y:Math.round(r.y+r.height/2)});})()"""))
-    if o.get("err"):
-        return False
-    raw_mouse_click(o["x"], o["y"])
-    for _ in range(20):
-        time.sleep(0.25)
-        if ev("(()=>{const i=document.getElementById('hand-scene');"
-              "return i&&i.src!==window.__p;})()") in ("true", True):
-            return True
+    """Raw-click the in-modal right arrow; True once #hand-scene advances.
+
+    A single click occasionally doesn't register (the run stalled mid-
+    tournament, leaving the rest unreached). Retry up to 4 times, re-reading
+    the arrow's position each time, before giving up.
+    """
+    for _ in range(4):
+        o = json.loads(ev(
+            "(()=>{const n=document.querySelector('.navigator-right');"
+            "const i=document.getElementById('hand-scene');"
+            "if(!n||!i) return JSON.stringify({err:1});"
+            "n.scrollIntoView({block:'center'});"
+            "window.__p=i.src; const r=n.getBoundingClientRect();"
+            "return JSON.stringify({x:Math.round(r.x+r.width/2),"
+            "y:Math.round(r.y+r.height/2)});})()"))
+        if o.get("err"):
+            return False
+        raw_mouse_click(o["x"], o["y"])
+        for _ in range(16):
+            time.sleep(0.25)
+            if ev("(()=>{const i=document.getElementById('hand-scene');"
+                  "return i&&i.src!==window.__p;})()") in ("true", True):
+                return True
     return False
 
 
