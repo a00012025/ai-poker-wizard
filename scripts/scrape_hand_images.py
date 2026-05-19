@@ -33,6 +33,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from title_ocr import read_title_id  # noqa: E402
+
 AB = "agent-browser"
 
 
@@ -358,16 +361,32 @@ def pager_to_first() -> None:
                 break
 
 
-def open_hand_by_id(hand_id: str) -> bool:
-    """Open the replay modal for hand_id (anchor; once per tournament).
+def _scene_src() -> str:
+    s = ev("(()=>{const i=document.getElementById('hand-scene');"
+           "return i&&i.src?i.src:'';})()")
+    return s if isinstance(s, str) else ""
 
-    Uses the proven path: scroll the row into view so it lands in the a11y
-    snapshot, then a Playwright click on the cell ref (raw-mouse coords on
-    this Angular cell were unreliable; the ref click opens it every time).
+
+def open_hand_by_id(hand_id: str) -> bool:
+    """Open the replay modal for hand_id by clicking ITS row.
+
+    Scroll the row into view (so it lands in the a11y snapshot), then a
+    Playwright click on the cell ref (raw-mouse on this Angular cell was
+    unreliable; the ref click opens it every time).
+
+    Crucially, this waits until #hand-scene shows a *fresh, settled* image,
+    not merely that the element exists. The modal reuses one <img>, so a
+    click can briefly leave the PREVIOUS hand's frame in place — capturing
+    then is exactly the stale-anchor bug that shifted all of Daily Hyper 1.
+    Clicking a different row always loads a different image, so "src left
+    its pre-click value and then stopped changing" pins the right hand.
+    This makes the row click correct by construction with no title needed
+    — the only id source for long-name events whose title is truncated.
     """
     for _ in range(4):
         if not _overlay_gone():
             clear_overlay()
+        pre = _scene_src()
         ev(f"""(()=>{{for(const tb of document.querySelectorAll('table')){{
           for(const r of tb.querySelectorAll('tbody tr')){{
             if(r.innerText.includes('{hand_id}')){{
@@ -376,19 +395,27 @@ def open_hand_by_id(hand_id: str) -> bool:
         time.sleep(0.5)
         ref = snap_ref(rf'cell "{hand_id}".*\[ref=e\d+')
         if ref and click_ref(ref):
-            # The modal opens immediately as a .hand-modal CDK pane, but the
-            # replay <img id=hand-scene> is rendered asynchronously and on
-            # the first hand can take well over 5s. As long as the pane is
-            # up, keep waiting (don't clear/retry, which races the render).
-            for _ in range(60):
+            last, stable = None, 0
+            for i in range(60):
                 time.sleep(0.5)
                 st = json.loads(ev(
                     "(()=>JSON.stringify({s:!!document.getElementById("
                     "'hand-scene'),m:!!document.querySelector("
                     "'.cdk-overlay-pane.hand-modal')}))()"))
                 if st["s"]:
-                    return True
-                if not st["m"] and _ > 6:
+                    cur = _scene_src()
+                    # must be non-empty, different from the pre-click frame,
+                    # and unchanged across two reads (render finished)
+                    if cur and cur != pre:
+                        if cur == last:
+                            stable += 1
+                            if stable >= 2:
+                                return True
+                        else:
+                            stable = 0
+                        last = cur
+                    continue
+                if not st["m"] and i > 6:
                     break  # pane never appeared / vanished — retry
         time.sleep(0.6)
     return False
@@ -421,15 +448,16 @@ def nav_right() -> bool:
     return False
 
 
-def grab_scene(dest: Path) -> bool:
+def grab_scene_bytes() -> bytes | None:
+    """Return the current #hand-scene PNG bytes (or None if not ready)."""
     ev("window.__g=document.getElementById('hand-scene').src")
     out = ab("eval", "window.__g")
     if out.startswith('"'):
         out = json.loads(out)
     if "," not in out:
-        return False
-    dest.write_bytes(base64.b64decode(out.split(",", 1)[1]))
-    return dest.stat().st_size > 1000
+        return None
+    raw = base64.b64decode(out.split(",", 1)[1])
+    return raw if len(raw) > 1000 else None
 
 
 def close_modal() -> None:
@@ -461,6 +489,24 @@ def main() -> int:
     ap.add_argument("--gt", default="",
                     help="ground_truth.jsonl: only scrape hands present here "
                          "(every image is then benchmarkable)")
+    ap.add_argument("--only-date", default="",
+                    help="only process tournaments whose row date cell "
+                         "contains this substring (e.g. 'May 03'). Filters on "
+                         "the cheap list cell — no Game History open — so a "
+                         "targeted backfill skips ~150 irrelevant events fast.")
+    ap.add_argument("--ignore-done-tours", action="store_true",
+                    help="do not skip tournaments recorded in "
+                         "done_tournaments.json. Use when a needed hand sits "
+                         "in a row whose tkey was wrongly marked complete "
+                         "(name/time collisions): every row is opened and the "
+                         "hand-id intersection finds the right one.")
+    ap.add_argument("--by-row-match", default="",
+                    help="for tournaments whose name contains this substring, "
+                         "open EACH hand by its own row click instead of the "
+                         "arrow walk. Needed for long-name live events whose "
+                         "replay title is truncated (no #TM id in the image), "
+                         "so title-OCR can't name the file — the row click is "
+                         "correct by construction.")
     args = ap.parse_args()
 
     gt_ids: set[str] | None = None
@@ -492,6 +538,9 @@ def main() -> int:
     if not clear_overlay():
         print("[warn] could not clear a pre-existing overlay")
     tours = tournament_rows()
+    if args.only_date:
+        tours = [t for t in tours if args.only_date in t["date"]]
+        print(f"[only-date] '{args.only_date}': {len(tours)} matching rows")
     if args.limit_tourneys:
         tours = tours[: args.limit_tourneys]
     print(f"[plan] {len(tours)} tournaments")
@@ -500,7 +549,7 @@ def main() -> int:
     total = 0
     for ti, tr in enumerate(tours):
         tkey = f"{tr['date']}|{tr['name']}"
-        if tkey in done_tours:
+        if tkey in done_tours and not args.ignore_done_tours:
             continue  # already fully covered — skip without opening it
         # Re-pin the tab each tournament so any drift (a stray tab switch
         # between tournaments) self-corrects without per-hand cost.
@@ -518,8 +567,9 @@ def main() -> int:
         # page's ids[k] — verified correct), then page on. Labels stay
         # correct; coverage no longer caps at 100.
         size = set_page_size_max() or 10
+        by_row = bool(args.by_row_match) and args.by_row_match in tr["name"]
         print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} "
-              f"(page size {size})")
+              f"(page size {size}{'; by-row' if by_row else ''})")
         pageno = 0
         want_seen = 0
         errored = False
@@ -528,10 +578,53 @@ def main() -> int:
             page_ids = [h for h in json.loads(ev(_HAND_TABLE_JS))["ids"] if h]
             if not page_ids:
                 break
+            # Fast skip for targeted runs (--gt = a small id set, often with
+            # --ignore-done-tours): if this tournament's first page shares no
+            # id with the target set, it holds none of them — don't page
+            # through it. Harmless on full-GT runs (every hand is in gt_ids,
+            # so page 1 always intersects and this never trips).
+            if pageno == 1 and gt_ids is not None and not (
+                    set(page_ids) & gt_ids):
+                break
             want = [h for h in page_ids
                     if h not in done and (gt_ids is None or h in gt_ids)]
             want_seen += len(want)
-            if want:
+            if want and by_row:
+                # No usable title in the image: open each wanted hand by its
+                # OWN row click. open_hand_by_id waits for a fresh, settled
+                # scene, so the file we save IS the hand we clicked — correct
+                # by construction, no arrow order or OCR involved.
+                for hid in want:
+                    if not open_hand_by_id(hid):
+                        print(f"   p{pageno}: could not open {hid}")
+                        errored = True
+                        clear_overlay()
+                        continue
+                    if not bb_active():
+                        set_bb_view()
+                    png = grab_scene_bytes()
+                    if png is None:
+                        man.write(json.dumps(
+                            {"hand_id": hid, "tournament": tr["name"],
+                             "date": tr["date"], "page": pageno,
+                             "by_row": True, "grab_failed": True},
+                            ensure_ascii=False) + "\n")
+                        man.flush()
+                        close_modal()
+                        continue
+                    (imgs / f"{hid}.png").write_bytes(png)
+                    done.add(hid)
+                    total += 1
+                    man.write(json.dumps(
+                        {"hand_id": hid, "tournament": tr["name"],
+                         "date": tr["date"], "page": pageno,
+                         "by_row": True},
+                        ensure_ascii=False) + "\n")
+                    man.flush()
+                    if total % 25 == 0:
+                        print(f"   ... {total} new ({len(done)} total)")
+                    close_modal()
+            elif want:
                 if not open_hand_by_id(page_ids[0]):
                     print(f"   p{pageno}: could not open first hand "
                           f"{page_ids[0]}")
@@ -540,7 +633,14 @@ def main() -> int:
                 else:
                     set_bb_view()
                     bb_persists: bool | None = None
-                    for k, hid in enumerate(page_ids):
+                    prev_oid: str | None = None
+                    # The arrow walks the page fast, but the in-modal order
+                    # is NOT guaranteed to equal page_ids and the anchor's
+                    # first frame can be stale (this caused Daily Hyper 1's
+                    # whole-tournament off-by-one). So never trust k for the
+                    # name: OCR each scene's own title bar — the only place
+                    # the true id exists — and key the file by THAT.
+                    for k in range(len(page_ids)):
                         if k > 0:
                             if not nav_right():
                                 print(f"   p{pageno}: arrow stalled at k={k};"
@@ -551,23 +651,53 @@ def main() -> int:
                                 bb_persists = bb_active()
                             if not bb_persists and not bb_active():
                                 set_bb_view()
-                        if hid in done or (
-                                gt_ids is not None and hid not in gt_ids):
-                            continue
                         if not bb_active():
                             set_bb_view()
-                        if grab_scene(imgs / f"{hid}.png"):
-                            done.add(hid)
-                            total += 1
+                        png = grab_scene_bytes()
+                        if png is None:
+                            continue
+                        oid, _, _ = read_title_id(png, valid=gt_ids)
+                        # Scene must advance every step; an unchanged id
+                        # means a stale frame — wait a beat and re-read.
+                        if oid is not None and oid == prev_oid:
+                            time.sleep(0.7)
+                            p2 = grab_scene_bytes()
+                            if p2:
+                                o2, _, _ = read_title_id(p2, valid=gt_ids)
+                                if o2 and o2 != prev_oid:
+                                    png, oid = p2, o2
+                        if oid is None:  # one retry before giving up
+                            time.sleep(0.5)
+                            p2 = grab_scene_bytes()
+                            if p2:
+                                o2, _, _ = read_title_id(p2, valid=gt_ids)
+                                if o2:
+                                    png, oid = p2, o2
+                        if oid is None:
                             man.write(json.dumps(
-                                {"hand_id": hid, "tournament": tr["name"],
-                                 "date": tr["date"],
-                                 "page": pageno, "k": k},
+                                {"hand_id": page_ids[k],
+                                 "tournament": tr["name"],
+                                 "date": tr["date"], "page": pageno,
+                                 "k": k, "ocr_failed": True},
                                 ensure_ascii=False) + "\n")
                             man.flush()
-                            if total % 25 == 0:
-                                print(f"   ... {total} new "
-                                      f"({len(done)} total)")
+                            continue
+                        prev_oid = oid
+                        if oid in done or (
+                                gt_ids is not None and oid not in gt_ids):
+                            continue
+                        (imgs / f"{oid}.png").write_bytes(png)
+                        done.add(oid)
+                        total += 1
+                        man.write(json.dumps(
+                            {"hand_id": oid, "tournament": tr["name"],
+                             "date": tr["date"], "page": pageno, "k": k,
+                             "list_id": page_ids[k]},
+                            ensure_ascii=False) + "\n")
+                        man.flush()
+                        if total % 25 == 0:
+                            print(f"   ... {total} new "
+                                  f"({len(done)} total)")
                     close_modal()
             if not hand_pager_next():
                 break

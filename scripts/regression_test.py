@@ -6845,6 +6845,66 @@ def test_hh_parser_no_ante_level_still_works():
     assert_eq(gt["effective_bb"], 50.0, "effective_bb (10000/200)")
 
 
+# ── Title OCR (dataset label oracle) ──
+#
+# Regression for the Daily Hyper 1 off-by-one: the scraper used to name
+# each replay PNG from its arrow-walk position, assuming the in-modal
+# right-arrow steps in hand-list order. That assumption broke (a stale
+# anchor frame shifted a whole tournament by one), so files held the wrong
+# hand. The fix makes the rendered title bar — the ONLY place the true id
+# exists — authoritative. These prove the reader is exact and that a
+# misnamed file is detected by reading its own title.
+
+_FX = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+
+
+@test
+def test_title_ocr_reads_correct_id_exactly():
+    """A scene whose id is known from a direct row-click anchor must read
+    back exactly (no off-by-one, no digit slip)."""
+    from title_ocr import read_title_id
+
+    fx = _FX / "title_correct_TM5963540471.png"
+    assert_true(fx.exists(), f"fixture missing: {fx}")
+    tid, votes, total = read_title_id(fx.read_bytes())
+    assert_eq(tid, "TM5963540471", "title id must read exactly")
+    assert_true(votes * 2 > total, "must win by a strict majority")
+
+
+@test
+def test_title_ocr_detects_mislabeled_file():
+    """The regression case itself: a file on disk named TM5880084315 whose
+    replay actually renders TM5880084269. Reading the title (not trusting
+    the name) must recover the TRUE id — this is what repairs the dataset
+    and what the self-correcting scraper now does at capture time."""
+    from title_ocr import read_title_id
+
+    fx = _FX / "title_mislabeled_file_TM5880084315.png"
+    assert_true(fx.exists(), f"fixture missing: {fx}")
+    gt = {"TM5880084269", "TM5880084315"}  # both are real GT ids
+    tid, _, _ = read_title_id(fx.read_bytes(), valid=gt)
+    assert_eq(tid, "TM5880084269",
+              "must read the TRUE rendered id, not the (wrong) filename")
+    assert_true(tid != "TM5880084315",
+                "filename is the mislabel; title is ground truth")
+
+
+@test
+def test_title_ocr_unreadable_returns_none():
+    """A title that cannot be read must return None — never a guessed id
+    (a false id would silently corrupt the benchmark pairing)."""
+    import io
+
+    from PIL import Image
+
+    from title_ocr import read_title_id
+
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 900), (0, 0, 0)).save(buf, "PNG")
+    tid, _, _ = read_title_id(buf.getvalue())
+    assert_true(tid is None, f"blank image must be unreadable, got {tid!r}")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

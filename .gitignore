@@ -39,6 +39,8 @@ downloads/
 # Allow snapshot test images
 !tests/snapshots/**/*.jpeg
 !tests/snapshots/**/*.png
+# Allow title-OCR regression fixtures (tiny, faithful title bands)
+!tests/fixtures/*.png
 # Snapshot GTO outputs are machine-local (depend on local .gto_cache)
 tests/snapshots/*/gto_text.txt
 tests/snapshots/*/gto_compact.txt
