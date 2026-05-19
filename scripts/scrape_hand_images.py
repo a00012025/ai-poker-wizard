@@ -489,55 +489,62 @@ def main() -> int:
             print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: "
                   f"could not open Game History; skip")
             continue
-        # Fast flow: max page size → record every hand id in time order
-        # across pages → page back to 1 → open hand #0, BB once → then just
-        # press the right arrow per hand. image #k == ids[k] (the modal has
-        # no TM id, but the in-modal arrow walks the same order the list
-        # shows). BB is re-applied only if it didn't persist across the
-        # arrow — checked once, then trusted, with a cheap per-hand guard.
-        size = set_page_size_max()
-        ids = collect_list_ids()
-        if not ids:
-            print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']}: no hands")
-            continue
-        wanted = [h for h in ids
-                  if h not in done and (gt_ids is None or h in gt_ids)]
-        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} — "
-              f"{len(ids)} hands, {len(wanted)} to grab (page size {size or 10})")
-        if not wanted:
-            continue  # whole tournament already scraped
-        pager_to_first()
-        if not open_hand_by_id(ids[0]):
-            print(f"   could not open first hand {ids[0]}; skip")
-            clear_overlay()
-            continue
-        set_bb_view()
-        bb_persists: bool | None = None
-        for k, hid in enumerate(ids):
-            if k > 0:
-                if not nav_right():
-                    print(f"   arrow stalled at k={k}; "
-                          f"{len(ids)-k} hands unreached")
-                    break
-                if bb_persists is None:        # learn once per tournament
-                    bb_persists = bb_active()
-                if not bb_persists and not bb_active():
+        # Per-PAGE anchor + arrow. The in-modal right arrow only walks within
+        # the loaded page window and hard-stalls at ~page_size steps, so a
+        # single anchor can't cover >100-hand tournaments. Instead: max the
+        # page size, then for each list page open its first hand, BB once,
+        # and arrow-walk just that page's <=100 hands (image #k == that
+        # page's ids[k] — verified correct), then page on. Labels stay
+        # correct; coverage no longer caps at 100.
+        size = set_page_size_max() or 10
+        print(f"[t{ti+1}/{len(tours)}] {tr['date']} {tr['name']} "
+              f"(page size {size})")
+        pageno = 0
+        while True:
+            pageno += 1
+            page_ids = [h for h in json.loads(ev(_HAND_TABLE_JS))["ids"] if h]
+            if not page_ids:
+                break
+            want = [h for h in page_ids
+                    if h not in done and (gt_ids is None or h in gt_ids)]
+            if want:
+                if not open_hand_by_id(page_ids[0]):
+                    print(f"   p{pageno}: could not open first hand "
+                          f"{page_ids[0]}")
+                    clear_overlay()
+                else:
                     set_bb_view()
-            if hid in done or (gt_ids is not None and hid not in gt_ids):
-                continue
-            if not bb_active():                # cheap guarantee of BB view
-                set_bb_view()
-            if grab_scene(imgs / f"{hid}.png"):
-                done.add(hid)
-                total += 1
-                man.write(json.dumps(
-                    {"hand_id": hid, "tournament": tr["name"],
-                     "date": tr["date"], "order_index": k},
-                    ensure_ascii=False) + "\n")
-                man.flush()
-                if total % 25 == 0:
-                    print(f"   ... {total} new ({len(done)} total)")
-        close_modal()
+                    bb_persists: bool | None = None
+                    for k, hid in enumerate(page_ids):
+                        if k > 0:
+                            if not nav_right():
+                                print(f"   p{pageno}: arrow stalled at k={k};"
+                                      f" {len(page_ids)-k} unreached")
+                                break
+                            if bb_persists is None:
+                                bb_persists = bb_active()
+                            if not bb_persists and not bb_active():
+                                set_bb_view()
+                        if hid in done or (
+                                gt_ids is not None and hid not in gt_ids):
+                            continue
+                        if not bb_active():
+                            set_bb_view()
+                        if grab_scene(imgs / f"{hid}.png"):
+                            done.add(hid)
+                            total += 1
+                            man.write(json.dumps(
+                                {"hand_id": hid, "tournament": tr["name"],
+                                 "date": tr["date"],
+                                 "page": pageno, "k": k},
+                                ensure_ascii=False) + "\n")
+                            man.flush()
+                            if total % 25 == 0:
+                                print(f"   ... {total} new "
+                                      f"({len(done)} total)")
+                    close_modal()
+            if not hand_pager_next():
+                break
     man.close()
     print(f"[done] {total} new images this run; "
           f"{len(list(imgs.glob('*.png')))} total in {imgs}")
