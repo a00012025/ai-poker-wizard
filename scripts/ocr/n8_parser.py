@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 from .region_detector import detect_regions
 from .table_parser import parse_table
 from .panel_parser import parse_panel, normalize_position
+from .button_detector import hero_position_from_button
 
 # Load config for confidence weights/threshold
 _CONFIG_PATH = Path(__file__).resolve().parent / "config" / "n8_default.json"
@@ -39,30 +40,55 @@ POSITION_ORDERS = {
 
 
 def _resolve_hero_board_conflict(
-    board_cards: list[str], hero_cards: list[str]
+    board_cards: list[str],
+    hero_cards: list[str],
+    *,
+    hero_details: list[dict] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """If hero and board share a card, clear hero.
+    """Resolve duplicate hero/board cards using classifier alternates."""
+    if not (board_cards and hero_cards):
+        return board_cards, hero_cards
 
-    Legacy versions tried A↔8 and 6↔9 rank swaps first — those patterns
-    covered frequent confusions from the old heuristic OCR pipeline. The
-    CNN classifier has different error modes (e.g., 8 vs 9 based on
-    crop edge detail) so those swaps now actively produce wrong answers
-    on hands where the classifier's second-best pick happens to match
-    the board. Instead we just clear the hero, which drops card_confidence
-    and naturally routes the hand into the Gemini fallback where the
-    image is re-read end-to-end.
-    """
-    if board_cards and hero_cards:
-        all_cards = board_cards + hero_cards
-        if len(set(all_cards)) < len(all_cards):
+    board_set = set(board_cards)
+    if not (set(hero_cards) & board_set) and len(set(hero_cards)) == len(hero_cards):
+        return board_cards, hero_cards
+
+    if hero_details is None:
+        log.warning(
+            "Duplicate cards detected without top2: board=%s hero=%s",
+            board_cards,
+            hero_cards,
+        )
+        return board_cards, []
+
+    fixed = list(hero_cards)
+    for idx, detail in enumerate(hero_details[:len(fixed)]):
+        current = fixed[idx]
+        if current not in board_set and fixed.count(current) == 1:
+            continue
+
+        candidates: list[tuple[str, float]] = []
+        for rank, rank_prob in detail.get("rank_top2", [])[:2]:
+            for suit, suit_prob in detail.get("suit_top2", [])[:2]:
+                if rank and suit:
+                    candidates.append((f"{rank}{suit}", rank_prob * suit_prob))
+        candidates.sort(key=lambda item: item[1], reverse=True)
+
+        for card, _ in candidates:
+            others = [fixed[j] for j in range(len(fixed)) if j != idx]
+            if card not in board_set and card not in others:
+                fixed[idx] = card
+                break
+        else:
             log.warning(
-                f"Duplicate cards detected: board={board_cards} "
-                f"hero={hero_cards} — clearing hero (board is more "
-                f"reliably OCR'd)"
+                "Duplicate cards unresolved: board=%s hero=%s detail=%s",
+                board_cards,
+                hero_cards,
+                detail,
             )
-            hero_cards = []
+            return board_cards, []
 
-    return board_cards, hero_cards
+    return board_cards, fixed
 
 
 def parse_n8_screenshot(image_bytes: bytes) -> dict:
@@ -672,7 +698,10 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     table_color = table_result.get("table_color", "unknown")
 
     board_cards, hero_cards = _resolve_hero_board_conflict(
-        board_cards, hero_cards)
+        board_cards,
+        hero_cards,
+        hero_details=table_result.get("hero_card_details"),
+    )
 
     # Card confidence — use actual hero detection quality from table parser.
     # Don't boost based on board legibility: CardCNN runs hero and board
@@ -814,6 +843,16 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                     hero_position = "SB"
                 elif "bb" in action_text or size == 1.0:
                     hero_position = "BB"
+
+    dealer_button = table_result.get("dealer_button")
+    if dealer_button and players_at_table == 8:
+        button_seat_idx, button_conf = dealer_button
+        button_hero_position = hero_position_from_button(
+            button_seat_idx,
+            table_size=players_at_table,
+        )
+        if button_conf >= 0.9 and button_hero_position:
+            hero_position = button_hero_position
 
     if not hero_position:
         return None, conf_parts

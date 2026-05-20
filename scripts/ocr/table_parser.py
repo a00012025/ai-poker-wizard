@@ -7,6 +7,8 @@ from the upper (table) region of an N8 replay screenshot.
 import cv2
 import numpy as np
 
+from .button_detector import detect_button
+
 
 def _detect_table_color(table_region: np.ndarray) -> str:
     """Detect table felt color to distinguish normal vs Final Table.
@@ -470,6 +472,8 @@ def _find_hero_cards(
         details.append({
             "rank": rank, "rank_conf": rank_conf,
             "suit": suit, "suit_conf": suit_conf,
+            "rank_top2": raw.get("rank_top2", []),
+            "suit_top2": masked.get("suit_top2", []),
             "conf": min(rank_conf, suit_conf),
         })
     cards = [f"{d['rank']}{d['suit']}" for d in details
@@ -563,6 +567,7 @@ def parse_table(table_region: np.ndarray) -> dict:
         }
 
     table_color = _detect_table_color(table_region)
+    dealer_button = detect_button(table_region)
     board_cards = _find_board_cards(table_region)
     hero_cards, hero_card_conf, hero_card_details = _find_hero_cards(table_region)
     all_stacks_named = _find_all_stacks(table_region)
@@ -580,6 +585,7 @@ def parse_table(table_region: np.ndarray) -> dict:
         "player_stacks": all_stacks,
         "named_stacks": all_stacks_named,
         "table_color": table_color,
+        "dealer_button": dealer_button,
     }
 
 

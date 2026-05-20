@@ -53,6 +53,7 @@ scripts/_tmp.py
 
 # OCR template raw crops
 scripts/ocr/templates/raw/
+!scripts/ocr/templates/dealer_button.png
 .game_modes_cache.json
 
 # Card classifier training crops (rebuildable via extract_crops.py)

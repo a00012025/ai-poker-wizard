@@ -212,6 +212,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int,
                     default=min(4, os.cpu_count() or 2))
     ap.add_argument("--max-failures", type=int, default=40)
+    ap.add_argument("--split", default="",
+                    help="Optional card-classifier split JSON for held-out eval")
+    ap.add_argument("--bucket", default="test", choices=["train", "val", "test"])
     args = ap.parse_args()
 
     gt_path = str(Path(args.ground_truth).resolve())
@@ -222,6 +225,9 @@ def main() -> int:
     with open(gt_path, encoding="utf-8") as fh:
         for line in fh:
             gt_ids.add(json.loads(line)["hand_id"])
+    if args.split:
+        split = json.loads(Path(args.split).read_text())
+        gt_ids &= set(split[args.bucket])
     imgs = sorted(img_dir.glob("*.png"))
     pairs = [p for p in imgs if p.stem in gt_ids]
     if args.limit and len(pairs) > args.limit:

@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(REPO_ROOT / ".env")
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from ocr.classifier.dataset import _letterbox, _to_tensor  # noqa: E402
+from ocr.classifier.dataset import CardDataset, _letterbox, _to_tensor  # noqa: E402
 from ocr.classifier.extract_crops import (  # noqa: E402
     _parse_hand_labels, _decode_table_region,
 )
@@ -31,6 +31,8 @@ REQUIRE_CLASS_F1 = 0.95
 
 CKPT = REPO_ROOT / "scripts" / "ocr" / "models" / "card_cnn_v1.pt"
 META = REPO_ROOT / "scripts" / "ocr" / "models" / "card_cnn_v1.json"
+DATA = REPO_ROOT / "data" / "cards_v2"
+SPLIT = REPO_ROOT / "data" / "splits" / "card_classifier_v2.json"
 
 
 def _predict_batch(net: CardCNN, crops: list[np.ndarray]) -> list[tuple[str, str, float]]:
@@ -47,6 +49,45 @@ def _predict_batch(net: CardCNN, crops: list[np.ndarray]) -> list[tuple[str, str
         s_idx = int(s_probs[i].argmax()); s_c = float(s_probs[i, s_idx])
         results.append((RANK_CLASSES[r_idx], SUIT_CLASSES[s_idx], min(r_c, s_c)))
     return results
+
+
+def _load_net(ckpt: Path, meta: dict):
+    version = meta.get("version", "v1")
+    if version == "mobilenet_v3_small":
+        from ocr.classifier.model import CardMobileNetV3Small
+        net = CardMobileNetV3Small()
+    elif version == "v2":
+        from ocr.classifier.model import CardCNNv2
+        net = CardCNNv2()
+    else:
+        net = CardCNN()
+    net.load_state_dict(torch.load(ckpt, map_location="cpu"))
+    net.eval()
+    return net
+
+
+def _split_check(net, data_root: Path, split_path: Path, bucket: str) -> dict:
+    dataset = CardDataset.from_split_json(data_root, split_path, bucket, augment=False)
+    if len(dataset) == 0:
+        raise SystemExit(f"empty split dataset: {bucket}")
+    rank_ok = 0
+    suit_ok = 0
+    card_ok = 0
+    for x, rank_idx, suit_idx in dataset:
+        with torch.no_grad():
+            rank_logits, suit_logits = net(x.unsqueeze(0))
+        rank_pred = int(rank_logits.argmax(1)[0])
+        suit_pred = int(suit_logits.argmax(1)[0])
+        rank_ok += int(rank_pred == rank_idx)
+        suit_ok += int(suit_pred == suit_idx)
+        card_ok += int(rank_pred == rank_idx and suit_pred == suit_idx)
+    total = len(dataset)
+    return {
+        "total": total,
+        "rank": rank_ok / total,
+        "suit": suit_ok / total,
+        "card": card_ok / total,
+    }
 
 
 async def _regression_check(net: CardCNN) -> tuple[int, int, list[str]]:
@@ -97,13 +138,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default=str(CKPT))
     ap.add_argument("--meta", default=str(META))
+    ap.add_argument("--data", default=str(DATA))
+    ap.add_argument("--split", default="")
+    ap.add_argument("--bucket", default="test", choices=["train", "val", "test"])
     ap.add_argument("--skip-regression", action="store_true",
                     help="Only check val accuracy + F1 gates from metadata JSON.")
     args = ap.parse_args()
 
     meta = json.loads(Path(args.meta).read_text())
-    print(f"metadata val_accuracy: rank={meta['val_accuracy_rank']:.4f}  "
-          f"suit={meta['val_accuracy_suit']:.4f}")
+    rank_acc_meta = meta.get("val_accuracy_rank", meta.get("val_acc_rank", 0.0))
+    suit_acc_meta = meta.get("val_accuracy_suit", meta.get("val_acc_suit", 0.0))
+    print(f"metadata val_accuracy: rank={rank_acc_meta:.4f}  "
+          f"suit={suit_acc_meta:.4f}")
+
+    net = _load_net(Path(args.ckpt), meta)
+
+    if args.split:
+        result = _split_check(net, Path(args.data), Path(args.split), args.bucket)
+        print(
+            f"{args.bucket} split: n={result['total']} "
+            f"card={result['card']:.4f} rank={result['rank']:.4f} "
+            f"suit={result['suit']:.4f}"
+        )
 
     failures_class: list[str] = []
     for cls, f1 in meta["val_per_class_f1"]["rank"].items():
@@ -117,8 +173,7 @@ def main():
         for f in failures_class:
             print(f"  {f}")
         sys.exit(2)
-    if (meta["val_accuracy_rank"] < REQUIRE_VAL_ACCURACY
-            or meta["val_accuracy_suit"] < REQUIRE_VAL_ACCURACY):
+    if (rank_acc_meta < REQUIRE_VAL_ACCURACY or suit_acc_meta < REQUIRE_VAL_ACCURACY):
         print(f"ACCURACY GATE FAILURE (< {REQUIRE_VAL_ACCURACY})")
         sys.exit(2)
     print("PASS: accuracy + per-class F1 gates")
@@ -126,10 +181,6 @@ def main():
     if args.skip_regression:
         print("(skipping regression check)")
         return
-
-    net = CardCNN()
-    net.load_state_dict(torch.load(args.ckpt, map_location="cpu"))
-    net.eval()
 
     passed, total, failures = asyncio.run(_regression_check(net))
     print(f"regression: {passed}/{total} hands pass")

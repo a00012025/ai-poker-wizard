@@ -42,3 +42,74 @@ class CardCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         f = self.backbone(x)
         return self.rank_head(f), self.suit_head(f)
+
+
+class CardCNNv2(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        def block(ci: int, co: int) -> nn.Sequential:
+            return nn.Sequential(
+                nn.Conv2d(ci, co, 3, padding=1),
+                nn.BatchNorm2d(co),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(co, co, 3, padding=1),
+                nn.BatchNorm2d(co),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
+            )
+
+        self.backbone = nn.Sequential(
+            block(3, 32),
+            block(32, 64),
+            block(64, 128),
+            block(128, 192),
+            block(192, 256),
+            nn.AdaptiveAvgPool2d(4),
+            nn.Flatten(),
+            nn.Dropout(0.3),
+        )
+        feat = 256 * 4 * 4
+        self.rank_head = nn.Linear(feat, len(RANK_CLASSES))
+        self.suit_head = nn.Linear(feat, len(SUIT_CLASSES))
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        f = self.backbone(x)
+        return self.rank_head(f), self.suit_head(f)
+
+
+class CardMobileNetV3Small(nn.Module):
+    def __init__(self, pretrained: bool = False):
+        super().__init__()
+        from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
+
+        weights = MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
+        base = mobilenet_v3_small(weights=weights)
+        self.register_buffer(
+            "_mean",
+            torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_std",
+            torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.features = base.features
+        self.avgpool = base.avgpool
+        in_features = base.classifier[0].in_features
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, 512),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(0.2),
+        )
+        self.rank_head = nn.Linear(512, len(RANK_CLASSES))
+        self.suit_head = nn.Linear(512, len(SUIT_CLASSES))
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = (x - self._mean) / self._std
+        f = self.features(x)
+        f = self.avgpool(f)
+        f = torch.flatten(f, 1)
+        f = self.shared(f)
+        return self.rank_head(f), self.suit_head(f)
