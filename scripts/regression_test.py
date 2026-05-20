@@ -1279,6 +1279,53 @@ def test_hh_parser_partial_ante_allin():
     assert_true(19.9 in stacks, f"alpha not at 19.9bb post-ante: {stacks}")
 
 
+@test
+def test_card_split_no_hand_leakage():
+    """A hand_id appearing in train must not appear in val or test."""
+    from ocr.classifier.split import build_split
+    from pathlib import Path
+    gt_path = Path(__file__).resolve().parent.parent / "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
+    split = build_split(gt_path, train=0.8, val=0.1, test=0.1, seed=0)
+    train_ids = set(split["train"])
+    val_ids = set(split["val"])
+    test_ids = set(split["test"])
+    assert_eq(len(train_ids & val_ids), 0, "train/val overlap")
+    assert_eq(len(train_ids & test_ids), 0, "train/test overlap")
+    assert_eq(len(val_ids & test_ids), 0, "val/test overlap")
+    total = len(train_ids) + len(val_ids) + len(test_ids)
+    assert_true(0.78 <= len(train_ids)/total <= 0.82,
+                f"train frac off: {len(train_ids)/total}")
+    assert_true(0.08 <= len(val_ids)/total <= 0.12,
+                f"val frac off: {len(val_ids)/total}")
+    assert_true(0.08 <= len(test_ids)/total <= 0.12,
+                f"test frac off: {len(test_ids)/total}")
+
+
+@test
+def test_card_split_tournament_balanced():
+    """Every tournament with >=10 hands appears in all three splits."""
+    import json
+    from collections import Counter
+    from pathlib import Path
+    from ocr.classifier.split import build_split
+    gt_path = Path(__file__).resolve().parent.parent / "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
+    split = build_split(gt_path, train=0.8, val=0.1, test=0.1, seed=0)
+    hid_to_tid = {}
+    with gt_path.open() as fh:
+        for line in fh:
+            o = json.loads(line)
+            hid_to_tid[o["hand_id"]] = o["ground_truth"].get("tournament_id")
+    big_tourneys = {t for t, n in Counter(hid_to_tid.values()).items()
+                    if n and n >= 10}
+    in_bucket = {"train": set(), "val": set(), "test": set()}
+    for bucket in ("train", "val", "test"):
+        for hid in split[bucket]:
+            in_bucket[bucket].add(hid_to_tid.get(hid))
+    for t in big_tourneys:
+        for bucket in ("train", "val", "test"):
+            assert_in(t, in_bucket[bucket], f"tourney {t} missing from {bucket}")
+
+
 # ── 169 Hand Index Tests ──
 
 @test
