@@ -10,3 +10,16 @@ venv/
 2026-*/
 hh_batch_results.*
 .claude/
+.codex/
+.omx/
+.gto_cache/
+.browser-profile/
+.tokens.json
+.game_modes_cache.json
+downloads/
+supabase/.temp/
+data/
+tests/
+docs/
+*.png
+!scripts/ocr/templates/dealer_button.png
