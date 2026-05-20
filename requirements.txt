@@ -18,7 +18,8 @@ psycopg2-binary>=2.9.0
 # OCR / Computer Vision
 opencv-python-headless>=4.8
 easyocr>=1.7
-torchvision>=0.25.0
+torch==2.5.1
+torchvision==0.20.1
 
 # Utilities
 python-dotenv>=1.0.0
