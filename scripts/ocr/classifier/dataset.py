@@ -1,9 +1,11 @@
-"""CardDataset — loads labeled crops from data/cards/{rank}/{suit}/*.png."""
+"""CardDataset — loads labeled crops from data/cards*/{rank}/{suit}/*.png."""
 from __future__ import annotations
 
+import json
 import random
 import re
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -15,15 +17,10 @@ from .model import RANK_CLASSES, SUIT_CLASSES
 INPUT_H, INPUT_W = 192, 128
 _RANK_TO_IDX = {r: i for i, r in enumerate(RANK_CLASSES)}
 _SUIT_TO_IDX = {s: i for i, s in enumerate(SUIT_CLASSES)}
-_FILENAME_RE = re.compile(r"^(?P<hand>[A-Za-z0-9]+)_(?P<src>hero|board)_(?P<slot>\d+)\.png$")
+_FILENAME_RE = re.compile(r"^(?P<hand>[A-Za-z0-9]+)_(?P<src>hero|hero_masked|board)_(?P<slot>\d+)\.png$")
 
 
 def _letterbox(img: np.ndarray, h: int = INPUT_H, w: int = INPUT_W) -> np.ndarray:
-    """Resize to (h, w), stretching aspect — cards have similar aspect ratios
-    (~0.7 w/h) so the small distortion beats wasting pixels on black padding
-    (v3 with letterbox plateaued at 90% rank acc because the rank glyph after
-    padding + resize was ~10px). Name kept as `_letterbox` for API stability;
-    the behavior is now stretch-resize."""
     return cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
 
 
@@ -46,9 +43,16 @@ def _apply_aug(img: np.ndarray) -> np.ndarray:
 class CardDataset(Dataset):
     """Every crop under root/{rank}/{suit}/{hand}_{src}_{slot}.png."""
 
-    def __init__(self, root: Path, augment: bool = True):
+    def __init__(
+        self,
+        root: Path,
+        augment: bool = True,
+        hand_ids: set[str] | None = None,
+        augment_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+    ):
         self.root = Path(root)
         self.augment = augment
+        self.augment_fn = augment_fn
         self.samples: list[tuple[str, str, int, int]] = []
         self.paths: list[Path] = []
         for rank_dir in sorted(self.root.iterdir() if self.root.exists() else []):
@@ -61,12 +65,34 @@ class CardDataset(Dataset):
                     m = _FILENAME_RE.match(png.name)
                     if not m:
                         continue
+                    if hand_ids is not None and m.group("hand") not in hand_ids:
+                        continue
                     self.paths.append(png)
                     self.samples.append((
                         m.group("hand"), f"{m.group('src')}_{m.group('slot')}",
                         _RANK_TO_IDX[rank_dir.name],
                         _SUIT_TO_IDX[suit_dir.name],
                     ))
+
+    @classmethod
+    def from_split_json(
+        cls,
+        root: Path,
+        split_path: Path,
+        bucket: str,
+        augment: bool = False,
+        augment_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+    ) -> "CardDataset":
+        with Path(split_path).open() as fh:
+            split = json.load(fh)
+        if bucket not in split:
+            raise ValueError(f"unknown split bucket: {bucket}")
+        return cls(
+            root,
+            augment=augment,
+            hand_ids=set(split[bucket]),
+            augment_fn=augment_fn,
+        )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -76,7 +102,7 @@ class CardDataset(Dataset):
         assert img is not None, f"unreadable: {self.paths[idx]}"
         img = _letterbox(img)
         if self.augment:
-            img = _apply_aug(img)
+            img = self.augment_fn(img) if self.augment_fn else _apply_aug(img)
         _, _, r_idx, s_idx = self.samples[idx]
         return _to_tensor(img), r_idx, s_idx
 

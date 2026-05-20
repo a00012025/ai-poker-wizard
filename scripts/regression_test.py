@@ -65,6 +65,108 @@ def assert_true(cond, msg=""):
         raise AssertionError(msg or "condition was False")
 
 
+# ── Card classifier v2 Tests ──
+
+@test
+def test_extract_crops_smoke():
+    from ocr.classifier.extract_pokercraft_crops import extract_one
+    import numpy as np
+
+    hid = "TM5846884226"
+    gt_row = None
+    gt_path = Path(__file__).resolve().parent.parent / "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
+    with gt_path.open() as fh:
+        for line in fh:
+            row = json.loads(line)
+            if row["hand_id"] == hid:
+                gt_row = row["ground_truth"]
+                break
+    assert_true(gt_row is not None, f"GT row for {hid} missing")
+    img_path = Path(__file__).resolve().parent.parent / f"data/hand_images/img/{hid}.png"
+    assert_true(img_path.exists(), f"image missing: {img_path}")
+    result = extract_one(img_path.read_bytes(), gt_row)
+    assert_eq(len(result["hero_crops"]), 2)
+    assert_eq(result["hero_labels"], ["5h", "4s"])
+    for crop in result["hero_crops"]:
+        assert_true(isinstance(crop, np.ndarray) and crop.shape[0] > 0)
+
+
+@test
+def test_extract_hero_labels_match_n8_visual_order():
+    from ocr.classifier.extract_pokercraft_crops import _visual_hero_order
+
+    assert_eq(_visual_hero_order(["3c", "7c"]), ["7c", "3c"])
+    assert_eq(_visual_hero_order(["Ah", "5h"]), ["Ah", "5h"])
+    assert_eq(_visual_hero_order(["3d", "3s"]), ["3s", "3d"])
+    assert_eq(_visual_hero_order(["7c", "7h"]), ["7h", "7c"])
+    assert_eq(_visual_hero_order(["2h", "2d"]), ["2d", "2h"])
+
+
+@test
+def test_augment_win_sticker_overlays_yellow():
+    import numpy as np
+    from ocr.classifier.augment import apply_win_sticker
+
+    base = np.full((192, 128, 3), 50, dtype=np.uint8)
+    out = apply_win_sticker(base, rng=np.random.default_rng(0), p=1.0)
+    yellow_mask = (out[..., 2] > 150) & (out[..., 1] > 150) & (out[..., 0] < 100)
+    assert_true(yellow_mask.sum() > 100, f"WIN sticker did not write yellow pixels: {yellow_mask.sum()}")
+
+
+@test
+def test_augment_color_jitter_preserves_dimensions():
+    import numpy as np
+    from ocr.classifier.augment import color_jitter
+
+    base = np.full((192, 128, 3), 128, dtype=np.uint8)
+    out = color_jitter(base, rng=np.random.default_rng(0), strength=0.3)
+    assert_eq(out.shape, base.shape)
+    assert_eq(out.dtype, np.uint8)
+
+
+@test
+def test_card_cnn_v2_forward_shape():
+    import torch
+    from ocr.classifier.model import CardCNNv2, RANK_CLASSES, SUIT_CLASSES
+
+    net = CardCNNv2()
+    net.eval()
+    rank_logits, suit_logits = net(torch.zeros(2, 3, 192, 128))
+    assert_eq(rank_logits.shape, (2, len(RANK_CLASSES)))
+    assert_eq(suit_logits.shape, (2, len(SUIT_CLASSES)))
+
+
+@test
+def test_card_mobilenet_v3_small_forward_shape():
+    import torch
+    from ocr.classifier.model import CardMobileNetV3Small, RANK_CLASSES, SUIT_CLASSES
+
+    net = CardMobileNetV3Small(pretrained=False)
+    net.eval()
+    rank_logits, suit_logits = net(torch.zeros(2, 3, 192, 128))
+    assert_eq(rank_logits.shape, (2, len(RANK_CLASSES)))
+    assert_eq(suit_logits.shape, (2, len(SUIT_CLASSES)))
+
+
+@test
+def test_button_detector_picks_known_fixture_sector():
+    import cv2
+
+    from ocr.button_detector import detect_button, hero_position_from_button
+    from ocr.region_detector import detect_regions
+
+    img_path = Path(__file__).resolve().parent.parent / "data/hand_images/img/TM5864550087.png"
+    image = cv2.imread(str(img_path))
+    regions = detect_regions(image)
+    result = detect_button(regions["table"], table_size=8)
+
+    assert_true(result is not None)
+    seat_idx, conf = result
+    assert_eq(seat_idx, 6)
+    assert_true(conf > 0.95)
+    assert_eq(hero_position_from_button(seat_idx, table_size=8), "BB")
+
+
 # ── Chip EV Tests ──
 
 @test
@@ -1277,6 +1379,53 @@ def test_hh_parser_partial_ante_allin():
     stacks = result["stacks_bb"]
     assert_true(0.0 in stacks, f"partial-ante all-in not at 0bb: {stacks}")
     assert_true(19.9 in stacks, f"alpha not at 19.9bb post-ante: {stacks}")
+
+
+@test
+def test_card_split_no_hand_leakage():
+    """A hand_id appearing in train must not appear in val or test."""
+    from ocr.classifier.split import build_split
+    from pathlib import Path
+    gt_path = Path(__file__).resolve().parent.parent / "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
+    split = build_split(gt_path, train=0.8, val=0.1, test=0.1, seed=0)
+    train_ids = set(split["train"])
+    val_ids = set(split["val"])
+    test_ids = set(split["test"])
+    assert_eq(len(train_ids & val_ids), 0, "train/val overlap")
+    assert_eq(len(train_ids & test_ids), 0, "train/test overlap")
+    assert_eq(len(val_ids & test_ids), 0, "val/test overlap")
+    total = len(train_ids) + len(val_ids) + len(test_ids)
+    assert_true(0.78 <= len(train_ids)/total <= 0.82,
+                f"train frac off: {len(train_ids)/total}")
+    assert_true(0.08 <= len(val_ids)/total <= 0.12,
+                f"val frac off: {len(val_ids)/total}")
+    assert_true(0.08 <= len(test_ids)/total <= 0.12,
+                f"test frac off: {len(test_ids)/total}")
+
+
+@test
+def test_card_split_tournament_balanced():
+    """Every tournament with >=10 hands appears in all three splits."""
+    import json
+    from collections import Counter
+    from pathlib import Path
+    from ocr.classifier.split import build_split
+    gt_path = Path(__file__).resolve().parent.parent / "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
+    split = build_split(gt_path, train=0.8, val=0.1, test=0.1, seed=0)
+    hid_to_tid = {}
+    with gt_path.open() as fh:
+        for line in fh:
+            o = json.loads(line)
+            hid_to_tid[o["hand_id"]] = o["ground_truth"].get("tournament_id")
+    big_tourneys = {t for t, n in Counter(hid_to_tid.values()).items()
+                    if n and n >= 10}
+    in_bucket = {"train": set(), "val": set(), "test": set()}
+    for bucket in ("train", "val", "test"):
+        for hid in split[bucket]:
+            in_bucket[bucket].add(hid_to_tid.get(hid))
+    for t in big_tourneys:
+        for bucket in ("train", "val", "test"):
+            assert_in(t, in_bucket[bucket], f"tourney {t} missing from {bucket}")
 
 
 # ── 169 Hand Index Tests ──
@@ -7078,6 +7227,61 @@ def test_title_ocr_unreadable_returns_none():
     Image.new("RGB", (640, 900), (0, 0, 0)).save(buf, "PNG")
     tid, _, _ = read_title_id(buf.getvalue())
     assert_true(tid is None, f"blank image must be unreadable, got {tid!r}")
+
+
+@test
+def test_resolve_hero_uses_top2_when_top1_collides():
+    """Hero CNN top1 collides with board; top2 doesn't, so keep top2."""
+    from ocr.n8_parser import _resolve_hero_board_conflict
+
+    board = ["Kc", "9d", "3h"]
+    hero_details = [
+        {
+            "rank": "K",
+            "rank_top2": [("K", 0.6), ("Q", 0.35)],
+            "suit": "c",
+            "suit_top2": [("c", 0.7), ("d", 0.2)],
+            "conf": 0.6,
+        },
+        {
+            "rank": "A",
+            "rank_top2": [("A", 0.9), ("K", 0.05)],
+            "suit": "s",
+            "suit_top2": [("s", 0.9), ("h", 0.05)],
+            "conf": 0.9,
+        },
+    ]
+
+    new_board, new_hero = _resolve_hero_board_conflict(
+        board,
+        ["Kc", "As"],
+        hero_details=hero_details,
+    )
+
+    assert_eq(new_board, board)
+    assert_eq(new_hero, ["Qc", "As"])
+
+
+@test
+def test_temperature_scaling_lowers_ece():
+    """Calibrated softmax should reduce expected calibration error."""
+    import torch
+
+    from ocr.classifier.calibrate import ece, fit_temperature
+
+    torch.manual_seed(0)
+    labels = torch.randint(0, 10, (1000,))
+    pred = labels.clone()
+    wrong = torch.randperm(1000)[:100]
+    pred[wrong] = (pred[wrong] + 1) % 10
+    logits = torch.zeros(1000, 10)
+    logits.scatter_(1, pred[:, None], 6.0)
+
+    temp = fit_temperature(logits, labels)
+    before = ece(torch.softmax(logits, dim=1), labels)
+    after = ece(torch.softmax(logits / temp, dim=1), labels)
+
+    assert_true(after < before, f"ECE not reduced: {before} -> {after}")
 
 
 if __name__ == "__main__":
