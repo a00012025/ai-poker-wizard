@@ -73,10 +73,15 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
     tournament_id_m = re.search(r"Tournament #(\d+)", header)
     tournament_id = tournament_id_m.group(1) if tournament_id_m else ""
 
-    level_m = re.search(r"Level\d+\(([\d,]+)/([\d,]+)\)", header)
+    # Level format is "Level14(400/800)" or, once antes kick in,
+    # "Level14(400/800(100))" — the trailing "(100)" is the ante.
+    level_m = re.search(
+        r"Level\d+\(([\d,]+)/([\d,]+)(?:\(([\d,]+)\))?\)", header
+    )
     if not level_m:
         return None
     bb_size = _parse_amount(level_m.group(2))
+    ante_size = _parse_amount(level_m.group(3)) if level_m.group(3) else 0
 
     # ── Table info ──
     table_line = lines[1]
@@ -273,10 +278,16 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
         if not include_folds:
             return None
 
-    # Check if hero had no decision (walk — everyone folded before hero acted)
+    # Check if hero had no decision (walk — everyone folded before hero acted).
+    # A non-acting seat (e.g. a short stack all-in from the ante, which emits
+    # no preflop action line) shortens preflop_parts and would otherwise push
+    # hero_preflop_idx past its end and false-trigger this gate. A genuine
+    # walk has no raise and never goes postflop, so only skip when hero truly
+    # took no preflop action and the hand never reached a flop.
+    hero_acted_preflop = any(p == hero_position for p, _ in preflop_actions_ordered)
     if hero_preflop_idx >= len(preflop_parts):
-        # Hero's position was never reached (everyone folded)
-        return None
+        if not hero_acted_preflop and not board_flop:
+            return None
 
     # ── Parse postflop streets ──
     streets = []

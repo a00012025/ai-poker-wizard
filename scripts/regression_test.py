@@ -6773,6 +6773,242 @@ def test_coach_system_terminology_rule():
                 "prompt body still contains a banned bilingual gloss")
 
 
+# ── HH Parser (ground-truth oracle) ──
+
+# Real GGPoker tournament hand: blinds 400/800 with a 100 ante. The ante is
+# rendered inside the level as "Level14(400/800(100))" — the regex used to
+# require "(400/800)" and returned None for every anted hand, silently
+# zeroing ground-truth coverage for ~all late-tournament hands.
+_HH_ANTE_HAND = """\
+Poker Hand #TM5963540471: Tournament #284938542, Daily Turbo $3 Hold'em No Limit - Level14(400/800(100)) - 2026/05/17 17:27:30
+Table '20' 8-max Seat #6 is the button
+Seat 1: Hero (8,063 in chips)
+Seat 2: 89fa3636 (4,660 in chips)
+Seat 3: 27448217 (16,567 in chips)
+Seat 4: d7153fd2 (40,398 in chips)
+Seat 5: a84236c (5,358 in chips)
+Seat 6: 1021c65b (50,149 in chips)
+Seat 7: 36a75840 (18,017 in chips)
+1021c65b: posts the ante 100
+89fa3636: posts the ante 100
+36a75840: posts the ante 100
+Hero: posts the ante 100
+a84236c: posts the ante 100
+d7153fd2: posts the ante 100
+27448217: posts the ante 100
+36a75840: posts small blind 400
+Hero: posts big blind 800
+*** HOLE CARDS ***
+Dealt to Hero [9c Th]
+Dealt to 89fa3636
+Dealt to 27448217
+Dealt to d7153fd2
+Dealt to a84236c
+Dealt to 1021c65b
+Dealt to 36a75840
+89fa3636: folds
+27448217: folds
+d7153fd2: folds
+a84236c: folds
+1021c65b: folds
+36a75840: raises 800 to 1,600
+Hero: calls 800
+*** FLOP *** [3c 6c 7c]
+36a75840: bets 3,200
+Hero: raises 3,163 to 6,363 and is all-in
+36a75840: calls 3,163
+Hero: shows [9c Th] (Ten high)
+36a75840: shows [5h 6s] (a pair of Sixes)
+*** TURN *** [3c 6c 7c] [Kh]
+*** RIVER *** [3c 6c 7c Kh] [4s]
+*** SHOWDOWN ***
+36a75840 collected 16,626 from pot
+*** SUMMARY ***
+Total pot 16,626 | Rake 0 | Jackpot 0 | Bingo 0 | Fortune 0 | Tax 0
+Board [3c 6c 7c Kh 4s]
+"""
+
+_HH_NO_ANTE_HAND = """\
+Poker Hand #TM5963540999: Tournament #284938542, Daily Turbo $3 Hold'em No Limit - Level1(100/200) - 2026/05/17 15:00:00
+Table '20' 3-max Seat #1 is the button
+Seat 1: Hero (10,000 in chips)
+Seat 2: villainA (10,000 in chips)
+Seat 3: villainB (10,000 in chips)
+villainA: posts small blind 100
+villainB: posts big blind 200
+*** HOLE CARDS ***
+Dealt to Hero [Ah Ks]
+Hero: raises 200 to 400
+villainA: folds
+villainB: calls 200
+*** FLOP *** [2d 7h Jc]
+villainB: checks
+Hero: bets 300
+villainB: folds
+*** SUMMARY ***
+Total pot 1,100
+"""
+
+
+@test
+def test_hh_parser_ante_level_format():
+    """Anted level 'Level14(400/800(100))' must parse (bb=800, not None)."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_ANTE_HAND, include_folds=True)
+    assert_true(gt is not None, "anted hand parsed to None (Level regex regression)")
+    assert_eq(gt["hand_id"], "TM5963540471", "hand_id")
+    assert_eq(gt["hero_position"], "BB", "hero_position")
+    assert_eq(gt["hero_hand"], "9cTh", "hero_hand")
+    # 8,063 / 800 = 10.07 → 10.1 (effective vs the all-in opponent)
+    assert_eq(gt["effective_bb"], 10.1, "effective_bb (bb_size must be 800)")
+    assert_eq(gt["preflop_actions"], "F-F-F-F-F-R2.0-C", "preflop_actions")
+    assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop street missing")
+
+
+# A short stack all-in from the ante ("posts the ante 4,942" with only 4,942
+# chips) emits no preflop action line, so its position is absent from
+# preflop_parts. That used to push hero_preflop_idx past the list end and
+# false-trigger the "walk" skip, dropping every anted hand with a sub-ante
+# stack. parse_hand must still return the hand (hero fields intact).
+_HH_ANTE_ALLIN_HAND = """\
+Poker Hand #TM5901976430: Tournament #280457497, Phase-L: 25 Zodiac Million Festival [Final] Hold'em No Limit - Level16(20,000/40,000(5,000)) - 2026/05/03 22:46:45
+Table '73' 8-max Seat #8 is the button
+Seat 1: 87514188 (1,318,736 in chips)
+Seat 2: Hero (1,283,487 in chips)
+Seat 3: 7edf0999 (650,858 in chips)
+Seat 4: 2dcb0bd9 (95,921 in chips)
+Seat 5: 35d9f56f (1,118,439 in chips)
+Seat 6: 15f641ed (4,942 in chips)
+Seat 7: b34ff918 (1,033,228 in chips)
+Seat 8: c1fd42c9 (472,515 in chips)
+15f641ed: posts the ante 4,942
+7edf0999: posts the ante 5,000
+2dcb0bd9: posts the ante 5,000
+Hero: posts the ante 5,000
+b34ff918: posts the ante 5,000
+35d9f56f: posts the ante 5,000
+c1fd42c9: posts the ante 5,000
+87514188: posts the ante 5,000
+87514188: posts small blind 20,000
+Hero: posts big blind 40,000
+*** HOLE CARDS ***
+Dealt to 87514188
+Dealt to Hero [5c Kc]
+Dealt to 7edf0999
+Dealt to 2dcb0bd9
+Dealt to 35d9f56f
+Dealt to 15f641ed
+Dealt to b34ff918
+Dealt to c1fd42c9
+7edf0999: folds
+2dcb0bd9: folds
+35d9f56f: folds
+b34ff918: folds
+c1fd42c9: folds
+87514188: raises 100,000 to 140,000
+Hero: calls 100,000
+*** FLOP *** [Th 8d 9h]
+87514188: bets 76,787
+Hero: folds
+Uncalled bet (76,787) returned to 87514188
+*** TURN *** [Th 8d 9h] [5d]
+*** RIVER *** [Th 8d 9h 5d] [7h]
+*** SHOWDOWN ***
+87514188 collected 319,942 from pot
+*** SUMMARY ***
+Total pot 319,942
+Board [Th 8d 9h 5d 7h]
+"""
+
+
+@test
+def test_hh_parser_ante_allin_does_not_false_walk():
+    """Sub-ante all-in seat must not drop the whole hand via the walk gate."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_ANTE_ALLIN_HAND, include_folds=True)
+    assert_true(gt is not None,
+                "ante-all-in hand parsed to None (walk-gate false positive)")
+    assert_eq(gt["hand_id"], "TM5901976430", "hand_id")
+    assert_eq(gt["hero_position"], "BB", "hero_position")
+    assert_eq(gt["hero_hand"], "5cKc", "hero_hand")
+    assert_eq(gt["preflop_actions"], "F-F-F-F-F-R3.5-C", "preflop_actions")
+    assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop missing")
+
+
+@test
+def test_hh_parser_no_ante_level_still_works():
+    """Non-anted level 'Level1(100/200)' must still parse (no regression)."""
+    from hh_parser import parse_hand
+
+    gt = parse_hand(_HH_NO_ANTE_HAND, include_folds=True)
+    assert_true(gt is not None, "non-anted hand parsed to None")
+    assert_eq(gt["hero_hand"], "AhKs", "hero_hand")
+    assert_eq(gt["hero_position"], "BTN", "hero_position (3-max button)")
+    assert_eq(gt["effective_bb"], 50.0, "effective_bb (10000/200)")
+
+
+# ── Title OCR (dataset label oracle) ──
+#
+# Regression for the Daily Hyper 1 off-by-one: the scraper used to name
+# each replay PNG from its arrow-walk position, assuming the in-modal
+# right-arrow steps in hand-list order. That assumption broke (a stale
+# anchor frame shifted a whole tournament by one), so files held the wrong
+# hand. The fix makes the rendered title bar — the ONLY place the true id
+# exists — authoritative. These prove the reader is exact and that a
+# misnamed file is detected by reading its own title.
+
+_FX = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+
+
+@test
+def test_title_ocr_reads_correct_id_exactly():
+    """A scene whose id is known from a direct row-click anchor must read
+    back exactly (no off-by-one, no digit slip)."""
+    from title_ocr import read_title_id
+
+    fx = _FX / "title_correct_TM5963540471.png"
+    assert_true(fx.exists(), f"fixture missing: {fx}")
+    tid, votes, total = read_title_id(fx.read_bytes())
+    assert_eq(tid, "TM5963540471", "title id must read exactly")
+    assert_true(votes * 2 > total, "must win by a strict majority")
+
+
+@test
+def test_title_ocr_detects_mislabeled_file():
+    """The regression case itself: a file on disk named TM5880084315 whose
+    replay actually renders TM5880084269. Reading the title (not trusting
+    the name) must recover the TRUE id — this is what repairs the dataset
+    and what the self-correcting scraper now does at capture time."""
+    from title_ocr import read_title_id
+
+    fx = _FX / "title_mislabeled_file_TM5880084315.png"
+    assert_true(fx.exists(), f"fixture missing: {fx}")
+    gt = {"TM5880084269", "TM5880084315"}  # both are real GT ids
+    tid, _, _ = read_title_id(fx.read_bytes(), valid=gt)
+    assert_eq(tid, "TM5880084269",
+              "must read the TRUE rendered id, not the (wrong) filename")
+    assert_true(tid != "TM5880084315",
+                "filename is the mislabel; title is ground truth")
+
+
+@test
+def test_title_ocr_unreadable_returns_none():
+    """A title that cannot be read must return None — never a guessed id
+    (a false id would silently corrupt the benchmark pairing)."""
+    import io
+
+    from PIL import Image
+
+    from title_ocr import read_title_id
+
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 900), (0, 0, 0)).save(buf, "PNG")
+    tid, _, _ = read_title_id(buf.getvalue())
+    assert_true(tid is None, f"blank image must be unreadable, got {tid!r}")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
