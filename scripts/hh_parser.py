@@ -111,6 +111,23 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
     if hero_seat is None:
         return None
 
+    # Subtract each player's ante so chips reflects the stack going into the
+    # betting round, not the pre-ante seat declaration. Solver effective-stack
+    # math and the all-in sizes in the action log are both post-ante; using
+    # pre-ante chips here was the only place that disagreed.
+    # Parse per-player so we handle the rare partial-ante all-in (where a short
+    # stack could only afford part of the header ante) and any BB-/BTN-ante
+    # variants correctly. Players with no posts line (sitting out) get 0.
+    if ante_size or "posts the ante" in text:
+        ante_re = re.compile(r"^(.+?): posts the ante ([\d,]+)$")
+        ante_by_name: dict[str, int] = {}
+        for line in lines:
+            am = ante_re.match(line)
+            if am:
+                ante_by_name[am.group(1).strip()] = _parse_amount(am.group(2))
+        for info in seats.values():
+            info["chips"] = max(0, info["chips"] - ante_by_name.get(info["name"], 0))
+
     num_players = len(seats)
     positions = POSITION_ORDERS.get(num_players)
     if positions is None:

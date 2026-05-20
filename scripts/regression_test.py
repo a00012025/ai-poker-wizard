@@ -1211,6 +1211,74 @@ def test_hh_parser_effective_stack_min():
                 f"effective_bb should be ~10, got {result['effective_bb']}")
 
 
+@test
+def test_hh_parser_subtracts_ante():
+    """HH Parser: ante is deducted from chip counts so stacks reflect the
+    post-ante state going into the betting round (same convention as the
+    all-in sizes printed in the action log)."""
+    from hh_parser import parse_hand
+    # _SAMPLE_HH_EFF_STACK: bb=400, ante=40
+    # Hero seat 2 declared 10,400 chips → post-ante 10,360 → 25.9bb
+    # BB seat 3 declared  4,000 chips → post-ante  3,960 →  9.9bb
+    result = parse_hand(_SAMPLE_HH_EFF_STACK)
+    assert_true(result is not None)
+    # hero_chips field reports post-ante chips (matches the all-in size logged
+    # by the dealer, which is also post-ante).
+    assert_eq(result["hero_chips"], 10360, f"hero_chips={result['hero_chips']}")
+    # effective_bb = min(hero, BB) / bb_size = 3960 / 400 = 9.9
+    assert_true(abs(result["effective_bb"] - 9.9) < 0.05,
+                f"effective_bb should be 9.9 (post-ante), got {result['effective_bb']}")
+    # stacks_bb reports each position's post-ante stack.
+    # SB stack 25.9bb, BB stack 9.9bb at minimum should both appear.
+    stacks = result["stacks_bb"]
+    assert_true(9.9 in stacks, f"BB 9.9bb missing from stacks_bb={stacks}")
+    assert_true(25.9 in stacks, f"Hero SB 25.9bb missing from stacks_bb={stacks}")
+
+
+# Partial-ante all-in: a 30-chip short stack at a 100-ante table can only
+# post 30 of the 100; their post-ante stack is 0, while everyone else has
+# their full ante subtracted.
+_SAMPLE_HH_PARTIAL_ANTE = """\
+Poker Hand #TM5600281000: Tournament #264809938, ¥220 Hold'em No Limit - Level10(500/1000(100)) - 2026/02/17 16:00:00
+Table '3' 8-max Seat #1 is the button
+Seat 1: alpha (20000 in chips)
+Seat 2: bravo (15000 in chips)
+Seat 3: charlie (30 in chips)
+Seat 4: Hero (12000 in chips)
+Seat 5: echo (8000 in chips)
+Seat 6: foxtrot (10000 in chips)
+alpha: posts the ante 100
+bravo: posts the ante 100
+charlie: posts the ante 30 and is all-in
+Hero: posts the ante 100
+echo: posts the ante 100
+foxtrot: posts the ante 100
+bravo: posts small blind 500
+charlie: posts big blind 0 and is all-in
+*** HOLE CARDS ***
+Dealt to Hero [Qd Tc]
+Hero: folds
+echo: folds
+foxtrot: folds
+alpha: folds
+bravo: folds
+*** SUMMARY ***
+Total pot 530 | Rake 0"""
+
+
+@test
+def test_hh_parser_partial_ante_allin():
+    """HH Parser: short stack that all-in'd on the ante gets 0 post-ante chips;
+    everyone else gets the full header ante subtracted."""
+    from hh_parser import parse_hand
+    result = parse_hand(_SAMPLE_HH_PARTIAL_ANTE, include_folds=True)
+    assert_true(result is not None, "should parse")
+    # bb=1000, ante=100. alpha 20000-100=19900 → 19.9bb. charlie 30-30=0 → 0.0bb.
+    stacks = result["stacks_bb"]
+    assert_true(0.0 in stacks, f"partial-ante all-in not at 0bb: {stacks}")
+    assert_true(19.9 in stacks, f"alpha not at 19.9bb post-ante: {stacks}")
+
+
 # ── 169 Hand Index Tests ──
 
 @test
@@ -6860,8 +6928,11 @@ def test_hh_parser_ante_level_format():
     assert_eq(gt["hand_id"], "TM5963540471", "hand_id")
     assert_eq(gt["hero_position"], "BB", "hero_position")
     assert_eq(gt["hero_hand"], "9cTh", "hero_hand")
-    # 8,063 / 800 = 10.07 → 10.1 (effective vs the all-in opponent)
-    assert_eq(gt["effective_bb"], 10.1, "effective_bb (bb_size must be 800)")
+    # bb=800, ante=100. Hero seat declares 8,063 → post-ante 7,963 → 9.95bb,
+    # rounded to 10.0bb. The previous expected value (10.1) was computed
+    # against the pre-ante chip count, which made the effective stack disagree
+    # with the all-in sizes in the action log.
+    assert_eq(gt["effective_bb"], 10.0, "effective_bb (bb_size must be 800, post-ante)")
     assert_eq(gt["preflop_actions"], "F-F-F-F-F-R2.0-C", "preflop_actions")
     assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop street missing")
 
