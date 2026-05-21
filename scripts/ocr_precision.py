@@ -164,6 +164,7 @@ def _run_one(img_path_str: str) -> dict:
             "elapsed_s": time.time() - t0,
         }
     parsed = result.get("hand")
+    diagnostics = result.get("diagnostics") or {}
     conf = float(result.get("confidence") or 0.0)
     card_conf = float(result.get("card_confidence") or 0.0)
     parts = result.get("confidence_parts") or {}
@@ -176,6 +177,7 @@ def _run_one(img_path_str: str) -> dict:
             "confidence": conf,
             "card_confidence": card_conf,
             "confidence_parts": parts,
+            "diagnostics": diagnostics,
             "elapsed_s": time.time() - t0,
         }
     fields = compare(parsed, gt)
@@ -185,6 +187,7 @@ def _run_one(img_path_str: str) -> dict:
         "confidence": conf,
         "card_confidence": card_conf,
         "confidence_parts": parts,
+        "diagnostics": diagnostics,
         "fields": fields,
         "failure_mode": None if fields["hand_exact"] else _classify_failure(parsed, gt, fields),
         "parsed": {k: parsed.get(k) for k in (
@@ -260,6 +263,7 @@ def main() -> int:
         return "<0.30"
 
     n = parse_none = errors = 0
+    records: list[dict] = []
     written_failures = 0
     elapsed_sum = 0.0
     t_start = time.time()
@@ -281,6 +285,7 @@ def main() -> int:
             elapsed_sum += float(r.get("elapsed_s") or 0.0)
             if r.get("skipped"):
                 continue
+            records.append(r)
             if r.get("error"):
                 errors += 1
                 if written_failures < args.max_failures:
@@ -350,6 +355,35 @@ def main() -> int:
     (out_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False))
 
+    diag_records = [r.get("diagnostics") or {} for r in records]
+    diag_n = max(len(diag_records), 1)
+    button_hits = sum(
+        1 for d in diag_records if (d.get("dealer_button_conf") or 0) >= 0.9
+    )
+    button_any = sum(
+        1 for d in diag_records if (d.get("dealer_button_conf") or 0) > 0
+    )
+    reaction_hits = sum(
+        1 for d in diag_records if d.get("estimate_used_reaction_signal")
+    )
+
+    pre_collapse_loss = Counter()
+    for d in diag_records:
+        pre = d.get("preflop_entries_pre_collapse_count")
+        post = d.get("preflop_entries_count")
+        if pre is not None and post is not None:
+            pre_collapse_loss[pre - post] += 1
+
+    diag_summary = {
+        "n": len(diag_records),
+        "dealer_button_detection_rate": f"{button_hits / diag_n:.3%}",
+        "dealer_button_any_match_rate": f"{button_any / diag_n:.3%}",
+        "estimate_reaction_signal_rate": f"{reaction_hits / diag_n:.3%}",
+        "pre_collapse_loss_histogram": dict(sorted(pre_collapse_loss.items())),
+    }
+    (out_dir / "diagnostics_summary.json").write_text(
+        json.dumps(diag_summary, indent=2, ensure_ascii=False))
+
     print("=" * 72)
     print(f"PRE-GEMINI OCR PRECISION  ({scored} scored, "
           f"{parse_none} parse_none, {errors} errors)")
@@ -376,6 +410,7 @@ def main() -> int:
     print(f"  avg latency             : {summary['avg_ms_per_image']} ms/image")
     print(f"  diffs (first {written_failures}) -> {diffs_path}")
     print(f"  summary                 -> {out_dir/'summary.json'}")
+    print(f"  diagnostics summary     -> {out_dir/'diagnostics_summary.json'}")
     print("=" * 72)
     return 0
 
