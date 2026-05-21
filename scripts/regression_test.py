@@ -2864,7 +2864,35 @@ def test_ocr_action_pattern_allin_misread():
     # _normalize_action recovers the canonical label even from corrupt reads
     assert_eq(_normalize_action("AII-In"), "All-In")
     assert_eq(_normalize_action("AIl-In"), "All-In")
+    assert_eq(_normalize_action("Al-In"), "All-In")
     assert_eq(_normalize_action("All-In"), "All-In")
+
+
+@test
+def test_ocr_action_pattern_raise_misread_as_ralse():
+    """OCR: Raise sticker tolerates i/l/I/1 confusion.
+
+    Phase-1 OCR-99 inspection found multiple position_wrong hands where
+    EasyOCR read a preflop Raise row as "Ralse". The panel parser then
+    treated the group as a player name, dropping the raise row and
+    undercounting table size, which shifted hero_position.
+    """
+    from ocr.panel_parser import _ACTION_PATTERNS, _classify_group, _normalize_action
+    import numpy as np
+
+    for text in ("Ralse", "RaIse", "Ra1se", "Raise"):
+        assert_true(_ACTION_PATTERNS.search(text) is not None, f"{text} should match")
+        assert_eq(_normalize_action(text), "Raise")
+
+    column_region = np.zeros((140, 240, 3), dtype=np.uint8)
+    group = [
+        {"text": "Ralse", "center_y": 70, "center_x": 80},
+        {"text": "2.4 BB", "center_y": 88, "center_x": 80},
+    ]
+    entry = _classify_group(group, column_region)
+    assert_true(entry is not None, "Ralse group should classify as an action")
+    assert_eq(entry["action"], "Raise")
+    assert_eq(entry["size"], 2.4)
 
 
 @test

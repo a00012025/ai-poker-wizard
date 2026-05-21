@@ -38,7 +38,7 @@ _ACTIONS = {"Fold", "Check", "Call", "Bet", "Raise", "All-In"}
 # through as a name-only entry, attached as player_name to the next "Call
 # 7 BB" entry → final flop action mis-recorded as hero call instead of jam).
 _ACTION_PATTERNS = re.compile(
-    r"(Fold|Check|Call|Bet|Raise|A[lI1]{2}.?[Ii1][nNuU]|FOLD|CHECK|CALL|BET|RAISE)",
+    r"(Fold|Check|Call|Bet|Ra[iIl1]se|Raise|A[lI1]{1,2}.?[Ii1][nNuU]|FOLD|CHECK|CALL|BET|RA[IIL1]SE|RAISE)",
     re.IGNORECASE,
 )
 # Strips position badges, BB amounts, and stand-alone numbers so the
@@ -753,13 +753,13 @@ def _normalize_action(action_raw: str) -> str:
         return "Call"
     elif "bet" in lower:
         return "Bet"
-    elif "raise" in lower:
+    elif "raise" in lower or re.match(r"^ra[iil1]se$", lower):
         return "Raise"
     elif "all" in lower:
         return "All-In"
     # Match the same shape the OCR-tolerant action regex catches: "AII-In",
     # "Al1-In", "AII-1n", etc. — same font-confusion pattern, lowercased.
-    if re.match(r"^a[li1]{2}.?[i1][nu]$", lower):
+    if re.match(r"^a[li1]{1,2}.?[i1][nu]$", lower):
         return "All-In"
     return action.capitalize()
 
