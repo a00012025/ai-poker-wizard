@@ -564,10 +564,19 @@ def parse_table(table_region: np.ndarray) -> dict:
             "hero_cards": [],
             "player_stacks": [],
             "table_color": "unknown",
+            "dealer_button": None,
+            "dealer_button_seat": None,
+            "dealer_button_conf": 0.0,
         }
 
     table_color = _detect_table_color(table_region)
-    dealer_button = detect_button(table_region)
+    dealer_button_raw = detect_button(table_region)
+    if dealer_button_raw is not None:
+        dealer_button = dealer_button_raw
+        dealer_button_seat, dealer_button_conf = dealer_button_raw
+    else:
+        dealer_button = None
+        dealer_button_seat, dealer_button_conf = None, 0.0
     board_cards = _find_board_cards(table_region)
     hero_cards, hero_card_conf, hero_card_details = _find_hero_cards(table_region)
     all_stacks_named = _find_all_stacks(table_region)
@@ -586,6 +595,8 @@ def parse_table(table_region: np.ndarray) -> dict:
         "named_stacks": all_stacks_named,
         "table_color": table_color,
         "dealer_button": dealer_button,
+        "dealer_button_seat": dealer_button_seat,
+        "dealer_button_conf": dealer_button_conf,
     }
 
 

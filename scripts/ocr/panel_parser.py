@@ -363,7 +363,7 @@ def _collapse_preflop_raise_jam(entries: list[dict]) -> list[dict]:
     return out
 
 
-def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> list[dict]:
+def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple[list[dict], int]:
     """Detect action entries in a column using full-column OCR.
 
     OCRs the entire column body once, then groups text results by
@@ -378,23 +378,25 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> list[
             no badge and would be misread as an overlay.
 
     Returns:
-        List of {"type", "position", "action", "size"} dicts
+        Tuple of (entries, pre-collapse group count). Entries are
+        {"type", "position", "action", "size"} dicts.
     """
     ch, cw = column_region.shape[:2]
     if ch < 20 or cw < 20:
-        return []
+        return [], 0
 
     # OCR the entire column body at once
     ocr_results = ocr_full_image(column_region)
 
     if not ocr_results:
-        return []
+        return [], 0
 
     # Group OCR results by Y proximity (texts within ~25px = same entry)
     groups = _group_by_y(ocr_results, y_threshold=25)
 
     # Split groups that contain multiple actions (merged entries)
     groups = _split_multi_action_groups(groups)
+    pre_collapse_count = len([g for g in groups if g])
 
     # Classify each group into an action entry.
     # In N8, each entry has: name group (player name) then action group
@@ -499,7 +501,7 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> list[
     # (opponent shoves, hero calls deeper — H2881).
     entries = _resolve_allin_attribution(entries)
 
-    return entries
+    return entries, pre_collapse_count
 
 
 def _split_multi_action_groups(groups: list[list[dict]]) -> list[list[dict]]:
@@ -804,13 +806,14 @@ def parse_panel(panel_image: np.ndarray) -> dict:
 
     result_columns = []
     for col in columns:
-        entries = detect_entries(
+        entries, pre_collapse_count = detect_entries(
             col["region"], is_preflop=(col["name"] == "Pre-Flop")
         )
         result_columns.append({
             "name": col["name"],
             "pot": col["pot"],
             "entries": entries,
+            "entries_pre_collapse_count": pre_collapse_count,
         })
 
     return {"columns": result_columns}

@@ -108,12 +108,22 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if image is None:
-        return {"hand": None, "hints": None, "confidence": 0.0}
+        return {
+            "hand": None,
+            "hints": None,
+            "confidence": 0.0,
+            "diagnostics": _build_diagnostics({}, []),
+        }
 
     # Step 1: detect regions
     regions = detect_regions(image)
     if regions is None:
-        return {"hand": None, "hints": None, "confidence": 0.0}
+        return {
+            "hand": None,
+            "hints": None,
+            "confidence": 0.0,
+            "diagnostics": _build_diagnostics({}, []),
+        }
 
     # Step 2: parse table
     table_result = parse_table(regions["table"])
@@ -123,7 +133,7 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
     columns = panel_result.get("columns", [])
 
     # Step 4: assemble hand JSON
-    hand, confidence_parts = _assemble_hand(table_result, columns)
+    hand, confidence_parts, diagnostics = _assemble_hand(table_result, columns)
 
     # Step 5: compute confidence
     confidence = _compute_confidence(confidence_parts)
@@ -139,6 +149,7 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
         "confidence": confidence,
         "card_confidence": confidence_parts.get("card_confidence", 0.0),
         "confidence_parts": confidence_parts,
+        "diagnostics": diagnostics,
     }
 
 
@@ -182,7 +193,7 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
     return result
 
 
-def _estimate_table_size(action_entries: list[dict]) -> int:
+def _estimate_table_size(action_entries: list[dict]) -> tuple[int, bool]:
     """Estimate table size from preflop action entries.
 
     In N8 PreFlop, entries appear in position order. The first round
@@ -196,7 +207,7 @@ def _estimate_table_size(action_entries: list[dict]) -> int:
     """
     n = len(action_entries)
     if n <= 2:
-        return max(n, 2)
+        return max(n, 2), False
 
     # Check for re-actions by looking for duplicate player names.
     # In the first round each player appears once.  If a name repeats,
@@ -225,10 +236,11 @@ def _estimate_table_size(action_entries: list[dict]) -> int:
             re_action_start = min(re_action_start, hero_indices[1])
 
     table_size = re_action_start if re_action_start < n else n
+    used_reaction_signal = re_action_start < n
 
     if table_size > 9:
-        return 9
-    return max(table_size, 2)
+        return 9, used_reaction_signal
+    return max(table_size, 2), used_reaction_signal
 
 
 def _normalize_name(name: str) -> str:
@@ -676,7 +688,37 @@ def _compute_effective_bb(
     return effective_bb, round(hero_starting, 1)
 
 
-def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None, dict]:
+def _build_diagnostics(
+    table_result: dict,
+    columns: list[dict],
+    *,
+    preflop_col: dict | None = None,
+    action_entries: list[dict] | None = None,
+    players_at_table_raw: int | None = None,
+    players_at_table_final: int | None = None,
+    estimate_used_reaction_signal: bool = False,
+) -> dict:
+    street_entries_count = {}
+    for col in columns:
+        name = (col.get("street") or col.get("name") or "").lower()
+        if name in ("flop", "turn", "river"):
+            street_entries_count[name] = len(col.get("entries", []))
+
+    return {
+        "players_at_table_raw": players_at_table_raw,
+        "players_at_table_final": players_at_table_final,
+        "estimate_used_reaction_signal": estimate_used_reaction_signal,
+        "dealer_button_seat": table_result.get("dealer_button_seat"),
+        "dealer_button_conf": float(table_result.get("dealer_button_conf") or 0.0),
+        "preflop_entries_count": len(action_entries or []),
+        "preflop_entries_pre_collapse_count": (
+            preflop_col.get("entries_pre_collapse_count") if preflop_col else None
+        ),
+        "street_entries_count": street_entries_count,
+    }
+
+
+def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None, dict, dict]:
     """Assemble hand JSON from parsed table and panel data.
 
     Uses position-order-based inference: in N8 PreFlop column, entries
@@ -684,7 +726,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     entry count, we determine table size and assign positions.
 
     Returns:
-        (hand_dict or None, confidence_parts dict)
+        (hand_dict or None, confidence_parts dict, diagnostics dict)
     """
     conf_parts = {
         "pot_consistency": 0.0,
@@ -696,6 +738,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     board_cards = table_result.get("board_cards", [])
     hero_cards = table_result.get("hero_cards", [])
     table_color = table_result.get("table_color", "unknown")
+    diagnostics = _build_diagnostics(table_result, columns)
 
     board_cards, hero_cards = _resolve_hero_board_conflict(
         board_cards,
@@ -739,18 +782,25 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
             street_cols = street_cols[1:]
 
     if preflop_col is None:
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     preflop_entries = preflop_col.get("entries", [])
 
     # Filter out false hero entries (avatar markers without action text)
     action_entries = _filter_action_entries(preflop_entries)
+    diagnostics = _build_diagnostics(
+        table_result,
+        columns,
+        preflop_col=preflop_col,
+        action_entries=action_entries,
+    )
 
     if not action_entries:
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     # Determine table size from entry count
-    players_at_table = _estimate_table_size(action_entries)
+    players_at_table_raw, estimate_used_reaction_signal = _estimate_table_size(action_entries)
+    players_at_table = players_at_table_raw
 
     # Cross-column refinement: detect re-actions where the preflop name
     # duplicate can't be seen because one entry has no name.
@@ -789,6 +839,15 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                     players_at_table -= 1
 
     players_at_table = min(max(players_at_table, 2), 9)
+    diagnostics = _build_diagnostics(
+        table_result,
+        columns,
+        preflop_col=preflop_col,
+        action_entries=action_entries,
+        players_at_table_raw=players_at_table_raw,
+        players_at_table_final=players_at_table,
+        estimate_used_reaction_signal=estimate_used_reaction_signal,
+    )
     pos_order = POSITION_ORDERS.get(players_at_table, POSITION_ORDERS[8])
 
     # Assign positions by entry order (first entry = first position, etc.)
@@ -855,7 +914,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
             hero_position = button_hero_position
 
     if not hero_position:
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     # Build preflop_actions string using assigned positions
     preflop_actions = _build_preflop_actions_from_order(
@@ -863,7 +922,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     )
 
     if not preflop_actions:
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     # Bail out when any raise/bet entry came back with no size — the
     # panel cell's "Raise N BB" text didn't OCR cleanly. We used to
@@ -882,7 +941,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     )
     if missing_raise_sizes:
         conf_parts["ocr_confidence"] = 0.0
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     # Build hero_hand — sort by rank (higher first), standard poker notation
     _RANK_ORDER = "23456789TJQKA"
@@ -899,7 +958,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
             hero_hand = c2 + c1
 
     if not hero_position:
-        return None, conf_parts
+        return None, conf_parts, diagnostics
 
     # Determine active players after preflop (didn't fold)
     active_positions = []
@@ -1046,7 +1105,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # OCR confidence from entries
     conf_parts["ocr_confidence"] = _avg_ocr_confidence(columns)
 
-    return hand, conf_parts
+    return hand, conf_parts, diagnostics
 
 
 def _extract_hero_hand_from_stack_text(table_result: dict) -> str:

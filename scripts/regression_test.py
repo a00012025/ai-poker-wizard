@@ -3118,7 +3118,7 @@ def test_ocr_bails_when_raise_size_missing():
         {"name": "Pre-Flop", "pot": 2.6, "entries": table_result["action_entries"]},
         {"name": "Flop", "pot": 16.6, "entries": []},
     ]
-    hand, conf_parts = _assemble_hand(table_result, columns)
+    hand, conf_parts, _diagnostics = _assemble_hand(table_result, columns)
     assert_true(hand is None,
                 f"_assemble_hand should return None when a raise has no size; got {hand}")
     assert_eq(conf_parts["ocr_confidence"], 0.0,
@@ -3220,7 +3220,7 @@ def test_ocr_card_confidence_not_boosted_by_board():
         "hero_card_details": [],
         "table_color": "green",
     }
-    _hand, conf_parts = _assemble_hand(table_result, columns=[])
+    _hand, conf_parts, _diagnostics = _assemble_hand(table_result, columns=[])
     assert_eq(conf_parts["card_confidence"], 0.611,
               "card_confidence should equal raw hero_card_conf, not get a "
               "+0.1 boost from board-cards being legible")
@@ -3578,13 +3578,13 @@ def test_ocr_table_size_from_entry_count():
     from ocr.n8_parser import _estimate_table_size
     # 8 entries = 8 players
     entries = [{"type": "opponent"}] * 7 + [{"type": "hero"}]
-    assert_eq(_estimate_table_size(entries), 8)
+    assert_eq(_estimate_table_size(entries)[0], 8)
     # 6 entries = 6 players
     entries = [{"type": "opponent"}] * 5 + [{"type": "hero"}]
-    assert_eq(_estimate_table_size(entries), 6)
+    assert_eq(_estimate_table_size(entries)[0], 6)
     # 2 entries = 2 players (min)
     entries = [{"type": "hero"}, {"type": "opponent"}]
-    assert_eq(_estimate_table_size(entries), 2)
+    assert_eq(_estimate_table_size(entries)[0], 2)
 
 
 @test
@@ -6796,7 +6796,7 @@ def test_postflop_position_reconciliation_with_preflop_index():
         "table_color": "green",
         "named_stacks": [],
     }
-    hand, _ = _assemble_hand(table_result, columns)
+    hand, _conf_parts, _diagnostics = _assemble_hand(table_result, columns)
     assert_true(hand is not None, "hand must be assembled")
     flop_actions = hand["streets"][0]["actions"]
     # The opponent's flop bet must be present and tagged with the same
