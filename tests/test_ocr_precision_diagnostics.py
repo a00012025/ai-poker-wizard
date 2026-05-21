@@ -25,10 +25,12 @@ def test_ocr_precision_writes_diagnostics(tmp_path):
     diffs_path = out / "diffs.jsonl"
     summary_path = out / "summary.json"
     diag_summary_path = out / "diagnostics_summary.json"
+    calib_path = out / "calibration_summary.json"
 
     assert diffs_path.exists(), "diffs.jsonl missing"
     assert summary_path.exists(), "summary.json missing"
     assert diag_summary_path.exists(), "diagnostics_summary.json missing"
+    assert calib_path.exists(), "calibration_summary.json missing"
 
     found_diag = False
     for line in diffs_path.read_text().splitlines():
@@ -46,3 +48,7 @@ def test_ocr_precision_writes_diagnostics(tmp_path):
         "pre_collapse_loss_histogram",
     ):
         assert key in diag_summary
+
+    calib = json.loads(calib_path.read_text())
+    assert "ece_10bin" in calib
+    assert "precision_coverage_curve" in calib

@@ -29,6 +29,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from ocr.calibration import (  # noqa: E402
+    expected_calibration_error,
+    precision_coverage_curve,
+    reliability_bins,
+)
+
 _RANK = {r: i for i, r in enumerate("23456789TJQKA")}
 _SUIT = {s: i for i, s in enumerate("cdhs")}
 
@@ -142,6 +148,48 @@ def _classify_failure(parsed: dict | None, gt: dict, fields: dict) -> str:
     if not fields["table_size"]:
         return "table_size_wrong"
     return "other"
+
+
+def _find_target_threshold(
+    confs: list[float],
+    correct: list[int],
+    *,
+    target_precision: float,
+    min_coverage: float,
+) -> dict | None:
+    """Return the smallest threshold meeting target precision and coverage."""
+    curve = precision_coverage_curve(confs, correct, n_points=200)
+    qualifying = [
+        pt for pt in curve
+        if pt["precision"] >= target_precision and pt["coverage"] >= min_coverage
+    ]
+    if not qualifying:
+        return None
+    return min(qualifying, key=lambda pt: pt["threshold"])
+
+
+def _write_reliability_plot(out_dir: Path, calibration_summary: dict) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    bins = calibration_summary["reliability_bins"]
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.5, label="perfect")
+    xs = [b["mean_conf"] for b in bins if b["n"] > 0]
+    ys = [b["accuracy"] for b in bins if b["n"] > 0]
+    sizes = [max(5, b["n"]) for b in bins if b["n"] > 0]
+    ax.scatter(xs, ys, s=sizes, alpha=0.7)
+    ax.set_xlabel("mean confidence in bin")
+    ax.set_ylabel("accuracy in bin")
+    ax.set_title(f"Reliability - ECE10={calibration_summary['ece_10bin']:.3f}")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_dir / "reliability.png", dpi=120)
+    plt.close(fig)
 
 
 def _run_one(img_path_str: str) -> dict:
@@ -384,6 +432,31 @@ def main() -> int:
     (out_dir / "diagnostics_summary.json").write_text(
         json.dumps(diag_summary, indent=2, ensure_ascii=False))
 
+    calibration_records = [r for r in records if r.get("fields") is not None]
+    confs = [float(r.get("confidence") or 0.0) for r in calibration_records]
+    correct = [
+        1 if r["fields"]["hand_exact"] else 0
+        for r in calibration_records
+    ]
+    calibration_summary = {
+        "n": len(confs),
+        "ece_10bin": expected_calibration_error(confs, correct, n_bins=10),
+        "ece_20bin": expected_calibration_error(confs, correct, n_bins=20),
+        "reliability_bins": reliability_bins(confs, correct, n_bins=10),
+        "precision_coverage_curve": precision_coverage_curve(
+            confs, correct, n_points=50,
+        ),
+        "threshold_for_target": _find_target_threshold(
+            confs,
+            correct,
+            target_precision=0.99,
+            min_coverage=0.70,
+        ),
+    }
+    (out_dir / "calibration_summary.json").write_text(
+        json.dumps(calibration_summary, indent=2, ensure_ascii=False))
+    _write_reliability_plot(out_dir, calibration_summary)
+
     print("=" * 72)
     print(f"PRE-GEMINI OCR PRECISION  ({scored} scored, "
           f"{parse_none} parse_none, {errors} errors)")
@@ -411,6 +484,7 @@ def main() -> int:
     print(f"  diffs (first {written_failures}) -> {diffs_path}")
     print(f"  summary                 -> {out_dir/'summary.json'}")
     print(f"  diagnostics summary     -> {out_dir/'diagnostics_summary.json'}")
+    print(f"  calibration summary     -> {out_dir/'calibration_summary.json'}")
     print("=" * 72)
     return 0
 
