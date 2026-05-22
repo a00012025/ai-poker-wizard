@@ -90,6 +90,33 @@ def _resolve_hero_board_conflict(
     return board_cards, fixed
 
 
+def _board_cards_supported_by_panel(
+    board_cards: list[str],
+    street_cols: list[dict],
+) -> list[str]:
+    """Limit board-card evidence to streets that have parsed action rows.
+
+    The table-region card detector often sees bright hero-card or table chrome
+    shapes in the turn/river slots even when the action panel has no entries
+    for those streets. Hero/board duplicate repair should only treat cards as
+    real board blockers when the panel proves that street was dealt; otherwise
+    a false extra board card can rewrite a correct high-confidence hero card.
+    """
+    if not board_cards:
+        return []
+    max_cards = 0
+    for col in street_cols:
+        if not col.get("entries"):
+            continue
+        name = str(col.get("name") or "").lower()
+        if name == "flop":
+            max_cards = max(max_cards, 3)
+        elif name == "turn":
+            max_cards = max(max_cards, 4)
+        elif name == "river":
+            max_cards = max(max_cards, 5)
+    return board_cards[:max_cards]
+
 def parse_n8_screenshot(image_bytes: bytes) -> dict:
     """Parse N8 replay screenshot into hand JSON.
 
@@ -173,6 +200,42 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
         else:
             result.append(e)
 
+    # Full-column OCR can occasionally split table chrome/avatar text into a
+    # nameless, positionless "Call" row near the top of otherwise fold-heavy
+    # preflop columns.  In 8-max capped N8 rows this phantom limp shifts the
+    # hero opener one seat toward the blinds.  Keep the guard narrow so real
+    # limp pots with a readable player/name or size survive.
+    if len(result) >= 8:
+        cleaned: list[dict] = []
+        for idx, entry in enumerate(result):
+            action = (entry.get("action") or "").lower()
+            is_phantom_early_call = (
+                0 < idx <= 2
+                and action == "call"
+                and entry.get("size") is None
+                and not (entry.get("position") or "").strip()
+                and not (entry.get("player_name") or "").strip()
+                and (result[idx - 1].get("action") or "").lower() == "fold"
+                and idx + 1 < len(result)
+                and (result[idx + 1].get("action") or "").lower() == "fold"
+            )
+            if is_phantom_early_call:
+                continue
+            is_phantom_late_call = (
+                idx >= 3
+                and action == "call"
+                and entry.get("size") is None
+                and not (entry.get("position") or "").strip()
+                and not (entry.get("player_name") or "").strip()
+                and (result[idx - 1].get("action") or "").lower() == "fold"
+                and idx + 1 < len(result)
+                and (result[idx + 1].get("action") or "").lower() in ("fold", "raise")
+            )
+            if is_phantom_late_call:
+                continue
+            cleaned.append(entry)
+        result = cleaned
+
     # Disambiguate false hero detections: when yellow background bleeds
     # into adjacent rows, fold entries near the real hero get marked as
     # hero too.  Reclassify hero-Fold entries as opponents when there is
@@ -198,6 +261,101 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
             for idx in hero_indices:
                 if (result[idx].get("player_name") or "").strip():
                     result[idx] = dict(result[idx], type="opponent")
+
+    hero_indices = [i for i, e in enumerate(result) if e["type"] == "hero"]
+    if len(hero_indices) > 1 and all(
+        (result[idx].get("action") or "").lower() == "fold"
+        for idx in hero_indices
+    ):
+        # Multiple anonymous hero-colored Fold rows are marker bleed, not the
+        # local player acting twice. Keep the first hero-fold as the real
+        # seat and demote later fold markers so table-size estimation does not
+        # mistake them for re-actions.
+        for idx in hero_indices[1:]:
+            result[idx] = dict(
+                result[idx],
+                type="opponent",
+                _false_hero_marker=True,
+            )
+
+    # N8 paints an additional red All-In sticker over some preflop shove/call
+    # resolutions. HSV sees the anonymous sticker as hero-colored even though
+    # it duplicates an earlier opponent all-in amount, adding a phantom hero
+    # re-action and shifting hero_position/action sequence.
+    #
+    # Drop this duplicate before the "non-fold hero beats fold hero" cleanup:
+    # if the all-in sticker is the false hero marker, reclassifying the real
+    # hero-fold row first leaves no hero row and turns otherwise parseable
+    # fold-out hands into parse_none.
+    cleaned: list[dict] = []
+    for idx, entry in enumerate(result):
+        action = (entry.get("action") or "").lower()
+        is_duplicate_hero_allin_sticker = (
+            entry.get("type") == "hero"
+            and action == "all-in"
+            and not entry.get("position")
+            and not (entry.get("player_name") or "").strip()
+            and entry.get("size") is None
+            and any(
+                prev.get("type") == "hero"
+                and (prev.get("action") or "").lower() == "all-in"
+                for prev in result[:idx]
+            )
+        )
+        if is_duplicate_hero_allin_sticker:
+            continue
+        is_anonymous_hero_allin = (
+            entry.get("type") == "hero"
+            and action == "all-in"
+            and not entry.get("position")
+            and not (entry.get("player_name") or "").strip()
+            and entry.get("size") is not None
+        )
+        if is_anonymous_hero_allin:
+            size = float(entry.get("size") or 0.0)
+            earlier_same_opponent_allin = any(
+                prev.get("type") == "opponent"
+                and (prev.get("action") or "").lower() == "all-in"
+                and prev.get("size") is not None
+                and abs(float(prev.get("size") or 0.0) - size) < 0.05
+                for prev in result[:idx]
+            )
+            previous_is_opponent_call = (
+                idx > 0
+                and result[idx - 1].get("type") == "opponent"
+                and (result[idx - 1].get("action") or "").lower() == "call"
+            )
+            earlier_nonfold_hero_action = any(
+                prev.get("type") == "hero"
+                and (prev.get("action") or "").lower() not in ("", "fold")
+                for prev in result[:idx]
+            )
+            if earlier_same_opponent_allin and (
+                previous_is_opponent_call or earlier_nonfold_hero_action
+            ):
+                continue
+        cleaned.append(entry)
+    result = cleaned
+
+    # A nameless/positionless Check immediately before an explicit BB Call is
+    # a duplicate blind-option OCR fragment, not a separate preflop action.
+    # Keeping it creates an impossible X-C tail and shifts the action types.
+    cleaned = []
+    for idx, entry in enumerate(result):
+        action = (entry.get("action") or "").lower()
+        is_duplicate_check_before_bb_call = (
+            action == "check"
+            and not (entry.get("position") or "").strip()
+            and not (entry.get("player_name") or "").strip()
+            and entry.get("size") is None
+            and idx + 1 < len(result)
+            and (result[idx + 1].get("action") or "").lower() == "call"
+            and (result[idx + 1].get("position") or "").strip().upper() == "BB"
+        )
+        if is_duplicate_check_before_bb_call:
+            continue
+        cleaned.append(entry)
+    result = cleaned
 
     hero_indices = [i for i, e in enumerate(result) if e["type"] == "hero"]
     if len(hero_indices) > 1:
@@ -234,27 +392,120 @@ def _estimate_table_size(action_entries: list[dict]) -> tuple[int, bool]:
     # In the first round each player appears once.  If a name repeats,
     # the second occurrence is a re-action.  Uses fuzzy matching because
     # OCR may read the same name slightly differently in each row.
-    seen_names: list[str] = []
+    seen_names: list[tuple[str, str]] = []
     re_action_start = n  # index where re-actions begin
     for i, e in enumerate(action_entries):
         name = (e.get("player_name") or "").strip()
         if not name:
             continue
+        action = (e.get("action") or "").lower()
         # Check against all previously seen names using fuzzy match
-        for prev in seen_names:
+        for prev, prev_action in seen_names:
             if _fuzzy_name_match(name, prev):
+                if prev_action == "fold":
+                    # A folded player cannot re-act later in the same hand.
+                    # Treat this as OCR name collision/bleed rather than a
+                    # table-size boundary.
+                    continue
                 # This player already appeared — re-action detected
                 re_action_start = min(re_action_start, i)
                 break
         if re_action_start < n:
             break
-        seen_names.append(name)
+        seen_names.append((name, action))
 
-    # Also detect re-actions when hero acted twice (two hero entries)
-    if re_action_start == n:
-        hero_indices = [i for i, e in enumerate(action_entries) if e["type"] == "hero"]
-        if len(hero_indices) >= 2:
-            re_action_start = min(re_action_start, hero_indices[1])
+    # Six-handed replay columns sometimes show a seventh trailing fold after
+    # an all-in/raise resolution, but OCR misses the repeated player name, so
+    # the generic name-based re-action detector treats it as a seventh seat.
+    # Keep this intentionally narrow: a lone explicit BB at row 5 also appears
+    # in true 7-max steal/shove hands, so require either a repeated non-blind
+    # trailing badge, adjacent duplicate BB badges, or a clean BTN->hero->BB
+    # 6-max blind alignment.
+    if re_action_start == n and n == 7:
+        last = action_entries[-1]
+        last_action = (last.get("action") or "").lower()
+        if last_action == "fold" and not last.get("_false_hero_marker"):
+            earlier_positions = {
+                (e.get("position") or "").strip().upper()
+                for e in action_entries[:-1]
+                if (e.get("position") or "").strip()
+            }
+            last_pos = (last.get("position") or "").strip().upper()
+            positions = [
+                (e.get("position") or "").strip().upper()
+                for e in action_entries
+            ]
+            duplicate_bb_blind_rows = (
+                positions[4] == "BB" and positions[5] == "BB"
+            )
+            btn_hero_bb_alignment = (
+                positions[3] == "BTN"
+                and action_entries[4].get("type") == "hero"
+                and positions[5] == "BB"
+            )
+            if (
+                (last_pos and last_pos not in {"BTN", "SB", "BB"}
+                 and last_pos in earlier_positions)
+                or duplicate_bb_blind_rows
+                or btn_hero_bb_alignment
+            ):
+                re_action_start = 6
+
+    # Some N8 re-action rows carry the same position badge as the original
+    # raiser/caller even when OCR misses the repeated player name. Treat a
+    # later non-fold row with a repeated non-blind badge and a readable name as
+    # the first re-action. The readable-name + non-blind guards avoid noisy
+    # first-round badge bleed such as duplicated BB/SB labels on shove/call
+    # rows.
+    seen_positions: dict[str, list[str]] = {}
+    for i, e in enumerate(action_entries):
+        pos = (e.get("position") or "").strip().upper()
+        action = (e.get("action") or "").lower()
+        name = (e.get("player_name") or "").strip()
+        if (
+            i >= 6
+            and pos
+            and pos not in {"BTN", "SB", "BB"}
+            and pos in seen_positions
+            and any(prev_action != "fold" for prev_action in seen_positions[pos])
+            and name
+            and action != "fold"
+        ):
+            re_action_start = min(re_action_start, i)
+            break
+        if pos:
+            seen_positions.setdefault(pos, []).append(action)
+
+    # Also detect re-actions when hero acted twice (two hero entries).  This
+    # can be earlier than a later repeated-name/badge signal, so always take
+    # the earliest second hero row instead of only using it as a fallback.
+    hero_indices = [i for i, e in enumerate(action_entries) if e["type"] == "hero"]
+    if len(hero_indices) >= 2:
+        re_action_start = min(re_action_start, hero_indices[1])
+
+    # In 6-max shove trees the local player's re-action fold can be rendered
+    # as an anonymous row immediately before a named caller's re-action. If
+    # name matching finds the caller at row 7 of an 8-row sequence, row 6 is
+    # often already the first re-action, not the final first-round seat.
+    if n == 8 and re_action_start == 7:
+        maybe_fold = action_entries[6]
+        caller = action_entries[7]
+        caller_name = (caller.get("player_name") or "").strip()
+        caller_action = (caller.get("action") or "").lower()
+        prior_nonfold_same_name = any(
+            (prev.get("action") or "").lower() != "fold"
+            and _fuzzy_name_match(caller_name, prev.get("player_name") or "")
+            for prev in action_entries[:6]
+        )
+        if (
+            (maybe_fold.get("action") or "").lower() == "fold"
+            and not (maybe_fold.get("player_name") or "").strip()
+            and not (maybe_fold.get("position") or "").strip()
+            and caller_action != "fold"
+            and caller_name
+            and prior_nonfold_same_name
+        ):
+            re_action_start = 6
 
     table_size = re_action_start if re_action_start < n else n
     used_reaction_signal = re_action_start < n
@@ -292,11 +543,12 @@ def _fuzzy_name_match(name1: str, name2: str) -> bool:
     # Exact match after normalization
     if a == b:
         return True
-    # One contains the other
-    if a in b or b in a:
+    # One contains the other. Very short OCR fragments (e.g. "ER") appear
+    # inside many unrelated names and should not start a false re-action.
+    min_len = min(len(a), len(b))
+    if min_len >= 4 and (a in b or b in a):
         return True
     # Long common prefix (at least 5 chars or 70% of shorter name)
-    min_len = min(len(a), len(b))
     prefix_len = 0
     for i in range(min_len):
         if a[i] == b[i]:
@@ -786,10 +1038,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
             preflop_col = first_street
             street_cols = street_cols[1:]
 
-    has_postflop_action = any(col.get("entries") for col in street_cols)
-    if has_postflop_action:
-        board_cards, hero_cards = _resolve_hero_board_conflict(
-            board_cards,
+    conflict_board_cards = _board_cards_supported_by_panel(
+        board_cards, street_cols
+    )
+    if conflict_board_cards:
+        _, hero_cards = _resolve_hero_board_conflict(
+            conflict_board_cards,
             hero_cards,
             hero_details=table_result.get("hero_card_details"),
         )

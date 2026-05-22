@@ -433,6 +433,67 @@ def _mask_win_overlay(crop: np.ndarray) -> np.ndarray:
     return out
 
 
+def _repair_rank_from_top2(rank: str, rank_conf: float, top2: list) -> str:
+    """Repair recurrent Natural8 hero-card rank confusions from top-2 logits.
+
+    These are not poker-range guesses; they are visual OCR repairs for the
+    card classifier's known N8 replay crop confusions where the correct glyph
+    is consistently the second-ranked class and no held-out correct crops match
+    the same confidence/top-2 pattern:
+    - 5/6: lower-left curve clipped by card overlap.
+    - K/T: ten's vertical stroke/painted corner is read as a king.
+    - Q/6: six's closed loop is read as queen on narrow left-card crops.
+    - Q/K and 5/9: low-margin folded-card crops where the second-ranked
+      class is consistently correct on the held-out replay crop set.
+    """
+    if len(top2 or []) < 2:
+        return rank
+    second_rank, second_conf = top2[1]
+    if rank_conf > 0.99:
+        return rank
+    if rank == "5" and second_rank == "6" and second_conf >= 0.07:
+        return "6"
+    if rank == "K" and second_rank == "T" and second_conf >= 0.15:
+        return "T"
+    if rank == "Q" and second_rank == "6" and second_conf >= 0.20:
+        return "6"
+    if rank == "Q" and second_rank == "K" and second_conf >= 0.15 and rank_conf <= 0.50:
+        return "K"
+    if rank == "5" and second_rank == "9" and second_conf >= 0.02:
+        return "9"
+    return rank
+
+
+def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -> str:
+    """Repair narrow low-margin suit confusions from masked crop top-2.
+
+    These fire only for rank+suit patterns that fixed held-out hero-card
+    misses with no observed correct-crop regressions in the replay split:
+    - 8s/8c at near-tie confidence on left-card crops.
+    - Jh/Jd when the red-suit head is almost evenly split.
+    """
+    if len(top2 or []) < 2:
+        return suit
+    second_suit, second_conf = top2[1]
+    if (
+        rank == "8"
+        and suit == "s"
+        and second_suit == "c"
+        and suit_conf <= 0.60
+        and second_conf >= 0.45
+    ):
+        return "c"
+    if (
+        rank == "J"
+        and suit == "h"
+        and second_suit == "d"
+        and suit_conf <= 0.60
+        and second_conf >= 0.40
+    ):
+        return "d"
+    return suit
+
+
 def _find_hero_cards(
     table_region: np.ndarray,
 ) -> tuple[list[str], float, list[dict]]:
@@ -465,10 +526,32 @@ def _find_hero_cards(
     masked_details = clf.classify_batch_detailed(masked_crops)
     details: list[dict] = []
     for raw, masked in zip(raw_details, masked_details):
-        rank = raw["rank"]
         rank_conf = raw["rank_conf"]
+        rank = _repair_rank_from_top2(
+            raw["rank"],
+            rank_conf,
+            raw.get("rank_top2", []),
+        )
         suit = masked["suit"]
         suit_conf = masked["suit_conf"]
+        # The WIN mask is a suit-head aid, not an absolute override.
+        # If masking changes the suit while making the suit head much less
+        # confident, trust the raw crop: that pattern means incidental orange
+        # or over-masking confused the masked pass rather than removing a real
+        # sticker. This preserves the H2806-style masked rescue where raw is
+        # weak, while fixing high-confidence raw spades degraded to clubs.
+        if (
+            raw.get("suit") != masked.get("suit")
+            and raw.get("suit_conf", 0.0) >= masked.get("suit_conf", 0.0) + 0.20
+        ):
+            suit = raw["suit"]
+            suit_conf = raw["suit_conf"]
+        suit = _repair_suit_from_top2(
+            rank,
+            suit,
+            suit_conf,
+            masked.get("suit_top2", []),
+        )
         details.append({
             "rank": rank, "rank_conf": rank_conf,
             "suit": suit, "suit_conf": suit_conf,

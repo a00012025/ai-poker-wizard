@@ -118,11 +118,13 @@ def compare(parsed: dict, gt: dict) -> dict:
 # ---------- per-image worker ----------
 
 _GT_MAP: dict[str, dict] = {}
+_EMIT_THRESHOLD = 0.88
 
 
-def _init_worker(gt_path: str) -> None:
+def _init_worker(gt_path: str, emit_threshold: float = 0.88) -> None:
     """Load GT into module globals once per worker (avoid pickling 7k dict)."""
-    global _GT_MAP
+    global _GT_MAP, _EMIT_THRESHOLD
+    _EMIT_THRESHOLD = emit_threshold
     with open(gt_path, encoding="utf-8") as fh:
         for line in fh:
             o = json.loads(line)
@@ -229,7 +231,7 @@ def _run_one(img_path_str: str) -> dict:
             "elapsed_s": time.time() - t0,
         }
     fields = compare(parsed, gt)
-    return {
+    record = {
         "hand_id": hand_id,
         "image": str(p),
         "confidence": conf,
@@ -247,6 +249,17 @@ def _run_one(img_path_str: str) -> dict:
             "preflop_actions", "effective_bb")},
         "gt_streets": _streets(gt),
         "elapsed_s": time.time() - t0,
+    }
+    if conf < _EMIT_THRESHOLD:
+        return dict(
+            record,
+            parsed_none=True,
+            abstained_confidence=True,
+            emit_threshold=_EMIT_THRESHOLD,
+        )
+    return {
+        **record,
+        "emit_threshold": _EMIT_THRESHOLD,
     }
 
 
@@ -266,6 +279,10 @@ def main() -> int:
     ap.add_argument("--split", default="",
                     help="Optional card-classifier split JSON for held-out eval")
     ap.add_argument("--bucket", default="test", choices=["train", "val", "test"])
+    ap.add_argument("--emit-threshold", type=float, default=0.88,
+                    help=("Minimum confidence required for deterministic "
+                          "emission. Lower-confidence parses count as "
+                          "Gemini fallback/abstain for headline precision."))
     args = ap.parse_args()
 
     gt_path = str(Path(args.ground_truth).resolve())
@@ -288,7 +305,8 @@ def main() -> int:
         sys.exit("no paired images")
 
     print(f"[ocr_precision] paired={len(pairs)}  images={len(imgs)}  "
-          f"gt={len(gt_ids)}  workers={args.workers}")
+          f"gt={len(gt_ids)}  workers={args.workers}  "
+          f"emit_threshold={args.emit_threshold:g}")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -310,7 +328,7 @@ def main() -> int:
         if c >= 0.30: return "0.30-0.50"
         return "<0.30"
 
-    n = parse_none = errors = 0
+    n = parse_none = errors = abstained_confidence = 0
     records: list[dict] = []
     written_failures = 0
     elapsed_sum = 0.0
@@ -320,10 +338,10 @@ def main() -> int:
     if args.workers > 1:
         ctx = mp.get_context("spawn")  # CNN + EasyOCR are not fork-safe
         pool = ctx.Pool(args.workers, initializer=_init_worker,
-                        initargs=(gt_path,))
+                        initargs=(gt_path, args.emit_threshold))
         iterator = pool.imap_unordered(_run_one, paths, chunksize=2)
     else:
-        _init_worker(gt_path)
+        _init_worker(gt_path, args.emit_threshold)
         iterator = (_run_one(p) for p in paths)
         pool = None
 
@@ -342,8 +360,14 @@ def main() -> int:
                 continue
             if r.get("parsed_none"):
                 parse_none += 1
-                failure_modes["parse_none"] += 1
+                if r.get("abstained_confidence"):
+                    abstained_confidence += 1
+                    failure_modes["confidence_abstain"] += 1
+                else:
+                    failure_modes["parse_none"] += 1
                 conf_buckets[bucket(r["confidence"])]["total"] += 1
+                if r.get("fields", {}).get("hand_exact"):
+                    conf_buckets[bucket(r["confidence"])]["exact"] += 1
                 if written_failures < args.max_failures:
                     diffs.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
                     written_failures += 1
@@ -386,6 +410,9 @@ def main() -> int:
         "paired": len(pairs),
         "scored": scored,
         "parse_none": parse_none,
+        "abstained_confidence": abstained_confidence,
+        "emit_threshold": args.emit_threshold,
+        "coverage": f"{scored / max(1, len(pairs)) * 100:.3f}%",
         "errors": errors,
         "elapsed_total_s": round(time.time() - t_start, 1),
         "avg_ms_per_image": round(elapsed_sum / max(1, n) * 1000, 1),
