@@ -16,7 +16,6 @@ log = logging.getLogger(__name__)
 from .region_detector import detect_regions
 from .table_parser import parse_table
 from .panel_parser import parse_panel, normalize_position
-from .button_detector import hero_position_from_button
 
 # Load config for confidence weights/threshold
 _CONFIG_PATH = Path(__file__).resolve().parent / "config" / "n8_default.json"
@@ -832,43 +831,29 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     players_at_table_raw, estimate_used_reaction_signal = _estimate_table_size(action_entries)
     players_at_table = players_at_table_raw
 
-    # Cross-column refinement: detect re-actions where the preflop name
-    # duplicate can't be seen because one entry has no name.
-    # Pattern: unnamed OPPONENT raise earlier + named call/fold at end
-    # where the named entry matches a postflop opponent.  The unnamed
-    # raiser IS the named caller (e.g., player opens, gets 3-bet, calls).
-    if len(action_entries) == players_at_table and players_at_table >= 3:
-        last_e = action_entries[-1]
-        last_action = (last_e.get("action") or "").lower()
-        last_name = (last_e.get("player_name") or "").strip()
-        if last_action in ("call", "fold") and last_name and last_e.get("type") != "hero":
-            # Check if this name matches an earlier unnamed OPPONENT raise
-            has_unnamed_opp_raise = False
-            for j, earlier in enumerate(action_entries[:-1]):
-                if earlier.get("type") == "hero":
-                    continue
-                earlier_action = (earlier.get("action") or "").lower()
-                earlier_name = (earlier.get("player_name") or "").strip()
-                if earlier_action == "raise" and not earlier_name:
-                    has_unnamed_opp_raise = True
-                    break
-            if has_unnamed_opp_raise:
-                # Verify: this player appears in postflop (confirming
-                # they entered the pot and are the same as the raiser)
-                postflop_opp_names = []
-                for col in street_cols:
-                    for e in col.get("entries", []):
-                        if e.get("type") != "hero":
-                            pn = (e.get("player_name") or "").strip()
-                            if pn:
-                                postflop_opp_names.append(pn)
-                in_postflop = any(
-                    _fuzzy_name_match(last_name, pn) for pn in postflop_opp_names
-                )
-                if in_postflop:
-                    players_at_table -= 1
+    # Natural8 tournament replays in the paired PokerCraft corpus are 8-max.
+    # A ninth visible preflop row has consistently been a duplicate/re-action
+    # fragment (often an all-in overlay or caller response), not a real ninth
+    # seat.  Cap the N8 parser at eight seats so those fragments stay in the
+    # re-action tail instead of shifting all positions through a 9-max order.
+    players_at_table = min(max(players_at_table, 2), 8)
+    first_round_count = players_at_table
 
-    players_at_table = min(max(players_at_table, 2), 9)
+    # If every visible preflop entry is a fold, action stops once the last
+    # player before the big blind folds, so the BB never receives a decision
+    # row.  The visible action count is
+    # therefore one smaller than the number of players at the table.  Use
+    # the larger table size for position assignment, but keep the action
+    # string limited to the rows that actually exist so we do not append a
+    # phantom BB fold.  Without this, 8-max fold-through screenshots were
+    # treated as 7-max, shifting hero_position one seat toward the blinds.
+    if (
+        2 <= len(action_entries) < 9
+        and all((e.get("action") or "").lower() == "fold" for e in action_entries)
+    ):
+        players_at_table = min(len(action_entries) + 1, 8)
+        first_round_count = len(action_entries)
+
     diagnostics = _build_diagnostics(
         table_result,
         columns,
@@ -884,7 +869,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # entries are re-actions (hero acting again after being raised).
     hero_position = None
     hero_index = None
-    for i, entry in enumerate(action_entries[:players_at_table]):
+    for i, entry in enumerate(action_entries[:first_round_count]):
         if i < len(pos_order):
             entry["position"] = pos_order[i]
             if entry["type"] == "hero" and hero_position is None:
@@ -892,7 +877,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                 hero_index = i
 
     # Mark re-action entries (beyond first round)
-    for i, entry in enumerate(action_entries[players_at_table:], players_at_table):
+    for i, entry in enumerate(action_entries[first_round_count:], first_round_count):
         entry["_is_reaction"] = True
 
     # If hero was assigned to a FOLD position (false hero marker), look for
@@ -932,37 +917,30 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                 elif "bb" in action_text or size == 1.0:
                     hero_position = "BB"
 
-    dealer_button = table_result.get("dealer_button")
-    if dealer_button and players_at_table == 8:
-        button_seat_idx, button_conf = dealer_button
-        button_hero_position = hero_position_from_button(
-            button_seat_idx,
-            table_size=players_at_table,
-        )
-        if button_conf >= 0.9 and button_hero_position:
-            hero_position = button_hero_position
+    # Do not override the action-panel hero position from table dealer-button
+    # detection.  The button detector uses fixed seat anchors for table
+    # geometry, but replay screenshots include crop/scale variants where a
+    # high-confidence button blob maps to the wrong seat.  The action panel is
+    # already ordered by preflop seat and gives the direct hero row; overriding
+    # it shifted otherwise exact 8-max hands to BB.
 
     if not hero_position:
         return None, conf_parts, diagnostics
 
     # Build preflop_actions string using assigned positions
     preflop_actions = _build_preflop_actions_from_order(
-        action_entries, pos_order, hero_position, players_at_table
+        action_entries, pos_order, hero_position, players_at_table,
+        first_round_count=first_round_count,
     )
 
     if not preflop_actions:
         return None, conf_parts, diagnostics
 
-    # Bail out when any raise/bet entry came back with no size — the
-    # panel cell's "Raise N BB" text didn't OCR cleanly. We used to
-    # silently substitute a min-raise placeholder ("R2") in
-    # _action_to_code, which corrupts pot accounting and makes the
-    # solver-side action mapping route the next bet to RAI. Better to
-    # surface this as a structural failure so gemini_session falls back
-    # to a full Gemini parse. Regression: H2823 — CO 3-bet "Raise 7 BB"
-    # came back size=null, default R2 ate the rest of the analysis
-    # (turn/river dropped because flop_actions resolved to X-RAI-C and
-    # the API rejected anything beyond it).
+    # Penalize, but do not discard, hands where a raise/bet entry came back
+    # with no size.  The action *type* is still useful for hand_exact and for
+    # focused Gemini fallback, while `_action_to_code` keeps a conservative
+    # placeholder size for the low-confidence hand.  Production callers gate
+    # on confidence before trusting solver-ready details.
     missing_raise_sizes = sum(
         1 for e in action_entries
         if (e.get("action") or "").lower() in ("raise", "bet")
@@ -970,7 +948,6 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     )
     if missing_raise_sizes:
         conf_parts["ocr_confidence"] = 0.0
-        return None, conf_parts, diagnostics
 
     # Build hero_hand — sort by rank (higher first), standard poker notation
     _RANK_ORDER = "23456789TJQKA"
@@ -991,13 +968,13 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
 
     # Determine active players after preflop (didn't fold)
     active_positions = []
-    for i, entry in enumerate(action_entries[:players_at_table]):
+    for i, entry in enumerate(action_entries[:first_round_count]):
         pos = entry.get("position", pos_order[i] if i < len(pos_order) else None)
         action = (entry.get("action") or "").lower()
         if action != "fold" and pos:
             active_positions.append(pos)
     # Also check re-action entries (calls after 3bet etc.)
-    for entry in action_entries[players_at_table:]:
+    for entry in action_entries[first_round_count:]:
         action = (entry.get("action") or "").lower()
         pos = entry.get("position")
         if action == "fold" and pos and pos in active_positions:
@@ -1017,7 +994,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # carries the same name. Names come from the panel's avatar text and
     # can drift slightly across columns, so use the existing fuzzy matcher.
     name_to_pos: list[tuple[str, str]] = []
-    for entry in action_entries[:players_at_table]:
+    for entry in action_entries[:first_round_count]:
         if entry.get("type") == "hero":
             continue
         nm = (entry.get("player_name") or "").strip()
@@ -1131,8 +1108,13 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         action_entries, street_cols
     )
 
-    # OCR confidence from entries
-    conf_parts["ocr_confidence"] = _avg_ocr_confidence(columns)
+    # OCR confidence from entries.  Keep the hard penalty when an aggressive
+    # action is missing its size; the structure can still be useful, but it
+    # should not pass production confidence gates as solver-ready.
+    if missing_raise_sizes:
+        conf_parts["ocr_confidence"] = 0.0
+    else:
+        conf_parts["ocr_confidence"] = _avg_ocr_confidence(columns)
 
     return hand, conf_parts, diagnostics
 
@@ -1146,18 +1128,24 @@ def _extract_hero_hand_from_stack_text(table_result: dict) -> str:
 def _build_preflop_actions_from_order(
     action_entries: list[dict], pos_order: list[str],
     hero_position: str | None, table_size: int,
+    *, first_round_count: int | None = None,
 ) -> str:
     """Build preflop_actions string from ordered action entries.
 
-    Entries are already assigned positions by order. First `table_size`
-    entries form the first round; remaining are re-actions.
+    Entries are already assigned positions by order.  Usually the first
+    `table_size` entries form the first round; fold-through hands are the
+    exception because the BB has no visible decision row, so callers can pass
+    `first_round_count=table_size-1` to keep the action string faithful while
+    still using the full table size for position assignment.
 
     Format: "F-F-R2-F-F-F-C-F" (one action per position)
     """
     # First round: map position -> action code
     pos_actions: dict[str, str] = {}
+    if first_round_count is None:
+        first_round_count = table_size
 
-    for i, entry in enumerate(action_entries[:table_size]):
+    for i, entry in enumerate(action_entries[:first_round_count]):
         pos = entry.get("position")
         if entry["type"] == "hero":
             pos = hero_position
@@ -1172,14 +1160,14 @@ def _build_preflop_actions_from_order(
 
     # Build first-round string in position order
     parts = []
-    for pos in pos_order:
+    for pos in pos_order[:first_round_count]:
         parts.append(pos_actions.get(pos, "F"))
 
     result = "-".join(parts)
 
     # Re-actions (entries beyond first round)
     re_codes = []
-    for entry in action_entries[table_size:]:
+    for entry in action_entries[first_round_count:]:
         if entry.get("_is_reaction"):
             action = (entry.get("action") or "").lower()
             size = entry.get("size")
@@ -1202,7 +1190,7 @@ def _action_to_code(action: str, size: float | None) -> str | None:
     elif action == "call":
         return "C"
     elif action == "check":
-        return "C"  # preflop check = call (BB option)
+        return "X"  # BB option is a check in PokerCraft/GTO action strings
     elif action in ("raise", "bet"):
         if size is not None:
             # Format: R{size} with no trailing zeros
@@ -1249,10 +1237,13 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         name = col["name"].lower()
         entries = col.get("entries", [])
 
-        # Include empty-entry columns only when a preceding street had
-        # entries (the hand continued but no action was detected — e.g.,
-        # check-check or went to showdown).
-        if not entries and not streets:
+        # Do not infer a later street from board-card pixels alone.  N8 keeps
+        # bright table/hero-card shapes in the board detector's search window,
+        # so false turn/river cards are common when the action panel has no
+        # entries for that street.  A dealt street should have at least one
+        # parsed panel row; otherwise leave it for Gemini fallback/hints rather
+        # than corrupting deterministic hand_exact with phantom runout cards.
+        if not entries:
             continue
 
         street = {}
@@ -1306,17 +1297,6 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         street["actions"] = actions
         if actions:
             streets.append(street)
-        elif streets:
-            # Include empty-action streets only when the prior street
-            # did NOT end with a fold (hand continued to this street
-            # but no entries were detected — e.g., went to showdown).
-            prev_actions = streets[-1].get("actions", [])
-            prev_ended_fold = (
-                prev_actions
-                and prev_actions[-1].get("action", "").upper() == "F"
-            )
-            if not prev_ended_fold:
-                streets.append(street)
 
     return streets
 

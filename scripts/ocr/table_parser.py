@@ -292,7 +292,7 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     used inside _find_hero_cards.
     """
     h, w = table_region.shape[:2]
-    hero = table_region[int(h * 0.58):int(h * 0.85), int(w * 0.28):int(w * 0.68)]
+    hero = table_region[int(h * 0.58):int(h * 0.98), int(w * 0.28):int(w * 0.68)]
     ah, aw = hero.shape[:2]
     if ah < 20 or aw < 20:
         return []
