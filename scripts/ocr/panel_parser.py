@@ -350,12 +350,11 @@ def _collapse_preflop_raise_jam(entries: list[dict]) -> list[dict]:
                 and not e.get("position")
                 and e.get("size") is None
             )
-            prev_named_aggro = (
-                bool(prev.get("player_name"))
-                and (prev.get("action") or "").lower()
-                in ("bet", "raise", "all-in")
+            prev_aggro_with_size = (
+                (prev.get("action") or "").lower() in ("bet", "raise", "all-in")
+                and prev.get("size") is not None
             )
-            if is_overlay and prev_named_aggro:
+            if is_overlay and prev_aggro_with_size:
                 if (prev.get("action") or "").lower() in ("bet", "raise"):
                     prev["action"] = "All-In"
                 continue
@@ -499,7 +498,17 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple
     # hero-specific dedup/flip/size-recovery above so it sees their
     # output and also catches the cross-side showdown layout they miss
     # (opponent shoves, hero calls deeper — H2881).
-    entries = _resolve_allin_attribution(entries)
+    #
+    # This is deliberately postflop-only.  Preflop all-ins are still part
+    # of a multi-player first-round sequence: after one player jams,
+    # several later seats can fold/call and earlier aggressors can still
+    # face a re-action.  Collapsing "everything after the shove" into one
+    # responder row turned hands like TM5863941940 into three entries
+    # (UTG fold, UTG+1 jam, hero fold), deleting the remaining seats and
+    # shifting hero_position to BB.  Preflop already has its narrower
+    # raise-jam overlay cleanup above.
+    if not is_preflop:
+        entries = _resolve_allin_attribution(entries)
 
     return entries, pre_collapse_count
 

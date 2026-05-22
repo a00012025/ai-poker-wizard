@@ -178,6 +178,28 @@ def _filter_action_entries(entries: list[dict]) -> list[dict]:
     # into adjacent rows, fold entries near the real hero get marked as
     # hero too.  Reclassify hero-Fold entries as opponents when there is
     # at least one hero with a non-fold action (the real hero).
+    #
+    # A second, common bleed pattern in N8 all-in/fold-heavy rows is:
+    # an opponent row with a readable avatar/name is tagged as hero while
+    # the real hero row is an anonymous yellow action sticker.  The hero's
+    # own panel row generally has no player_name OCR because the local
+    # player's avatar/name is not rendered in the same way as opponents.
+    # If an anonymous hero marker exists, named hero rows are much more
+    # likely to be adjacent-opponent false positives.  Reclassifying them
+    # before table-size estimation prevents those false markers from
+    # triggering the "hero acted twice" re-action heuristic and shifting
+    # hero_position toward the blinds.
+    hero_indices = [i for i, e in enumerate(result) if e["type"] == "hero"]
+    if len(hero_indices) > 1:
+        has_anonymous_hero = any(
+            not (result[idx].get("player_name") or "").strip()
+            for idx in hero_indices
+        )
+        if has_anonymous_hero:
+            for idx in hero_indices:
+                if (result[idx].get("player_name") or "").strip():
+                    result[idx] = dict(result[idx], type="opponent")
+
     hero_indices = [i for i, e in enumerate(result) if e["type"] == "hero"]
     if len(hero_indices) > 1:
         has_non_fold_hero = any(
@@ -849,7 +871,6 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         estimate_used_reaction_signal=estimate_used_reaction_signal,
     )
     pos_order = POSITION_ORDERS.get(players_at_table, POSITION_ORDERS[8])
-
     # Assign positions by entry order (first entry = first position, etc.)
     # Only the FIRST hero entry determines hero_position; later hero
     # entries are re-actions (hero acting again after being raised).
