@@ -762,22 +762,6 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     table_color = table_result.get("table_color", "unknown")
     diagnostics = _build_diagnostics(table_result, columns)
 
-    board_cards, hero_cards = _resolve_hero_board_conflict(
-        board_cards,
-        hero_cards,
-        hero_details=table_result.get("hero_card_details"),
-    )
-
-    # Card confidence — use actual hero detection quality from table parser.
-    # Don't boost based on board legibility: CardCNN runs hero and board
-    # crops independently, so board cards being clear says nothing about
-    # hero rank reliability. Regression: H2822 — hero 8s/8d classified at
-    # 0.611, +0.1 board boost pushed it to 0.711 (just above the 0.70
-    # MIN_CARD_CONF gate), letting the wrong "9s8d" prediction ship.
-    hero_card_conf = table_result.get("hero_card_conf", 0.0)
-    if hero_cards and len(hero_cards) == 2:
-        conf_parts["card_confidence"] = hero_card_conf
-
     # Find the PreFlop and Blinds columns
     blinds_col = None
     preflop_col = None
@@ -802,6 +786,30 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                 and len(first_entries) >= 5):
             preflop_col = first_street
             street_cols = street_cols[1:]
+
+    has_postflop_action = any(col.get("entries") for col in street_cols)
+    if has_postflop_action:
+        board_cards, hero_cards = _resolve_hero_board_conflict(
+            board_cards,
+            hero_cards,
+            hero_details=table_result.get("hero_card_details"),
+        )
+
+    # Card confidence — use actual hero detection quality from table parser.
+    # Don't boost based on board legibility: CardCNN runs hero and board
+    # crops independently, so board cards being clear says nothing about
+    # hero rank reliability. Regression: H2822 — hero 8s/8d classified at
+    # 0.611, +0.1 board boost pushed it to 0.711 (just above the 0.70
+    # MIN_CARD_CONF gate), letting the wrong "9s8d" prediction ship.
+    #
+    # Also do not let false board-card detections rewrite correct hero
+    # cards on preflop-only hands. Natural8 screenshots can show bright
+    # hero-card blobs in the table center detector's search window even
+    # when no flop exists; conflict resolution is only useful when the
+    # action panel proves a postflop street happened.
+    hero_card_conf = table_result.get("hero_card_conf", 0.0)
+    if hero_cards and len(hero_cards) == 2:
+        conf_parts["card_confidence"] = hero_card_conf
 
     if preflop_col is None:
         return None, conf_parts, diagnostics
