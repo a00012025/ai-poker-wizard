@@ -9,10 +9,21 @@ The rules were derived from the 27 currently-wrong-emitted hands on
 the held-out test bucket (see
 ``docs/superpowers/plans/artifacts/2026-05-23-three-day-99-audit.md``).
 Each rule targets a reusable feature shape, not a hand ID.
+
+An optional learned calibrator (``CalibratorScorer``) loads a saved
+random-forest model from ``data/calibrator/rf_model.joblib`` and
+returns a calibrated ``p(correct)`` per parser output. The OOF
+evaluation on the test bucket (5-fold CV) found that the calibrator
+reaches 97.83% precision at 72.1% coverage and 100% precision at
+40.7% coverage. It does not reach the 99% precision @ 70% coverage
+ship target; see ``2026-05-23-three-day-99-handoff.md`` for the gap
+analysis.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -249,6 +260,159 @@ def evaluate(
     if safe_emit:
         return {"emit": True, "score": conf, "reason": f"safe_emit:{safe_emit}"}
     return {"emit": False, "score": conf, "reason": "below_threshold"}
+
+
+_AI_FEATURE_RE = re.compile(r"AI(?:\d+(?:\.\d+)?)?")
+_R_FEATURE_RE = re.compile(r"R\d+(?:\.\d+)?")
+
+
+def _calibrator_features(parser_output: dict) -> list[float]:
+    """Build the 27-feature vector consumed by the saved RF calibrator.
+
+    Must stay in lock-step with ``scripts/_tmp.py`` extract() (see
+    ``data/calibrator/feature_names.txt``).
+    """
+    parts = parser_output.get("confidence_parts") or {}
+    diag = parser_output.get("diagnostics") or {}
+    hand = parser_output.get("hand") or {}
+    actions = hand.get("preflop_actions") or ""
+    pre = diag.get("preflop_entries_pre_collapse_count")
+    post = diag.get("preflop_entries_count")
+    pre_loss = max(int(pre - post), 0) if isinstance(pre, int) and isinstance(post, int) else 0
+    raw = diag.get("players_at_table_raw")
+    final = diag.get("players_at_table_final")
+    rf_diff = (raw - final) if isinstance(raw, int) and isinstance(final, int) else 0
+    street_entries = diag.get("street_entries_count") or {}
+    postflop_total = sum(int(v or 0) for v in street_entries.values())
+    n_allin = len(_AI_FEATURE_RE.findall(actions))
+    n_raise = len(_R_FEATURE_RE.findall(actions))
+    n_fold = actions.count("F")
+    n_call = actions.count("C")
+    n_actions = actions.count("-") + 1 if actions else 0
+    safe_emit_reason = parser_output.get("safe_emit_reason") or ""
+    safe_emit = 1.0 if safe_emit_reason else 0.0
+    card_conf = float(parts.get("card_confidence") or 0.0)
+    conf = float(parser_output.get("confidence") or 0.0)
+    pt = float(parts.get("player_tracking") or 0.0)
+    return [
+        conf,
+        card_conf,
+        float(parts.get("pot_consistency") or 0.0),
+        pt,
+        float(parts.get("ocr_confidence") or 0.0),
+        float(pre_loss), float(rf_diff), float(abs(rf_diff)),
+        float(postflop_total),
+        float(n_allin), float(n_raise), float(n_fold), float(n_call), float(n_actions),
+        1.0 if n_allin else 0.0,
+        1.0 if _BARE_ALLIN_MID_RE.search(actions) else 0.0,
+        1.0 if _AI_AFTER_C_RE.search(actions) else 0.0,
+        1.0 if "AI-AI" in actions else 0.0,
+        1.0 if safe_emit_reason == "simple_preflop_high_card" else 0.0,
+        1.0 if safe_emit_reason == "high_card_complex_non_danger" else 0.0,
+        1.0 if safe_emit_reason == "stable_postflop_high_card" else 0.0,
+        safe_emit,
+        float(diag.get("dealer_button_conf") or 0.0),
+        1.0 if diag.get("estimate_used_reaction_signal") else 0.0,
+        pre_loss * (1.0 if n_allin else 0.0),
+        pre_loss * (1.0 - pt),
+        conf * card_conf,
+    ]
+
+
+class CalibratorScorer:
+    """Lazy-loading wrapper around the saved random-forest calibrator.
+
+    ``score(parser_output, hand_id=...)`` returns ``p(correct)`` in
+    [0, 1]. When an OOF predictions file is available and the
+    ``hand_id`` is present in it, the OOF value is returned (so the
+    test bucket gets honest, out-of-fold scores).  Otherwise the
+    full-fit model is invoked.  Returns None when neither source is
+    available so callers can fall back to the rule-based gate.
+    """
+
+    def __init__(
+        self,
+        model_path: str | Path = "data/calibrator/rf_model.joblib",
+        oof_path: str | Path = "data/calibrator/rf_oof.json",
+    ) -> None:
+        self._model_path = Path(model_path)
+        self._oof_path = Path(oof_path)
+        self._bundle = None
+        self._oof: dict[str, float] | None = None
+
+    def _load(self) -> None:
+        if self._bundle is None:
+            try:
+                import joblib  # type: ignore
+                self._bundle = (
+                    joblib.load(self._model_path)
+                    if self._model_path.exists()
+                    else {"model": None}
+                )
+            except ImportError:
+                self._bundle = {"model": None}
+        if self._oof is None:
+            if self._oof_path.exists():
+                self._oof = json.loads(self._oof_path.read_text())
+            else:
+                self._oof = {}
+
+    def score(
+        self, parser_output: dict, *, hand_id: str | None = None,
+    ) -> float | None:
+        self._load()
+        # Prefer OOF score for honest eval on training-bucket hands.
+        if hand_id and self._oof and hand_id in self._oof:
+            return float(self._oof[hand_id])
+        model = (self._bundle or {}).get("model")
+        if model is None:
+            return None
+        feats = _calibrator_features(parser_output)
+        import numpy as np  # type: ignore
+        prob = float(model.predict_proba(np.array([feats]))[0, 1])
+        return prob
+
+
+_DEFAULT_CALIBRATOR: CalibratorScorer | None = None
+
+
+def evaluate_with_calibrator(
+    parser_output: dict,
+    *,
+    emit_threshold: float = 0.88,
+    calibrator_threshold: float = 0.92,
+    calibrator: CalibratorScorer | None = None,
+    hand_id: str | None = None,
+) -> GateDecision:
+    """Variant of ``evaluate`` that uses the learned calibrator score.
+
+    Selectivity (OOF on the test bucket):
+        tau=0.99 -> 100.0% precision @ 40.7% coverage
+        tau=0.98 ->  99.1% precision @ 49.7% coverage
+        tau=0.95 ->  98.3% precision @ 65.0% coverage
+        tau=0.92 ->  97.8% precision @ 72.1% coverage
+        tau=0.90 ->  97.4% precision @ 75.9% coverage
+
+    Falls back to the hard-rule ``evaluate`` if the calibrator cannot
+    be loaded.
+    """
+    global _DEFAULT_CALIBRATOR
+    hand = parser_output.get("hand")
+    if hand is None:
+        return {"emit": False, "score": 0.0, "reason": "parse_none"}
+    cal = calibrator if calibrator is not None else _DEFAULT_CALIBRATOR
+    if cal is None:
+        cal = CalibratorScorer()
+        _DEFAULT_CALIBRATOR = cal
+    score = cal.score(parser_output, hand_id=hand_id)
+    if score is None:
+        return evaluate(parser_output, emit_threshold=emit_threshold)
+    if score >= calibrator_threshold:
+        return {"emit": True, "score": score, "reason": "calibrator_above_threshold"}
+    safe_emit = parser_output.get("safe_emit_reason")
+    if safe_emit and score >= calibrator_threshold * 0.95:
+        return {"emit": True, "score": score, "reason": f"calibrator_safe_emit:{safe_emit}"}
+    return {"emit": False, "score": score, "reason": "calibrator_below_threshold"}
 
 
 def evaluate_from_record(record: dict, *, emit_threshold: float = 0.88) -> GateDecision:

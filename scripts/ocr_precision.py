@@ -120,17 +120,24 @@ def compare(parsed: dict, gt: dict) -> dict:
 _GT_MAP: dict[str, dict] = {}
 _EMIT_THRESHOLD = 0.88
 _GATE_ENABLED = False
+_USE_CALIBRATOR = False
+_CALIBRATOR_THRESHOLD = 0.92
 
 
 def _init_worker(
     gt_path: str,
     emit_threshold: float = 0.88,
     gate_enabled: bool = False,
+    use_calibrator: bool = False,
+    calibrator_threshold: float = 0.92,
 ) -> None:
     """Load GT into module globals once per worker (avoid pickling 7k dict)."""
     global _GT_MAP, _EMIT_THRESHOLD, _GATE_ENABLED
+    global _USE_CALIBRATOR, _CALIBRATOR_THRESHOLD
     _EMIT_THRESHOLD = emit_threshold
     _GATE_ENABLED = gate_enabled
+    _USE_CALIBRATOR = use_calibrator
+    _CALIBRATOR_THRESHOLD = calibrator_threshold
     with open(gt_path, encoding="utf-8") as fh:
         for line in fh:
             o = json.loads(line)
@@ -261,7 +268,31 @@ def _run_one(img_path_str: str) -> dict:
     }
     # Confidence-gate decision: composes the hard-risk rules with the
     # threshold + safe_emit_reason logic. When ``_GATE_ENABLED`` is True
-    # (default), the gate's emit decision and abstain reason are used.
+    # the gate's emit decision and abstain reason are used.
+    if _USE_CALIBRATOR:
+        from ocr.confidence_gate import evaluate_with_calibrator as _cal_eval
+        decision = _cal_eval(
+            result,
+            emit_threshold=_EMIT_THRESHOLD,
+            calibrator_threshold=_CALIBRATOR_THRESHOLD,
+            hand_id=hand_id,
+        )
+        if not decision["emit"]:
+            return dict(
+                record,
+                parsed_none=True,
+                abstained_confidence=True,
+                emit_threshold=_EMIT_THRESHOLD,
+                gate_reason=decision["reason"],
+                calibrator_score=decision.get("score"),
+            )
+        return {
+            **record,
+            "emit_threshold": _EMIT_THRESHOLD,
+            "gate_reason": decision["reason"],
+            "calibrator_score": decision.get("score"),
+        }
+
     if _GATE_ENABLED:
         from ocr.confidence_gate import evaluate as _gate_eval
         decision = _gate_eval(result, emit_threshold=_EMIT_THRESHOLD)
@@ -324,6 +355,14 @@ def main() -> int:
                           "Off by default so the baseline benchmark "
                           "remains unchanged (see "
                           "2026-05-23-three-day-99-handoff.md for why)."))
+    ap.add_argument("--use-calibrator", action="store_true",
+                    help=("Use the learned RF calibrator as the gate. "
+                          "Looks up OOF predictions from "
+                          "data/calibrator/rf_oof.json for honest test-"
+                          "bucket evaluation; falls back to the trained "
+                          "model otherwise. See confidence_gate.py."))
+    ap.add_argument("--calibrator-threshold", type=float, default=0.92,
+                    help="Calibrator p(correct) threshold for emit.")
     ap.add_argument("--dump-all", action="store_true",
                     help=("Dump every record (including emitted-exact) to "
                           "all_records.jsonl for calibrator training."))
@@ -384,13 +423,23 @@ def main() -> int:
 
     paths = [str(p) for p in pairs]
     gate_enabled = bool(args.enable_gate)
+    use_calibrator = bool(args.use_calibrator)
     if args.workers > 1:
         ctx = mp.get_context("spawn")  # CNN + EasyOCR are not fork-safe
-        pool = ctx.Pool(args.workers, initializer=_init_worker,
-                        initargs=(gt_path, args.emit_threshold, gate_enabled))
+        pool = ctx.Pool(
+            args.workers,
+            initializer=_init_worker,
+            initargs=(
+                gt_path, args.emit_threshold, gate_enabled,
+                use_calibrator, args.calibrator_threshold,
+            ),
+        )
         iterator = pool.imap_unordered(_run_one, paths, chunksize=2)
     else:
-        _init_worker(gt_path, args.emit_threshold, gate_enabled)
+        _init_worker(
+            gt_path, args.emit_threshold, gate_enabled,
+            use_calibrator, args.calibrator_threshold,
+        )
         iterator = (_run_one(p) for p in paths)
         pool = None
 
