@@ -538,11 +538,36 @@ def _find_hero_cards(
         # If masking changes the suit while making the suit head much less
         # confident, trust the raw crop: that pattern means incidental orange
         # or over-masking confused the masked pass rather than removing a real
-        # sticker. This preserves the H2806-style masked rescue where raw is
-        # weak, while fixing high-confidence raw spades degraded to clubs.
+        # sticker. Also trust a very strong raw suit when the masked pass is
+        # only moderately confident and still has the raw suit as its runner-up
+        # (H2894: WIN mask flipped 9h→9d at 0.82 while raw stayed 9h at 0.98).
+        # This preserves the H2806-style masked rescue where raw is weak, while
+        # fixing high-confidence raw suits degraded by over-masking.
+        raw_suit = raw.get("suit")
+        masked_suit = masked.get("suit")
+        raw_suit_conf = raw.get("suit_conf", 0.0)
+        masked_suit_top2 = masked.get("suit_top2", [])
+        masked_second_suit = (
+            masked_suit_top2[1][0]
+            if len(masked_suit_top2) >= 2
+            else None
+        )
+        masked_second_conf = (
+            masked_suit_top2[1][1]
+            if len(masked_suit_top2) >= 2
+            else 0.0
+        )
         if (
-            raw.get("suit") != masked.get("suit")
-            and raw.get("suit_conf", 0.0) >= masked.get("suit_conf", 0.0) + 0.20
+            raw_suit != masked_suit
+            and (
+                raw_suit_conf >= masked.get("suit_conf", 0.0) + 0.20
+                or (
+                    raw_suit_conf >= 0.95
+                    and suit_conf <= 0.85
+                    and masked_second_suit == raw_suit
+                    and masked_second_conf >= 0.05
+                )
+            )
         ):
             suit = raw["suit"]
             suit_conf = raw["suit_conf"]
