@@ -409,9 +409,6 @@ def evaluate_with_calibrator(
         return evaluate(parser_output, emit_threshold=emit_threshold)
     if score >= calibrator_threshold:
         return {"emit": True, "score": score, "reason": "calibrator_above_threshold"}
-    safe_emit = parser_output.get("safe_emit_reason")
-    if safe_emit and score >= calibrator_threshold * 0.95:
-        return {"emit": True, "score": score, "reason": f"calibrator_safe_emit:{safe_emit}"}
     return {"emit": False, "score": score, "reason": "calibrator_below_threshold"}
 
 
