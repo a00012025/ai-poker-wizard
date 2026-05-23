@@ -119,12 +119,18 @@ def compare(parsed: dict, gt: dict) -> dict:
 
 _GT_MAP: dict[str, dict] = {}
 _EMIT_THRESHOLD = 0.88
+_GATE_ENABLED = False
 
 
-def _init_worker(gt_path: str, emit_threshold: float = 0.88) -> None:
+def _init_worker(
+    gt_path: str,
+    emit_threshold: float = 0.88,
+    gate_enabled: bool = False,
+) -> None:
     """Load GT into module globals once per worker (avoid pickling 7k dict)."""
-    global _GT_MAP, _EMIT_THRESHOLD
+    global _GT_MAP, _EMIT_THRESHOLD, _GATE_ENABLED
     _EMIT_THRESHOLD = emit_threshold
+    _GATE_ENABLED = gate_enabled
     with open(gt_path, encoding="utf-8") as fh:
         for line in fh:
             o = json.loads(line)
@@ -253,6 +259,27 @@ def _run_one(img_path_str: str) -> dict:
         "gt_streets": _streets(gt),
         "elapsed_s": time.time() - t0,
     }
+    # Confidence-gate decision: composes the hard-risk rules with the
+    # threshold + safe_emit_reason logic. When ``_GATE_ENABLED`` is True
+    # (default), the gate's emit decision and abstain reason are used.
+    if _GATE_ENABLED:
+        from ocr.confidence_gate import evaluate as _gate_eval
+        decision = _gate_eval(result, emit_threshold=_EMIT_THRESHOLD)
+        if not decision["emit"]:
+            return dict(
+                record,
+                parsed_none=True,
+                abstained_confidence=True,
+                emit_threshold=_EMIT_THRESHOLD,
+                gate_reason=decision["reason"],
+            )
+        return {
+            **record,
+            "safe_emit_overridden": decision["reason"].startswith("safe_emit:"),
+            "emit_threshold": _EMIT_THRESHOLD,
+            "gate_reason": decision["reason"],
+        }
+
     if conf < _EMIT_THRESHOLD and not safe_emit_reason:
         return dict(
             record,
@@ -292,6 +319,14 @@ def main() -> int:
                     help=("Minimum confidence required for deterministic "
                           "emission. Lower-confidence parses count as "
                           "Gemini fallback/abstain for headline precision."))
+    ap.add_argument("--enable-gate", action="store_true",
+                    help=("Enable the confidence_gate hard-risk rules. "
+                          "Off by default so the baseline benchmark "
+                          "remains unchanged (see "
+                          "2026-05-23-three-day-99-handoff.md for why)."))
+    ap.add_argument("--dump-all", action="store_true",
+                    help=("Dump every record (including emitted-exact) to "
+                          "all_records.jsonl for calibrator training."))
     args = ap.parse_args()
 
     gt_path = str(Path(args.ground_truth).resolve())
@@ -342,15 +377,20 @@ def main() -> int:
     written_failures = 0
     elapsed_sum = 0.0
     t_start = time.time()
+    all_records_path = out_dir / "all_records.jsonl" if args.dump_all else None
+    all_records_fh = (
+        all_records_path.open("w", encoding="utf-8") if all_records_path else None
+    )
 
     paths = [str(p) for p in pairs]
+    gate_enabled = bool(args.enable_gate)
     if args.workers > 1:
         ctx = mp.get_context("spawn")  # CNN + EasyOCR are not fork-safe
         pool = ctx.Pool(args.workers, initializer=_init_worker,
-                        initargs=(gt_path, args.emit_threshold))
+                        initargs=(gt_path, args.emit_threshold, gate_enabled))
         iterator = pool.imap_unordered(_run_one, paths, chunksize=2)
     else:
-        _init_worker(gt_path, args.emit_threshold)
+        _init_worker(gt_path, args.emit_threshold, gate_enabled)
         iterator = (_run_one(p) for p in paths)
         pool = None
 
@@ -361,6 +401,8 @@ def main() -> int:
             if r.get("skipped"):
                 continue
             records.append(r)
+            if all_records_fh is not None:
+                all_records_fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
             if r.get("error"):
                 errors += 1
                 if written_failures < args.max_failures:
@@ -406,6 +448,8 @@ def main() -> int:
             pool.close()
             pool.join()
         diffs.close()
+        if all_records_fh is not None:
+            all_records_fh.close()
 
     scored = max(1, n - parse_none - errors)
 
