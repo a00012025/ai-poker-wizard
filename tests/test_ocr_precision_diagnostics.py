@@ -46,8 +46,15 @@ def test_ocr_precision_writes_diagnostics(tmp_path):
         "dealer_button_detection_rate",
         "estimate_reaction_signal_rate",
         "pre_collapse_loss_histogram",
+        "safe_emit_override_reasons",
     ):
         assert key in diag_summary
+
+    summary = json.loads(summary_path.read_text())
+    assert "safe_emit_overrides" in summary
+    assert "safe_emit_override_exact" in summary
+    assert "safe_emit_override_wrong" in summary
+    assert "safe_emit_override_reasons" in summary
 
     calib = json.loads(calib_path.read_text())
     assert "ece_10bin" in calib

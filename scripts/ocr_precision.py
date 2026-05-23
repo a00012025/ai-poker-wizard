@@ -218,6 +218,7 @@ def _run_one(img_path_str: str) -> dict:
     conf = float(result.get("confidence") or 0.0)
     card_conf = float(result.get("card_confidence") or 0.0)
     parts = result.get("confidence_parts") or {}
+    safe_emit_reason = result.get("safe_emit_reason")
 
     if parsed is None:
         return {
@@ -228,6 +229,7 @@ def _run_one(img_path_str: str) -> dict:
             "card_confidence": card_conf,
             "confidence_parts": parts,
             "diagnostics": diagnostics,
+            "safe_emit_reason": safe_emit_reason,
             "elapsed_s": time.time() - t0,
         }
     fields = compare(parsed, gt)
@@ -238,6 +240,7 @@ def _run_one(img_path_str: str) -> dict:
         "card_confidence": card_conf,
         "confidence_parts": parts,
         "diagnostics": diagnostics,
+        "safe_emit_reason": safe_emit_reason,
         "fields": fields,
         "failure_mode": None if fields["hand_exact"] else _classify_failure(parsed, gt, fields),
         "parsed": {k: parsed.get(k) for k in (
@@ -250,13 +253,19 @@ def _run_one(img_path_str: str) -> dict:
         "gt_streets": _streets(gt),
         "elapsed_s": time.time() - t0,
     }
-    if conf < _EMIT_THRESHOLD:
+    if conf < _EMIT_THRESHOLD and not safe_emit_reason:
         return dict(
             record,
             parsed_none=True,
             abstained_confidence=True,
             emit_threshold=_EMIT_THRESHOLD,
         )
+    if conf < _EMIT_THRESHOLD and safe_emit_reason:
+        return {
+            **record,
+            "safe_emit_overridden": True,
+            "emit_threshold": _EMIT_THRESHOLD,
+        }
     return {
         **record,
         "emit_threshold": _EMIT_THRESHOLD,
@@ -411,6 +420,25 @@ def main() -> int:
         "scored": scored,
         "parse_none": parse_none,
         "abstained_confidence": abstained_confidence,
+        "safe_emit_overrides": sum(
+            1 for r in records if r.get("safe_emit_overridden")
+        ),
+        "safe_emit_override_exact": sum(
+            1 for r in records
+            if r.get("safe_emit_overridden")
+            and r.get("fields", {}).get("hand_exact")
+        ),
+        "safe_emit_override_wrong": sum(
+            1 for r in records
+            if r.get("safe_emit_overridden")
+            and r.get("fields") is not None
+            and not r.get("fields", {}).get("hand_exact")
+        ),
+        "safe_emit_override_reasons": dict(Counter(
+            r.get("safe_emit_reason")
+            for r in records
+            if r.get("safe_emit_overridden") and r.get("safe_emit_reason")
+        ).most_common()),
         "emit_threshold": args.emit_threshold,
         "coverage": f"{scored / max(1, len(pairs)) * 100:.3f}%",
         "errors": errors,
@@ -455,6 +483,11 @@ def main() -> int:
         "dealer_button_any_match_rate": f"{button_any / diag_n:.3%}",
         "estimate_reaction_signal_rate": f"{reaction_hits / diag_n:.3%}",
         "pre_collapse_loss_histogram": dict(sorted(pre_collapse_loss.items())),
+        "safe_emit_override_reasons": dict(Counter(
+            r.get("safe_emit_reason")
+            for r in records
+            if r.get("safe_emit_overridden") and r.get("safe_emit_reason")
+        ).most_common()),
     }
     (out_dir / "diagnostics_summary.json").write_text(
         json.dumps(diag_summary, indent=2, ensure_ascii=False))

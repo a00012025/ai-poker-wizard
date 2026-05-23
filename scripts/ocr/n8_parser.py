@@ -163,6 +163,11 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
 
     # Step 5: compute confidence
     confidence = _compute_confidence(confidence_parts)
+    safe_emit_reason = _safe_emit_override_reason(
+        hand, confidence_parts, diagnostics
+    )
+    if safe_emit_reason:
+        diagnostics["safe_emit_reason"] = safe_emit_reason
 
     # Step 6: build hints for low confidence
     hints = None
@@ -176,6 +181,7 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
         "card_confidence": confidence_parts.get("card_confidence", 0.0),
         "confidence_parts": confidence_parts,
         "diagnostics": diagnostics,
+        "safe_emit_reason": safe_emit_reason,
     }
 
 
@@ -1654,6 +1660,107 @@ def _compute_confidence(parts: dict) -> float:
     for key, weight in _CONF_WEIGHTS.items():
         score += parts.get(key, 0.0) * weight
     return min(1.0, max(0.0, score))
+
+
+def _preflop_type_tokens(hand: dict | None) -> list[str]:
+    """Return preflop action type tokens, ignoring numeric sizes."""
+    if not hand:
+        return []
+    tokens: list[str] = []
+    for tok in (hand.get("preflop_actions") or "").split("-"):
+        tok = tok.strip().upper()
+        if not tok:
+            continue
+        if tok.startswith("AI"):
+            tokens.append("AI")
+        elif tok.startswith("R"):
+            tokens.append("R")
+        else:
+            tokens.append(tok)
+    return tokens
+
+
+def _safe_emit_override_reason(
+    hand: dict | None,
+    confidence_parts: dict,
+    diagnostics: dict,
+) -> str | None:
+    """Return a guarded reason for emitting below the global confidence gate.
+
+    The blended confidence score is intentionally conservative: missing raise
+    sizes and weak postflop player tracking can push otherwise exact parses
+    below the benchmark's 0.88 emission threshold.  These predicates recover
+    only shapes whose risk is bounded by strong card confidence plus stable
+    action/table diagnostics.  Known danger shapes stay abstained: low card
+    confidence, ambiguous all-in grammar, missing effective stack on fragile
+    all-in rows, and reaction/table-size mismatches.
+    """
+    if not hand:
+        return None
+
+    card_conf = float(confidence_parts.get("card_confidence") or 0.0)
+    pot_conf = float(confidence_parts.get("pot_consistency") or 0.0)
+    player_conf = float(confidence_parts.get("player_tracking") or 0.0)
+    ocr_conf = float(confidence_parts.get("ocr_confidence") or 0.0)
+    pre_count = diagnostics.get("preflop_entries_count")
+    pre_collapse = diagnostics.get("preflop_entries_pre_collapse_count")
+    preloss = (
+        (pre_collapse - pre_count)
+        if isinstance(pre_collapse, int) and isinstance(pre_count, int)
+        else 99
+    )
+    raw_players = diagnostics.get("players_at_table_raw")
+    final_players = diagnostics.get("players_at_table_final")
+    postflop_rows = sum(
+        int(v or 0)
+        for v in (diagnostics.get("street_entries_count") or {}).values()
+    )
+    used_reaction_signal = bool(
+        diagnostics.get("estimate_used_reaction_signal")
+    )
+    tokens = _preflop_type_tokens(hand)
+    has_allin = "AI" in tokens
+    raise_count = tokens.count("R")
+    effective_missing = hand.get("effective_bb") is None
+
+    high_card_base = card_conf >= 0.998 and pot_conf >= 0.5 and player_conf >= 0.5
+
+    if high_card_base and not has_allin and raise_count <= 1:
+        return "simple_preflop_high_card"
+
+    danger_complex = (
+        bool(tokens and tokens[-1] == "AI")
+        or bool(tokens and tokens[0] == "R")
+        or (effective_missing and preloss <= 2)
+        or (effective_missing and raw_players != final_players)
+        or (
+            postflop_rows > 0
+            and raw_players != final_players
+            and ocr_conf == 0.0
+            and raise_count >= 2
+            and preloss <= 7
+        )
+    )
+    if (
+        card_conf >= 0.999
+        and pot_conf >= 0.5
+        and player_conf >= 0.5
+        and not danger_complex
+    ):
+        return "high_card_complex_non_danger"
+
+    if (
+        card_conf >= 0.999
+        and ocr_conf == 1.0
+        and pot_conf == 1.0
+        and preloss <= 1
+        and not has_allin
+        and postflop_rows > 0
+        and not used_reaction_signal
+    ):
+        return "stable_postflop_high_card"
+
+    return None
 
 
 def _build_hints(table_result: dict, columns: list[dict],
