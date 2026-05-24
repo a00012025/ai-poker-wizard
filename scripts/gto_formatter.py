@@ -699,6 +699,33 @@ def format_full_spot(spot_solution: dict, hero_hand: str = None, hero_position: 
     return "\n".join(parts)
 
 
+def _combo_idx_in_player_range(
+    spot_solution: dict,
+    hero_position: str,
+    combo_idx: int | None,
+    min_range: float = 0.005,
+) -> bool:
+    """Return True if an exact postflop combo is present at this node.
+
+    Solver strategy/EV arrays often contain arbitrary-looking defaults for
+    combos that have already taken a different earlier action and therefore
+    have zero range at the current node.  Those off-node combo rows must not
+    drive user-facing advice.
+    """
+    if combo_idx is None:
+        return False
+    for pi in spot_solution.get("players_info", []):
+        if pi.get("player", {}).get("position") != hero_position:
+            continue
+        range_arr = pi.get("range", [])
+        return (
+            len(range_arr) == 1326
+            and combo_idx < len(range_arr)
+            and range_arr[combo_idx] >= min_range
+        )
+    return False
+
+
 def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str,
                         min_freq: float = 0.05, combo_idx: int | None = None) -> str:
     """Format compact GTO line: one line with actions ≥ min_freq.
@@ -713,8 +740,15 @@ def format_spot_compact(spot_solution: dict, hero_hand: str, hero_position: str,
     action_solutions = spot_solution.get("action_solutions", [])
     actions_freq = None
 
-    # Postflop: use combo-specific frequencies from 1326-strategy arrays
+    # Postflop: use combo-specific frequencies from 1326-strategy arrays.
+    # If the exact combo has zero range at this node, do not fall back to
+    # same-hand aggregate counters. That node is unreachable for hero's
+    # actual line (often because an earlier bet size was off-grid/off-mix),
+    # so user-facing output should treat it as no solver data rather than
+    # borrowing advice from different combos.
     if combo_idx is not None and action_solutions and "strategy" in action_solutions[0]:
+        if not _combo_idx_in_player_range(spot_solution, hero_position, combo_idx):
+            return ""
         combo_freq = {}
         for asol in action_solutions:
             freq = asol["strategy"][combo_idx]
@@ -840,7 +874,12 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
         action_evs = _get_action_evs_preflop(spot_solution, hero_hand, hero_pos)
     else:
         from hh_deviation_check import _get_action_evs_postflop
-        action_evs = _get_action_evs_postflop(spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
+        if combo_idx is not None and not _combo_idx_in_player_range(
+            spot_solution, hero_pos, combo_idx
+        ):
+            return None
+        action_evs = _get_action_evs_postflop(
+            spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
 
     if not action_evs:
         return None

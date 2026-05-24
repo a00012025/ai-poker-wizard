@@ -34,7 +34,13 @@ from gto_api import (
     find_closest_action, find_closest_action_postflop, nearest_depth,
     nearest_cash_depth,
 )
-from gto_formatter import format_full_spot, format_ev_comparison, normalize_hand_name, combo_index_for_hand
+from gto_formatter import (
+    format_full_spot,
+    format_ev_comparison,
+    normalize_hand_name,
+    combo_index_for_hand,
+    _combo_idx_in_player_range,
+)
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
@@ -316,17 +322,25 @@ def _get_hero_action_freq(solution: dict, action_code: str, hero_hand: str, hero
     return hero_freq, gto_rec
 
 
-def _compute_preflop_pot(preflop_actions: str, effective_bb: float) -> float:
+def _compute_preflop_pot(
+    preflop_actions: str,
+    effective_bb: float,
+    num_players: int = 8,
+    ante_per_player: float = 0.0,
+) -> float:
     """Compute the pot at the start of the flop from original preflop actions."""
     parts = preflop_actions.split("-")
 
     # Initial: SB posts 0.5, BB posts 1.0
-    investments = [0.0] * 8
-    investments[6] = 0.5  # SB
-    investments[7] = 1.0  # BB
+    seat_count = max(num_players, len(parts), 2)
+    investments = [0.0] * seat_count
+    sb_idx = max(0, num_players - 2)
+    bb_idx = max(1, num_players - 1)
+    investments[sb_idx] = 0.5  # SB
+    investments[bb_idx] = 1.0  # BB
     current_bet = 1.0  # BB is the initial bet to match
 
-    for i in range(min(len(parts), 8)):
+    for i in range(min(len(parts), num_players)):
         code = parts[i]
         if code in ("F", ""):
             pass
@@ -343,10 +357,10 @@ def _compute_preflop_pot(preflop_actions: str, effective_bb: float) -> float:
             current_bet = effective_bb
 
     # Continuation actions (re-raises after initial 8 positions)
-    if len(parts) > 8:
-        active = [i for i in range(8) if parts[i] not in ("F", "")]
+    if len(parts) > num_players:
+        active = [i for i in range(num_players) if parts[i] not in ("F", "")]
         cont_idx = 0
-        for j in range(8, len(parts)):
+        for j in range(num_players, len(parts)):
             if cont_idx >= len(active):
                 cont_idx = 0
             pos = active[cont_idx]
@@ -364,7 +378,7 @@ def _compute_preflop_pot(preflop_actions: str, effective_bb: float) -> float:
                 current_bet = effective_bb
             cont_idx += 1
 
-    return sum(investments)
+    return sum(investments) + (ante_per_player * num_players)
 
 
 def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot: float) -> str:
@@ -419,6 +433,31 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
 
     # Fallback to absolute matching
     return find_closest_action(available_actions, bet_size)
+
+
+def _display_pot_pct(pct: float) -> float:
+    """Snap noisy actual pot percentages to familiar poker bet labels."""
+    for target in (20, 25, 33, 50, 55, 66, 75, 100, 125, 150, 200):
+        if abs(pct - target) <= 2:
+            return target
+    return pct
+
+
+def _solver_action_pot_pct(solution: dict, action_code: str | None) -> float | None:
+    """Return the solver bucket's pot percentage for an action code."""
+    if not solution or not action_code:
+        return None
+    for asol in solution.get("action_solutions", []):
+        if asol.get("action", {}).get("code") != action_code:
+            continue
+        pct = asol.get("action", {}).get("betsize_by_pot")
+        if pct is None:
+            return None
+        try:
+            return float(pct)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str, set[str] | None]:
@@ -935,7 +974,18 @@ def _run_analysis(hand: dict) -> dict:
     # MTTGeneral CO opens R2.2 — user's R2 gets mapped to R2.2, inflating
     # every downstream pot by ~0.7bb, which misroutes a 4.6bb river bet
     # from the 50%-pot bucket to the 36%-pot bucket. H2767 regression.)
-    actual_pot = _compute_preflop_pot(hand["preflop_actions"], hand["effective_bb"])
+    actual_pot = _compute_preflop_pot(
+        hand["preflop_actions"],
+        hand["effective_bb"],
+        num_players=num_players,
+        ante_per_player=0.0,
+    )
+    display_pot = _compute_preflop_pot(
+        hand["preflop_actions"],
+        hand["effective_bb"],
+        num_players=num_players,
+        ante_per_player=0.0 if is_cash else 0.125,
+    )
 
     # Normalize preflop actions
     # For ICM, use ICM gametype for preflop normalization
@@ -1197,10 +1247,12 @@ def _run_analysis(hand: dict) -> dict:
                     if action_type == "C":
                         prev = street_investments.get(pos, 0)
                         actual_pot += outstanding_bet - prev
+                        display_pot += outstanding_bet - prev
                         street_investments[pos] = outstanding_bet
                     elif action_type not in ("X", "F"):
                         prev = street_investments.get(pos, 0)
                         actual_pot += target_size - prev
+                        display_pot += target_size - prev
                         street_investments[pos] = target_size
                         outstanding_bet = target_size
                 continue
@@ -1242,12 +1294,21 @@ def _run_analysis(hand: dict) -> dict:
                         taken_code = find_closest_action_postflop(match_avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
+                actual_pot_pct = None
+                if (
+                    target_size
+                    and display_pot > 0
+                    and outstanding_bet == 0
+                    and action_type not in ("X", "C", "F")
+                ):
+                    actual_pot_pct = target_size / display_pot
                 hero_spots.append({
                     "street": street_name,
                     "header": street_header if street_first_hero else None,
                     "params": params,
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
                     "taken_code": taken_code,
+                    "actual_pot_pct": actual_pot_pct,
                     # Snapshot of every prior action on this street so the
                     # spot categorizer can tell a fresh c-bet apart from a
                     # response to a donk/probe/check-raise. Copy because
@@ -1287,10 +1348,12 @@ def _run_analysis(hand: dict) -> dict:
                 elif action_type == "C":
                     prev = street_investments.get(pos, 0)
                     actual_pot += outstanding_bet - prev
+                    display_pot += outstanding_bet - prev
                     street_investments[pos] = outstanding_bet
                 else:  # bet/raise
                     prev = street_investments.get(pos, 0)
                     actual_pot += target_size - prev
+                    display_pot += target_size - prev
                     street_investments[pos] = target_size
                     outstanding_bet = target_size
 
@@ -1730,6 +1793,37 @@ def _run_analysis(hand: dict) -> dict:
                     )
                     break
 
+    # Exact-combo postflop guard for off-size branches: when a prior hero bet
+    # on the same street had to be mapped to a solver bucket that differs
+    # materially from the actual pot %, the next node may be unreachable for
+    # hero's exact combo even though GTO Wizard still returns aggregate data.
+    # Hide that next node as "no solver data" rather than borrowing advice
+    # from different combos/lines (H2902 river).
+    offrange_no_solver_idxs: set[int] = set()
+    if not no_hero_hand and hero_combo_idx is not None:
+        for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+            if not (
+                    sol
+                    and spot["street"] != "preflop"
+                    and sol.get("action_solutions")
+                    and not _combo_idx_in_player_range(sol, hero_pos, hero_combo_idx)):
+                continue
+            previous_same_street_size_mismatch = False
+            for j in range(i - 1, -1, -1):
+                prev_spot = hero_spots[j]
+                if prev_spot["street"] != spot["street"]:
+                    break
+                actual_pct = prev_spot.get("actual_pot_pct")
+                if not actual_pct:
+                    continue
+                solver_pct = _solver_action_pot_pct(
+                    solutions[j], prev_spot.get("taken_code"))
+                if solver_pct is not None and abs(float(actual_pct) - solver_pct) >= 0.10:
+                    previous_same_street_size_mismatch = True
+                    break
+            if previous_same_street_size_mismatch:
+                offrange_no_solver_idxs.add(i)
+
     t_phase2 = time.time()
 
     # ── Phase 3: Format results ──
@@ -1791,6 +1885,7 @@ def _run_analysis(hand: dict) -> dict:
     from hand_eval import evaluate as _eval_hand
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        display_sol = None if i in offrange_no_solver_idxs else sol
         if spot["header"]:
             results.append("")
             results.append("=" * 50)
@@ -1808,16 +1903,16 @@ def _run_analysis(hand: dict) -> dict:
                         if eval_result["full_label"]:
                             results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
 
-        if sol:
+        if display_sol:
             # When no hero hand specified, show only range-level summary (no hero-specific detail)
-            spot_text = format_full_spot(sol, None if no_hero_hand else hero_hand, hero_pos)
+            spot_text = format_full_spot(display_sol, None if no_hero_hand else hero_hand, hero_pos)
             results.append(spot_text)
 
             # Include full range breakdown when no hero hand specified or ICM
             # preflop — prevents Gemini from fabricating range compositions
             if (is_icm and spot["street"] == "preflop") or no_hero_hand:
                 from gto_formatter import format_range_by_action
-                range_text = format_range_by_action(sol, hero_pos)
+                range_text = format_range_by_action(display_sol, hero_pos)
                 if range_text:
                     results.append("")
                     results.append(range_text)
@@ -1827,15 +1922,20 @@ def _run_analysis(hand: dict) -> dict:
             if taken_code and not no_hero_hand:
                 is_pf = spot["street"] == "preflop"
                 ev_note = format_ev_comparison(
-                    sol, taken_code, hero_hand, hero_pos,
+                    display_sol, taken_code, hero_hand, hero_pos,
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
                 if ev_note:
                     results.append(ev_note)
         else:
-            # Check if a previous hero action explains the missing data
-            explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos,
-                                                      combo_idx=hero_combo_idx)
+            # Check if a previous hero action explains the missing data.
+            # For exact-combo off-range nodes, intentionally suppress this
+            # explanation: the user-facing fix is simply "no solver data",
+            # not a low-frequency recommendation borrowed from the prior node.
+            explanation = None
+            if i not in offrange_no_solver_idxs:
+                explanation = _explain_missing_solution(i, hero_spots, solutions, hero_hand, hero_pos,
+                                                        combo_idx=hero_combo_idx)
             if explanation:
                 results.append(explanation)
             else:
@@ -1870,6 +1970,7 @@ def _run_analysis(hand: dict) -> dict:
         compact.append(offrange_note)
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        display_sol = None if i in offrange_no_solver_idxs else sol
         if spot["header"]:
             # Convert 【Preflop】 → ─── Preflop ───
             # Simplify 【Turn: Kc（Board: Js6h5sKc）】 → Turn: Kc
@@ -1890,12 +1991,12 @@ def _run_analysis(hand: dict) -> dict:
                         if eval_result["full_label"]:
                             compact.append(f"🎯 {eval_result['full_label']}")
 
-        if sol:
+        if display_sol:
             # When no hero hand, use sentinel to force range-level frequencies
             # For postflop, pass combo_idx for combo-specific frequencies
             pf_spot = spot["street"] == "preflop"
             cidx = None if (pf_spot or no_hero_hand) else hero_combo_idx
-            spot_compact = format_spot_compact(sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos,
+            spot_compact = format_spot_compact(display_sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos,
                                                combo_idx=cidx)
             if spot_compact:
                 compact.append(spot_compact)
@@ -1906,7 +2007,7 @@ def _run_analysis(hand: dict) -> dict:
                 # Build hero action label with sizing
                 hero_action_short = taken_code
                 hero_sizing_pct = ""
-                for asol in sol.get("action_solutions", []):
+                for asol in display_sol.get("action_solutions", []):
                     if asol["action"]["code"] == taken_code:
                         act = asol["action"]
                         if taken_code == "X":
@@ -1920,9 +2021,15 @@ def _run_analysis(hand: dict) -> dict:
                         else:
                             # "raise" if preflop or facing a bet
                             has_fc = any(a["action"]["code"] in ("F", "C")
-                                         for a in sol.get("action_solutions", []))
+                                         for a in display_sol.get("action_solutions", []))
                             verb = "raise" if (spot["street"] == "preflop" or has_fc) else "bet"
-                            pct = float(act.get("betsize_by_pot", 0)) * 100
+                            actual_pct = spot.get("actual_pot_pct")
+                            pct = (
+                                float(actual_pct) * 100
+                                if actual_pct
+                                else float(act.get("betsize_by_pot", 0)) * 100
+                            )
+                            pct = _display_pot_pct(pct)
                             if pct > 0:
                                 hero_action_short = f"{verb} {pct:.0f}% pot"
                                 hero_sizing_pct = f"{pct:.0f}%"
@@ -1935,20 +2042,31 @@ def _run_analysis(hand: dict) -> dict:
                 gto_top_label = ""
                 gto_top_freq = 0.0
                 combo_freq = None
-                if not is_pf and hero_combo_idx is not None:
-                    action_sols = sol.get("action_solutions", [])
+                if not pf_spot and hero_combo_idx is not None:
+                    action_sols = display_sol.get("action_solutions", [])
                     if action_sols and "strategy" in action_sols[0]:
-                        combo_freq = {}
-                        for asol in action_sols:
-                            f = asol["strategy"][hero_combo_idx]
-                            if f > 0.005:
-                                combo_freq[asol["action"]["code"]] = f
+                        combo_in_range = False
+                        for pi in display_sol.get("players_info", []):
+                            if pi["player"]["position"] == hero_pos:
+                                rng = pi.get("range", [])
+                                combo_in_range = (
+                                    len(rng) == 1326
+                                    and hero_combo_idx < len(rng)
+                                    and rng[hero_combo_idx] >= 0.005
+                                )
+                                break
+                        if combo_in_range:
+                            combo_freq = {}
+                            for asol in action_sols:
+                                f = asol["strategy"][hero_combo_idx]
+                                if f > 0.005:
+                                    combo_freq[asol["action"]["code"]] = f
                 if combo_freq:
                     af = combo_freq
                 else:
                     af = None
                     hand_name = normalize_hand_name(hero_hand)
-                    for pi in sol.get("players_info", []):
+                    for pi in display_sol.get("players_info", []):
                         if pi["player"]["position"] != hero_pos:
                             continue
                         shc = pi.get("simple_hand_counters", {})
@@ -1961,12 +2079,12 @@ def _run_analysis(hand: dict) -> dict:
                     gto_top_freq = af[top_code]
                     if top_code != taken_code:
                         gto_top_label = _action_label_short(
-                            top_code, sol, spot["street"])
+                            top_code, display_sol, spot["street"])
 
                 # Check EV loss
                 is_pf = spot["street"] == "preflop"
                 ev_note = format_ev_comparison(
-                    sol, taken_code, hero_hand, hero_pos,
+                    display_sol, taken_code, hero_hand, hero_pos,
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
                 sizing_hint = f" (GTO建議 {gto_top_label})" if gto_top_label else ""

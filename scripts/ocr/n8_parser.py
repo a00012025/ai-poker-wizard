@@ -1519,6 +1519,7 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         opp_positions_remaining = [p for p in postflop_order
                                    if p != hero_position and p not in folded_in_streets]
         opp_idx = 0
+        street_name_positions: list[tuple[str, str]] = []
 
         for entry in entries:
             entry_type = entry.get("type", "opponent")
@@ -1534,15 +1535,33 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             else:
                 # Use OCR-detected position if available
                 ocr_pos = entry.get("position")
+                player_name = (entry.get("player_name") or "").strip()
+                prior_name_pos = next(
+                    (
+                        prev_pos
+                        for prev_name, prev_pos in street_name_positions
+                        if player_name and _fuzzy_name_match(player_name, prev_name)
+                    ),
+                    None,
+                )
                 if ocr_pos and ocr_pos != "BB":
                     # Trust OCR position if it's not the default
                     pos = ocr_pos
+                elif ocr_pos == "BB" and prior_name_pos == "BB":
+                    # BB badges are common OCR defaults, so the generic path
+                    # usually infers order instead of trusting them.  But when
+                    # the same named player was already assigned BB on this
+                    # street (check → raise), keep BB; otherwise a folded BTN
+                    # can be incorrectly resurrected as the raiser. H2896.
+                    pos = "BB"
                 elif opp_positions_remaining:
                     # Infer from postflop order
                     pos = opp_positions_remaining[opp_idx % len(opp_positions_remaining)]
                     opp_idx += 1
                 else:
                     pos = ocr_pos or "?"
+                if player_name and pos and pos != "?":
+                    street_name_positions.append((player_name, pos))
 
             act_code = _street_action_code(action_text, size)
             act_dict = {"position": pos, "action": act_code}

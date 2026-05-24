@@ -271,6 +271,35 @@ def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
         collapsed.append(e)
     entries = collapsed
 
+    # N8's showdown layout can render an extra red All-In badge under the
+    # caller's sticker when the caller is also all-in for less than the
+    # opponent's displayed shove. OCR sees:
+    #   [opponent All-In 23.2, opponent Call 17.5, hero All-In 23.2]
+    # even though the real action is opponent shoves, hero calls all-in.
+    # The trailing All-In is a reveal/badge fragment, not a new raise. Drop
+    # it before choosing the shove; otherwise the "last all-in wins" scan
+    # below makes the caller look like the aggressor and the solver walks an
+    # impossible RAI-C-X turn node.
+    cleaned: list[dict] = []
+    seen_sized_allin = False
+    for e in entries:
+        act = (e.get("action") or "").lower()
+        prev_act = (cleaned[-1].get("action") or "").lower() if cleaned else ""
+        is_trailing_call_allin_badge = (
+            act == "all-in"
+            and e.get("size") is not None
+            and seen_sized_allin
+            and prev_act == "call"
+            and not (e.get("player_name") or "").strip()
+            and not (e.get("position") or "")
+        )
+        if is_trailing_call_allin_badge:
+            continue
+        cleaned.append(e)
+        if act == "all-in" and e.get("size") is not None:
+            seen_sized_allin = True
+    entries = cleaned
+
     # 2. Find the all-in shove (last all-in carrying a real size).
     shove_idx = None
     for i, e in enumerate(entries):
@@ -292,12 +321,21 @@ def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
         (p.get("action") or "").lower() in ("call", "raise", "bet", "all-in")
         for p in post
     )
+    response_size = next(
+        (
+            p.get("size")
+            for p in post
+            if (p.get("action") or "").lower() in ("call", "raise", "bet", "all-in")
+            and p.get("size") is not None
+        ),
+        shove.get("size"),
+    )
     if has_match or not has_fold:
         responder = {
             "type": responder_type,
             "position": None,
             "action": "Call",
-            "size": shove.get("size"),
+            "size": response_size,
         }
     else:
         responder = {

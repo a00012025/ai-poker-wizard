@@ -2963,6 +2963,40 @@ def test_resolve_allin_attribution_hero_shoves_opp_calls_unchanged():
 
 
 @test
+def test_resolve_allin_attribution_short_hero_calls_opp_shove():
+    """panel_parser: when hero calls all-in for less after an opponent
+    shove, N8 may OCR a trailing hero All-In badge from the showdown reveal.
+    That badge is not a raise; collapse to opponent All-In + hero Call.
+
+    Regression for H2896 turn: BB shoves 23.2bb, HJ calls remaining
+    17.5bb all-in. The OCR fragments were
+    [BB All-In 23.2, BB Call 17.5, hero All-In 23.2], which made the
+    solver walk an impossible RAI-C-X turn node and print "no solver data".
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    raw = [
+        {"type": "opponent", "position": "BB", "action": "All-In",
+         "size": 23.2, "player_name": "HiagoS"},
+        {"type": "opponent", "position": "BB", "action": "Call",
+         "size": 17.5},
+        {"type": "hero", "position": None, "action": "All-In",
+         "size": 23.2},
+    ]
+    out = _resolve_allin_attribution(raw)
+
+    assert_eq(len(out), 2, "trailing all-in badge must be dropped")
+    shove, resp = out
+    assert_eq(shove["type"], "opponent", "BB is the shover")
+    assert_eq(shove["position"], "BB", "shover position preserved")
+    assert_eq((shove["action"] or "").lower(), "all-in", "BB shove preserved")
+    assert_eq(shove["size"], 23.2, "shove size preserved")
+    assert_eq(resp["type"], "hero", "hero is the responder")
+    assert_eq(resp["action"], "Call", "hero called; must not become all-in raise")
+    assert_eq(resp["size"], 17.5, "hero call size comes from the call sticker")
+
+
+@test
 def test_resolve_allin_attribution_opp_shoves_hero_folds():
     """panel_parser: opponent bet carries the All-In badge, hero folds —
     collapse to [opponent All-In, hero Fold] (no phantom call)."""
@@ -4055,6 +4089,131 @@ def test_compact_format_spot_compact():
     assert_in("GTO:", compact, "should start with GTO: prefix")
     assert_in("%", compact, "should show frequency percentage")
     assert_true("combos" not in compact.lower(), "should not show combos count")
+
+
+@test
+def test_compact_offrange_exact_combo_returns_no_data():
+    """Compact formatter: if the exact combo has zero range at a later
+    node, do not use either its solver-default row or same-hand aggregate
+    counters.
+
+    Regression for H2902 river: Qh9d bet an off-grid/off-mix river size.
+    The facing-raise node was unreachable for that exact combo. GTO Wizard
+    still returned a misleading raw row ("Call 100%") and aggregate Q9o
+    counters ("Fold 99%"), but the user-facing result should be no solver
+    data for hero's actual combo/line.
+    """
+    from gto_formatter import combo_index_for_hand, format_ev_comparison, format_spot_compact
+
+    off_idx = combo_index_for_hand("Qh9d")
+    in_idx = combo_index_for_hand("Qs9d")
+    assert_true(off_idx is not None and in_idx is not None, "fixture combos must index")
+
+    n = 1326
+    range_arr = [0.0] * n
+    range_arr[in_idx] = 1.0
+
+    fold_strategy = [0.0] * n
+    call_strategy = [0.0] * n
+    fold_strategy[in_idx] = 0.991
+    call_strategy[in_idx] = 0.004
+    # Off-range exact combo row is misleading solver noise and must be ignored.
+    call_strategy[off_idx] = 1.0
+
+    fold_evs = [0.0] * n
+    call_evs = [0.0] * n
+    call_evs[in_idx] = -3.5
+    call_evs[off_idx] = 9.9  # would hide the mistake if exact off-range row is used
+
+    sol = {
+        "game": {
+            "board": "Jd7d4dTd4c",
+            "current_street": {"type": "river"},
+        },
+        "players_info": [{
+            "player": {"position": "BB"},
+            "range": range_arr,
+            "simple_hand_counters": {
+                "Q9o": {
+                    "actions_total_frequencies": {
+                        "F": 0.991,
+                        "C": 0.004,
+                    }
+                }
+            },
+        }],
+        "action_solutions": [
+            {
+                "action": {"code": "F"},
+                "strategy": fold_strategy,
+                "evs": fold_evs,
+                "total_frequency": 0.5,
+            },
+            {
+                "action": {"code": "C"},
+                "strategy": call_strategy,
+                "evs": call_evs,
+                "total_frequency": 0.5,
+            },
+        ],
+    }
+
+    compact = format_spot_compact(sol, "Q9o", "BB", combo_idx=off_idx)
+    assert_eq(compact, "",
+              "off-range exact combo should format as no solver data")
+
+    ev = format_ev_comparison(
+        sol, "C", "Q9o", "BB", is_preflop=False, combo_idx=off_idx)
+    assert_true(ev is None,
+                f"off-range exact combo should not produce EV advice, got {ev!r}")
+
+
+@test
+def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
+    """H2902: river facing-raise node is off-range after hero's 1.8bb
+    lead, so compact output should show no solver data for the call. The
+    hero lead label must use the actual pot percentage (~33%), not the
+    nearest solver bucket (~45%).
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 19.8,
+        "hero_position": "BB",
+        "hero_hand": "Qh9d",
+        "preflop_actions": "R2-F-F-F-F-C",
+        "players_at_table": 6,
+        "hero_starting_stack": 19.8,
+        "streets": [
+            {"board": "4dJd7d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "X"},
+            ]},
+            {"card": "Td", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "X"},
+            ]},
+            {"card": "4c", "actions": [
+                {"position": "BB", "action": "R1.8", "size": 1.8},
+                {"position": "LJ", "action": "R"},
+                {"position": "BB", "action": "C", "size": 2.2},
+            ]},
+        ],
+    })
+
+    compact = result["text_compact"]
+    assert_in("→ Hero bet 33% pot", compact,
+              "river lead should display actual 1/3-pot size")
+    assert_not_in("→ Hero bet 45% pot", compact,
+                  "compact label must not display the nearest solver bucket")
+    assert_in("（無 solver 數據）", compact,
+              "off-range facing-raise node should show no solver data")
+    river_section = compact.split("─── River: 4c ───", 1)[1]
+    assert_not_in("GTO: Call 100%", river_section,
+                  "must not use zero-range exact combo strategy row")
+    assert_not_in("GTO: Fold 99%", river_section,
+                  "must not borrow same-hand aggregate data for off-range node")
 
 
 @test
@@ -6842,6 +7001,44 @@ def test_postflop_position_reconciliation_with_preflop_index():
     # propagate that exact position to the flop entries.
     assert_eq(opp_actions[0]["position"], "HJ",
               "h3scar's flop position must match preflop reassignment")
+
+
+@test
+def test_postflop_repeated_named_bb_stays_bb_after_folded_btn():
+    """n8_parser: a named BB who checks then raises must remain BB even
+    after another opponent folds on the same street.
+
+    Regression for H2896 flop: BB checked, HJ bet, BTN folded, then the
+    same named BB raised. Because BB badges are normally treated as noisy
+    defaults, the raise was inferred from rotating opponent order and
+    incorrectly assigned to the already-folded BTN.
+    """
+    from ocr.n8_parser import _build_streets
+
+    streets = _build_streets(
+        [{"name": "Flop", "entries": [
+            {"type": "opponent", "position": "BB", "action": "Check",
+             "size": None, "player_name": "HiagoS"},
+            {"type": "hero", "position": "BB", "action": "Bet",
+             "size": 2.4},
+            {"type": "opponent", "position": "BTN", "action": "Fold",
+             "size": None, "player_name": "rudevirus"},
+            {"type": "opponent", "position": "BB", "action": "Raise",
+             "size": 6.5, "player_name": "Hiagos"},
+            {"type": "hero", "position": "BB", "action": "Call",
+             "size": 4.1},
+        ]}],
+        ["8c", "4s", "3c"],
+        ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_position="HJ",
+        active_positions=["HJ", "BTN", "BB"],
+    )
+
+    actions = streets[0]["actions"]
+    assert_eq(actions[2]["position"], "BTN", "BTN fold preserved")
+    assert_eq(actions[3]["position"], "BB",
+              "same named checker's raise must not move to folded BTN")
+    assert_eq(actions[3]["action"], "R6.5")
 
 
 
