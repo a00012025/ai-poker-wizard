@@ -139,13 +139,15 @@ def put(function: str, params: dict, response: dict | None):
                 if sanitized is None:
                     cur.execute(
                         "INSERT INTO gto_api_cache (cache_key, response, is_null) "
-                        "VALUES (%s, NULL, TRUE) ON CONFLICT DO NOTHING",
+                        "VALUES (%s, NULL, TRUE) "
+                        "ON CONFLICT (cache_key) DO UPDATE SET response = NULL, is_null = TRUE",
                         (key,),
                     )
                 else:
                     cur.execute(
                         "INSERT INTO gto_api_cache (cache_key, response, is_null) "
-                        "VALUES (%s, %s, FALSE) ON CONFLICT DO NOTHING",
+                        "VALUES (%s, %s, FALSE) "
+                        "ON CONFLICT (cache_key) DO UPDATE SET response = EXCLUDED.response, is_null = FALSE",
                         (key, json.dumps(sanitized, allow_nan=False)),
                     )
                 cur.close()

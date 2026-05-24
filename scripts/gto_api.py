@@ -117,6 +117,7 @@ def get_spot_solution(
     flop_actions: str = "",
     turn_actions: str = "",
     river_actions: str = "",
+    bypass_cache: bool = False,
 ) -> dict | None:
     """Get full strategy solution for a spot. Returns None if no solution (204)."""
     params = {
@@ -125,9 +126,10 @@ def get_spot_solution(
         "flop_actions": flop_actions, "turn_actions": turn_actions,
         "river_actions": river_actions,
     }
-    cached = cache_get("spot_solution", params)
-    if cached is not SENTINEL:
-        return cached
+    if not bypass_cache:
+        cached = cache_get("spot_solution", params)
+        if cached is not SENTINEL:
+            return cached
     r = _get_with_retry(
         f"{API_BASE}/v4/solutions/spot-solution/",
         params=params,

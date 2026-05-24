@@ -4217,6 +4217,54 @@ def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
 
 
 @test
+def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
+    """H2905: HJ open, CO overcall, BB call is a 3-way pot, not 4-way.
+    Simplify postflop to HJ-vs-CO heads-up and escalate to a depth where
+    the CO flat line exists, rather than reducing the shallow effective
+    stack until every street has no solver data.
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 8.6,
+        "hero_position": "CO",
+        "hero_hand": "As8s",
+        "preflop_actions": "F-F-R2-C-F-F-C",
+        "players_at_table": 7,
+        "hero_starting_stack": 18.6,
+        "streets": [
+            {"board": "JhKs4h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "X"},
+                {"position": "CO", "action": "R2.4", "size": 2.4},
+                {"position": "BB", "action": "F"},
+                {"position": "HJ", "action": "C", "size": 2.4},
+            ]},
+            {"card": "5h", "actions": [
+                {"position": "HJ", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "6d", "actions": [
+                {"position": "HJ", "action": "R15", "size": 15.0},
+                {"position": "CO", "action": "F"},
+            ]},
+        ],
+    })
+
+    compact = result["text_compact"]
+    assert_in("⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析", compact,
+              "must simplify the 3-way HJ+CO+BB pot to HJ/CO")
+    assert_not_in("4-way", compact, "must not describe this hand as 4-way")
+    assert_in("─── Preflop ───\nGTO:", compact,
+              "CO preflop facing HJ open must have solver data")
+    flop_section = compact.split("─── Flop: JhKs4h ───", 1)[1].split("─── Turn:", 1)[0]
+    turn_section = compact.split("─── Turn: 5h ───", 1)[1].split("─── River:", 1)[0]
+    assert_in("GTO:", flop_section, "flop should use HU approximation data")
+    assert_in("GTO:", turn_section, "turn should use HU approximation data")
+
+
+@test
 def test_no_hero_hand_flag():
     """No hero hand: output omits hero-specific sections when no_hero_hand=True."""
     from analyze_hand import analyze_hand_full

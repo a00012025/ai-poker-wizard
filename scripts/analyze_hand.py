@@ -540,7 +540,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
                     pass
                 break
 
-    # Estimate dead money from extra callers to adjust effective BB
+    # Estimate dead money from extra callers to adjust effective BB.
     open_size = 2.0  # default
     for p in parts[:8]:
         if p.startswith("R"):
@@ -551,7 +551,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
             break
     extra_callers = len(non_fold) - 2  # hero + villain = 2
     # In 3bet/4bet pots, dead money is amplified: callers' money inflates the pot,
-    # causing larger sizing and calls, roughly 3x the raw dead money
+    # causing larger sizing and calls, roughly 3x the raw dead money.
     amplifier = 3.0 if is_3bet else 1.0
     dead_money = extra_callers * open_size * amplifier
     adjusted_eff = hand["effective_bb"] - dead_money
@@ -1204,10 +1204,29 @@ def _run_analysis(hand: dict) -> dict:
                 from gto_api import AVAILABLE_DEPTHS
                 cur_bb = float(post_depth) - 0.125
                 higher = sorted(d for d in AVAILABLE_DEPTHS if d > cur_bb)
-                for try_bb in higher[:3]:
+                candidate_bbs: list[float] = []
+                if multiway_positions:
+                    hero_stack_bb = hand.get("hero_starting_stack")
+                    if hero_stack_bb:
+                        hero_try_depth = nearest_depth(hero_stack_bb)
+                        hero_try_bb = float(hero_try_depth) - 0.125
+                        if hero_try_bb > cur_bb:
+                            candidate_bbs.append(hero_try_bb)
+                        candidate_bbs.extend(higher)
+                    else:
+                        candidate_bbs.extend(higher[:3])
+                else:
+                    candidate_bbs.extend(higher[:3])
+                # Preserve order while removing duplicates.
+                seen_bbs: set[float] = set()
+                candidate_bbs = [
+                    d for d in candidate_bbs
+                    if not (d in seen_bbs or seen_bbs.add(d))
+                ]
+                for try_bb in candidate_bbs:
                     try_depth = try_bb + 0.125
                     try_pf = _normalize_preflop_actions(
-                        hand["preflop_actions"],
+                        post_preflop_check,
                         post_gametype, try_depth,
                     )
                     _probe2 = get_next_actions(
@@ -1215,6 +1234,16 @@ def _run_analysis(hand: dict) -> dict:
                         preflop_actions=try_pf, board=board,
                     )
                     if _probe2 and _probe2["next_actions"].get("available_actions"):
+                        if hero_combo_idx is not None and not no_hero_hand:
+                            root_sol = get_spot_solution(
+                                gametype=post_gametype, depth=try_depth,
+                                preflop_actions=try_pf, board=board,
+                            )
+                            if (
+                                root_sol
+                                and not _combo_idx_in_player_range(root_sol, hero_pos, hero_combo_idx)
+                            ):
+                                continue
                         post_depth = try_depth
                         if is_icm:
                             chipev_depth = try_depth
@@ -1463,11 +1492,11 @@ def _run_analysis(hand: dict) -> dict:
     from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
     _parent_token = getattr(_gto_tl, "access_token", None)
 
-    def _fetch_with_token(params):
+    def _fetch_with_token(params, bypass_cache: bool = False):
         if _parent_token:
             set_user_token(_parent_token)
         try:
-            return get_spot_solution(**params)
+            return get_spot_solution(**params, bypass_cache=bypass_cache)
         finally:
             if _parent_token:
                 clear_user_token()
@@ -1481,6 +1510,40 @@ def _run_analysis(hand: dict) -> dict:
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             solutions[idx] = future.result()
+
+    # Retry preflop hero spots after any postflop depth escalation.  In
+    # shallow multiway-overcall hands the postflop approximation may move to
+    # hero's own stack depth where the flat-call branch exists; preflop should
+    # still show the CO decision rather than no data (H2905).
+    for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
+        if sol is not None or spot["street"] != "preflop" or spot.get("hu_fallback_params"):
+            continue
+        retry_depths = []
+        for d in (
+            spot["params"].get("depth"),
+            depth if not is_icm else chipev_depth,
+            nearest_depth(hand.get("hero_starting_stack")) if hand.get("hero_starting_stack") else None,
+        ):
+            if d is not None and d not in retry_depths:
+                retry_depths.append(d)
+        retry_pfs = []
+        for pf in (
+            spot["params"].get("preflop_actions"),
+            _preflop_before_hero(preflop_actions, hero_pos, pos_order),
+        ):
+            if pf is not None and pf not in retry_pfs:
+                retry_pfs.append(pf)
+        for retry_depth in retry_depths:
+            for retry_pf in retry_pfs:
+                retry_params = dict(spot["params"], depth=retry_depth,
+                                    preflop_actions=retry_pf)
+                retry_sol = _fetch_with_token(retry_params, bypass_cache=True)
+                if retry_sol:
+                    solutions[i] = retry_sol
+                    hero_spots[i]["params"] = retry_params
+                    break
+            if solutions[i]:
+                break
 
     # Retry with HU fallback for spots that returned no solution
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
@@ -1811,16 +1874,20 @@ def _run_analysis(hand: dict) -> dict:
             previous_same_street_size_mismatch = False
             for j in range(i - 1, -1, -1):
                 prev_spot = hero_spots[j]
-                if prev_spot["street"] != spot["street"]:
-                    break
-                actual_pct = prev_spot.get("actual_pot_pct")
-                if not actual_pct:
+                prev_sol = solutions[j]
+                prev_taken = prev_spot.get("taken_code")
+                if not prev_sol or not prev_taken:
                     continue
-                solver_pct = _solver_action_pot_pct(
-                    solutions[j], prev_spot.get("taken_code"))
-                if solver_pct is not None and abs(float(actual_pct) - solver_pct) >= 0.10:
-                    previous_same_street_size_mismatch = True
-                    break
+                if prev_spot["street"] == spot["street"]:
+                    actual_pct = prev_spot.get("actual_pot_pct")
+                    solver_pct = _solver_action_pot_pct(prev_sol, prev_taken)
+                    if (
+                        actual_pct
+                        and solver_pct is not None
+                        and abs(float(actual_pct) - solver_pct) >= 0.10
+                    ):
+                        previous_same_street_size_mismatch = True
+                        break
             if previous_same_street_size_mismatch:
                 offrange_no_solver_idxs.add(i)
 
