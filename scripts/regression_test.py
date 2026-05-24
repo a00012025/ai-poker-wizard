@@ -617,6 +617,49 @@ def test_api_no_solution_returns_none():
 
 
 @test
+def test_api_404_spot_solution_returns_none():
+    """API: spot_solution returns None for 404 responses.
+
+    Regression for H2914: an impossible OCR runout (river Ks duplicated
+    from the flop) made GTO Wizard return 404 from spot-solution.  The bot
+    must treat that as no solver data instead of crashing the screenshot
+    analysis.
+    """
+    import gto_api
+
+    class FakeResponse:
+        status_code = 404
+
+        def raise_for_status(self):
+            raise AssertionError("404 should be handled before raise_for_status")
+
+    orig_get = gto_api._get_with_retry
+    orig_cache_get = gto_api.cache_get
+    orig_cache_put = gto_api.cache_put
+    writes = []
+    try:
+        gto_api._get_with_retry = lambda *a, **kw: FakeResponse()
+        gto_api.cache_get = lambda *a, **kw: gto_api.SENTINEL
+        gto_api.cache_put = lambda *a, **kw: writes.append((a, kw))
+        sol = gto_api.get_spot_solution(
+            gametype="MTTGeneral", depth=17.125,
+            preflop_actions="F-F-F-F-R2-F-F-C",
+            board="KhJsKsAdKs",
+            flop_actions="X-R1.1-C",
+            turn_actions="X-R4.25-C",
+            river_actions="X",
+        )
+    finally:
+        gto_api._get_with_retry = orig_get
+        gto_api.cache_get = orig_cache_get
+        gto_api.cache_put = orig_cache_put
+
+    assert_true(sol is None, "404 spot-solution should be cached as no data")
+    assert_true(writes and writes[-1][0][2] is None,
+                "404 response should write a null cache entry")
+
+
+@test
 def test_api_postflop_percentage_detection():
     """API: find_closest_action_postflop detects percentage-based sizes."""
     from gto_api import get_next_actions, find_closest_action_postflop
@@ -4265,6 +4308,47 @@ def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
 
 
 @test
+def test_h2915_turn_ends_after_hero_call_without_extra_no_solver_node():
+    """H2915: OCR split a terminal turn call into BB call + duplicate BB bet.
+
+    After hero calls CO's turn shove-sized bet, there is no further decision
+    point.  The compact output should stop after "Hero call" and must not add
+    a trailing same-street "（無 solver 數據）" line.
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 12.4,
+        "hero_position": "BB",
+        "hero_hand": "QcJc",
+        "preflop_actions": "F-F-F-F-R2-C-F-C",
+        "players_at_table": 8,
+        "hero_starting_stack": 12.4,
+        "streets": [
+            {"board": "6d4s3c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R2.6", "size": 2.6},
+                {"position": "BB", "action": "C", "size": 2.6},
+            ]},
+            {"card": "Kc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R7.8", "size": 7.8},
+                {"position": "BB", "action": "C", "size": 7.8},
+                # Phantom duplicate: same BB cannot call then immediately
+                # raise the same amount without CO acting again.
+                {"position": "BB", "action": "R7.8", "size": 7.8},
+            ]},
+        ],
+    })
+
+    turn_section = result["text_compact"].split("─── Turn: Kc ───", 1)[1]
+    assert_in("→ Hero call", turn_section, "turn call should still be shown")
+    assert_not_in("（無 solver 數據）", turn_section,
+                  "terminal turn call must not be followed by extra no-data node")
+
+
+@test
 def test_no_hero_hand_flag():
     """No hero hand: output omits hero-specific sections when no_hero_hand=True."""
     from analyze_hand import analyze_hand_full
@@ -6895,6 +6979,40 @@ def test_resolve_hero_board_conflict_unresolvable_clears_hero():
     new_board, new_hero = _resolve_hero_board_conflict(board, hero)
     assert_eq(new_board, board, "board must be preserved")
     assert_eq(new_hero, [], "hero must be cleared on unresolvable conflict")
+
+
+@test
+def test_duplicate_runout_detected_for_full_gemini_fallback():
+    """n8_parser: impossible exact-card duplicates are structural failures.
+
+    Regression for H2914: OCR read the river As as Ks, producing
+    KhJsKsAdKs with the exact Ks appearing twice.  That parse must not be
+    trusted or sent to solver; production should demote it to full Gemini
+    vision so the screenshot can be re-read as the correct river As.
+    """
+    from ocr.n8_parser import _duplicate_known_cards
+
+    hand = {
+        "hero_hand": "3s3h",
+        "streets": [
+            {"board": "KhJsKs", "actions": []},
+            {"card": "Ad", "actions": []},
+            {"card": "Ks", "actions": []},
+        ],
+    }
+    assert_eq(_duplicate_known_cards(hand), ["Ks"],
+              "duplicate Ks in board runout must be detected")
+
+    corrected = {
+        "hero_hand": "3s3h",
+        "streets": [
+            {"board": "KhJsKs", "actions": []},
+            {"card": "Ad", "actions": []},
+            {"card": "As", "actions": []},
+        ],
+    }
+    assert_eq(_duplicate_known_cards(corrected), [],
+              "valid KhJsKsAdAs runout must not be flagged")
 
 
 @test

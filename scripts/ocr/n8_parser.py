@@ -90,6 +90,40 @@ def _resolve_hero_board_conflict(
     return board_cards, fixed
 
 
+def _duplicate_known_cards(hand: dict | None) -> list[str]:
+    """Return exact duplicate cards in a parsed hand.
+
+    Natural8 screenshots can occasionally produce high-confidence but
+    impossible board classifications (H2914: board contained Ks twice).  A
+    duplicate exact card means the OCR parse is structurally unsafe: full
+    Gemini must re-read the screenshot, not just hero cards.
+    """
+    if not hand:
+        return []
+
+    cards: list[str] = []
+    hero_hand = hand.get("hero_hand") or ""
+    if len(hero_hand) == 4:
+        cards.extend([hero_hand[:2], hero_hand[2:]])
+
+    for street in hand.get("streets") or hand.get("postflop_actions") or []:
+        board = street.get("board") or street.get("cards") or street.get("card") or ""
+        if isinstance(board, str):
+            cards.extend(
+                board[i:i + 2]
+                for i in range(0, len(board) - 1, 2)
+                if len(board[i:i + 2]) == 2
+            )
+
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for card in cards:
+        if card in seen and card not in dupes:
+            dupes.append(card)
+        seen.add(card)
+    return dupes
+
+
 def _board_cards_supported_by_panel(
     board_cards: list[str],
     street_cols: list[dict],
@@ -160,6 +194,14 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
 
     # Step 4: assemble hand JSON
     hand, confidence_parts, diagnostics = _assemble_hand(table_result, columns)
+    duplicate_cards = _duplicate_known_cards(hand)
+    if duplicate_cards:
+        diagnostics["duplicate_cards"] = duplicate_cards
+        # Do not let an impossible exact-card duplicate pass the FAST or
+        # cards-only Gemini paths.  This is a board/structure problem, so a
+        # full image parse is required.
+        confidence_parts["card_confidence"] = 0.0
+        confidence_parts["ocr_confidence"] = 0.0
 
     # Step 5: compute confidence
     confidence = _compute_confidence(confidence_parts)

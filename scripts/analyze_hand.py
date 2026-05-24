@@ -1269,6 +1269,26 @@ def _run_analysis(hand: dict) -> dict:
                 except ValueError:
                     pass
 
+            # OCR can split a showdown/all-in sticker into a second
+            # same-player aggressive action immediately after that player has
+            # already called the outstanding bet.  A player cannot call and
+            # then raise again without an intervening opponent action; dropping
+            # the duplicate keeps terminal streets from printing an extra
+            # "no solver data" node (H2915 turn).
+            if (
+                _street_actions_so_far
+                and _street_actions_so_far[-1].get("position") == pos
+                and _street_actions_so_far[-1].get("action") == "C"
+                and action_type not in ("X", "C", "F")
+            ):
+                prev_size = float(_street_actions_so_far[-1].get("size") or 0)
+                if (
+                    not target_size
+                    or not prev_size
+                    or abs(float(target_size) - prev_size) <= 0.1
+                ):
+                    continue
+
             # Skip actions from positions not in simplified heads-up
             if multiway_positions and pos not in multiway_positions:
                 # Still track pot changes from folded players

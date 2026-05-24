@@ -134,7 +134,7 @@ def get_spot_solution(
         f"{API_BASE}/v4/solutions/spot-solution/",
         params=params,
     )
-    if r.status_code in (204, 403):
+    if r.status_code in (204, 403, 404):
         cache_put("spot_solution", params, None)
         return None
     r.raise_for_status()
