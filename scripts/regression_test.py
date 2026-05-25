@@ -7675,6 +7675,40 @@ def test_temperature_scaling_lowers_ece():
     assert_true(after < before, f"ECE not reduced: {before} -> {after}")
 
 
+@test
+def test_document_image_routing():
+    """Bug regression: Telegram delivers uncompressed/HEIC screenshots as
+    Document (not Photo) when the user picks "send as file". The previous
+    handle_document path rejected anything not .txt/.zip with the misleading
+    `請上傳手牌歷史檔案（.txt 或 .zip）`. _is_image_document must classify
+    common image documents so they get routed to the photo-analysis pipeline.
+    """
+    from telegram_bot.bot import _is_image_document
+
+    # Screenshots uploaded as file (with mime + extension)
+    assert_true(_is_image_document("image/png", "screenshot.png"))
+    assert_true(_is_image_document("image/jpeg", "img_001.jpg"))
+    assert_true(_is_image_document("image/jpeg", "photo.jpeg"))
+    assert_true(_is_image_document("image/webp", "photo.webp"))
+    # iPhone screenshots
+    assert_true(_is_image_document("image/heic", "IMG_1234.HEIC"))
+    assert_true(_is_image_document("image/heif", "IMG_1234.heif"))
+    # Mime missing but extension is an image
+    assert_true(_is_image_document(None, "scene.png"))
+    assert_true(_is_image_document("", "scene.jpg"))
+    # Mime says image but extension is unusual (case-insensitive mime)
+    assert_true(_is_image_document("IMAGE/PNG", "weird"))
+
+    # Animated GIF: don't route to image analysis
+    assert_true(not _is_image_document("image/gif", "anim.gif"))
+    # Hand-history files must remain non-image
+    assert_true(not _is_image_document("text/plain", "GG2026.txt"))
+    assert_true(not _is_image_document("application/zip", "hands.zip"))
+    # Other documents
+    assert_true(not _is_image_document("application/pdf", "doc.pdf"))
+    assert_true(not _is_image_document(None, "notes.txt"))
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

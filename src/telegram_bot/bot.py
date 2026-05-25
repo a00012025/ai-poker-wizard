@@ -50,6 +50,24 @@ def _setup_logger() -> logging.Logger:
     return logger
 
 
+_IMAGE_DOC_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+
+
+def _is_image_document(mime_type: str | None, fname_lower: str) -> bool:
+    """True when a Telegram Document is actually an image.
+
+    Telegram delivers images as Document (not Photo) when the user sends
+    "as file" or when the client uploads an unsupported-for-compression
+    format (HEIC, large PNG, etc.). Animated GIFs are excluded — they
+    arrive via ANIMATION and aren't poker screenshots.
+    """
+    if mime_type:
+        mt = mime_type.lower()
+        if mt.startswith("image/") and not mt.endswith("/gif"):
+            return True
+    return fname_lower.endswith(_IMAGE_DOC_EXTS)
+
+
 class PokerWizardBot:
     def __init__(self, token: str = None, session_manager: ClaudeSessionManager = None,
                  db: Database | None = None):
@@ -729,43 +747,66 @@ class PokerWizardBot:
         refresh_token = await self._get_user_refresh_token(user_id)
 
         t0 = time.time()
+        image_bytes = await self._download_telegram_image(photo, label, status_msg)
+        if image_bytes is None:
+            return
+
+        await self._run_image_analysis(
+            update,
+            label=label, user_id=user_id, caption=caption,
+            image_bytes=image_bytes, mime_type="image/jpeg",
+            status_msg=status_msg, refresh_token=refresh_token, t0=t0,
+        )
+
+    async def _download_telegram_image(self, source, label: str, status_msg) -> bytes | None:
+        """Download bytes from a Telegram PhotoSize or Document with retry.
+
+        Returns None when all attempts timed out (status message updated).
+        """
+        for attempt in range(3):
+            try:
+                tg_file = await source.get_file(
+                    read_timeout=30, write_timeout=30, connect_timeout=30,
+                )
+                return bytes(await tg_file.download_as_bytearray(
+                    read_timeout=30, write_timeout=30, connect_timeout=30,
+                ))
+            except telegram.error.TimedOut:
+                delay = 3 * (attempt + 1)
+                self.log.warning(
+                    f"[{label}] Image download timed out (attempt {attempt+1}/3), "
+                    f"retry in {delay}s"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(delay)
+        await status_msg.edit_text("❌ 圖片下載失敗（Telegram 超時），請稍後再試。")
+        return None
+
+    async def _run_image_analysis(
+        self, update: Update, *,
+        label: str, user_id: int, caption: str,
+        image_bytes: bytes, mime_type: str,
+        status_msg, refresh_token, t0: float,
+    ):
+        """Run the shared image-analysis pipeline.
+
+        Used by both _handle_photo_inner (image-as-photo) and the image
+        branch of _handle_document_inner (image-as-file).
+        """
+        gto_sent = False
+
+        async def send_gto_summary(text: str):
+            nonlocal gto_sent
+            await status_msg.delete()
+            await _send_reply(update.message, text, self.log, label)
+            gto_sent = True
+
         try:
-            # Download photo (retry on Telegram timeout)
-            image_bytes = None
-            for _dl_attempt in range(3):
-                try:
-                    tg_file = await photo.get_file(
-                        read_timeout=30, write_timeout=30, connect_timeout=30,
-                    )
-                    image_bytes = bytes(await tg_file.download_as_bytearray(
-                        read_timeout=30, write_timeout=30, connect_timeout=30,
-                    ))
-                    break
-                except telegram.error.TimedOut:
-                    delay = 3 * (_dl_attempt + 1)
-                    self.log.warning(
-                        f"[{label}] Photo download timed out (attempt {_dl_attempt+1}/3), "
-                        f"retry in {delay}s"
-                    )
-                    if _dl_attempt < 2:
-                        await asyncio.sleep(delay)
-            if image_bytes is None:
-                await status_msg.edit_text("❌ 圖片下載失敗（Telegram 超時），請稍後再試。")
-                return
-
-            gto_sent = False
-
-            async def send_gto_summary(text: str):
-                nonlocal gto_sent
-                await status_msg.delete()
-                await _send_reply(update.message, text, self.log, label)
-                gto_sent = True
-
             async with _TypingLoop(update.message.chat):
                 response = await self.session_manager.send_image_message(
                     chat_id=update.effective_chat.id,
                     image_bytes=image_bytes,
-                    mime_type="image/jpeg",
+                    mime_type=mime_type,
                     user_text=caption,
                     status_callback=status_msg.edit_text,
                     send_gto_callback=send_gto_summary,
@@ -838,6 +879,28 @@ class PokerWizardBot:
             except Exception:
                 pass
 
+        fname_lower = fname.lower()
+
+        # Image-as-file: Telegram delivers uncompressed/HEIC screenshots as
+        # Document, not Photo. Route to the same analysis pipeline as photos
+        # instead of rejecting with the hand-history prompt.
+        if _is_image_document(doc.mime_type, fname_lower):
+            raw_status = await _send_status(update.message, "🔍 正在下載圖片...")
+            status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
+            refresh_token = await self._get_user_refresh_token(user_id)
+            t0 = time.time()
+            image_bytes = await self._download_telegram_image(doc, label, status_msg)
+            if image_bytes is None:
+                return
+            await self._run_image_analysis(
+                update,
+                label=label, user_id=user_id, caption=caption,
+                image_bytes=image_bytes,
+                mime_type=doc.mime_type or "image/jpeg",
+                status_msg=status_msg, refresh_token=refresh_token, t0=t0,
+            )
+            return
+
         # Parse optional ICM override from caption (e.g., "10000" or "10000 200")
         # When starting_stack=0, analyze_hands auto-detects from first hand's hero chips
         starting_stack = 0
@@ -851,7 +914,6 @@ class PokerWizardBot:
                     tournament_size = ts
 
         # Validate file type
-        fname_lower = fname.lower()
         if not (fname_lower.endswith(".txt") or fname_lower.endswith(".zip")):
             await update.message.reply_text(
                 "請上傳手牌歷史檔案（.txt 或 .zip）"
