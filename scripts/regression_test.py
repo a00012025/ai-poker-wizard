@@ -391,6 +391,48 @@ def test_preflop_pending_facing_allin_uses_allin_effective_depth():
 
 
 @test
+def test_seven_max_padded_utg_facing_3bet_spot_from_sb():
+    """H3431: 7-max UTG maps to solver UTG+1 and must expose the SB 3-bet call node."""
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "QsTs",
+        "effective_bb": 23.4,
+        "hero_position": "UTG",
+        "player_stacks": [41.9, 6.7, 57.7, 18.9, 28.7, 16.4, 14.9],
+        "preflop_actions": "R2-F-F-F-F-R5-F-C",
+        "players_at_table": 7,
+        "hero_starting_stack": 23.4,
+        "streets": [
+            {"board": "5dTc9d", "actions": [
+                {"size": 3.5, "action": "R3.5", "position": "SB"},
+                {"size": 3.5, "action": "C", "position": "UTG"},
+            ]},
+            {"card": "4d", "actions": [
+                {"size": 18.9, "action": "R18.9", "position": "SB"},
+                {"action": "F", "position": "UTG"},
+            ]},
+        ],
+    })
+
+    compact = result["text_compact"]
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    assert_true(len(preflop_spots) >= 2, f"expected facing-3bet spot, got {preflop_spots}")
+    facing_spot = preflop_spots[1]
+    assert_eq(facing_spot.get("taken_code"), "C")
+    assert_eq(facing_spot.get("solver_hero_pos"), "UTG+1")
+    assert_in("R7.1", facing_spot["params"]["preflop_actions"], "SB 3-bet should be normalized in the node before hero call")
+    assert_true(not facing_spot["params"]["preflop_actions"].endswith("-C"), "node must stop before hero's call")
+    assert_in("─── Preflop — Facing 3-bet ───", compact)
+    facing_section = compact.split("─── Preflop — Facing 3-bet ───", 1)[1].split("─── Flop:", 1)[0]
+    assert_in("GTO:", facing_section)
+    assert_in("→ Hero call", facing_section)
+    assert_true("此手牌 0% 到達此節點" not in compact, compact)
+    assert_true("cold call" not in result["text"].lower(), result["text"])
+
+
+@test
 def test_chip_ev_depth_mapping():
     """Chip EV: depth maps to nearest available solver depth."""
     from gto_api import nearest_depth

@@ -398,6 +398,10 @@ Solver 數據是 ground truth（最高原則，絕對不可違反！）：
   如果 hero 是第一個 raise 的人（前面都是 F），那就是 open raise，不是跟注！
   如果 hero 的 R 前面有別人的 R，那才是 3bet。
   絕對不要把 open raise 說成「跟注」！
+- 極重要：不可捏造 action line 中不存在的玩家行動！
+  只能根據「GTO Solver 數據」列出的實際 action_desc / preflop_actions 描述誰 raise、誰 call、誰 fold。
+  如果數據沒有 BB call / cold call，就絕對不能寫「BB cold call」或「多人跟注」。
+  小桌 MTT 可能顯示座位映射（例如使用者顯示 UTG = solver UTG+1），描述手牌時以使用者顯示的位置與實際 action_desc 為準。
 
 ICM 近似解說明規則：
 - 如果數據中包含「ICM 模式」「用戶籌碼」「Solver 籌碼」，必須在回覆開頭說明使用了哪個近似解

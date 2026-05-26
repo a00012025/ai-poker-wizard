@@ -228,8 +228,13 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
 def _preflop_before_hero(preflop_actions: str, hero_position: str, position_order: list[str] | None = None) -> str:
     """Get preflop action string up to (but not including) hero's action."""
     pos_order = position_order or POSITION_ORDER
-    parts = preflop_actions.split("-")
     hero_idx = pos_order.index(hero_position)
+    return _preflop_before_index(preflop_actions, hero_idx)
+
+
+def _preflop_before_index(preflop_actions: str, hero_idx: int) -> str:
+    """Get preflop action string up to (but not including) a seat index."""
+    parts = preflop_actions.split("-")
     before = parts[:hero_idx]
     return "-".join(before) if before else ""
 
@@ -891,8 +896,12 @@ def _run_analysis(hand: dict) -> dict:
     else:
         target_players = num_players
 
+    hero_preflop_idx_override = None
     if target_players > num_players:
         pad_count = target_players - num_players
+        original_pos_order = _get_position_order(num_players)
+        if hero_pos in original_pos_order:
+            hero_preflop_idx_override = pad_count + original_pos_order.index(hero_pos)
         padding = "-".join(["F"] * pad_count)
         hand = dict(hand)  # shallow copy to avoid mutating original
         hand["preflop_actions"] = padding + "-" + hand["preflop_actions"]
@@ -901,8 +910,14 @@ def _run_analysis(hand: dict) -> dict:
         num_players = target_players
 
     pos_order = _get_position_order(num_players)
+    hero_preflop_idx = (
+        hero_preflop_idx_override
+        if hero_preflop_idx_override is not None and hero_preflop_idx_override < len(pos_order)
+        else pos_order.index(hero_pos)
+    )
+    solver_hero_pos = pos_order[hero_preflop_idx]
 
-    allin_effective = _preflop_allin_effective_bb(hand, hero_pos, pos_order)
+    allin_effective = _preflop_allin_effective_bb(hand, solver_hero_pos, pos_order)
     if allin_effective and allin_effective < float(hand["effective_bb"]) - 0.5:
         hand = dict(hand)
         hand["effective_bb"] = allin_effective
@@ -1060,19 +1075,18 @@ def _run_analysis(hand: dict) -> dict:
     # Reason: effective_bb = min(hero, caller) is retroactive — hero doesn't know who'll call
     # when deciding to open. The solver models uniform stacks, so hero's stack is the best proxy.
     # Fall back to original_depth (from effective_bb) when player_stacks unavailable.
-    preflop_before = _preflop_before_hero(preflop_actions, hero_pos, pos_order)
+    preflop_before = _preflop_before_index(preflop_actions, hero_preflop_idx)
     preflop_depth = original_depth if multiway_note else depth
     pf_parts = preflop_actions.split("-")
-    hero_idx = pos_order.index(hero_pos)
+    hero_idx = hero_preflop_idx
     if not is_icm and not allin_effective:
         hero_stack_bb = hand.get("hero_starting_stack")
         if not hero_stack_bb and hand.get("player_stacks"):
             stacks = hand["player_stacks"]
             # Only use if stacks length matches padded table size (validates correct mapping)
             if len(stacks) == num_players:
-                hero_idx_padded = pos_order.index(hero_pos)
-                if hero_idx_padded < len(stacks) and stacks[hero_idx_padded] > 0:
-                    hero_stack_bb = stacks[hero_idx_padded]
+                if hero_preflop_idx < len(stacks) and stacks[hero_preflop_idx] > 0:
+                    hero_stack_bb = stacks[hero_preflop_idx]
         if hero_stack_bb and hero_stack_bb > hand.get("effective_bb", 0):
             hero_depth = nearest_depth(hero_stack_bb)
             if hero_depth != preflop_depth:
@@ -1081,7 +1095,7 @@ def _run_analysis(hand: dict) -> dict:
                 try:
                     renorm = _normalize_preflop_actions(
                         hand["preflop_actions"], gametype, hero_depth)
-                    preflop_before = _preflop_before_hero(renorm, hero_pos, pos_order)
+                    preflop_before = _preflop_before_index(renorm, hero_preflop_idx)
                 except Exception:
                     pass  # fall back to original preflop_before
                 preflop_depth = hero_depth
@@ -1090,6 +1104,7 @@ def _run_analysis(hand: dict) -> dict:
         "header": "【Preflop】",
         "params": dict(gametype=gametype, depth=preflop_depth, stacks=icm_stacks,
                        preflop_actions=preflop_before),
+        "solver_hero_pos": solver_hero_pos,
         "action_desc": None,
     })
 
@@ -1147,6 +1162,7 @@ def _run_analysis(hand: dict) -> dict:
                     "header": f"【Preflop — {reraise_label}】",
                     "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
                                    preflop_actions=prefix),
+                    "solver_hero_pos": solver_hero_pos,
                     "action_desc": f"  → 實際行動: {hero_pos} {code}（solver code: {code}）",
                     "taken_code": code,
                     "hu_fallback_params": dict(
@@ -1190,6 +1206,7 @@ def _run_analysis(hand: dict) -> dict:
                         gametype=gametype, depth=depth, stacks=icm_stacks,
                         preflop_actions="-".join(first_round),
                     ),
+                    "solver_hero_pos": solver_hero_pos,
                     "action_desc": None,
                 })
 
@@ -1341,7 +1358,7 @@ def _run_analysis(hand: dict) -> dict:
                             )
                             if (
                                 root_sol
-                                and not _combo_idx_in_player_range(root_sol, hero_pos, hero_combo_idx)
+                                and not _combo_idx_in_player_range(root_sol, solver_hero_pos, hero_combo_idx)
                             ):
                                 continue
                         post_depth = try_depth
@@ -1455,6 +1472,7 @@ def _run_analysis(hand: dict) -> dict:
                     "street": street_name,
                     "header": street_header if street_first_hero else None,
                     "params": params,
+                    "solver_hero_pos": solver_hero_pos,
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
                     "taken_code": taken_code,
                     "actual_pot_pct": actual_pot_pct,
@@ -1600,6 +1618,7 @@ def _run_analysis(hand: dict) -> dict:
                     "street": street_name,
                     "header": street_label,
                     "params": params,
+                    "solver_hero_pos": solver_hero_pos,
                     "action_desc": f"→ Hero 的決策點",
                     "taken_code": None,  # hero hasn't acted
                     "street_actions_before_hero": actions_before_hero,
@@ -1648,7 +1667,7 @@ def _run_analysis(hand: dict) -> dict:
         retry_pfs = []
         for pf in (
             spot["params"].get("preflop_actions"),
-            _preflop_before_hero(preflop_actions, hero_pos, pos_order),
+            _preflop_before_index(preflop_actions, hero_preflop_idx),
         ):
             if pf is not None and pf not in retry_pfs:
                 retry_pfs.append(pf)
@@ -1707,7 +1726,7 @@ def _run_analysis(hand: dict) -> dict:
             best_freq = 0
             hn = normalize_hand_name(hero_hand)
             for pi in prev_sol.get("players_info", []):
-                if pi["player"]["position"] != hero_pos:
+                if pi["player"]["position"] != solver_hero_pos:
                     continue
                 shc = pi.get("simple_hand_counters", {})
                 hd = shc.get(hn)
@@ -1724,7 +1743,7 @@ def _run_analysis(hand: dict) -> dict:
             hn2 = normalize_hand_name(hero_hand)
             hero_taken_freq = 0
             for pi in prev_sol.get("players_info", []):
-                if pi["player"]["position"] != hero_pos:
+                if pi["player"]["position"] != solver_hero_pos:
                     continue
                 shc2 = pi.get("simple_hand_counters", {})
                 hd2 = shc2.get(hn2)
@@ -1763,7 +1782,7 @@ def _run_analysis(hand: dict) -> dict:
     # maps to 17bb solver = limp/fold, but hero's 21bb stack maps to 20bb = 100% raise).
     if not is_icm and solutions[0] is not None:
         pf_parts = preflop_actions.split("-")
-        hero_pf_idx = pos_order.index(hero_pos)
+        hero_pf_idx = hero_preflop_idx
         hero_pf_action = pf_parts[hero_pf_idx] if hero_pf_idx < len(pf_parts) else ""
         is_hero_open = (hero_pf_action.startswith("R") or hero_pf_action.startswith("AI"))
         all_fold_before = all(p == "F" for p in pf_parts[:hero_pf_idx])
@@ -1773,7 +1792,7 @@ def _run_analysis(hand: dict) -> dict:
             sol0 = solutions[0]
             has_raise = False
             for pi in sol0.get("players_info", []):
-                if pi["player"]["position"] == hero_pos and len(pi.get("range", [])) == 169:
+                if pi["player"]["position"] == solver_hero_pos and len(pi.get("range", [])) == 169:
                     hn = normalize_hand_name(hero_hand)
                     ranks = "23456789TJQKA"
                     all_hands = []
@@ -1808,7 +1827,7 @@ def _run_analysis(hand: dict) -> dict:
                     if retry_sol:
                         # Check if hero's hand has raise at next depth
                         for pi in retry_sol.get("players_info", []):
-                            if pi["player"]["position"] == hero_pos and len(pi.get("range", [])) == 169:
+                            if pi["player"]["position"] == solver_hero_pos and len(pi.get("range", [])) == 169:
                                 if hn in hand_names_sorted:
                                     for asol in retry_sol.get("action_solutions", []):
                                         code = asol["action"]["code"]
@@ -1834,7 +1853,7 @@ def _run_analysis(hand: dict) -> dict:
         if solutions[0]:
             hn = normalize_hand_name(hero_hand)
             for pi in solutions[0].get("players_info", []):
-                if pi["player"]["position"] != hero_pos:
+                if pi["player"]["position"] != solver_hero_pos:
                     continue
                 shc = pi.get("simple_hand_counters", {})
                 hd = shc.get(hn)
@@ -1864,7 +1883,7 @@ def _run_analysis(hand: dict) -> dict:
             flop_start_sol = _fetch_with_token(flop_start_params)
             if flop_start_sol:
                 for pi in flop_start_sol["players_info"]:
-                    if pi["player"]["position"] == hero_pos:
+                    if pi["player"]["position"] == spot.get("solver_hero_pos", solver_hero_pos):
                         rng = pi.get("range", [])
                         if len(rng) == 1326 and rng[hero_combo_idx] < 0.005:
                             has_offrange = True
@@ -1893,7 +1912,7 @@ def _run_analysis(hand: dict) -> dict:
                 found = False
                 if check_sol:
                     for pi in check_sol["players_info"]:
-                        if pi["player"]["position"] == hero_pos:
+                        if pi["player"]["position"] == solver_hero_pos:
                             rng = pi.get("range", [])
                             if len(rng) == 1326 and rng[hero_combo_idx] >= 0.005:
                                 found = True
@@ -1987,8 +2006,9 @@ def _run_analysis(hand: dict) -> dict:
             if not (sol and spot["street"] != "preflop" and sol.get("action_solutions")):
                 continue
             combo_range = 0.0
+            spot_hero_pos = spot.get("solver_hero_pos", solver_hero_pos)
             for pi in sol.get("players_info", []):
-                if pi.get("player", {}).get("position") != hero_pos:
+                if pi.get("player", {}).get("position") != spot_hero_pos:
                     continue
                 rng = pi.get("range", [])
                 if len(rng) == 1326 and hero_combo_idx < len(rng):
@@ -2036,6 +2056,8 @@ def _run_analysis(hand: dict) -> dict:
     else:
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
         results.append(hero_label)
+    if solver_hero_pos != hero_pos:
+        results.append(f"座位映射: 使用者顯示 {hero_pos} = solver {solver_hero_pos}（因 {num_players}-max solver padding）")
     if icm_fallback_note:
         results.append(icm_fallback_note)
     if multiway_note:
@@ -2052,7 +2074,7 @@ def _run_analysis(hand: dict) -> dict:
         for idx, (raw_code, norm_code) in enumerate(zip(raw_parts, norm_parts)):
             if raw_code == norm_code:
                 continue
-            pos_name = pos_order[idx] if idx < len(pos_order) else f"pos{idx}"
+            pos_name = hero_pos if idx == hero_preflop_idx else (pos_order[idx] if idx < len(pos_order) else f"pos{idx}")
             if raw_code.startswith("AI") and norm_code == "RAI":
                 # Any all-in → solver all-in is the same thing, not a real correction
                 continue
@@ -2078,6 +2100,7 @@ def _run_analysis(hand: dict) -> dict:
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         display_sol = None if i in offrange_no_solver_idxs else sol
+        spot_hero_pos = spot.get("solver_hero_pos", solver_hero_pos)
         if spot["header"]:
             results.append("")
             results.append("=" * 50)
@@ -2097,14 +2120,14 @@ def _run_analysis(hand: dict) -> dict:
 
         if display_sol:
             # When no hero hand specified, show only range-level summary (no hero-specific detail)
-            spot_text = format_full_spot(display_sol, None if no_hero_hand else hero_hand, hero_pos)
+            spot_text = format_full_spot(display_sol, None if no_hero_hand else hero_hand, spot_hero_pos)
             results.append(spot_text)
 
             # Include full range breakdown when no hero hand specified or ICM
             # preflop — prevents Gemini from fabricating range compositions
             if (is_icm and spot["street"] == "preflop") or no_hero_hand:
                 from gto_formatter import format_range_by_action
-                range_text = format_range_by_action(display_sol, hero_pos)
+                range_text = format_range_by_action(display_sol, spot_hero_pos)
                 if range_text:
                     results.append("")
                     results.append(range_text)
@@ -2114,7 +2137,7 @@ def _run_analysis(hand: dict) -> dict:
             if taken_code and not no_hero_hand:
                 is_pf = spot["street"] == "preflop"
                 ev_note = format_ev_comparison(
-                    display_sol, taken_code, hero_hand, hero_pos,
+                    display_sol, taken_code, hero_hand, spot_hero_pos,
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
                 if ev_note:
@@ -2163,6 +2186,7 @@ def _run_analysis(hand: dict) -> dict:
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         display_sol = None if i in offrange_no_solver_idxs else sol
+        spot_hero_pos = spot.get("solver_hero_pos", solver_hero_pos)
         if spot["header"]:
             # Convert 【Preflop】 → ─── Preflop ───
             # Simplify 【Turn: Kc（Board: Js6h5sKc）】 → Turn: Kc
@@ -2188,7 +2212,7 @@ def _run_analysis(hand: dict) -> dict:
             # For postflop, pass combo_idx for combo-specific frequencies
             pf_spot = spot["street"] == "preflop"
             cidx = None if (pf_spot or no_hero_hand) else hero_combo_idx
-            spot_compact = format_spot_compact(display_sol, "__RANGE__" if no_hero_hand else hero_hand, hero_pos,
+            spot_compact = format_spot_compact(display_sol, "__RANGE__" if no_hero_hand else hero_hand, spot_hero_pos,
                                                combo_idx=cidx)
             if spot_compact:
                 compact.append(spot_compact)
@@ -2240,7 +2264,7 @@ def _run_analysis(hand: dict) -> dict:
                     action_sols = display_sol.get("action_solutions", [])
                     if action_sols and "strategy" in action_sols[0]:
                         if _combo_idx_in_player_range(
-                            display_sol, hero_pos, hero_combo_idx
+                            display_sol, spot_hero_pos, hero_combo_idx
                         ):
                             combo_freq = {}
                             for asol in action_sols:
@@ -2253,7 +2277,7 @@ def _run_analysis(hand: dict) -> dict:
                     af = None
                     hand_name = normalize_hand_name(hero_hand)
                     for pi in display_sol.get("players_info", []):
-                        if pi["player"]["position"] != hero_pos:
+                        if pi["player"]["position"] != spot_hero_pos:
                             continue
                         shc = pi.get("simple_hand_counters", {})
                         hd = shc.get(hand_name)
@@ -2270,7 +2294,7 @@ def _run_analysis(hand: dict) -> dict:
                 # Check EV loss
                 is_pf = spot["street"] == "preflop"
                 ev_note = format_ev_comparison(
-                    display_sol, taken_code, hero_hand, hero_pos,
+                    display_sol, taken_code, hero_hand, spot_hero_pos,
                     is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
                 )
                 sizing_hint = f" (GTO建議 {gto_top_label})" if gto_top_label else ""
