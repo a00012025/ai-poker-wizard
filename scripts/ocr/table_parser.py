@@ -222,8 +222,17 @@ def _find_board_cards(table_region: np.ndarray) -> list[str]:
     crops = _locate_board_cards(table_region)
     if not crops:
         return []
-    results = CardClassifier().classify_batch(crops)
-    return [f"{r}{s}" for r, s, _ in results if r and s]
+    results = CardClassifier().classify_batch_detailed(crops)
+    cards = []
+    for crop, detail in zip(crops, results):
+        rank = detail.get("rank")
+        suit = detail.get("suit")
+        corner_rank, corner_conf = _rank_from_corner_ocr(crop)
+        if corner_rank and corner_conf >= 0.90 and corner_rank != rank:
+            rank = corner_rank
+        if rank and suit:
+            cards.append(f"{rank}{suit}")
+    return cards
 
 
 def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
@@ -455,6 +464,10 @@ def _repair_rank_from_top2(rank: str, rank_conf: float, top2: list) -> str:
         return "6"
     if rank == "K" and second_rank == "T" and second_conf >= 0.15:
         return "T"
+    if rank == "K" and second_rank == "A" and second_conf >= 0.15 and rank_conf <= 0.80:
+        return "A"
+    if rank == "A" and second_rank == "4" and second_conf >= 0.06 and rank_conf <= 0.90:
+        return "4"
     if rank == "Q" and second_rank == "6" and second_conf >= 0.20:
         return "6"
     if rank == "Q" and second_rank == "K" and second_conf >= 0.15 and rank_conf <= 0.50:
@@ -619,6 +632,7 @@ def _find_hero_cards(
             raw_suit != masked_suit
             and (
                 raw_suit_conf >= masked.get("suit_conf", 0.0) + 0.20
+                or raw_suit_conf >= 0.99
                 or (
                     raw_suit_conf >= 0.95
                     and suit_conf <= 0.85

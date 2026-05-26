@@ -498,6 +498,22 @@ def _estimate_table_size(action_entries: list[dict]) -> tuple[int, bool]:
                 or btn_hero_bb_alignment
             ):
                 re_action_start = 6
+        elif last_action != "fold":
+            positions = [
+                (e.get("position") or "").strip().upper()
+                for e in action_entries
+            ]
+            actions = [(e.get("action") or "").lower() for e in action_entries]
+            last_pos = positions[-1]
+            hero_3bet_from_blind = (
+                action_entries[5].get("type") == "hero"
+                and actions[5] in {"raise", "all-in"}
+                and any(a in {"raise", "all-in"} for a in actions[:5])
+                and last_pos
+                and last_pos not in {"BTN", "SB", "BB"}
+            )
+            if hero_3bet_from_blind:
+                re_action_start = 6
 
     # Some N8 re-action rows carry the same position badge as the original
     # raiser/caller even when OCR misses the repeated player name. Treat a
@@ -1238,11 +1254,10 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     if not preflop_actions:
         return None, conf_parts, diagnostics
 
-    # Penalize, but do not discard, hands where a raise/bet entry came back
-    # with no size.  The action *type* is still useful for hand_exact and for
-    # focused Gemini fallback, while `_action_to_code` keeps a conservative
-    # placeholder size for the low-confidence hand.  Production callers gate
-    # on confidence before trusting solver-ready details.
+    # A raise/bet with no size is not solver-ready: using a placeholder raise
+    # corrupts pot reconstruction and can map later street actions to the
+    # wrong solver node.  Return no deterministic hand so production falls
+    # back to Gemini vision with the partial OCR hints.
     missing_raise_sizes = sum(
         1 for e in action_entries
         if (e.get("action") or "").lower() in ("raise", "bet")
@@ -1250,6 +1265,7 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     )
     if missing_raise_sizes:
         conf_parts["ocr_confidence"] = 0.0
+        return None, conf_parts, diagnostics
 
     # Build hero_hand — sort by rank (higher first), standard poker notation
     _RANK_ORDER = "23456789TJQKA"
@@ -1535,6 +1551,7 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
     # Track who folds across streets
     folded_in_streets = set()
 
+    runout_after_allin_call = False
     for col in street_cols:
         name = col["name"].lower()
         entries = col.get("entries", [])
@@ -1546,6 +1563,8 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         # parsed panel row; otherwise leave it for Gemini fallback/hints rather
         # than corrupting deterministic hand_exact with phantom runout cards.
         if not entries:
+            if name == "river" and river_card and runout_after_allin_call:
+                streets.append({"card": river_card, "actions": []})
             continue
 
         street = {}
@@ -1562,6 +1581,7 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
                                    if p != hero_position and p not in folded_in_streets]
         opp_idx = 0
         street_name_positions: list[tuple[str, str]] = []
+        pending_all_in = False
 
         for entry in entries:
             entry_type = entry.get("type", "opponent")
@@ -1614,6 +1634,10 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             # Track folds
             if action_text == "fold":
                 folded_in_streets.add(pos)
+            if action_text == "all-in":
+                pending_all_in = True
+            elif pending_all_in and action_text == "call":
+                runout_after_allin_call = True
 
         street["actions"] = actions
         if actions:
