@@ -4173,6 +4173,69 @@ def test_compact_format_multi_street():
 
 
 @test
+def test_compact_format_shows_gto_for_later_decision_points():
+    """Compact: later same-street decision points still show a GTO line.
+
+    Regression for H3416: after hero check-raised flop, the exact JTo combo
+    had a very small but non-zero range at the turn call and river fold nodes.
+    The compact formatter treated that as off-range and printed only
+    "→ Hero call/fold", hiding the solver frequencies for those later
+    decisions.
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "effective_bb": 99.9,
+        "hero_position": "BB",
+        "hero_hand": "JsTc",
+        "preflop_actions": "F-F-F-R2-F-F-C",
+        "players_at_table": 7,
+        "hero_starting_stack": 99.9,
+        "streets": [
+            {"board": "6d8hJd", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R1.7", "size": 1.7},
+                {"position": "BB", "action": "R5.2", "size": 5.2},
+                {"position": "CO", "action": "C", "size": 3.5},
+            ]},
+            {"card": "8d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R7.8", "size": 7.8},
+                {"position": "BB", "action": "C", "size": 7.8},
+            ]},
+            {"card": "Qc", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R23.4", "size": 23.4},
+                {"position": "BB", "action": "F"},
+            ]},
+        ],
+    })
+
+    compact = result["text_compact"]
+    turn_section = compact.split("─── Turn: 8d ───", 1)[1].split("─── River:", 1)[0]
+    river_section = compact.split("─── River: Qc ───", 1)[1]
+
+    assert_in("→ Hero check", turn_section)
+    assert_in("GTO: Call", turn_section,
+              "turn facing-bet decision should show solver frequencies")
+    assert_in("→ Hero call", turn_section)
+    assert_true(
+        turn_section.index("GTO: Call") < turn_section.index("→ Hero call"),
+        "turn call should be immediately explained by a preceding GTO line",
+    )
+
+    assert_in("→ Hero check", river_section)
+    assert_in("GTO: Fold", river_section,
+              "river facing-bet decision should show solver frequencies")
+    assert_in("→ Hero fold", river_section)
+    assert_true(
+        river_section.index("GTO: Fold") < river_section.index("→ Hero fold"),
+        "river fold should be immediately explained by a preceding GTO line",
+    )
+
+
+@test
 def test_compact_format_spot_compact():
     """Compact: format_spot_compact produces emoji-marked action lines."""
     from gto_formatter import format_spot_compact

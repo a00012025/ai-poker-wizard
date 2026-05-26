@@ -1906,11 +1906,17 @@ def _run_analysis(hand: dict) -> dict:
     offrange_no_solver_idxs: set[int] = set()
     if not no_hero_hand and hero_combo_idx is not None:
         for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
-            if not (
-                    sol
-                    and spot["street"] != "preflop"
-                    and sol.get("action_solutions")
-                    and not _combo_idx_in_player_range(sol, hero_pos, hero_combo_idx)):
+            if not (sol and spot["street"] != "preflop" and sol.get("action_solutions")):
+                continue
+            combo_range = 0.0
+            for pi in sol.get("players_info", []):
+                if pi.get("player", {}).get("position") != hero_pos:
+                    continue
+                rng = pi.get("range", [])
+                if len(rng) == 1326 and hero_combo_idx < len(rng):
+                    combo_range = float(rng[hero_combo_idx] or 0.0)
+                break
+            if combo_range >= 0.005:
                 continue
             previous_same_street_size_mismatch = False
             for j in range(i - 1, -1, -1):
@@ -2153,17 +2159,9 @@ def _run_analysis(hand: dict) -> dict:
                 if not pf_spot and hero_combo_idx is not None:
                     action_sols = display_sol.get("action_solutions", [])
                     if action_sols and "strategy" in action_sols[0]:
-                        combo_in_range = False
-                        for pi in display_sol.get("players_info", []):
-                            if pi["player"]["position"] == hero_pos:
-                                rng = pi.get("range", [])
-                                combo_in_range = (
-                                    len(rng) == 1326
-                                    and hero_combo_idx < len(rng)
-                                    and rng[hero_combo_idx] >= 0.005
-                                )
-                                break
-                        if combo_in_range:
+                        if _combo_idx_in_player_range(
+                            display_sol, hero_pos, hero_combo_idx
+                        ):
                             combo_freq = {}
                             for asol in action_sols:
                                 f = asol["strategy"][hero_combo_idx]

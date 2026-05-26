@@ -703,7 +703,7 @@ def _combo_idx_in_player_range(
     spot_solution: dict,
     hero_position: str,
     combo_idx: int | None,
-    min_range: float = 0.005,
+    min_range: float = 1e-12,
 ) -> bool:
     """Return True if an exact postflop combo is present at this node.
 
@@ -711,6 +711,10 @@ def _combo_idx_in_player_range(
     combos that have already taken a different earlier action and therefore
     have zero range at the current node.  Those off-node combo rows must not
     drive user-facing advice.
+
+    Use a near-zero threshold instead of the display/action cutoff (0.5%):
+    rare but non-zero combos still have meaningful exact-combo strategy rows
+    and should be shown for later decision points.
     """
     if combo_idx is None:
         return False
