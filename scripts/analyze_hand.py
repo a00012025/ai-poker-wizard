@@ -234,6 +234,37 @@ def _preflop_before_hero(preflop_actions: str, hero_position: str, position_orde
     return "-".join(before) if before else ""
 
 
+def _preflop_allin_effective_bb(hand: dict, hero_position: str, position_order: list[str]) -> float | None:
+    """Infer effective stack from a preflop all-in that reopens action to hero.
+
+    OCR/parser output can preserve the all-in size (e.g. ``AI19.9``) while
+    leaving ``effective_bb`` at the hero's full stack.  For the facing-all-in
+    decision the solver depth should be the all-in stack, capped by hero's
+    stack when available.
+    """
+    parts = (hand.get("preflop_actions") or "").split("-")
+    if not parts or hero_position not in position_order:
+        return None
+    hero_idx = position_order.index(hero_position)
+    if hero_idx >= len(parts) or parts[hero_idx] in ("", "F"):
+        return None
+    hero_stack = hand.get("hero_starting_stack") or hand.get("effective_bb")
+    best: float | None = None
+    for code in parts[hero_idx + 1:]:
+        if not code.startswith("AI"):
+            continue
+        raw_size = code[2:]
+        try:
+            allin_size = float(raw_size) if raw_size else float(hero_stack or 0)
+        except (TypeError, ValueError):
+            continue
+        if allin_size <= 0:
+            continue
+        eff = min(float(hero_stack), allin_size) if hero_stack else allin_size
+        best = eff if best is None else min(best, eff)
+    return best
+
+
 STREET_NAMES = ["flop", "turn", "river"]
 
 # Action display names for explanatory messages
@@ -871,6 +902,12 @@ def _run_analysis(hand: dict) -> dict:
 
     pos_order = _get_position_order(num_players)
 
+    allin_effective = _preflop_allin_effective_bb(hand, hero_pos, pos_order)
+    if allin_effective and allin_effective < float(hand["effective_bb"]) - 0.5:
+        hand = dict(hand)
+        hand["effective_bb"] = allin_effective
+        depth = nearest_cash_depth(allin_effective) if is_cash else nearest_depth(allin_effective)
+
     # ICM support: resolve gametype and stacks
     icm_stacks = ""
     icm_note = ""
@@ -1025,7 +1062,9 @@ def _run_analysis(hand: dict) -> dict:
     # Fall back to original_depth (from effective_bb) when player_stacks unavailable.
     preflop_before = _preflop_before_hero(preflop_actions, hero_pos, pos_order)
     preflop_depth = original_depth if multiway_note else depth
-    if not is_icm:
+    pf_parts = preflop_actions.split("-")
+    hero_idx = pos_order.index(hero_pos)
+    if not is_icm and not allin_effective:
         hero_stack_bb = hand.get("hero_starting_stack")
         if not hero_stack_bb and hand.get("player_stacks"):
             stacks = hand["player_stacks"]
@@ -1054,66 +1093,105 @@ def _run_analysis(hand: dict) -> dict:
         "action_desc": None,
     })
 
-    # Check if hero faces a re-raise (needs to act again preflop)
-    pf_parts = preflop_actions.split("-")
-    hero_idx = pos_order.index(hero_pos)
-    has_reraise = any(
-        pf_parts[i].startswith("R")
-        for i in range(hero_idx + 1, min(len(pf_parts), num_players))
-    )
-    if has_reraise:
-        # Query hero's second decision at the full N-position preflop
-        full_n = "-".join(pf_parts[:num_players])
-
-        # Build HU fallback: strip cold callers (keep only hero + 3bettor)
-        # Solver often lacks 3-way cold call solutions; HU is a reasonable approximation
-        reraise_idx = None
-        for i in range(hero_idx + 1, num_players):
-            if pf_parts[i].startswith("R") or pf_parts[i].startswith("AI"):
-                reraise_idx = i
+    # Check if hero acts again preflop (e.g. opens then faces a 3-bet, or
+    # 3-bets then faces a 4-bet).  Every continuation action by hero is its
+    # own decision node so compact output can show solver data for each one.
+    hero_continuation_seen = False
+    if len(pf_parts) > num_players:
+        active = [i for i in range(num_players) if pf_parts[i] not in ("F", "")]
+        prefix_parts = list(pf_parts[:num_players])
+        cont_idx = 0
+        for j in range(num_players, len(pf_parts)):
+            if not active:
                 break
-        hu_fallback_n = None
-        if reraise_idx is not None:
-            cold_callers = [
-                i for i in range(num_players)
-                if i != hero_idx and i != reraise_idx and pf_parts[i] not in ("F", "")
-            ]
-            if cold_callers:
-                hu_parts = list(pf_parts[:num_players])
-                for ci in cold_callers:
-                    hu_parts[ci] = "F"
-                hu_fallback_n = "-".join(hu_parts)
+            cont_idx %= len(active)
+            actor_idx = active[cont_idx]
+            code = pf_parts[j]
+            prefix = "-".join(prefix_parts)
 
-        # Check if hero's continuation action is in the string (parts[N:])
-        hero_cont_desc = None
-        if len(pf_parts) > num_players:
-            active = [i for i in range(num_players) if pf_parts[i] not in ("F", "")]
-            cont_idx = 0
-            for j in range(num_players, len(pf_parts)):
-                if cont_idx >= len(active):
-                    cont_idx = 0
-                if active[cont_idx] == hero_idx:
-                    code = pf_parts[j]
-                    hero_cont_desc = f"  → 實際行動: {hero_pos} {code}（solver code: {code}）"
-                    break
+            if actor_idx == hero_idx:
+                hero_continuation_seen = True
+                n_raises = sum(
+                    1 for p in prefix_parts
+                    if p.startswith("R") or p.startswith("AI")
+                )
+                if n_raises >= 3:
+                    reraise_label = "Facing 4-bet"
+                elif n_raises >= 2:
+                    reraise_label = "Facing 3-bet"
+                else:
+                    reraise_label = "Continuation"
+
+                # Build HU fallback by keeping hero plus the most recent
+                # aggressor before this decision.  Solver often lacks 3-way
+                # cold-call continuations; HU is a reasonable approximation.
+                aggressor_idx = None
+                for k in range(len(prefix_parts) - 1, -1, -1):
+                    if prefix_parts[k].startswith("R") or prefix_parts[k].startswith("AI"):
+                        aggressor_idx = k
+                        break
+                hu_fallback_n = None
+                if aggressor_idx is not None:
+                    cold_callers = [
+                        i for i in active
+                        if i not in (hero_idx, aggressor_idx)
+                    ]
+                    if cold_callers:
+                        hu_parts = list(prefix_parts)
+                        for ci in cold_callers:
+                            hu_parts[ci] = "F"
+                        hu_fallback_n = "-".join(hu_parts)
+
+                hero_spots.append({
+                    "street": "preflop",
+                    "header": f"【Preflop — {reraise_label}】",
+                    "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
+                                   preflop_actions=prefix),
+                    "action_desc": f"  → 實際行動: {hero_pos} {code}（solver code: {code}）",
+                    "taken_code": code,
+                    "hu_fallback_params": dict(
+                        gametype=gametype, depth=depth, stacks=icm_stacks,
+                        preflop_actions=hu_fallback_n,
+                    ) if hu_fallback_n else None,
+                })
+
+            prefix_parts.append(code)
+            if code == "F":
+                active.pop(cont_idx)
+            else:
                 cont_idx += 1
 
-        # Label the re-raise type for the header
-        reraise_pos = pos_order[reraise_idx] if reraise_idx is not None else "?"
-        n_raises = sum(1 for p in pf_parts[:num_players] if p.startswith("R") or p.startswith("AI"))
-        if n_raises >= 3:
-            reraise_label = "Facing 4-bet"
-        else:
-            reraise_label = "Facing 3-bet"
-        hero_spots.append({
-            "street": "preflop",
-            "header": f"【Preflop — {reraise_label}】",
-            "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
-                           preflop_actions=full_n),
-            "action_desc": hero_cont_desc,
-            "hu_fallback_params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
-                                       preflop_actions=hu_fallback_n) if hu_fallback_n else None,
-        })
+    # Some parsers encode a preflop all-in/raise in the initial N-position
+    # pass but omit the final hero response.  Still surface the facing
+    # decision node so the compact output never hides a solver spot (H3428).
+    if not hero_continuation_seen and len(pf_parts) >= num_players:
+        first_round = pf_parts[:num_players]
+        if hero_idx < len(first_round) and first_round[hero_idx] not in ("", "F"):
+            aggressor_code = None
+            for code in first_round[hero_idx + 1:]:
+                if code.startswith("R") or code.startswith("AI"):
+                    aggressor_code = code
+                    break
+            if aggressor_code:
+                n_raises = sum(
+                    1 for p in first_round
+                    if p.startswith("R") or p.startswith("AI")
+                )
+                if aggressor_code == "RAI" or aggressor_code.startswith("AI"):
+                    reraise_label = "Facing all-in"
+                elif n_raises >= 3:
+                    reraise_label = "Facing 4-bet"
+                else:
+                    reraise_label = "Facing 3-bet"
+                hero_spots.append({
+                    "street": "preflop",
+                    "header": f"【Preflop — {reraise_label}】",
+                    "params": dict(
+                        gametype=gametype, depth=depth, stacks=icm_stacks,
+                        preflop_actions="-".join(first_round),
+                    ),
+                    "action_desc": None,
+                })
 
     board = ""
     flop_acts = ""
@@ -2114,6 +2192,8 @@ def _run_analysis(hand: dict) -> dict:
                                                combo_idx=cidx)
             if spot_compact:
                 compact.append(spot_compact)
+            elif not no_hero_hand:
+                compact.append("GTO: 此手牌 0% 到達此節點")
 
             # Hero result line — skip when no hero hand
             taken_code = spot.get("taken_code")

@@ -333,6 +333,64 @@ def test_chip_ev_3way_cold_call_fallback():
 
 
 @test
+def test_preflop_continuation_spot_for_facing_4bet_call():
+    """H3427: hero's preflop call facing a 4-bet must be its own solver node."""
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "TsTc",
+        "hero_position": "SB",
+        "preflop_actions": "F-F-F-F-R2.1-R7-F-R18-C",
+        "players_at_table": 7,
+        "hero_starting_stack": 20.4,
+        "streets": [
+            {"board": "4dKc9h", "actions": [
+                {"action": "X", "position": "SB"},
+                {"size": 12.0, "action": "R12", "position": "BTN"},
+                {"action": "F", "position": "SB"},
+            ]},
+        ],
+    })
+
+    compact = result["text_compact"]
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    assert_true(len(preflop_spots) >= 2, f"expected facing-4bet spot, got {preflop_spots}")
+    assert_eq(preflop_spots[1].get("taken_code"), "C")
+    assert_in("─── Preflop — Facing 4-bet ───", compact)
+    facing_section = compact.split("─── Preflop — Facing 4-bet ───", 1)[1].split("─── Flop:", 1)[0]
+    assert_in("GTO:", facing_section)
+    assert_in("→ Hero call", facing_section)
+
+
+@test
+def test_preflop_pending_facing_allin_uses_allin_effective_depth():
+    """H3428: initial-round AI action reopens a visible 20bb facing-all-in node."""
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "6s6c",
+        "effective_bb": 37.8,
+        "hero_position": "UTG",
+        "player_stacks": [17.9, 30.8, 6.4, 10.9, 9.1, 25.7, 71.9, 37.3],
+        "preflop_actions": "R2-F-F-AI19.9-F-F-F-F",
+        "players_at_table": 8,
+        "hero_starting_stack": 39.3,
+    })
+
+    compact = result["text_compact"]
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    assert_true(len(preflop_spots) >= 2, f"expected facing-all-in spot, got {preflop_spots}")
+    assert_in("♠ UTG 66 | 20bb MTT", compact)
+    assert_in("─── Preflop — Facing all-in ───", compact)
+    facing_section = compact.split("─── Preflop — Facing all-in ───", 1)[1]
+    assert_in("GTO:", facing_section)
+    assert_eq(preflop_spots[1]["params"]["depth"], 20.125)
+    assert_in("RAI", preflop_spots[1]["params"]["preflop_actions"])
+
+
+@test
 def test_chip_ev_depth_mapping():
     """Chip EV: depth maps to nearest available solver depth."""
     from gto_api import nearest_depth
@@ -3215,6 +3273,17 @@ def test_ocr_table_parser_board_cards():
 
 
 @test
+def test_ocr_h3429_win_sticker_corner_rank_reads_pocket_twos():
+    """OCR: WIN sticker noise must not turn a visible 2h corner into Kh."""
+    from ocr.n8_parser import parse_n8_screenshot
+
+    img_path = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "ocr" / "H3429.jpeg"
+    result = parse_n8_screenshot(img_path.read_bytes())
+    assert_true(result.get("hand"), "H3429 should parse into a hand")
+    assert_eq(result["hand"].get("hero_hand"), "2h2c")
+
+
+@test
 def test_ocr_card_confidence_surfaced_separately():
     """OCR: parse_n8_screenshot exposes card_confidence on the result so
     the gemini_session tiered gate can apply a hard card-conf floor.
@@ -3353,8 +3422,10 @@ def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
               "_find_hero_cards should classify the raw crops too")
     assert_in("classify_batch_detailed(masked_crops)", src,
               "_find_hero_cards should classify the masked crops too")
-    # Sanity: rank pulled from raw, suit from masked.
-    assert_in('rank = raw["rank"]', src)
+    # Sanity: rank starts from raw, can be repaired by raw top-2/corner OCR,
+    # and suit comes from the masked crop.
+    assert_in('raw["rank"]', src)
+    assert_in("_rank_from_corner_ocr(crops[i])", src)
     assert_in('suit = masked["suit"]', src)
 
 

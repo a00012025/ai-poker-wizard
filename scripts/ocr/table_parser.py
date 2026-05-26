@@ -464,6 +464,58 @@ def _repair_rank_from_top2(rank: str, rank_conf: float, top2: list) -> str:
     return rank
 
 
+def _rank_from_corner_ocr(crop: np.ndarray) -> tuple[str | None, float]:
+    """Read the visible top-left card rank with OCR as a CNN cross-check.
+
+    Natural8 WIN stickers can cover the lower half of a hero card.  The
+    classifier sees the whole crop and can confidently hallucinate a face card
+    from the sticker/avatar noise even when the corner rank is unobstructed
+    (H3429: 2♥ was read as K♥).  EasyOCR is much better at the isolated corner
+    glyph, so use it only when it returns a clean single rank token.
+    """
+    from .ocr_utils import ocr_text, preprocess_for_ocr
+
+    h, w = crop.shape[:2]
+    if h < 30 or w < 25:
+        return None, 0.0
+
+    rank_chars = set("23456789TJQKA")
+
+    def normalize_rank_token(text: str) -> str | None:
+        token = text.strip().upper().replace(" ", "")
+        token = token.replace("IO", "10").replace("O", "0")
+        if token == "10":
+            return "T"
+        if len(token) == 1 and token in rank_chars:
+            return token
+        return None
+
+    # The crop includes rank + suit in the top-left.  Keep candidates tight
+    # enough that noisy chip/sticker text cannot be mixed into the OCR result.
+    boxes = [
+        (0, 0, int(w * 0.64), int(h * 0.52)),
+        (0, 0, int(w * 0.55), int(h * 0.45)),
+        (0, 0, int(w * 0.70), int(h * 0.60)),
+    ]
+    candidates: list[tuple[str, float]] = []
+    for x1, y1, x2, y2 in boxes:
+        x2 = min(w, max(x2, min(w, 35)))
+        y2 = min(h, max(y2, min(h, 45)))
+        corner = crop[y1:y2, x1:x2]
+        if corner.size == 0:
+            continue
+        for image in (corner, preprocess_for_ocr(corner, min_width=160)):
+            text, conf = ocr_text(image, whitelist="23456789TJQKA10", psm=10)
+            rank = normalize_rank_token(text)
+            if rank and conf >= 70:
+                candidates.append((rank, float(conf) / 100.0))
+
+    if not candidates:
+        return None, 0.0
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates[0]
+
+
 def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -> str:
     """Repair narrow low-margin suit confusions from masked crop top-2.
 
@@ -525,13 +577,19 @@ def _find_hero_cards(
     raw_details = clf.classify_batch_detailed(crops)
     masked_details = clf.classify_batch_detailed(masked_crops)
     details: list[dict] = []
-    for raw, masked in zip(raw_details, masked_details):
+    for i, (raw, masked) in enumerate(zip(raw_details, masked_details)):
         rank_conf = raw["rank_conf"]
         rank = _repair_rank_from_top2(
             raw["rank"],
             rank_conf,
             raw.get("rank_top2", []),
         )
+        rank_source = "classifier"
+        corner_rank, corner_conf = _rank_from_corner_ocr(crops[i])
+        if corner_rank and corner_rank != rank:
+            rank = corner_rank
+            rank_conf = corner_conf
+            rank_source = "corner_ocr"
         suit = masked["suit"]
         suit_conf = masked["suit_conf"]
         # The WIN mask is a suit-head aid, not an absolute override.
@@ -582,6 +640,7 @@ def _find_hero_cards(
             "suit": suit, "suit_conf": suit_conf,
             "rank_top2": raw.get("rank_top2", []),
             "suit_top2": masked.get("suit_top2", []),
+            "rank_source": rank_source,
             "conf": min(rank_conf, suit_conf),
         })
     cards = [f"{d['rank']}{d['suit']}" for d in details
