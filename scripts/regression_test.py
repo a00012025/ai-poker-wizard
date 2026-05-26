@@ -65,6 +65,59 @@ def assert_true(cond, msg=""):
         raise AssertionError(msg or "condition was False")
 
 
+# ── GTO auth context Tests ──
+
+@test
+def test_run_with_gto_token_preserves_main_thread_token():
+    import analyze_hand
+    import gto_api
+
+    calls = []
+    gto_api.set_user_token("parent-access-token")
+
+    def fake_solver_call(**_kwargs):
+        calls.append(getattr(gto_api._thread_local, "access_token", None))
+        return "ok"
+
+    try:
+        result = analyze_hand._run_with_gto_token(
+            "parent-access-token", fake_solver_call, gametype="MTTGeneral"
+        )
+        assert_eq(result, "ok")
+        assert_eq(calls, ["parent-access-token"])
+        assert_eq(
+            getattr(gto_api._thread_local, "access_token", None),
+            "parent-access-token",
+            "Inline helper calls must restore the request's per-user token.",
+        )
+    finally:
+        gto_api.clear_user_token()
+
+
+@test
+def test_run_with_gto_token_clears_executor_thread_token():
+    import analyze_hand
+    import gto_api
+
+    calls = []
+    gto_api.clear_user_token()
+
+    def fake_solver_call(**_kwargs):
+        calls.append(getattr(gto_api._thread_local, "access_token", None))
+        return "ok"
+
+    result = analyze_hand._run_with_gto_token(
+        "parent-access-token", fake_solver_call, gametype="MTTGeneral"
+    )
+    assert_eq(result, "ok")
+    assert_eq(calls, ["parent-access-token"])
+    assert_eq(
+        getattr(gto_api._thread_local, "access_token", None),
+        None,
+        "Executor helper calls should not leak per-user tokens after fetch.",
+    )
+
+
 # ── Card classifier v2 Tests ──
 
 @test

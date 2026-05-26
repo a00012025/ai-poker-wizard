@@ -56,6 +56,28 @@ POSITION_ORDERS = {
     2: ["SB", "BB"],
 }
 
+
+def _run_with_gto_token(parent_token: str | None, fn, *args, **kwargs):
+    """Run a GTO API call with the caller's per-user token, then restore it.
+
+    ``_run_analysis`` fetches some spots in executor threads and some inline on
+    the main request thread. Inline calls must not clear the main thread's
+    token, or later solver requests fall back to the global ``.tokens.json``.
+    """
+    from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
+
+    previous_token = getattr(_gto_tl, "access_token", None)
+    if parent_token:
+        set_user_token(parent_token)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        if previous_token:
+            set_user_token(previous_token)
+        else:
+            clear_user_token()
+
+
 CASH_GAMETYPES = {
     2: "CashHuGeneral_NL100R2",
     3: "Cash3mGeneral_3mGGAIorFoldcEV",
@@ -1509,17 +1531,16 @@ def _run_analysis(hand: dict) -> dict:
 
     # ── Phase 2: Fetch all spot solutions in parallel ──
     # Propagate thread-local user token into executor threads
-    from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
+    from gto_api import _thread_local as _gto_tl
     _parent_token = getattr(_gto_tl, "access_token", None)
 
     def _fetch_with_token(params, bypass_cache: bool = False):
-        if _parent_token:
-            set_user_token(_parent_token)
-        try:
-            return get_spot_solution(**params, bypass_cache=bypass_cache)
-        finally:
-            if _parent_token:
-                clear_user_token()
+        return _run_with_gto_token(
+            _parent_token,
+            get_spot_solution,
+            **params,
+            bypass_cache=bypass_cache,
+        )
 
     solutions = [None] * len(hero_spots)
     with ThreadPoolExecutor(max_workers=len(hero_spots)) as executor:
