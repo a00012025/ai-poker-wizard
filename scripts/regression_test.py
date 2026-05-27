@@ -7980,6 +7980,39 @@ def test_first_bet_pot_pct_includes_ante():
               "As6d-specific combo strategy at facing-cbet node must be Call 99%")
 
 
+@test
+def test_postflop_pre_collapse_in_diagnostics():
+    """H3433 regression: per-street pre_collapse counts must be exposed in
+    diagnostics so the fallback gate can demote to full-Gemini when an
+    All-In re-action box silently disappears in the collapse step.
+
+    structural_conf alone (pot/player/ocr consistency) cannot detect this
+    failure mode — the surviving action chain still passes those checks,
+    even when the BB's "Raise 13.6 BB All-In" sticker was eaten and the
+    villain's fold got orphaned. The hidden signal is large per-street
+    raw-fragment → final-entry loss.
+    """
+    import io
+    from pathlib import Path
+    from ocr.n8_parser import parse_n8_screenshot
+
+    img_path = Path(__file__).resolve().parent.parent / "tests" / "snapshots" / "H3433" / "input.jpeg"
+    if not img_path.exists():
+        # Falls back to skipping if the fixture isn't checked in yet; the
+        # snapshot test runner will still cover the same behavior via DB.
+        return
+
+    result = parse_n8_screenshot(img_path.read_bytes())
+    diag = result.get("diagnostics") or {}
+    assert_in("street_entries_pre_collapse_count", diag,
+              "diagnostics must expose per-street pre_collapse counts")
+    pre = diag["street_entries_pre_collapse_count"]
+    final = diag.get("street_entries_count") or {}
+    losses = {s: int(pre[s]) - int(final.get(s, 0)) for s in pre}
+    assert_true(max(losses.values(), default=0) >= 4,
+                f"H3433 river must show large collapse loss; got {losses}")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

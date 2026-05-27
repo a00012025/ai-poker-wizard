@@ -1929,7 +1929,33 @@ class GeminiSessionManager:
                     STRUCTURAL_MIN = float(
                         os.getenv("OCR_STRUCTURAL_MIN", "0.80")
                     )
-                    if structural_conf >= STRUCTURAL_MIN:
+                    # Postflop entry-collapse loss is a hidden structural risk:
+                    # pot/player/ocr consistency can all read 1.0 even when the
+                    # collapse step quietly ate a re-action box (e.g. H3433 —
+                    # river had 10 raw fragments collapsed to 3, eating BB's
+                    # "Raise 13.6 BB All-In" sticker and turning a win into a
+                    # parsed fold). When that happens, the cards-only fallback
+                    # patches the hero hand but keeps the broken action chain
+                    # — analysis then shows the user a wrong storyline. Treat
+                    # large per-street collapse losses as structural-failure
+                    # and demote to full Gemini reparse instead.
+                    POSTFLOP_LOSS_MAX = int(
+                        os.getenv("OCR_POSTFLOP_COLLAPSE_LOSS_MAX", "4")
+                    )
+                    diag = ocr_result.get("diagnostics") or {}
+                    pre_map = diag.get("street_entries_pre_collapse_count") or {}
+                    final_map = diag.get("street_entries_count") or {}
+                    max_postflop_loss = 0
+                    worst_street = None
+                    for s, pre in pre_map.items():
+                        if pre is None:
+                            continue
+                        loss = int(pre) - int(final_map.get(s) or 0)
+                        if loss > max_postflop_loss:
+                            max_postflop_loss = loss
+                            worst_street = s
+                    postflop_collapse_ok = max_postflop_loss <= POSTFLOP_LOSS_MAX
+                    if structural_conf >= STRUCTURAL_MIN and postflop_collapse_ok:
                         reason = (
                             "hero_hand missing"
                             if not hero_hand_present
@@ -1965,12 +1991,18 @@ class GeminiSessionManager:
                             hand["__ocr_conf__"] = float(ocr_conf)
                             return hand
                         # else fall through to full Gemini parse below
+                    collapse_note = (
+                        f", postflop_collapse_loss={max_postflop_loss}"
+                        f"@{worst_street}>{POSTFLOP_LOSS_MAX}"
+                        if not postflop_collapse_ok
+                        else ""
+                    )
                     self._logger.info(
                         f"[chat={chat_id}] Demoting to full Gemini fallback "
                         f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
                         f"hero_hand_present={hero_hand_present}, "
-                        f"overall={ocr_conf:.2f}) — bad hero card prediction "
-                        f"shouldn't pass even when actions look fine"
+                        f"overall={ocr_conf:.2f}{collapse_note}) — bad hero "
+                        f"card prediction shouldn't pass even when actions look fine"
                     )
                     hand_ok = False
 

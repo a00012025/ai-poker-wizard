@@ -1036,10 +1036,14 @@ def _build_diagnostics(
     estimate_used_reaction_signal: bool = False,
 ) -> dict:
     street_entries_count = {}
+    street_entries_pre_collapse_count = {}
     for col in columns:
         name = (col.get("street") or col.get("name") or "").lower()
         if name in ("flop", "turn", "river"):
             street_entries_count[name] = len(col.get("entries", []))
+            pre = col.get("entries_pre_collapse_count")
+            if pre is not None:
+                street_entries_pre_collapse_count[name] = pre
 
     return {
         "players_at_table_raw": players_at_table_raw,
@@ -1052,6 +1056,7 @@ def _build_diagnostics(
             preflop_col.get("entries_pre_collapse_count") if preflop_col else None
         ),
         "street_entries_count": street_entries_count,
+        "street_entries_pre_collapse_count": street_entries_pre_collapse_count,
     }
 
 
