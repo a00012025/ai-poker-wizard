@@ -834,7 +834,7 @@ class GeminiSessionManager:
         self.client = genai.Client(api_key=api_key)
         self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
-        self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-3-pro-preview")
+        self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest")
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
