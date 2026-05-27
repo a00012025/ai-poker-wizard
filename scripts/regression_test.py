@@ -7938,6 +7938,48 @@ def test_document_image_routing():
     assert_true(not _is_image_document(None, "notes.txt"))
 
 
+@test
+def test_first_bet_pot_pct_includes_ante():
+    """H3432 regression: postflop first-bet matching must use a pot value that
+    includes the MTT ante. analyze_hand previously computed actual_pot WITHOUT
+    antes while display_pot included them, so a 3.6bb cbet on a real 5.4bb
+    pot (≈67% pot) was scored as 80% against a no-ante 4.5bb actual_pot and
+    routed to the 83%-pot bucket (R4.55) instead of the 55%-pot bucket (R3).
+    The cascading consequence was an entirely wrong solver subtree showing
+    "All-in 89.5%" for As6d when the correct combo strategy is Call 99%.
+    """
+    from analyze_hand import analyze_hand_full
+
+    hand = {
+        "gametype": "MTTGeneral",
+        "hero_hand": "As6d",
+        "hero_position": "BB",
+        "effective_bb": 15.1,
+        "hero_starting_stack": 15.1,
+        "players_at_table": 7,
+        "preflop_actions": "F-F-F-F-R2-F-C",
+        "streets": [
+            {"board": "3c5d7c", "actions": [
+                {"action": "X", "position": "BB"},
+                {"size": 3.6, "action": "R3.6", "position": "BTN"},
+                {"size": 3.6, "action": "C", "position": "BB"},
+            ]},
+        ],
+    }
+
+    r = analyze_hand_full(hand)
+
+    flop_spots = [s for s in r["hero_spots"] if s.get("street") == "flop"]
+    facing_cbet = next((s for s in flop_spots if s.get("taken_code") == "C"), None)
+    assert_true(facing_cbet is not None, "expected a facing-cbet hero spot on flop")
+    flop_actions = facing_cbet["params"]["flop_actions"]
+    assert_eq(flop_actions, "X-R3",
+              f"BTN 3.6bb cbet on 5.4bb pot must match R3 (55% pot bucket), got {flop_actions!r}")
+
+    assert_in("Call 99%", r["text_compact"],
+              "As6d-specific combo strategy at facing-cbet node must be Call 99%")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

@@ -1048,18 +1048,18 @@ def _run_analysis(hand: dict) -> dict:
     # MTTGeneral CO opens R2.2 — user's R2 gets mapped to R2.2, inflating
     # every downstream pot by ~0.7bb, which misroutes a 4.6bb river bet
     # from the 50%-pot bucket to the 36%-pot bucket. H2767 regression.)
+    # Include the standard MTT ante so target_pct lines up with the solver's
+    # own pot context (which assumes 12.5% ante). Without it, a 67%-pot cbet
+    # on a real 5.4bb pot reads as 80% against a 4.5bb actual_pot and lands
+    # in the wrong solver bucket (H3432 regression).
+    ante_per_player = 0.0 if is_cash else 0.125
     actual_pot = _compute_preflop_pot(
         hand["preflop_actions"],
         hand["effective_bb"],
         num_players=num_players,
-        ante_per_player=0.0,
+        ante_per_player=ante_per_player,
     )
-    display_pot = _compute_preflop_pot(
-        hand["preflop_actions"],
-        hand["effective_bb"],
-        num_players=num_players,
-        ante_per_player=0.0 if is_cash else 0.125,
-    )
+    display_pot = actual_pot
 
     # Normalize preflop actions
     # For ICM, use ICM gametype for preflop normalization

@@ -17,4 +17,4 @@ GTO: Bet 9.15（83% pot） 84% / Bet 6.05（55% pot） 13%
 ─── River: 5h ───
 🎯 Ace high
 GTO: Bet 7（64% pot） 96%
-→ Hero bet 64% pot ✅
+→ Hero bet 50% pot ❌ (GTO建議 bet 64% pot)

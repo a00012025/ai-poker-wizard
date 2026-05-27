@@ -5,15 +5,15 @@ GTO: Fold 100%
 
 ─── Flop: 9dQs3h ───
 🎯 口袋對 (22) < 牌面
-GTO: Bet 1.15（20% pot） 47% / Bet 1.9（33% pot） 31% / Check 9% / Bet 3.15（55% pot） 8%
-→ Hero bet 20% pot ✅
+GTO: 此手牌 0% 到達此節點
+→ Hero bet 22% pot ✅
 
 ─── Turn: 6d ───
 🎯 口袋對 (22) < 牌面
-GTO: Check 44% / Bet 6.65（83% pot） 41% / Bet 4.4（55% pot） 10%
+GTO: 此手牌 0% 到達此節點
 → Hero check ✅
 
 ─── River: 9c ───
 🎯 口袋對 (22) < 牌面
-GTO: Fold 51% / Call 36% / All-in 9%
+GTO: 此手牌 0% 到達此節點
 → Hero fold ✅

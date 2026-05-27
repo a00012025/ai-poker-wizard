@@ -7,17 +7,17 @@ GTO: Call 100%
 🎯 頂對 (Q)
 GTO: Check 100%
 → Hero check ✅
-GTO: Call 69% / Fold 31%
-→ Hero raise 33% pot ✅ (GTO建議 call)
+GTO: Call 99%
+→ Hero raise 33% pot ❌ (GTO建議 call)
 
 ─── Turn: As ───
 🎯 中對 (Q)
-GTO: All-in 92% / Check 8%
+GTO: Check 95%
 → Hero check ✅
 
 ─── River: 3s ───
 🎯 中對 (Q)
-GTO: Check 78% / All-in 22%
+GTO: Check 100%
 → Hero check ✅
-GTO: Call 60% / All-in 30% / Fold 11%
+GTO: Call 87% / All-in 13%
 → Hero call ✅

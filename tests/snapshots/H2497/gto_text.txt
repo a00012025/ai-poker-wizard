@@ -32,56 +32,77 @@ Hero Q7o 牌型: 頂對 (Q)
     Check: 100.0%（9.0 combos） EV 1.02bb
   → 實際行動: BB X（solver code: X）
 
-【BB 在 Flop QsJc9s】底池 8.500bb
-  Fold: 61.4%（533 combos）
-  Call: 24.1%（209 combos）
-  RAISE 6.8（33% pot）: 1.4%（13 combos）
-  RAISE 9.3（55% pot）: 5.2%（45 combos）
-  All-in 15.000: 7.8%（68 combos）
+【BB 在 Flop QsJc9s】底池 7.300bb
+  Fold: 54.9%（476 combos）
+  Call: 28.5%（247 combos）
+  RAISE 4.8（33% pot）: 7.5%（65 combos）
+  RAISE 6.8（55% pot）: 3.0%（26 combos）
+  All-in 15.000: 6.1%（53 combos）
 
 【BB Q7o】
   Range 頻率: 100.0%（9.0/9 combos）
-  EV: 0.18bb | Equity: 45.6%
+  EV: 0.92bb | Equity: 49.2%
   策略:
-    Call: 84.6%（7.6 combos） EV 0.18bb
-    Fold: 15.4%（1.4 combos） EV -0.00bb
-⚠ EV 損失 0.18bb（RAISE 6.8（33% pot） -0.17bb vs Call 0.02bb）
-  → 實際行動: BB R5 5.0bb（solver code: R6.8）
+    Call: 99.4%（8.9 combos） EV 0.92bb
+    RAISE 4.8（33% pot）: 0.6%（0.1 combos） EV 0.81bb
+⚠ EV 損失 0.11bb（RAISE 4.8（33% pot） 0.68bb vs Call 0.79bb）
+  → 實際行動: BB R5 5.0bb（solver code: R4.8）
 
 
 ==================================================
 【Turn: As（Board: 9sQsJcAs）】
 Hero Q7o 牌型: 中對 (Q)
-【BB 在 Turn QsJc9sAs】底池 19.100bb
-  Check: 7.7%（1 combos）
-  All-in 8.200: 92.3%（11 combos）
+【BB 在 Turn QsJc9sAs】底池 15.100bb
+  Check: 54.4%（33 combos）
+  BET 3（20% pot）: 6.7%（4 combos）
+  BET 5（33% pot）: 1.4%（1 combos）
+  All-in 10.200: 37.5%（23 combos）
 
 【BB Q7o】
-  Range 頻率: 0.0%（0.0/9 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 0.6%（0.1/9 combos）
+  EV: 1.34bb | Equity: 25.9%
+  策略:
+    Check: 95.6%（0.1 combos） EV 1.34bb
+    Bet 3（20% pot）: 4.4%（0.0 combos） EV 1.31bb
   → 實際行動: BB X（solver code: X）
 
 
 ==================================================
 【River: 3s（Board: 9sQsJcAs3s）】
 Hero Q7o 牌型: 中對 (Q)
-【BB 在 River QsJc9sAs3s】底池 19.100bb
-  Check: 77.9%（1 combos）
-  All-in 8.200: 22.1%（0 combos）
+【BB 在 River QsJc9sAs3s】底池 15.100bb
+  Check: 41.2%（12 combos）
+  BET 1.5（10% pot）: 6.6%（2 combos）
+  BET 5.5（36% pot）: 0.8%（0 combos）
+  All-in 10.200: 51.5%（16 combos）
 
 【BB Q7o】
-  Range 頻率: 0.0%（0.0/9 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 0.6%（0.1/9 combos）
+  EV: 3.15bb | Equity: 34.5%
+  策略:
+    All-in: 57.7%（0.0 combos） EV 3.09bb
+    Check: 42.3%（0.0 combos） EV 3.15bb
+  花色差異:
+    Qh7d: Check 7%, All-in 93%（EV 3.1bb）
+    Qh7c: Check 7%, All-in 93%（EV 3.1bb）
+    Qd7c: Check 7%, All-in 93%（EV 3.1bb）
+    Qd7h: Check 7%, All-in 93%（EV 3.1bb）
+    Qc7d: Check 100%（EV 3.2bb）
+    Qc7h: Check 100%（EV 3.2bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 River QsJc9sAs3s】底池 21.100bb
-  Fold: 10.6%（0 combos）
-  Call: 59.9%（0 combos）
-  All-in 8.200: 29.6%（0 combos）
+【BB 在 River QsJc9sAs3s】底池 16.600bb
+  Fold: 0.2%（0 combos）
+  Call: 72.1%（9 combos）
+  All-in 10.200: 27.7%（3 combos）
 
 【BB Q7o】
-  Range 頻率: 0.0%（0.0/9 combos）
-  EV: 0.00bb | Equity: 0.0%
+  Range 頻率: 0.3%（0.0/9 combos）
+  EV: 7.55bb | Equity: 50.0%
+  策略:
+    Call: 87.1%（0.0 combos） EV 7.55bb
+    All-in: 12.6%（0.0 combos） EV 7.55bb
+    Fold: 0.3%（0.0 combos） EV 7.55bb
   → 實際行動: BB C 2.5bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
