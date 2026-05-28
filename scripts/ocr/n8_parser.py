@@ -1057,6 +1057,7 @@ def _build_diagnostics(
         ),
         "street_entries_count": street_entries_count,
         "street_entries_pre_collapse_count": street_entries_pre_collapse_count,
+        "ensemble_used": bool(table_result.get("ensemble_used")),
     }
 
 

@@ -4,10 +4,17 @@ Extracts board cards, hero cards, player stacks, and table color
 from the upper (table) region of an N8 replay screenshot.
 """
 
+import os
+
 import cv2
 import numpy as np
 
 from .button_detector import detect_button
+
+# Phase C — when a single-pass hero prediction's conf falls below this floor,
+# fall back to the multi-crop ensemble vote in scripts/ocr/classifier/ensemble.py.
+# 0.50 is the default; production can override via OCR_ENSEMBLE_FLOOR.
+ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
 
 
 def _detect_table_color(table_region: np.ndarray) -> str:
@@ -656,7 +663,37 @@ def _find_hero_cards(
             "suit_top2": masked.get("suit_top2", []),
             "rank_source": rank_source,
             "conf": min(rank_conf, suit_conf),
+            "ensemble_used": False,
         })
+
+    # Phase C — multi-crop ensemble rescue for low-confidence hero crops.
+    # The WIN sticker covers the lower half; voting across full/top/bottom
+    # crops recovers the read when raw+masked single-pass is below the floor.
+    if details and any(d["conf"] < ENSEMBLE_FLOOR for d in details):
+        from .classifier.ensemble import predict_with_ensemble
+
+        for i, d in enumerate(details):
+            if d["conf"] >= ENSEMBLE_FLOOR:
+                continue
+            ens = predict_with_ensemble(crops[i])
+            d["ensemble_used"] = True
+            d["ensemble_label"] = ens["label"]
+            d["ensemble_conf"] = ens["card_conf"]
+            d["ensemble_votes"] = ens["votes"]
+            if not ens["label"] or len(ens["label"]) != 2:
+                continue
+            if ens["card_conf"] > d["conf"]:
+                d["rank"] = ens["label"][0]
+                d["suit"] = ens["label"][1]
+                # Distribute the ensemble confidence into the rank/suit slots
+                # so downstream code that reads rank_conf/suit_conf keeps a
+                # sensible signal. Using the same value for both is fine
+                # because the ensemble vote is a joint card-level read.
+                d["rank_conf"] = ens["card_conf"]
+                d["suit_conf"] = ens["card_conf"]
+                d["conf"] = ens["card_conf"]
+                d["rank_source"] = "ensemble"
+
     cards = [f"{d['rank']}{d['suit']}" for d in details
              if d["rank"] and d["suit"]]
     conf = min((d["conf"] for d in details), default=0.0)
@@ -766,6 +803,9 @@ def parse_table(table_region: np.ndarray) -> dict:
     # Flat list of stack values for backward compatibility
     all_stacks = [s["stack"] for s in all_stacks_named]
 
+    ensemble_used = any(
+        bool(d.get("ensemble_used")) for d in hero_card_details
+    )
     return {
         "board_cards": board_cards,
         "hero_cards": hero_cards,
@@ -778,6 +818,7 @@ def parse_table(table_region: np.ndarray) -> dict:
         "dealer_button": dealer_button,
         "dealer_button_seat": dealer_button_seat,
         "dealer_button_conf": dealer_button_conf,
+        "ensemble_used": ensemble_used,
     }
 
 
