@@ -69,14 +69,26 @@ def predict_with_ensemble(crop: np.ndarray) -> EnsembleResult:
         label, conf = _predict_one(sub)
         votes.append({"crop": name, "label": label, "conf": conf})
 
-    tallies: dict[str, float] = {}
+    # Require a hard majority — at least two of the three crops must agree
+    # on the exact label — before we let the ensemble override the
+    # single-pass read. Confidence-weighted voting alone is dangerous on
+    # low-resolution hero crops: a single minority crop with the highest
+    # raw conf can elect a label none of the others endorsed (H3433 card 1:
+    # full=5d@0.16 (correct), top=7h@0.16, bottom=3c@0.27 → confidence-vote
+    # picks 3c). Majority-agreement filters that case.
+    counts: dict[str, int] = {}
     for v in votes:
-        if not v["label"]:
-            continue
-        tallies[v["label"]] = tallies.get(v["label"], 0.0) + v["conf"]
-    if not tallies:
+        if v["label"]:
+            counts[v["label"]] = counts.get(v["label"], 0) + 1
+    majority = next(
+        (lab for lab, n in counts.items() if n >= 2),
+        None,
+    )
+    if majority is None:
         return {"label": "", "card_conf": 0.0, "votes": votes}
-    label = max(tallies, key=tallies.get)
-    total = sum(tallies.values())
-    card_conf = tallies[label] / total if total > 0 else 0.0
-    return {"label": label, "card_conf": float(card_conf), "votes": votes}
+    agreeing = [v for v in votes if v["label"] == majority]
+    card_conf = sum(v["conf"] for v in agreeing) / max(1, len(agreeing))
+    # Boost when all three crops agree — strong signal.
+    if len(agreeing) == len(votes):
+        card_conf = min(1.0, card_conf + 0.1)
+    return {"label": majority, "card_conf": float(card_conf), "votes": votes}
