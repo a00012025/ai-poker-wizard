@@ -1,8 +1,61 @@
-"""Card crop augmentation for CardCNN v2 training."""
+"""Card crop augmentation for CardCNN v2/v3 training."""
 from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
+
+from .overlay_library import OverlayLibrary
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@lru_cache(maxsize=1)
+def _default_overlay_library() -> OverlayLibrary:
+    return OverlayLibrary(REPO_ROOT / "data" / "win_overlays")
+
+
+def apply_real_win_overlay(
+    img: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    p: float = 0.50,
+    lib: OverlayLibrary | None = None,
+) -> np.ndarray:
+    if rng.random() > p:
+        return img
+    if lib is None:
+        lib = _default_overlay_library()
+    overlay = lib.sample(rng)
+    if overlay is None:
+        return img
+    h, w = img.shape[:2]
+    target_w = int(rng.uniform(0.6, 1.0) * w)
+    target_w = max(1, min(target_w, w))
+    scale = target_w / max(overlay.shape[1], 1)
+    target_h = max(1, int(overlay.shape[0] * scale))
+    target_h = min(target_h, max(1, h - 1))
+    resized = cv2.resize(
+        overlay, (target_w, target_h), interpolation=cv2.INTER_AREA
+    )
+    x_hi = max(1, w - target_w)
+    x0 = int(rng.integers(0, x_hi))
+    y_lo = int(h * 0.30)
+    y_hi = max(y_lo + 1, h - target_h)
+    y0 = int(rng.integers(y_lo, y_hi))
+    out = img.copy()
+    bgr = resized[:, :, :3]
+    alpha = resized[:, :, 3:4].astype(np.float32) / 255.0
+    alpha = alpha * float(rng.uniform(0.7, 1.0))
+    roi = out[y0:y0 + target_h, x0:x0 + target_w]
+    blended = (
+        bgr.astype(np.float32) * alpha
+        + roi.astype(np.float32) * (1 - alpha)
+    ).astype(np.uint8)
+    out[y0:y0 + target_h, x0:x0 + target_w] = blended
+    return out
 
 
 def apply_win_sticker(
@@ -56,4 +109,9 @@ def light_geometric(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
 def apply_all(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
     img = light_geometric(img, rng=rng)
     img = color_jitter(img, rng=rng, strength=0.2)
-    return apply_win_sticker(img, rng=rng, p=0.25)
+    # 70% real overlay (when corpus available), 20% synthetic block, 10% clean.
+    # The real-overlay path no-ops when the library is empty, so this stays
+    # safe in CI/dev before Task A.1's harvest has run.
+    img = apply_real_win_overlay(img, rng=rng, p=0.70)
+    img = apply_win_sticker(img, rng=rng, p=0.20)
+    return img
