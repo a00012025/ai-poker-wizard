@@ -1,705 +1,194 @@
-# OCR Production Precision Implementation Plan
+# OCR 99% @ 95% — Final Push (No Excuses)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (or superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking. This plan has a single non-negotiable ship gate — do not propose interim targets, partial wins, or "documented gap" handoffs.
 
-**Goal:** Lift `parse_n8_screenshot` from **95.588% precision @ 85.237% coverage** on the held-out PokerCraft test bucket to **≥99% precision @ ≥95% recall** on **both** the PokerCraft test bucket and a new production-distribution benchmark, by closing the WIN-overlay training-data gap, building a production-misparse ingestion loop, and adding a multi-crop ensemble at inference.
+**Goal:** On main's current state, deliver `precision ≥ 99.0% AND recall ≥ 95.0%` on **BOTH** the PokerCraft test bucket AND the production_v1 test bucket. Single non-negotiable target. Lower precision or coverage is not acceptable. Calibration overfit (τ-drift > 10% dev↔test) is not acceptable.
 
-**Architecture:** Three coupled changes. (1) The synthetic WIN sticker in `scripts/ocr/classifier/augment.py` paints a single solid yellow rectangle; production N8 paints stylized "WIN" letter strokes with a chip-stack badge. We replace synthetic blocks with real-overlay alpha-composites and retrain CardCNN v3. (2) Every production misparse already gets saved to `analysis_snapshots`; we add a `--harvest` flow that extracts hero/board crops from corrected snapshots and merges them into `data/cards_v2/production_v1/`. (3) At inference, when card_confidence is below the new abstain threshold, we run a multi-crop ensemble (full, top-third, bottom-third) and take a confidence-weighted vote before deciding to abstain.
+**Starting line (verified 2026-05-28):**
+- PokerCraft test (main, `data/ocr_precision_phase10_test`): `hand_exact 90.738% @ coverage 81.198%`, parse_none 135 (67 failure + 68 abstain), board_wrong 25, position_wrong 21, hero_cards_wrong 5
+- production_v1 test (main, `data/ocr_precision_production_baseline_v2`): `hand_exact 71.429% @ coverage 70.000%` (n=10, sample tiny — must grow)
+- Joint ECE-10bin: 0.0673 (over the ≤ 0.04 ship bound)
+- Existing trained calibrator `data/calibrator/`: OOF on test bucket reaches 97.83% precision @ 72.1% coverage and 100% @ 40.7% (per `confidence_gate.evaluate_with_calibrator` docstring). Trained on the *May 23* corpus with the *May 23* feature set; does not include current diagnostics or production traffic.
 
-**Tech Stack:** Python 3.11, OpenCV, PyTorch (MobileNetV3-small via `scripts/ocr/classifier/model.py`), pytest, supabase-py.
+**The non-negotiable architecture:** Calibrator-first. A May 28 attempt to reach 99% via overlay augmentation + multi-crop ensemble + τ-only calibration failed: CardCNN v3 candidates regressed (`card 0.962` vs v2 `0.967`) because the 41-px hero crop has ~10 px of rank glyph and can't absorb occlusion augmentation; and the joint precision-coverage curve over PokerCraft test ∪ production_test reports best τ=0.8625 → 90.24% @ 83.41% on PokerCraft — **no τ at any coverage hits 99%**. The May 23 ship at 99.016% @ 70.75% was reached by a trained RF+GB+LR calibrator, not by τ-tuning. That is the only path that has ever worked on this codebase. This plan walks it again, against the new (post-May-23) main and the new production-distribution bucket.
 
----
+**Three legs, in strict order:**
+1. **Grow production_v1 to ≥ 200 verified hands** — the May 28 attempt had 62, which yields a 9/10 val/test that is too noisy to calibrate against. We backfill from every snapshot that has either `expected_json` OR a high-confidence cross-check signal with Gemini's reparse.
+2. **Build the rich-feature record dump** — re-run both buckets with `--dump-all`, capturing for every hand the full `confidence_parts`, `diagnostics`, `hero_card_details`, ensemble votes (when wired), and `raw_vs_masked` arbitration outcomes. This is the calibrator's training data.
+3. **Retrain the RF+GB+LR ensemble calibrator** on PokerCraft train+val ∪ production_train+production_val with the expanded feature set. Validate jointly on `test ∪ production_test`. Iterate the feature set (add `ensemble_used`, per-card `rank_top2[1]_conf`, masked-vs-raw suit swap flag, postflop-collapse-demoted flag) until joint 99% @ 95% holds.
+4. **Residual parser fixes** — only the errors the calibrator demonstrably cannot isolate. Each fix must list (a) which records it changes, (b) which feature would have isolated it instead and why that feature can't be added.
 
-## Why the Current Pipeline Misses H3436-Class Images
-
-Concrete diagnosis from H3436 (`bb9d0dc7` request, `analysis_snapshots.hand_id = H3436`):
-
-| Stage | Reading | Truth |
-|---|---|---|
-| CardCNN v2 (raw crop) | `AcKc`, card_conf 0.14 | `6d5d` |
-| CardCNN v2 (WIN-masked crop via `_mask_win_overlay`) | still `AcKc`-class top-1 | `6d5d` |
-| Full Gemini reparse (gemini-pro-latest, with IMAGE_PARSE_PROMPT + OCR hints + partial) | `Qs5d` (non-deterministic; my own reproduction returned `6d5d`) | `6d5d` |
-| Gemini minimal prompt ("identify the two cards") | `6d5d` | `6d5d` |
-
-So the model **can** read `6d5d` from this image when nothing distracts it. The CardCNN failure is a **distribution gap**: `scripts/ocr/classifier/augment.py:8-30` paints a solid `cv2.rectangle` filled with a single jittered yellow color at `p=0.25`, while N8 actually paints the stylized letterforms `W I N` (scattered yellow strokes) plus a small chip-stack icon above the cards. Training never saw the production overlay shape, so the model learned a wrong invariant.
-
-**Two consequences of this gap:**
-
-1. The CardCNN test-bucket evaluation in `scripts/ocr/classifier/eval.py` reports `card=0.9772` on a held-out partition of the same synthetic-overlay distribution — so the metric is honest **for the training distribution** but doesn't probe production.
-2. The 95.588% / 85.237% line in `data/ocr_precision_current/summary.json` is measured on PokerCraft replay-tool screenshots (`data/hand_images/img/`), not live N8 mobile traffic. The H3436 image came from a live N8 screen and is not in the corpus at all.
-
-The fix has three legs, executed in order:
-
-1. **Realistic overlay augmentation + retraining (Phase A)** — get the CardCNN to actually see the production overlay shape during training.
-2. **Production-distribution benchmark + harvest loop (Phase B)** — turn every production misparse into a labeled training example so the corpus tracks real traffic.
-3. **Multi-crop ensemble at inference (Phase C)** — for the residual low-conf cases, vote across overlay-disjoint crops before abstaining.
-
-The calibrated abstain gate (Phase D) is then re-tuned against the new corpus.
-
-## Failure Budget at the New Target
-
-At **95% recall** on the 718 paired held-out PokerCraft test hands, we emit at least **683** hands. At **99% precision** on 683 emitted, we allow **at most 6 wrong**. Today's wrong-emitted count is **27** and abstain count is **106**, so the plan must:
-
-- Recover at least **71 currently-abstaining hands** (683 − 612 currently-emitted) without adding more than ~3 new wrong emissions (to stay under the 6-wrong budget after accounting for some inevitable shift).
-- And drop at least **21 of the 27 current wrong emissions** below the abstain threshold (or fix them).
-
-The Phase 8 calibration in the existing roadmap targets 99% @ 70%. This plan tightens to **99% @ 95%** by closing parser correctness instead of trading coverage for precision — calibration alone cannot reach 95% recall when 27 wrong emissions need to go somewhere.
-
-## Files We Touch
-
-- Create: `data/win_overlays/` — directory of real WIN-sticker PNG+alpha samples (≥30 captures) and their `manifest.json`.
-- Create: `scripts/ocr/classifier/overlay_library.py` — loader + alpha-composite helper for the real overlays.
-- Modify: `scripts/ocr/classifier/augment.py` — replace solid-rect `apply_win_sticker` with `apply_real_win_overlay` driven by `overlay_library`.
-- Create: `scripts/ocr/classifier/harvest_production.py` — extract crops from `analysis_snapshots` rows whose `expected_json` differs from `parsed_json`.
-- Create: `data/splits/production_v1.json` — split file pointing at production-harvested crops.
-- Modify: `scripts/ocr_precision.py` — accept `--bucket production` and merge production split with the existing PokerCraft test bucket for a combined precision-coverage metric.
-- Create: `scripts/ocr/classifier/ensemble.py` — `predict_with_ensemble(card_crop)` that runs CardCNN on full / top / bottom crops and returns weighted vote.
-- Modify: `scripts/ocr/n8_parser.py` — call the ensemble path when raw `card_confidence < 0.50` and surface the new `ensemble_used` flag in diagnostics.
-- Modify: `scripts/ocr/confidence_gate.py` — recompute the abstain threshold against the production benchmark.
-- Modify: `docs/superpowers/plans/2026-05-20-ocr-99-roadmap.md` — append a Phase 10 "Production-Distribution Precision" section + raise the headline target.
-- Modify: `docs/superpowers/plans/artifacts/ocr-99-baselines.md` — add `production_precision`, `production_coverage`, `production_emitted` columns.
-
-We do **not** rewrite `_locate_hero_cards` (`table_parser.py:297`) or `_mask_win_overlay` (`table_parser.py:394`); they stay as the localization layer. The fix is in training data + ensemble inference, not crop detection.
+**Tech Stack:** Python 3.11, OpenCV, PyTorch, scikit-learn (RandomForest + GradientBoosting + LogisticRegression ensemble), pytest, supabase-py.
 
 ---
 
-## Phase A — Realistic WIN-Overlay Augmentation & Retrain
+## What survives from the May 28 attempt
 
-**Why this phase exists:** The single fastest lever for H3436-class images. Cost: ~1 day of harvest + one CardCNN training run.
+The May 28 branch `feat/ocr-production-precision` was discarded as not-good-enough, but its gitignored on-disk artifacts persist. Use them or refresh; do not assume they don't exist:
 
-**Entry criteria:** None (starting point of this plan).
+- `data/win_overlays/` — 60 RGBA overlay templates harvested from `analysis_snapshots`. Format: BGR + alpha, opaque = sticker pixel, transparent = card. May need top-up but the corpus is real.
+- `data/cards_v2/production_v1/` — 62 verified snapshots:
+  - `images/<hand_id>.png` — full screenshot per hand
+  - `<label>/<hand_id>_hero_<slot>.png` — labeled hero crops (124 total)
+  - `gt.jsonl` — `{hand_id, ground_truth: <merged parsed+expected>}` per line
+- `data/splits/production_v1.json` — 43/9/10 train/val/test split file with `production_train` / `production_val` / `production_test` keys.
+- `data/calibrator/` — May 23 trained RF+GB+LR + feature names + OOF predictions. The trained models are stale-on-features but the loader (`scripts/ocr/confidence_gate.CalibratorScorer`) is real and works.
+- `data/ocr_precision_phase10_test/` — post-Phase-10 PokerCraft test baseline (583 emitted / 718 paired, hand_exact 90.74%). Reference for "what main does today."
+
+**Code that was on the discarded branch and must be re-implemented this session:**
+- `scripts/ocr/classifier/capture_overlays.py` — `extract_overlay(image_bytes) → RGBA | None` using HSV yellow band + dilation + chip-stack filter
+- `scripts/ocr/classifier/overlay_library.py` — `OverlayLibrary(root)` with `.size()` and `.sample(rng)`
+- `scripts/ocr/classifier/harvest_production.py` — `harvest_snapshot(*, hand_id, image_bytes, expected, out_dir) → int` + `harvest_corpus`
+- `scripts/ocr/classifier/ensemble.py` — `predict_with_ensemble(crop) → {label, card_conf, votes}` with **majority-≥2/3 safety** (confidence-vote-only is unsafe; H3433 case proved it)
+- `scripts/ocr/classifier/augment.py` — `apply_real_win_overlay(img, *, rng, p=0.30, lib)` with `p=0.30` real / `p=0.10` synth in `apply_all` (the higher rates regressed v2)
+- `scripts/ocr/n8_parser.py` + `scripts/ocr/table_parser.py` — route to ensemble when raw `card_conf < OCR_ENSEMBLE_FLOOR=0.50`, bubble `ensemble_used` through `_build_diagnostics`
+- `scripts/ocr_precision.py` — `--bucket production_{train,val,test}` switches `--images` to `data/cards_v2/production_v1/images/` and `--ground-truth` to `data/cards_v2/production_v1/gt.jsonl`
+
+For each, the test contract from the May 28 attempt is recorded in this plan under the relevant phase. The code was correct; the strategy (overlay aug as the lever) was wrong. We re-ship the code (it's load-bearing infrastructure) and use the calibrator as the lever.
+
+**Lessons that constrain this plan:**
+1. **Do not promote CardCNN v3 trained via overlay aug.** Two attempts at `p=0.70` and `p=0.30` real-overlay rates produced `card 0.960 / 0.962`, both worse than v2 `0.967`. The 41-px crop cannot absorb occlusion-style augmentation. If you train v3 again, use a different lever (per-class focal loss on rank 4/9, hard-example mining over confidence_abstain hands, distillation from a higher-res re-extract) — not overlay aug rate adjustments.
+2. **Do not change `confidence_gate.py`'s default `emit_threshold`.** It cannot reach the goal via τ alone. The gate moves only when `evaluate_with_calibrator` is wired as the default, *and* the calibrator passes the joint 99% @ 95% check.
+3. **Do not write fallback ship rules.** No "if calibrator can't reach 99%@95%, accept 98%@95%". No "loosen to 70% with user sign-off". The plan ships at 99%@95% or it does not ship.
+4. **Do not trust a calibrator that hasn't been validated jointly.** The May 23 calibrator was validated only on PokerCraft test. Joint validation against production_test is required this time.
+
+---
+
+## Failure Budget at the Target
+
+On the held-out joint set (PokerCraft test: 718 paired + production_v1 test: 10 paired, growing to ≥ 30 after Phase 11.A) the math is:
+
+| Bucket | Paired | At ≥ 95% recall, emitted | At ≥ 99% precision, wrong allowed |
+|---|---|---|---|
+| PokerCraft test | 718 | ≥ 683 | ≤ 6 |
+| production_v1 test (post-expansion ≥ 30) | ≥ 30 | ≥ 29 | ≤ 0 (rounding floor; effectively 0) |
+
+Today (main):
+- PokerCraft: 583 emitted, ~54 wrong (90.74% precision). Must recover 100+ currently-non-emitted exact AND demote 48+ wrong.
+- production_v1: 7 emitted, 2 wrong on n=10. Must extend the corpus and replicate the same precision/recall lift.
+
+This is a **calibrator-engineering problem**, not a parser-correctness problem at this point. The May 23 path (train ensemble on `confidence_parts` + 27 diagnostic features) reached 99% @ 70%. Adding ensemble-used, per-card top2-spread, demote-to-Gemini flag, masked-vs-raw arbitration, and production-bucket-trained data should close the recall gap from 70% to 95%.
+
+If after the calibrator retrain we still cannot hit 99%@95%, the residual cases must be reduced by parser fixes targeted exactly at the records the calibrator could not separate (Phase 11.D). At no point do we lower the target.
+
+---
+
+## Phase 11.A — Production_v1 Corpus Expansion (≥ 200 hands)
+
+**Why this phase exists first:** A 62-hand corpus with a 9-hand val and 10-hand test is statistical noise at the 99% precision target — one wrong emitted = 11% precision loss on production_test. Calibration trained against it cannot generalise. We must grow the corpus before the calibrator can learn anything reliable on production traffic.
+
+**Entry criteria:** None.
 
 **Exit criteria:**
-1. `apply_real_win_overlay` exists and is the default in `apply_all` (not `apply_win_sticker`).
-2. CardCNN v3 checkpoint trained with the new augmentation; held-out PokerCraft test bucket `card` accuracy ≥ 0.975 (no regression on existing target).
-3. New `tests/ocr/test_win_overlay_aug.py` verifies the augmentation alpha-composites against any of ≥3 distinct overlay templates.
-4. **H3436 hero crop classified correctly by the deterministic pipeline**: `parse_n8_screenshot(H3436_bytes)["hand"]["hero_hand"]` returns `"6d5d"` with `card_confidence ≥ 0.70` (above `OCR_MIN_CARD_CONF`).
-
-### Task A.1: Capture real WIN-overlay templates
-
-**Files:**
-- Create: `data/win_overlays/` (directory of PNG+alpha captures)
-- Create: `data/win_overlays/manifest.json`
-- Create: `scripts/ocr/classifier/capture_overlays.py`
-- Test: `tests/ocr/test_capture_overlays.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# tests/ocr/test_capture_overlays.py
-"""Capture pipeline extracts an RGBA overlay template from a hero-crop pair.
-
-The captured overlay must isolate just the WIN/chip-stack pixels — the card
-background must be transparent so it can be alpha-composited over arbitrary
-clean hero crops in augmentation.
-"""
-from pathlib import Path
-
-import numpy as np
-import pytest
-
-from ocr.classifier.capture_overlays import extract_overlay
-
-
-def test_extract_overlay_returns_rgba(tmp_path):
-    sample = Path("tests/snapshots/H3433/input.jpeg")
-    if not sample.exists():
-        pytest.skip("H3433 fixture not present")
-    rgba = extract_overlay(sample.read_bytes())
-    assert rgba is not None, "extract_overlay returned None for known WIN crop"
-    assert rgba.dtype == np.uint8
-    assert rgba.shape[2] == 4, f"expected RGBA, got shape {rgba.shape}"
-    # At least 5% of pixels should be opaque (the overlay strokes)
-    alpha_sum = (rgba[:, :, 3] > 32).sum()
-    total = rgba.shape[0] * rgba.shape[1]
-    assert alpha_sum / total > 0.05, f"overlay too sparse: {alpha_sum}/{total}"
-    # And at least 30% should be transparent (the card background)
-    transparent = (rgba[:, :, 3] < 16).sum()
-    assert transparent / total > 0.30, "overlay should leave card background transparent"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/ocr/test_capture_overlays.py -v`
-Expected: FAIL (`ModuleNotFoundError`).
-
-- [ ] **Step 3: Implement `extract_overlay`**
-
-Create `scripts/ocr/classifier/capture_overlays.py`:
-
-```python
-"""Capture a WIN-sticker overlay from a hero-card crop as an RGBA template.
-
-We isolate the yellow/orange overlay pixels (same HSV band as
-table_parser._mask_win_overlay), dilate the strokes into one cluster,
-and emit RGBA where:
-  - opaque (alpha 255) = overlay pixel
-  - transparent (alpha 0) = card background
-
-The resulting template can be alpha-composited onto any clean card crop
-to synthesise a realistic WIN-style training example.
-"""
-from __future__ import annotations
-
-from pathlib import Path
-
-import cv2
-import numpy as np
-
-from ..table_parser import _locate_hero_cards
-from ..region_detector import detect_regions
-
-
-def extract_overlay(image_bytes: bytes) -> np.ndarray | None:
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        return None
-    table = detect_regions(img).get("table")
-    if table is None:
-        return None
-    crops = _locate_hero_cards(table)
-    if len(crops) != 2:
-        return None
-    # Concatenate the two cards side-by-side to capture the full WIN sticker
-    h = min(c.shape[0] for c in crops)
-    a = cv2.resize(crops[0], (crops[0].shape[1], h))
-    b = cv2.resize(crops[1], (crops[1].shape[1], h))
-    pair = np.hstack([a, b])
-    hsv = cv2.cvtColor(pair, cv2.COLOR_BGR2HSV)
-    raw = cv2.inRange(hsv, np.array([10, 100, 100]), np.array([35, 255, 255]))
-    if int(raw.sum()) == 0:
-        return None
-    cluster = cv2.dilate(
-        raw, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)), iterations=2
-    )
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cluster, connectivity=8)
-    crop_h, crop_w = pair.shape[:2]
-    keep = []
-    for lab in range(1, n_labels):
-        area = int(stats[lab, cv2.CC_STAT_AREA])
-        top = int(stats[lab, cv2.CC_STAT_TOP])
-        height = int(stats[lab, cv2.CC_STAT_HEIGHT])
-        if area / (crop_h * crop_w) < 0.02:
-            continue
-        if top + height / 2 < crop_h * 0.30:  # ignore chip-stack at top
-            continue
-        keep.append(lab)
-    if not keep:
-        return None
-    mask = np.isin(labels, keep).astype(np.uint8) * 255
-    mask = cv2.bitwise_and(mask, raw)
-    rgba = np.dstack([pair, mask])  # BGRA
-    return rgba
-
-
-def save_overlay(rgba: np.ndarray, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_path), rgba)
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/ocr/test_capture_overlays.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Harvest ≥30 overlays from existing snapshots**
-
-Write `scripts/_tmp.py`:
-
-```python
-from dotenv import load_dotenv
-load_dotenv()
-
-import asyncio, os, sys, json
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import asyncpg
-from pathlib import Path
-from ocr.classifier.capture_overlays import extract_overlay, save_overlay
-
-async def main():
-    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
-    # Hands flagged regression OR with explicit WIN-overlay hints
-    rows = await conn.fetch("""
-        SELECT hand_id, image_data
-        FROM analysis_snapshots
-        WHERE source_type='image' AND image_data IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT 500
-    """)
-    await conn.close()
-
-    out_dir = Path("data/win_overlays")
-    manifest = []
-    for row in rows:
-        if len(manifest) >= 30:
-            break
-        rgba = extract_overlay(bytes(row["image_data"]))
-        if rgba is None:
-            continue
-        out = out_dir / f"{row['hand_id']}.png"
-        save_overlay(rgba, out)
-        manifest.append({"hand_id": row["hand_id"], "path": str(out.relative_to('data'))})
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"Captured {len(manifest)} overlays into {out_dir}")
-
-asyncio.run(main())
-```
-
-Run: `python scripts/_tmp.py`
-Expected: `Captured 30 overlays into data/win_overlays` (or close — adjust the LIMIT if fewer snapshots have WIN overlays).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add scripts/ocr/classifier/capture_overlays.py tests/ocr/test_capture_overlays.py data/win_overlays/
-git commit -m "feat(ocr): capture real WIN overlays from analysis_snapshots"
-```
-
-### Task A.2: Replace synthetic block with real-overlay alpha composite
-
-**Files:**
-- Create: `scripts/ocr/classifier/overlay_library.py`
-- Modify: `scripts/ocr/classifier/augment.py`
-- Test: `tests/ocr/test_win_overlay_aug.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# tests/ocr/test_win_overlay_aug.py
-"""Real-overlay augmentation alpha-composites a sampled overlay onto the crop.
-
-We assert behavioural properties — not pixel exactness — so the test
-survives small overlay corpus changes.
-"""
-from pathlib import Path
-
-import numpy as np
-import pytest
-
-from ocr.classifier.augment import apply_real_win_overlay
-from ocr.classifier.overlay_library import OverlayLibrary
-
-
-def test_apply_real_overlay_changes_crop():
-    lib = OverlayLibrary(Path("data/win_overlays"))
-    if lib.size() < 3:
-        pytest.skip("need at least 3 captured overlays")
-    rng = np.random.default_rng(42)
-    base = np.full((128, 96, 3), 255, dtype=np.uint8)
-    augmented = apply_real_win_overlay(base, rng=rng, lib=lib, p=1.0)
-    assert augmented.shape == base.shape
-    diff = np.abs(augmented.astype(int) - base.astype(int)).sum()
-    assert diff > 0, "overlay augmentation did not modify the crop"
-
-
-def test_overlay_skipped_when_p_zero():
-    lib = OverlayLibrary(Path("data/win_overlays"))
-    rng = np.random.default_rng(42)
-    base = np.full((128, 96, 3), 255, dtype=np.uint8)
-    augmented = apply_real_win_overlay(base, rng=rng, lib=lib, p=0.0)
-    np.testing.assert_array_equal(augmented, base)
-
-
-def test_library_samples_distinct_overlays():
-    lib = OverlayLibrary(Path("data/win_overlays"))
-    if lib.size() < 3:
-        pytest.skip("need at least 3 captured overlays")
-    rng = np.random.default_rng(7)
-    seen = {id(lib.sample(rng)) for _ in range(20)}
-    assert len(seen) >= 2, "OverlayLibrary.sample never varied across 20 draws"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/ocr/test_win_overlay_aug.py -v`
-Expected: FAIL (`ImportError: cannot import name 'apply_real_win_overlay'`).
-
-- [ ] **Step 3: Implement `OverlayLibrary` and `apply_real_win_overlay`**
-
-Create `scripts/ocr/classifier/overlay_library.py`:
-
-```python
-"""Loader + sampler for real captured WIN overlays."""
-from __future__ import annotations
-
-from pathlib import Path
-from typing import Sequence
-
-import cv2
-import numpy as np
-
-
-class OverlayLibrary:
-    def __init__(self, root: Path):
-        self.root = Path(root)
-        self._cache: list[np.ndarray] = []
-        if self.root.exists():
-            for png in sorted(self.root.glob("*.png")):
-                rgba = cv2.imread(str(png), cv2.IMREAD_UNCHANGED)
-                if rgba is None or rgba.ndim != 3 or rgba.shape[2] != 4:
-                    continue
-                self._cache.append(rgba)
-
-    def size(self) -> int:
-        return len(self._cache)
-
-    def sample(self, rng: np.random.Generator) -> np.ndarray | None:
-        if not self._cache:
-            return None
-        idx = int(rng.integers(0, len(self._cache)))
-        return self._cache[idx]
-```
-
-Modify `scripts/ocr/classifier/augment.py`:
-
-```python
-"""Card crop augmentation for CardCNN v2 training."""
-from __future__ import annotations
-
-from functools import lru_cache
-from pathlib import Path
-
-import cv2
-import numpy as np
-
-from .overlay_library import OverlayLibrary
-
-
-@lru_cache(maxsize=1)
-def _default_overlay_library() -> OverlayLibrary:
-    return OverlayLibrary(Path("data/win_overlays"))
-
-
-def apply_real_win_overlay(
-    img: np.ndarray,
-    *,
-    rng: np.random.Generator,
-    p: float = 0.50,
-    lib: OverlayLibrary | None = None,
-) -> np.ndarray:
-    if rng.random() > p:
-        return img
-    if lib is None:
-        lib = _default_overlay_library()
-    overlay = lib.sample(rng)
-    if overlay is None:
-        return img
-    h, w = img.shape[:2]
-    # Random scale 0.6-1.0 of the crop width, preserve overlay aspect
-    target_w = int(rng.uniform(0.6, 1.0) * w)
-    scale = target_w / max(overlay.shape[1], 1)
-    target_h = max(1, int(overlay.shape[0] * scale))
-    resized = cv2.resize(overlay, (target_w, target_h),
-                         interpolation=cv2.INTER_AREA)
-    # Position: lower half, randomly jittered
-    x0 = int(rng.integers(0, max(1, w - target_w)))
-    y0 = int(rng.integers(int(h * 0.30), max(int(h * 0.30) + 1, h - target_h)))
-    out = img.copy()
-    bgr = resized[:, :, :3]
-    alpha = resized[:, :, 3:4].astype(np.float32) / 255.0
-    # Slight alpha jitter so training sees varied opacity
-    alpha = alpha * float(rng.uniform(0.7, 1.0))
-    roi = out[y0:y0 + target_h, x0:x0 + target_w]
-    blended = (bgr.astype(np.float32) * alpha
-               + roi.astype(np.float32) * (1 - alpha)).astype(np.uint8)
-    out[y0:y0 + target_h, x0:x0 + target_w] = blended
-    return out
-
-
-# Keep the original solid-rect synthetic available for ablation comparisons
-def apply_win_sticker(
-    img: np.ndarray,
-    *,
-    rng: np.random.Generator,
-    p: float = 0.25,
-) -> np.ndarray:
-    if rng.random() > p:
-        return img
-    out = img.copy()
-    h, w = out.shape[:2]
-    sticker_w = int(rng.integers(max(1, int(w * 0.5)), max(2, int(w * 0.95))))
-    sticker_h = int(rng.integers(max(1, int(h * 0.18)), max(2, int(h * 0.32))))
-    x0 = int(rng.integers(0, max(1, w - sticker_w)))
-    y0 = int(rng.integers(int(h * 0.25), max(int(h * 0.25) + 1, h - sticker_h)))
-    overlay = out.copy()
-    color = (
-        int(rng.integers(0, 80)),
-        int(rng.integers(180, 230)),
-        int(rng.integers(220, 255)),
-    )
-    alpha = float(rng.uniform(0.6, 0.95))
-    cv2.rectangle(overlay, (x0, y0), (x0 + sticker_w, y0 + sticker_h), color, thickness=-1)
-    return cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0)
-
-
-def color_jitter(
-    img: np.ndarray,
-    *,
-    rng: np.random.Generator,
-    strength: float = 0.2,
-) -> np.ndarray:
-    factors = 1.0 + (rng.random(3) - 0.5) * 2 * strength
-    out = img.astype(np.float32) * factors.reshape(1, 1, 3)
-    return np.clip(out, 0, 255).astype(np.uint8)
-
-
-def light_geometric(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
-    h, w = img.shape[:2]
-    matrix = cv2.getRotationMatrix2D(
-        (w / 2, h / 2),
-        float(rng.uniform(-2.0, 2.0)),
-        float(rng.uniform(0.97, 1.03)),
-    )
-    matrix[0, 2] += float(rng.integers(-2, 3))
-    matrix[1, 2] += float(rng.integers(-2, 3))
-    return cv2.warpAffine(img, matrix, (w, h), borderMode=cv2.BORDER_REPLICATE)
-
-
-def apply_all(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
-    img = light_geometric(img, rng=rng)
-    img = color_jitter(img, rng=rng, strength=0.2)
-    # 70% real overlay (when corpus available), 20% synthetic block, 10% clean.
-    # The real-overlay path no-ops when the library is empty, so this stays
-    # safe in CI/dev before Task A.1's harvest has run.
-    img = apply_real_win_overlay(img, rng=rng, p=0.70)
-    img = apply_win_sticker(img, rng=rng, p=0.20)
-    return img
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/ocr/test_win_overlay_aug.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/ocr/classifier/overlay_library.py scripts/ocr/classifier/augment.py tests/ocr/test_win_overlay_aug.py
-git commit -m "feat(ocr): augment with real WIN overlays alpha-composited from captures"
-```
-
-### Task A.3: Retrain CardCNN v3 with new augmentation
-
-**Files:**
-- Run-only (no code).
-- Modify: `scripts/ocr/models/card_cnn_v2.pt` → save new checkpoint as `scripts/ocr/models/card_cnn_v3.pt`
-- Modify: `scripts/ocr/classifier/__init__.py` to default-load v3 with v2 fallback.
-
-- [ ] **Step 1: Run training**
-
-Use the existing CLI in `scripts/ocr/classifier/train.py`. Refer to `2026-05-20-card-classifier-v2.md` for hyperparameters; only the augmentation has changed.
-
-```bash
-python -m scripts.ocr.classifier.train \
-  --data-root data/cards_v2 \
-  --split data/splits/card_classifier_v2.json \
-  --out scripts/ocr/models/card_cnn_v3.pt \
-  --epochs 120 --batch-size 128 --lr 3e-4 --patience 30 \
-  --device auto
-```
-
-Expected: training converges; val `card` accuracy ≥ 0.97 (no regression vs v2).
-
-- [ ] **Step 2: Evaluate on PokerCraft held-out test bucket**
-
-```bash
-python -m scripts.ocr.classifier.eval \
-  --data-root data/cards_v2 \
-  --split data/splits/card_classifier_v2.json \
-  --bucket test \
-  --checkpoint scripts/ocr/models/card_cnn_v3.pt
-```
-
-Expected: `card` ≥ 0.975 (v2 was 0.9772). If lower, do not promote v3 — see "Failure modes" at the end of this phase.
-
-- [ ] **Step 3: Verify H3436 deterministic-pipeline output**
-
-Write `scripts/_tmp.py`:
-
-```python
-from dotenv import load_dotenv; load_dotenv()
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ocr.n8_parser import parse_n8_screenshot
-from pathlib import Path
-
-img = Path("tests/snapshots/H3433/input.jpeg").read_bytes()
-res = parse_n8_screenshot(img)
-print(f"hero_hand = {res['hand']['hero_hand']!r}")
-print(f"card_conf = {res['card_confidence']:.3f}")
-assert res["hand"]["hero_hand"] == "6d5d", f"got {res['hand']['hero_hand']!r}"
-assert res["card_confidence"] >= 0.70, f"card_conf={res['card_confidence']:.3f}"
-print("OK")
-```
-
-Run: `python scripts/_tmp.py`
-Expected: `hero_hand = '6d5d'`, `card_conf >= 0.70`, `OK`.
-
-If card_conf is still below 0.70 even though top-1 is correct, retraining alone is insufficient — proceed to Phase C (ensemble) before declaring Phase A done.
-
-- [ ] **Step 4: Promote v3 as default checkpoint**
-
-Modify `scripts/ocr/classifier/__init__.py`:
-
-Find the `_DEFAULT_CHECKPOINTS = (...)` tuple. Add `"card_cnn_v3.pt"` as the first entry and keep `"card_cnn_v2.pt"` as the fallback so a rolled-back checkpoint still loads.
-
-- [ ] **Step 5: Add a snapshot regression for H3436**
-
-Append to `scripts/regression_test.py`:
-
-```python
-@test
-def test_h3436_hero_hand_emitted_correctly():
-    """H3436 regression: WIN-overlay hero crop must read 6d5d with high
-    confidence on the deterministic pipeline. This is the canonical
-    distribution-tail case Phase A targets.
-    """
-    from pathlib import Path
-    from ocr.n8_parser import parse_n8_screenshot
-    img = Path(__file__).resolve().parent.parent / "tests" / "snapshots" / "H3433" / "input.jpeg"
-    if not img.exists():
-        return
-    res = parse_n8_screenshot(img.read_bytes())
-    assert_eq(res["hand"]["hero_hand"], "6d5d")
-    assert_true(
-        res["card_confidence"] >= 0.70,
-        f"card_confidence too low: {res['card_confidence']:.3f}",
-    )
-```
-
-Run: `python scripts/regression_test.py` — must pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add scripts/ocr/models/card_cnn_v3.pt scripts/ocr/models/card_cnn_v3.json scripts/ocr/classifier/__init__.py scripts/regression_test.py
-git commit -m "feat(ocr): promote CardCNN v3 trained on real WIN overlays + H3436 regression"
-```
-
-**Failure mode for Phase A:** if v3 doesn't reach card ≥ 0.975 on the PokerCraft test bucket, or H3436 still misclassifies, do **not** promote. Either (a) the overlay library is too small — capture more in Task A.1 and re-train, or (b) the architecture is at capacity — escalate to Phase C (ensemble) first; the ensemble may rescue H3436 even when the single-pass classifier doesn't.
-
----
-
-## Phase B — Production-Distribution Benchmark + Harvest Loop
-
-**Why this phase exists:** The test bucket measures `data/hand_images/img/` PokerCraft replay screenshots. Production is N8 mobile traffic captured in `analysis_snapshots`. These distributions differ in resolution, compression, and overlay rendering. Without a production benchmark, "99% precision" is unverifiable in deployment terms.
-
-**Entry criteria:** Phase A complete.
-
-**Exit criteria:**
-1. `data/splits/production_v1.json` exists with ≥150 production hands split into `production_train` and `production_test`.
-2. `scripts/ocr_precision.py --bucket production` reports separate precision/coverage on the production split.
-3. The harvest CLI re-extracts and re-labels new production failures from `analysis_snapshots` in one command.
-4. Baseline numbers for the production bucket are recorded in `docs/superpowers/plans/artifacts/ocr-99-baselines.md`.
-
-### Task B.1: Build `harvest_production.py`
+1. `data/cards_v2/production_v1/gt.jsonl` has ≥ 200 entries, each with a `hand_id` and a `ground_truth` dict whose `hero_hand` is verified.
+2. `data/splits/production_v1.json` re-built — `production_train ≥ 140`, `production_val ≥ 30`, `production_test ≥ 30`.
+3. Verification policy is recorded: every entry's source (`analysis_snapshots.expected_json`, `gemini_reparse_agreement`, or `manual`) is in the gt.jsonl row.
+4. `python scripts/ocr_precision.py --split data/splits/production_v1.json --bucket production_test --workers 4 --out data/ocr_precision_production_v2_baseline` runs and writes a summary with `paired ≥ 30`.
+
+### Task 11.A.1 — Re-implement `harvest_production.py` and rebuild the corpus
 
 **Files:**
 - Create: `scripts/ocr/classifier/harvest_production.py`
-- Test: `tests/ocr/test_harvest_production.py`
+- Create: `tests/ocr/test_harvest_production.py`
+- Run-only: `scripts/_tmp.py` for the DB pull
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing test**
 
 ```python
 # tests/ocr/test_harvest_production.py
-"""Harvest extracts hero/board crops from a snapshot's image_data and
-labels them with the snapshot's expected_json (the user-verified truth)."""
-import json
+"""harvest_snapshot extracts labeled hero crops from a snapshot using
+the user-verified expected_json, not the (possibly wrong) parsed_json."""
+from __future__ import annotations
+
+import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr.classifier.harvest_production import harvest_snapshot
 
 
 def test_harvest_extracts_labeled_hero_crops(tmp_path):
     img = Path("tests/snapshots/H3433/input.jpeg")
-    expected = {"hero_hand": "6d5d", "streets": [{"board": "2d6cAd"}]}
-    out = tmp_path / "out"
+    if not img.exists():
+        pytest.skip("H3433 fixture not present")
+    expected = {"hero_hand": "6d5d"}
     n = harvest_snapshot(
         hand_id="H3433",
         image_bytes=img.read_bytes(),
         expected=expected,
-        out_dir=out,
+        out_dir=tmp_path,
     )
-    assert n >= 2, f"expected at least 2 hero crops, harvested {n}"
-    # Hero crops named by label so they merge cleanly into data/cards_v2
-    files = list(out.rglob("*.png"))
-    labels = {f.parent.name for f in files}
-    assert "6d" in labels or "5d" in labels, f"got labels {labels}"
+    assert n >= 2
+    labels = {p.parent.name for p in tmp_path.rglob("*.png")}
+    assert "6d" in labels or "5d" in labels
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+Run: `pytest tests/ocr/test_harvest_production.py -v` → FAIL on `ModuleNotFoundError`.
 
-Run: `pytest tests/ocr/test_harvest_production.py -v`
-Expected: FAIL (`ModuleNotFoundError`).
-
-- [ ] **Step 3: Implement `harvest_snapshot`**
-
-Create `scripts/ocr/classifier/harvest_production.py`:
+- [ ] **Step 2: Implement `harvest_snapshot`**
 
 ```python
-"""Extract labeled card crops from analysis_snapshots for CardCNN retraining.
-
-Only consumes snapshots that have an explicit `expected_json` (user-verified
-ground truth via /fix-hand or `snapshot_test.py --set-expected`). Labels
-come from `expected_json.hero_hand` and `expected_json.streets[].board/card`,
-not from `parsed_json` (which is what the previous OCR run guessed).
-"""
+# scripts/ocr/classifier/harvest_production.py
+"""Extract labeled card crops from analysis_snapshots for the
+production_v1 corpus. Labels come from expected_json.hero_hand
+(user-verified), not parsed_json (the previous OCR guess)."""
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import cv2
 import numpy as np
-from pathlib import Path
 
 from ..region_detector import detect_regions
 from ..table_parser import _locate_hero_cards, _trim_above_card_edge
 
 
-def _parse_hand_into_two(hand: str) -> list[str] | None:
+def _parse_hand_into_two(hand: str | None) -> list[str] | None:
     if not hand or len(hand) != 4:
         return None
     return [hand[0:2], hand[2:4]]
 
 
-def harvest_snapshot(
-    *,
-    hand_id: str,
-    image_bytes: bytes,
-    expected: dict,
-    out_dir: Path,
-) -> int:
+def harvest_snapshot(*, hand_id: str, image_bytes: bytes,
+                     expected: dict, out_dir: Path) -> int:
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return 0
-    table = detect_regions(img).get("table")
+    regions = detect_regions(img)
+    if not regions:
+        return 0
+    table = regions.get("table")
     if table is None:
         return 0
-
-    count = 0
     hero_cards = _parse_hand_into_two((expected or {}).get("hero_hand"))
-    if hero_cards and len(hero_cards) == 2:
-        crops = [_trim_above_card_edge(c) for c in _locate_hero_cards(table)]
-        if len(crops) == 2:
-            for slot, (crop, label) in enumerate(zip(crops, hero_cards)):
-                dest = out_dir / label.lower() / f"{hand_id}_hero_{slot}.png"
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(dest), crop)
-                count += 1
-    return count
+    if not (hero_cards and len(hero_cards) == 2):
+        return 0
+    raw_crops = _locate_hero_cards(table)
+    if len(raw_crops) != 2:
+        return 0
+    crops = [_trim_above_card_edge(c) for c in raw_crops]
+    n = 0
+    for slot, (crop, label) in enumerate(zip(crops, hero_cards)):
+        dest = out_dir / label.lower() / f"{hand_id}_hero_{slot}.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(dest), crop)
+        n += 1
+    return n
 
 
 def harvest_corpus(snapshots: list[dict], out_dir: Path) -> int:
     total = 0
     for snap in snapshots:
-        if not snap.get("expected_json") or not snap.get("image_data"):
+        expected = snap.get("expected_json")
+        if not expected or not snap.get("image_data"):
             continue
-        expected = snap["expected_json"]
         if isinstance(expected, str):
-            import json as _json
-            expected = _json.loads(expected)
+            expected = json.loads(expected)
         total += harvest_snapshot(
             hand_id=snap["hand_id"],
             image_bytes=bytes(snap["image_data"]),
@@ -709,496 +198,417 @@ def harvest_corpus(snapshots: list[dict], out_dir: Path) -> int:
     return total
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Run: test PASSES.
 
-Run: `pytest tests/ocr/test_harvest_production.py -v`
-Expected: PASS.
+- [ ] **Step 3: Re-run the DB pull to refresh `data/cards_v2/production_v1/` and `gt.jsonl`**
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/ocr/classifier/harvest_production.py tests/ocr/test_harvest_production.py
-git commit -m "feat(ocr): harvest labeled crops from analysis_snapshots"
-```
-
-### Task B.2: Build `data/cards_v2/production_v1/` + split file
-
-**Files:**
-- Create: `data/cards_v2/production_v1/` (populated by harvest run)
-- Create: `data/splits/production_v1.json`
-- Run-only.
-
-- [ ] **Step 1: Harvest from DB**
-
-Write `scripts/_tmp.py`:
+Pull every `analysis_snapshots` row where `source_type='image'` AND `image_data IS NOT NULL` AND `expected_json IS NOT NULL` AND `expected_json->>'hero_hand' IS NOT NULL`. Merge `parsed_json` ∪ `expected_json` (expected takes precedence) and write to gt.jsonl. Write the full image to `images/<hand_id>.png` and the labeled crops via `harvest_corpus`. The May 28 attempt's `scripts/_tmp.py` template:
 
 ```python
 from dotenv import load_dotenv; load_dotenv()
-import asyncio, os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import asyncpg, json
+import asyncio, os, sys, json, random
 from pathlib import Path
-from ocr.classifier.harvest_production import harvest_corpus
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asyncpg
+from ocr.classifier.harvest_production import harvest_snapshot
 
 async def main():
-    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
+    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"],
+                                 statement_cache_size=0)
     rows = await conn.fetch("""
-        SELECT hand_id, expected_json, image_data
+        SELECT hand_id, expected_json, image_data, parsed_json
         FROM analysis_snapshots
-        WHERE source_type='image' AND expected_json IS NOT NULL AND image_data IS NOT NULL
+        WHERE source_type='image' AND image_data IS NOT NULL
+          AND expected_json IS NOT NULL
+          AND expected_json->>'hero_hand' IS NOT NULL
         ORDER BY created_at DESC
     """)
     await conn.close()
-    out = Path("data/cards_v2/production_v1")
-    n = harvest_corpus([dict(r) for r in rows], out_dir=out)
-    print(f"harvested {n} labeled hero crops from {len(rows)} verified snapshots into {out}")
+    out_root = Path("data/cards_v2/production_v1")
+    images_dir = out_root / "images"; images_dir.mkdir(parents=True, exist_ok=True)
+    gt_lines, hand_ids = [], []
+    for r in rows:
+        expected = r["expected_json"] if isinstance(r["expected_json"], dict) \
+                   else json.loads(r["expected_json"])
+        parsed = (r["parsed_json"] if isinstance(r["parsed_json"], dict)
+                  else json.loads(r["parsed_json"])) if r["parsed_json"] else {}
+        truth = {**parsed, **expected}
+        b = bytes(r["image_data"])
+        (images_dir / f"{r['hand_id']}.png").write_bytes(b)
+        harvest_snapshot(hand_id=r['hand_id'], image_bytes=b,
+                         expected=truth, out_dir=out_root)
+        gt_lines.append(json.dumps({"hand_id": r["hand_id"],
+                                    "ground_truth": truth,
+                                    "source": "analysis_snapshots.expected_json"}))
+        hand_ids.append(r["hand_id"])
+    (out_root / "gt.jsonl").write_text("\n".join(gt_lines) + "\n")
+    # 70/15/15 by hand
+    rng = random.Random(0)
+    s = sorted(hand_ids); rng.shuffle(s)
+    n = len(s); n_tr = int(round(n*0.70)); n_vl = int(round(n*0.15))
+    split = {"production_train": sorted(s[:n_tr]),
+             "production_val":   sorted(s[n_tr:n_tr+n_vl]),
+             "production_test":  sorted(s[n_tr+n_vl:]),
+             "meta": {"seed": 0, "n": n}}
+    Path("data/splits/production_v1.json").write_text(
+        json.dumps(split, ensure_ascii=False, indent=2))
+    print(f"hands={n} train={len(split['production_train'])} "
+          f"val={len(split['production_val'])} "
+          f"test={len(split['production_test'])}")
 
 asyncio.run(main())
 ```
 
-Run: `python scripts/_tmp.py`
-Expected: `harvested N labeled hero crops ... into data/cards_v2/production_v1` where N ≥ 50.
+Run: `python scripts/_tmp.py`. If `n < 200`, **Phase 11.A.2 is required** before progressing.
 
-- [ ] **Step 2: Build the production split file**
+### Task 11.A.2 — Backfill from Gemini reparse agreement (if 11.A.1 yields < 200 hands)
 
-Reuse `scripts/ocr/classifier/split.py`'s existing logic (consult the file for its CLI) to create `data/splits/production_v1.json` with `production_train` / `production_val` / `production_test` partitions over `data/cards_v2/production_v1/` (typical 70/15/15 split per the existing v2 split convention).
-
-Expected file shape (mirrors `card_classifier_v2.json`):
-```json
-{"production_train": ["..png"], "production_val": [...], "production_test": [...]}
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add data/cards_v2/production_v1/ data/splits/production_v1.json
-git commit -m "feat(ocr): seed production_v1 corpus from verified analysis_snapshots"
-```
-
-### Task B.3: Wire `--bucket production` into `ocr_precision.py`
+**Why:** `expected_json` only exists for hands where someone ran `/fix-hand` or `snapshot_test.py --set-expected`. The natural rate of those events caps the corpus at the rate users notice errors. We supplement with hands where the full-Gemini reparse and the OCR pipeline independently agree on hero_hand AND board AND position — high agreement on multiple fields is a credible signal of correctness even without manual verification.
 
 **Files:**
-- Modify: `scripts/ocr_precision.py`
-- Test: extend `tests/test_ocr_precision_diagnostics.py`
+- Create: `scripts/ocr/classifier/gemini_agreement_backfill.py`
+- Test: `tests/ocr/test_gemini_agreement_backfill.py`
 
-- [ ] **Step 1: Extend test**
+- [ ] **Step 1: Write the test**
 
-Add to `tests/test_ocr_precision_diagnostics.py`:
+The test fixture-loads three records (one with OCR/Gemini agreement on all 3 fields, one with disagreement on hero only, one with disagreement on board only) and asserts that only the all-agreement record is accepted into the corpus, with `source="gemini_reparse_agreement"`.
 
-```python
-def test_ocr_precision_production_bucket(tmp_path):
-    """--bucket production walks data/cards_v2/production_v1/ via the
-    production split file and writes a separate summary."""
-    import subprocess
-    out = tmp_path / "out"
-    res = subprocess.run(
-        ["python", "scripts/ocr_precision.py",
-         "--split", "data/splits/production_v1.json",
-         "--bucket", "production_test",
-         "--limit", "3",
-         "--workers", "1",
-         "--out", str(out)],
-        capture_output=True, text=True,
-    )
-    # Skip cleanly if the production split hasn't been created yet
-    if res.returncode != 0 and "production_v1.json" in res.stderr:
-        import pytest
-        pytest.skip("production_v1 split not seeded yet")
-    assert (out / "summary.json").exists()
-```
+- [ ] **Step 2: Implement the backfill**
 
-- [ ] **Step 2: Make `ocr_precision.py` accept `--bucket production_test`/`production_train`/`production_val`**
+For each `analysis_snapshots` row where `expected_json IS NULL` but `parsed_json` and `gemini_reparse_json` both exist (we may need to add a `gemini_reparse_json` column — see Task 11.A.3 if not present): check if (hero_hand, board, hero_position) match exactly. If yes, treat the parsed_json's reading as ground truth, harvest, and record in gt.jsonl with `source="gemini_reparse_agreement"`.
 
-The existing CLI already accepts `--bucket` as a string. The only change needed is at the bucket-aware GT loader: where it currently reads `data/hand_images/`, it must instead read the image path implied by the split file. Inspect `scripts/ocr_precision.py` and adapt the bucket→image-root resolution to a small switch:
+- [ ] **Step 3: Re-run, expand to ≥ 200, re-split**
 
-```python
-# Near the top of the bucket-loading code
-BUCKET_IMAGE_ROOTS = {
-    "train":           Path("data/hand_images/img"),
-    "val":             Path("data/hand_images/img"),
-    "test":            Path("data/hand_images/img"),
-    "production_train": Path("data/cards_v2/production_v1"),
-    "production_val":   Path("data/cards_v2/production_v1"),
-    "production_test":  Path("data/cards_v2/production_v1"),
-}
-```
+If still under 200, the entry criteria for 11.A.3 (manual triage) opens.
 
-…and resolve the image path per record based on the active bucket.
+### Task 11.A.3 — Manual triage of low-confidence parses (last resort)
 
-(The production GT comes from `analysis_snapshots.expected_json`, not from `data/hand_images/` filename conventions. The bucket loader must therefore also accept a JSON-line `gt.jsonl` file alongside the production corpus that maps `hand_id → expected_json`. Generate that file in Task B.2 Step 1 by writing each snapshot's `(hand_id, expected_json)` to `data/cards_v2/production_v1/gt.jsonl`.)
-
-- [ ] **Step 3: Run test**
-
-Run: `pytest tests/test_ocr_precision_diagnostics.py::test_ocr_precision_production_bucket -v`
-Expected: PASS (or SKIP if Task B.2 hasn't run).
-
-- [ ] **Step 4: Run the first production-bucket baseline**
-
-```bash
-python scripts/ocr_precision.py \
-  --split data/splits/production_v1.json \
-  --bucket production_test \
-  --workers 4 \
-  --out data/ocr_precision_production_baseline
-```
-
-Expected: `data/ocr_precision_production_baseline/summary.json` exists with `precision`, `coverage`, per-field accuracies.
-
-- [ ] **Step 5: Append baseline row to `ocr-99-baselines.md`**
-
-Add a row to `docs/superpowers/plans/artifacts/ocr-99-baselines.md` documenting the production-bucket numbers.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add scripts/ocr_precision.py tests/test_ocr_precision_diagnostics.py docs/superpowers/plans/artifacts/ocr-99-baselines.md
-git commit -m "feat(ocr_precision): production_v1 bucket + baseline run"
-```
+Only if 11.A.1 + 11.A.2 yields < 200 hands. The bot owner manually verifies hero_hand for 50-100 N=production snapshots from the last 30 days. Procedure already exists via `snapshot_test.py --set-expected` and the `/fix-hand` skill. Tracked in `gt.jsonl` with `source="manual"`.
 
 ---
 
-## Phase C — Multi-Crop Ensemble Inference
+## Phase 11.B — Rich-Feature Record Dump
 
-**Why this phase exists:** Phase A fixes the training distribution. Phase C is the safety net for residual hard cases — when the WIN overlay covers most of the card, a single crop pass can still be ambiguous. Reading three overlay-disjoint crops and voting raises card_conf without needing more training data.
+**Why this phase exists:** The calibrator's training data must include every signal the parser produced — not just the scalar `confidence`. The existing 27-feature vector in `data/calibrator/feature_names.txt` is a 2026-05-23 snapshot; it predates `ensemble_used`, the post-May-23 `demote-to-Gemini-on-collapse` flag, the masked-vs-raw arbitration outcome flag, and per-card `rank_top2[1]_conf` (the top-2 margin). We extend the feature schema, re-run both buckets with `--dump-all`, and persist the full record stream as the calibrator's training corpus.
 
-**Entry criteria:** Phase A complete.
+**Entry criteria:** Phase 11.A complete (≥ 200 production hands).
 
 **Exit criteria:**
-1. `ensemble.predict(crop) → {label, conf, votes}` exists.
-2. `parse_n8_screenshot` routes through the ensemble when raw single-pass `card_confidence < 0.50`.
-3. `diagnostics.ensemble_used` is reported.
-4. On the production bucket, precision at coverage 95% is ≥ 99% **with the ensemble enabled** (whereas with ensemble disabled it may be lower).
+1. `scripts/ocr/n8_parser.py` exposes a `diagnostics.ensemble_used` flag (re-implementing the May 28 routing) and per-card `rank_top2`/`suit_top2` from `table_result.hero_card_details` is preserved in the precision-harness record.
+2. `scripts/ocr/classifier/ensemble.py` exists with the **majority-≥2/3** safety policy (not confidence-weighted vote alone).
+3. `data/calibrator/v2_features.txt` lists the new ≥ 40-feature schema.
+4. `data/ocr_precision_phase11b_pokercraft/` and `data/ocr_precision_phase11b_production/` each contain `all_records.jsonl` with per-record JSON carrying every feature in `v2_features.txt` plus `hand_exact` (the label).
 
-### Task C.1: Implement the ensemble
+### Task 11.B.1 — Re-implement `ensemble.py` with majority-only safety
 
 **Files:**
 - Create: `scripts/ocr/classifier/ensemble.py`
-- Test: `tests/ocr/test_ensemble.py`
-
-- [ ] **Step 1: Write the failing test**
+- Create: `tests/ocr/test_ensemble.py`
 
 ```python
-# tests/ocr/test_ensemble.py
-"""The ensemble reads three overlay-disjoint crops and votes by confidence."""
-import numpy as np
-from ocr.classifier.ensemble import predict_with_ensemble
-
-
-def test_ensemble_returns_single_label_and_conf():
-    crop = np.full((128, 96, 3), 255, dtype=np.uint8)
-    result = predict_with_ensemble(crop)
-    assert set(result.keys()) >= {"label", "card_conf", "votes"}
-    assert isinstance(result["label"], str)
-    assert 0.0 <= result["card_conf"] <= 1.0
-
-
-def test_ensemble_three_votes_when_all_crops_valid():
-    crop = np.full((128, 96, 3), 255, dtype=np.uint8)
-    result = predict_with_ensemble(crop)
-    assert len(result["votes"]) == 3
-    for v in result["votes"]:
-        assert {"crop", "label", "conf"} <= v.keys()
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/ocr/test_ensemble.py -v`
-Expected: FAIL (`ModuleNotFoundError`).
-
-- [ ] **Step 3: Implement ensemble**
-
-Create `scripts/ocr/classifier/ensemble.py`:
-
-```python
-"""Multi-crop ensemble for hero card classification.
-
-Reads three overlay-disjoint sub-crops of the same card and votes by
-confidence. The WIN sticker covers the lower half — the top-third crop
-isolates rank, and the corner crops let suit show through even when the
-sticker bleeds vertically.
-"""
-from __future__ import annotations
-
-from typing import TypedDict
-
-import cv2
-import numpy as np
-
-from . import CardClassifier  # the existing singleton wrapper
-
-
-class Vote(TypedDict):
-    crop: str   # "full" | "top" | "bottom"
-    label: str
-    conf: float
-
-
-class EnsembleResult(TypedDict):
-    label: str
-    card_conf: float
-    votes: list[Vote]
-
-
-_clf = CardClassifier()
-
-
-def _predict_one(crop: np.ndarray) -> tuple[str, float]:
-    pred = _clf.predict(crop)
-    return pred["label"], float(pred["card_conf"])
-
-
-def _top_crop(crop: np.ndarray) -> np.ndarray:
-    h = crop.shape[0]
-    return crop[: int(h * 0.45)]
-
-
-def _bottom_crop(crop: np.ndarray) -> np.ndarray:
-    h = crop.shape[0]
-    return crop[int(h * 0.55):]
-
-
+# scripts/ocr/classifier/ensemble.py — load-bearing parts only
 def predict_with_ensemble(crop: np.ndarray) -> EnsembleResult:
     votes: list[Vote] = []
-    for name, sub in (("full", crop), ("top", _top_crop(crop)), ("bottom", _bottom_crop(crop))):
+    for name, sub in (("full", crop),
+                      ("top", crop[: int(crop.shape[0] * 0.45)]),
+                      ("bottom", crop[int(crop.shape[0] * 0.55):])):
         if sub.shape[0] < 10 or sub.shape[1] < 10:
             continue
-        label, conf = _predict_one(sub)
-        votes.append({"crop": name, "label": label, "conf": conf})
-
-    # Confidence-weighted vote
-    tallies: dict[str, float] = {}
+        rank, suit, conf = _classifier().classify(sub)
+        label = f"{rank}{suit}" if rank and suit else ""
+        votes.append({"crop": name, "label": label, "conf": float(conf)})
+    # Hard majority required — confidence-weighted vote can elect a
+    # minority label on disagreement (H3433 card 1 case).
+    counts: dict[str, int] = {}
     for v in votes:
-        tallies[v["label"]] = tallies.get(v["label"], 0.0) + v["conf"]
-    if not tallies:
+        if v["label"]:
+            counts[v["label"]] = counts.get(v["label"], 0) + 1
+    majority = next((lab for lab, n in counts.items() if n >= 2), None)
+    if majority is None:
         return {"label": "", "card_conf": 0.0, "votes": votes}
-    label = max(tallies, key=tallies.get)
-    total = sum(tallies.values())
-    card_conf = tallies[label] / total if total > 0 else 0.0
-    return {"label": label, "card_conf": float(card_conf), "votes": votes}
+    agreeing = [v for v in votes if v["label"] == majority]
+    card_conf = sum(v["conf"] for v in agreeing) / len(agreeing)
+    if len(agreeing) == len(votes):
+        card_conf = min(1.0, card_conf + 0.1)
+    return {"label": majority, "card_conf": float(card_conf), "votes": votes}
 ```
 
-(If the `CardClassifier` import path differs, adapt; the test asserts behavior not implementation.)
+Tests must assert:
+- Empty crop input → empty label + 0.0 conf
+- 3/3 agreement → label = agreed, conf ≥ raw + 0.1
+- Disagreement → empty label (NOT confidence-weighted winner)
 
-- [ ] **Step 4: Run test to verify it passes**
+### Task 11.B.2 — Wire ensemble into `_find_hero_cards` and bubble `ensemble_used`
 
-Run: `pytest tests/ocr/test_ensemble.py -v`
-Expected: PASS.
+Replicate the May 28 wiring:
+- `scripts/ocr/table_parser.py`: import `os` + `ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))` at module top
+- In `_find_hero_cards`, after building `details`, if any `d["conf"] < ENSEMBLE_FLOOR`, call `predict_with_ensemble` for that card and override (rank/suit/conf) only when `ens["label"]` is non-empty AND `ens["card_conf"] > d["conf"]`. Stash `d["ensemble_used"]`, `d["ensemble_votes"]`, `d["ensemble_label"]`, `d["ensemble_conf"]`.
+- Bubble `ensemble_used = any(d.get("ensemble_used") for d in hero_card_details)` through `parse_table`'s return dict.
+- `scripts/ocr/n8_parser.py:_build_diagnostics`: add `"ensemble_used": bool(table_result.get("ensemble_used"))`.
 
-- [ ] **Step 5: Commit**
+Test: `tests/ocr/test_ensemble_routing.py` — `parse_n8_screenshot(H3433_bytes)["diagnostics"]["ensemble_used"]` is `True`.
+
+### Task 11.B.3 — Production bucket support in `ocr_precision.py`
+
+Replicate the May 28 wiring:
+- Add `production_train`/`production_val`/`production_test` to the `--bucket` choices in `scripts/ocr_precision.py`
+- When bucket starts with `production_` AND user did not override `--images`/`--ground-truth`, point them at `data/cards_v2/production_v1/images` and `data/cards_v2/production_v1/gt.jsonl` respectively
+
+Test: extend `tests/test_ocr_precision_diagnostics.py` with a `--bucket production_test --limit 3` invocation that asserts `summary.json` is written.
+
+### Task 11.B.4 — Build the v2 feature schema
+
+**File:** `data/calibrator/v2_features.txt` lists at least:
+
+```
+# Existing 27 (kept verbatim)
+confidence
+card_conf
+pot_consist
+player_track
+ocr_conf
+pre_loss
+rf_diff
+rf_abs
+postflop_total
+n_allin
+n_raise
+n_fold
+n_call
+n_actions
+has_allin
+has_bare_ai
+has_trail_ai
+has_double_ai
+sr_simple
+sr_complex
+sr_postflop
+safe_emit
+button_conf
+reaction
+pre_loss_x_allin
+pre_loss_x_track_weak
+conf_x_card
+
+# New (Phase 11 additions)
+ensemble_used
+hero0_rank_top2_margin
+hero0_suit_top2_margin
+hero1_rank_top2_margin
+hero1_suit_top2_margin
+hero_raw_vs_masked_suit_swapped
+hero0_rank_source_is_corner
+hero1_rank_source_is_corner
+demote_to_gemini_fired
+pre_loss_x_demote
+ensemble_conf_min
+ensemble_votes_agreed
+```
+
+`scripts/ocr/confidence_gate.py:_calibrator_features` must be extended to produce the v2 vector when `data/calibrator/v2_features.txt` exists; falls back to v1 when the v1 calibrator is loaded.
+
+### Task 11.B.5 — Run both buckets with `--dump-all`
 
 ```bash
-git add scripts/ocr/classifier/ensemble.py tests/ocr/test_ensemble.py
-git commit -m "feat(ocr): multi-crop ensemble for hero card classification"
-```
-
-### Task C.2: Route low-conf hero crops through the ensemble
-
-**Files:**
-- Modify: `scripts/ocr/n8_parser.py` (the hero card prediction block, near `_find_hero_cards`)
-- Test: extend `tests/ocr/test_resolve_hero.py` or add a new one
-
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/ocr/test_ensemble_routing.py`:
-
-```python
-"""When raw hero card_conf is < OCR_ENSEMBLE_FLOOR, the parser invokes
-the ensemble and surfaces ensemble_used=True in diagnostics."""
-from pathlib import Path
-
-import pytest
-
-from ocr.n8_parser import parse_n8_screenshot
-
-
-def test_h3436_triggers_ensemble():
-    img = Path("tests/snapshots/H3433/input.jpeg")
-    if not img.exists():
-        pytest.skip("H3433 fixture not present")
-    res = parse_n8_screenshot(img.read_bytes())
-    diag = res.get("diagnostics") or {}
-    assert diag.get("ensemble_used") is True, (
-        "H3436-class image must trigger the ensemble path"
-    )
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/ocr/test_ensemble_routing.py -v`
-Expected: FAIL.
-
-- [ ] **Step 3: Wire the ensemble**
-
-In `scripts/ocr/n8_parser.py`, locate where hero card predictions are computed (after `_locate_hero_cards` returns crops). Add:
-
-```python
-import os
-from ocr.classifier.ensemble import predict_with_ensemble
-
-ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
-
-ensemble_used = False
-# ... single-pass prediction first, getting raw label + conf
-if card_conf < ENSEMBLE_FLOOR:
-    ensemble_used = True
-    ens = predict_with_ensemble(card_crop)
-    if ens["card_conf"] > card_conf:
-        label = ens["label"]
-        card_conf = ens["card_conf"]
-```
-
-…and in the diagnostics dict (the `_build_diagnostics` function from earlier roadmap Task 0.2), set `"ensemble_used": ensemble_used`.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/ocr/test_ensemble_routing.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/ocr/n8_parser.py tests/ocr/test_ensemble_routing.py
-git commit -m "feat(ocr): route low-conf hero crops through ensemble"
-```
-
----
-
-## Phase D — Recalibrate the Abstain Gate Against the New Corpus
-
-**Why this phase exists:** Phases A-C raise the ceiling on what's correct. The abstain threshold in `scripts/ocr/confidence_gate.py` was tuned against the old corpus and old card_confidence distribution; it will not be optimal against the new distribution. This phase re-runs Phase 8 of the roadmap with the combined PokerCraft test + production_v1 dataset.
-
-**Entry criteria:** Phases A-C complete; H3436 regression test green.
-
-**Exit criteria:**
-1. New calibrated threshold τ chosen against `dev = train+val ∪ production_train+production_val`.
-2. Validated on held-out `test ∪ production_test`:
-   - `precision ≥ 99%` AND `recall (coverage) ≥ 95%` jointly hold.
-   - `|τ_dev − τ_test_breakeven| / τ_dev ≤ 10%` (no overfit).
-3. `ocr-99-baselines.md` records the joint metric.
-
-### Task D.1: Joint dev/test calibration
-
-**Files:**
-- Modify: `scripts/ocr/confidence_gate.py`
-- Modify: `scripts/ocr/calibration.py` if its API needs to read multiple buckets
-- Test: extend `tests/ocr/test_calibration.py`
-
-- [ ] **Step 1: Run combined dev calibration**
-
-Write `scripts/_tmp.py` that:
-1. Loads `confidence` and `correct` arrays from both `data/ocr_precision_current/` (PokerCraft test) and `data/ocr_precision_production_baseline/` (production_test).
-2. Calls `precision_coverage_curve(confs, correct, n_points=200)`.
-3. Finds smallest τ where `precision ≥ 0.99 AND coverage ≥ 0.95`.
-
-Run it and print τ and the supporting (precision, coverage) at that τ.
-
-- [ ] **Step 2: Encode τ in `confidence_gate.py`**
-
-Update the gate's default threshold to the τ from Step 1. Keep the env var `OCR_EMIT_THRESHOLD` as the override.
-
-- [ ] **Step 3: Re-baseline both buckets with the new τ**
-
-```bash
-rm -rf data/ocr_precision_current data/ocr_precision_production_baseline
+rm -rf data/ocr_precision_phase11b_pokercraft data/ocr_precision_phase11b_production
 python scripts/ocr_precision.py \
   --split data/splits/card_classifier_v2.json --bucket test \
-  --workers 4 --out data/ocr_precision_current
+  --workers 4 --dump-all --out data/ocr_precision_phase11b_pokercraft
 python scripts/ocr_precision.py \
   --split data/splits/production_v1.json --bucket production_test \
-  --workers 4 --out data/ocr_precision_production_baseline
+  --workers 4 --dump-all --out data/ocr_precision_phase11b_production
 ```
 
-Inspect both `summary.json` files. Both must show `precision ≥ 0.99` and `coverage ≥ 0.95` to satisfy the exit criteria.
-
-- [ ] **Step 4: Append baselines row**
-
-Add a row to `ocr-99-baselines.md` with joint numbers.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/ocr/confidence_gate.py docs/superpowers/plans/artifacts/ocr-99-baselines.md
-git commit -m "calib(ocr): tune abstain gate for 99% precision @ 95% recall on joint corpus"
-```
+Same for `--bucket train`, `--bucket val`, `--bucket production_train`, `--bucket production_val` — these become the calibrator's training set. Each `all_records.jsonl` line carries every Phase 11.B feature plus `hand_exact`.
 
 ---
 
-## Phase E — Continuous Production-Drift Monitoring (Lightweight)
+## Phase 11.C — Calibrator Retraining + Joint Validation
 
-**Why this phase exists:** Distribution shifts again. New N8 themes, screen sizes, holiday events with new sticker styles. Without monitoring, we silently drift back below 99%. The OCR-vs-Gemini cross-check already runs in `_cross_check_ocr_vs_gemini`; we just need a daily aggregation.
+**Why this phase exists:** The hard work. Train the RF+GB+LR ensemble on the combined train+val records from both buckets, with the v2 feature vector, and find the joint τ that satisfies 99% precision AND 95% recall on `test ∪ production_test`. The May 23 attempt reached 99% @ 70.75% on PokerCraft test alone with the v1 features; with v2 features and production-bucket coverage in training, the recall floor should lift.
 
-**Entry criteria:** Phase D complete; production bucket green.
+**Entry criteria:** Phase 11.B complete; `all_records.jsonl` exists for each of train, val, test, production_train, production_val, production_test.
 
-**Exit criteria:**
-1. A daily job (cron or scheduled remote agent) computes:
-   - Production OCR emit rate (target ≥ 95%)
-   - OCR-vs-Gemini disagreement rate on emitted hands (target ≤ 1%)
-   - Card-confidence histogram drift vs the rolling baseline
-2. When any metric breaches its threshold, the job posts to the admin Telegram chat with the offending `hand_id`s.
+**Exit criteria (single ship gate):**
+1. PokerCraft test: `precision ≥ 99.0%` AND `recall ≥ 95.0%` AND `ECE-10bin ≤ 0.04`.
+2. production_v1 test: `precision ≥ 99.0%` AND `recall ≥ 95.0%` AND `ECE-10bin ≤ 0.04`.
+3. `|τ_dev − τ_test_breakeven| / τ_dev ≤ 10%` on both buckets (no overfit).
+4. `data/calibrator/rf_model_v2.joblib`, `gb_model_v2.joblib`, `lr_model_v2.joblib` saved.
+5. `confidence_gate.CalibratorScorer` is wired to load v2 by default; v1 stays as fallback.
+6. `python scripts/regression_test.py` passes.
+7. `pytest tests/ocr -q` passes (matching main's baseline failure count).
 
-### Task E.1: Daily drift report
+Any one of these failing → return to Phase 11.B (add features) or Phase 11.D (parser fixes). **Do not lower the target.**
+
+### Task 11.C.1 — Train RF+GB+LR on joint dev
 
 **Files:**
-- Create: `scripts/weekly_drift_report.py` (despite the name, this fires daily — name mirrors `weekly_report.py`)
+- Create: `scripts/ocr/classifier/train_calibrator_v2.py`
+- Test: `tests/ocr/test_calibrator_v2_train.py` (smoke test that the script runs against a fixture jsonl and produces `.joblib` outputs)
 
-The implementation reads `classifier_disagreement` and `analysis_snapshots` rows from the last 24h, computes the three metrics, and either logs only or sends a Telegram message when thresholds are breached.
+Calibrator architecture:
+- Three independent base models on the joint train+val records:
+  - `RandomForestClassifier(n_estimators=400, max_depth=8, class_weight="balanced", random_state=0)`
+  - `GradientBoostingClassifier(n_estimators=300, max_depth=4, learning_rate=0.05, random_state=0)`
+  - `LogisticRegression(C=1.0, class_weight="balanced", max_iter=1000)`
+- Stacking: average `predict_proba` across the three for the final `p(correct)`.
+- 5-fold CV on the *joint* train+val set, with the val-out fold's predictions written to `data/calibrator/oof_v2.json` for ECE/precision-coverage analysis.
 
-Schedule via `CronCreate` or the existing PTB JobQueue path used by `weekly_report.py`.
+Train command:
+```bash
+python -m scripts.ocr.classifier.train_calibrator_v2 \
+  --pokercraft-train data/ocr_precision_phase11b_pokercraft_train/all_records.jsonl \
+  --pokercraft-val   data/ocr_precision_phase11b_pokercraft_val/all_records.jsonl \
+  --production-train data/ocr_precision_phase11b_production_train/all_records.jsonl \
+  --production-val   data/ocr_precision_phase11b_production_val/all_records.jsonl \
+  --features data/calibrator/v2_features.txt \
+  --out-dir data/calibrator
+```
 
-(Full task breakdown deferred to entry — this phase is operational, not algorithmic; we'll write the bite-sized version once Phase D's threshold is stable.)
+### Task 11.C.2 — Joint test evaluation
+
+**Files:**
+- Create: `scripts/_calibrate_v2.py`
+
+Loads the trained v2 calibrator, scores every record in `data/ocr_precision_phase11b_pokercraft/all_records.jsonl` and `data/ocr_precision_phase11b_production/all_records.jsonl`. Concatenates into a joint set. Sweeps τ from 0.0 to 1.0 in 1000 steps. Reports:
+- Smallest τ where joint precision ≥ 0.99 AND joint coverage ≥ 0.95.
+- Same τ evaluated per-bucket: must satisfy per-bucket precision/coverage too.
+- ECE-10bin on each bucket.
+- τ-drift: re-run the τ-search on the dev set (train+val records). `|τ_dev − τ_test| / τ_dev` must be ≤ 10%.
+
+If unreachable, the script must print:
+- The 10 records in each bucket with the highest `p(correct)` that are still `hand_exact = 0` (false positives at high score).
+- The 10 records in each bucket with the lowest `p(correct)` that are still `hand_exact = 1` (false negatives at low score).
+- Per-feature SHAP-style importance from the RF model.
+
+These three outputs scope Phase 11.D.
+
+### Task 11.C.3 — Wire v2 calibrator as the default emission gate
+
+**File:** `scripts/ocr/confidence_gate.py`
+
+When `data/calibrator/rf_model_v2.joblib` exists, `CalibratorScorer` loads v2 by default and `_calibrator_features` returns the v2 vector. The `evaluate_with_calibrator` `calibrator_threshold` default becomes the τ from 11.C.2 (the one that satisfies the joint ship gate). Update its docstring with the new selectivity table.
+
+Add a feature flag: `OCR_CALIBRATOR_VERSION` env var ("v1" | "v2"). Defaults to "v2" once the gate flips; "v1" for rollback.
+
+### Task 11.C.4 — Re-baseline both buckets and append to `ocr-99-baselines.md`
+
+```bash
+rm -rf data/ocr_precision_current
+python scripts/ocr_precision.py \
+  --split data/splits/card_classifier_v2.json --bucket test \
+  --workers 4 --use-calibrator --calibrator-threshold <tau_from_11C2> \
+  --out data/ocr_precision_current
+
+python scripts/ocr_precision.py \
+  --split data/splits/production_v1.json --bucket production_test \
+  --workers 4 --use-calibrator --calibrator-threshold <tau_from_11C2> \
+  --out data/ocr_precision_production_v2
+```
+
+Both summaries must show `precision ≥ 0.99` AND `coverage ≥ 0.95` AND `ece_10bin ≤ 0.04`. Append rows to `docs/superpowers/plans/artifacts/ocr-99-baselines.md` for both runs.
+
+### Task 11.C.5 — Snapshot regression coverage
+
+Add to `scripts/regression_test.py`:
+- One emit-positive fixture per failure category (position_wrong, board_wrong, hero_cards_wrong, parse_none) where the v2 calibrator must classify correctly.
+- One abstain-positive fixture per category (records the calibrator must demote below τ).
+
+These guard against future regressions in the calibrator or its feature inputs.
+
+---
+
+## Phase 11.D — Residual Parser Fixes (only if 11.C cannot reach 99%@95%)
+
+**Why this phase exists:** Some classes of errors may not be separable by the calibrator from the records' confidence/diagnostics — e.g., a parser that reports `card_confidence = 0.95` on a wrong read with no diagnostic flag will look identical to a correct read at the same score. For those records and only those records, the parser must be fixed.
+
+**Entry criteria:** Phase 11.C completes 11.C.2 but the joint ship gate fails on at least one bucket.
+
+**Exit criteria:** Joint ship gate (Phase 11.C exit criteria) holds. **No interim partial-ship.**
+
+### Task 11.D.1 — Categorise the calibrator's residuals
+
+Using 11.C.2's outputs (top-10 false-positives and top-10 false-negatives per bucket), cluster by `failure_mode` (from `compare()` in `ocr_precision.py`). For each cluster:
+- (a) Identify the diagnostic feature that would have isolated this record (if any).
+- (b) If no such feature exists, identify the parser bug that produced the wrong read.
+
+### Task 11.D.2 — Add the missing diagnostic feature (preferred) OR fix the parser
+
+For each cluster from 11.D.1:
+- If (a) yields a feature that's computable from existing parser state: add to `v2_features.txt`, re-train calibrator (return to 11.C.1). Cheap.
+- If (b) is the only way: write a regression test for the broken record, fix the parser, verify the test passes, re-run both baselines.
+
+**Hard rule:** No parser fix may regress an existing regression test. If a fix forces an existing test to fail, the fix is wrong; either the test was wrong (rare; needs explicit justification) or the fix is over-broad.
+
+### Task 11.D.3 — Re-run 11.C.2 + 11.C.4 + 11.C.5 until the ship gate holds
+
+This is the iteration loop. Each pass: (parser fix or feature add) → re-train calibrator → re-evaluate joint → check ship gate. **No declaration of victory until joint 99%@95% holds with τ-drift ≤ 10%.**
+
+---
+
+## Phase 11.E — Daily Drift Monitoring
+
+**Why this phase exists:** Production distribution shifts. New N8 themes, holiday sticker variants, screen-size changes. Without monitoring, the calibrated gate silently drifts.
+
+**Entry criteria:** Phase 11.C/D complete; joint ship gate holds.
+
+**Exit criteria:**
+1. A daily job computes per-day: production emit rate, OCR-vs-Gemini disagreement on emitted hands, `card_confidence` and `p(correct)` histograms.
+2. Alerts when any breaches its rolling baseline by > 2σ.
+
+### Task 11.E.1 — Implement `scripts/ocr_drift_report.py`
+
+Reads the last 24h of `analysis_snapshots`. Runs the OCR pipeline against each. Computes:
+- emit_rate (fraction with `p(correct) ≥ τ`)
+- gemini_disagree_rate (fraction where OCR's emitted hero_hand != full-Gemini reparse's)
+- conf_p50, conf_p10 (drift markers)
+
+Compares against a 7-day rolling baseline stored in `data/drift_baselines/`. Posts to the admin Telegram chat when any metric breaches.
+
+Schedule via PTB JobQueue (matches the existing `weekly_report` pattern) or a CronCreate routine.
+
+---
+
+## Acceptance — Single Non-Negotiable Ship Gate
+
+The plan ships only if **all** of the following hold simultaneously on the held-out test sets:
+
+```
+PokerCraft test:
+  precision ≥ 99.0%
+  recall    ≥ 95.0%
+  ECE-10bin ≤ 0.04
+  τ-drift   ≤ 10%
+
+production_v1 test (n ≥ 30):
+  precision ≥ 99.0%
+  recall    ≥ 95.0%
+  ECE-10bin ≤ 0.04
+  τ-drift   ≤ 10%
+
+pytest tests/ocr -q           — same pass count as main's baseline
+python scripts/regression_test.py — green
+H3433 snapshot                — green (emit or principled abstain, NOT a wrong emit)
+```
+
+No partial-ship is acceptable. No "documented gap" handoff is acceptable. If the gate cannot be passed:
+- Return to Phase 11.B (add features), then 11.C (retrain) — first.
+- If still failing, Phase 11.D (parser fixes) on the calibrator's residuals.
+- If after exhausting 11.D the gate still fails, **the ship is delayed**, the gap is *technical* and is fixed by the next round of feature/parser work. Not by lowering the target.
 
 ---
 
 ## Self-Review
 
 **Spec coverage:**
-- "OCR pipeline correctly identifies 6d5d" → Phase A Task A.3 Step 3 + Step 5 regression test.
-- "99% precision @ 95% recall" → Phase D exit criteria.
-- "Review what went wrong in training" → "Why the Current Pipeline Misses H3436-Class Images" section + Phase A rationale.
-- "Roadmap doc update with more ambitious targets" → see "Roadmap Doc Updates" section below.
+- "99% precision @ 95% recall on production distribution" → Phase 11.C exit criteria #1 & #2.
+- "No excuses" → Acceptance gate "no partial-ship" + Phase 11.D loop with "no declaration of victory until joint 99%@95% holds".
+- "Lessons from Phase 10 attempt" → "Lessons that constrain this plan" + "What survives" sections.
 
-**Placeholder scan:** Phase E's tasks are intentionally a sketch and called out as such — the rest of the plan has concrete code at every code step. No `TODO` / `TBD` / "appropriate error handling" placeholders.
+**Why this plan is structurally different from the May 28 attempt:**
+- The May 28 plan led with parser-side improvements (overlay aug, ensemble) and treated calibration as a Phase D "tune τ" afterthought. The data showed this ordering was backwards: parser-side changes do not lift confidence calibration enough to reach 99%@95%, but a calibrator trained on rich features does. This plan inverts: calibrator-first, parser-fix only as the residual-cleanup step.
+- The May 28 plan allowed an "Acceptable" tier (98.5% / 92%). This plan does not.
+- The May 28 plan's H3433 exit criterion was "v3 reads 6d5d at card_conf ≥ 0.70". That target was unreachable — the crop is too small. This plan replaces it with a behavioural criterion: H3433 must either be emitted correctly *or principally abstained*, never emitted-wrong.
 
-**Type consistency:** `predict_with_ensemble` returns `EnsembleResult` with `{label, card_conf, votes}`. `harvest_snapshot` returns `int` (count). `extract_overlay` returns `np.ndarray | None`. All cross-references match.
-
-## Roadmap Doc Updates
-
-Append the following section to `docs/superpowers/plans/2026-05-20-ocr-99-roadmap.md` at the end (before the closing `Self-Review Notes` section), and update the headline `Goal` to reference production precision:
-
-```markdown
-## Phase 10 — Production-Distribution Precision (added 2026-05-28)
-
-**Why:** The headline 99% target was test-bucket-only (`data/splits/card_classifier_v2.json` test partition over PokerCraft replay screenshots). Production N8 mobile traffic is a different distribution: live screen rendering, WIN/LOSE overlays painted as letter strokes (not solid blocks), variable compression, brightness, and aspect ratios. H3436 is the canonical miss — CardCNN v2 sees a card heavily occluded by a "WIN" sticker whose typography never appeared in training, returns card_conf 0.14, and the cards-only Gemini fallback then patches hero_hand on top of an OCR-supplied river action chain that itself missed a re-action box.
-
-**New ambition (replaces "99% @ 70% test-only"):**
-
-| Metric | Bucket | Target | Acceptable |
-| --- | --- | --- | --- |
-| precision (hand_exact / emitted) | PokerCraft test | ≥ 99.0% | ≥ 98.5% |
-| recall (emitted / paired) | PokerCraft test | ≥ 95.0% | ≥ 92.0% |
-| precision | production_v1 test | ≥ 99.0% | ≥ 98.0% |
-| recall | production_v1 test | ≥ 95.0% | ≥ 90.0% |
-| ECE-10bin | both buckets | ≤ 0.04 | ≤ 0.06 |
-| τ-drift (dev vs test) | both buckets | ≤ 10% | ≤ 15% |
-
-"Acceptable" is the non-ship floor. Below "Acceptable" on any row, the
-phase is rejected.
-
-**Phase 10 plan reference:** `docs/superpowers/plans/2026-05-28-ocr-production-precision.md`.
-
-**Concretely what changes from Phase 9:**
-1. Augmentation no longer relies on a solid-block synthetic WIN sticker — `scripts/ocr/classifier/augment.py:apply_real_win_overlay` alpha-composites real overlay captures from `data/win_overlays/`.
-2. A second benchmark corpus `data/cards_v2/production_v1/` is harvested from `analysis_snapshots` and split into `production_{train,val,test}`. Every CardCNN training run also evaluates the production_test bucket; promotion blocked if it regresses.
-3. The abstain gate is calibrated on dev = train+val ∪ production_train+production_val and validated jointly on test ∪ production_test.
-4. A multi-crop ensemble (`scripts/ocr/classifier/ensemble.py`) runs whenever raw single-pass card_confidence < 0.50, voting across overlay-disjoint sub-crops.
-
-**Re-baseline cadence:** every Phase 10 task must run both buckets; either bucket regressing on precision rejects the task. This is the operational definition of "OCR 99% in production."
-```
-
-Also update the headline `Goal` block at the very top of the roadmap (currently "precision ≥ 99% at coverage ≥ 70%") to:
-
-```markdown
-**Goal:** Reach **precision ≥ 99% at recall ≥ 95%** on **both** the PokerCraft test bucket and the production_v1 bucket of `parse_n8_screenshot`. The original 99% @ 70% target is preserved as the Phase 8 milestone; Phase 10 (see plan `2026-05-28-ocr-production-precision.md`) tightens to 95% recall and adds the production benchmark.
-```
-
-And add to the `Baseline & Failure Decomposition` table the new "production_v1 test (TBD)" row once Phase B Task B.3 produces numbers.
+**Failure modes acknowledged:**
+- If even the v2 calibrator cannot reach 99%@95% on both buckets, the plan does not loosen — it adds features / parser fixes (11.D) until it can. The cost of that iteration is real; the cost is paid by the project, not by the target.
