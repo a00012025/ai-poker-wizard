@@ -864,6 +864,65 @@ def _get_per_action_evs(spot_solution: dict, hand_name: str, position: str) -> d
     return None
 
 
+def _get_action_strategy_frequencies(
+    spot_solution: dict,
+    hero_hand: str,
+    hero_pos: str,
+    is_preflop: bool,
+    combo_idx: int | None = None,
+) -> dict[str, float] | None:
+    """Return solver strategy frequencies for hero's hand/combo at a node.
+
+    Per-action EV arrays can be noisy or use terminal-action accounting that
+    is not directly comparable for every action.  Strategy frequencies are the
+    guardrail for whether a taken action is actually solver-approved.
+    """
+    if not spot_solution or "action_solutions" not in spot_solution:
+        return None
+
+    player_info = None
+    for pi in spot_solution.get("players_info", []):
+        if pi.get("player", {}).get("position") == hero_pos:
+            player_info = pi
+            break
+    if not player_info:
+        return None
+
+    if is_preflop:
+        range_arr = player_info.get("range", [])
+        if len(range_arr) == 169:
+            from hh_deviation_check import HAND_TO_169
+            idx = HAND_TO_169.get(normalize_hand_name(hero_hand))
+            if idx is not None and idx < len(range_arr) and range_arr[idx] > 0:
+                freqs: dict[str, float] = {}
+                for asol in spot_solution["action_solutions"]:
+                    strat = asol.get("strategy")
+                    if strat and idx < len(strat):
+                        freqs[asol.get("action", {}).get("code")] = float(strat[idx])
+                return freqs or None
+
+    elif combo_idx is not None and _combo_idx_in_player_range(
+        spot_solution, hero_pos, combo_idx
+    ):
+        freqs = {}
+        for asol in spot_solution["action_solutions"]:
+            strat = asol.get("strategy")
+            if strat and combo_idx < len(strat):
+                freqs[asol.get("action", {}).get("code")] = float(strat[combo_idx])
+        return freqs or None
+
+    # Fallback to aggregate hand counters when exact strategy rows are not
+    # available (or when caller intentionally did not pass a combo index).
+    shc = player_info.get("simple_hand_counters", {})
+    hand_data = shc.get(normalize_hand_name(hero_hand))
+    if hand_data:
+        actions_freq = hand_data.get("actions_total_frequencies", {})
+        if actions_freq:
+            return {code: float(freq) for code, freq in actions_freq.items()}
+
+    return None
+
+
 def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
                          hero_pos: str, is_preflop: bool, combo_idx: int | None = None) -> str | None:
     """Format EV comparison between hero's action and the best action.
@@ -886,6 +945,20 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
             spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
 
     if not action_evs:
+        return None
+
+    strategy_freqs = _get_action_strategy_frequencies(
+        spot_solution, hero_hand, hero_pos, is_preflop, combo_idx
+    )
+    taken_freq = strategy_freqs.get(taken_code) if strategy_freqs else None
+    max_freq = max(strategy_freqs.values()) if strategy_freqs else None
+    if (
+        taken_code == "F"
+        and taken_freq is not None
+        and max_freq is not None
+        and taken_freq >= 0.05
+        and taken_freq >= max_freq - 0.005
+    ):
         return None
 
     hero_ev = action_evs.get(taken_code)

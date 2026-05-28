@@ -256,16 +256,35 @@ def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
         return entries
 
     # 1. Fold a bare All-In badge into the adjacent prior shove (any side).
+    #
+    # Keep this limited to sticker-only OCR fragments, plus duplicate red
+    # badges on a previous all-in.  A real hero back-jam can also have no
+    # player_name (Natural8 centers hero action stickers), but after the
+    # same-side pass it carries a real size and follows an opponent raise.  Do
+    # not attach that to villain's raise (H3442).  Conversely, showdown
+    # layouts can OCR a duplicate/garbled sized All-In directly after an
+    # already-all-in row; that is still a badge and should collapse (H2881).
     collapsed: list[dict] = []
     for e in entries:
-        is_bare_allin = (
+        is_nameless_positionless_allin = (
             (e.get("action") or "") == "All-In"
             and not e.get("player_name")
+            and not e.get("position")
         )
-        if is_bare_allin and collapsed:
+        if is_nameless_positionless_allin and collapsed:
             prev = collapsed[-1]
             prev_act = (prev.get("action") or "").lower()
-            if prev_act in ("bet", "raise", "all-in") and prev.get("size"):
+            is_sticker_only = e.get("size") is None
+            # A duplicate all-in badge can carry a bogus size when EasyOCR
+            # merges adjacent bet/call stickers.  This happens on a previous
+            # Bet/All-In row (H2881), but a sized nameless all-in after a
+            # previous Raise is the real hero back-jam row in H3442.
+            is_duplicate_allin_badge = prev_act in ("bet", "all-in")
+            if (
+                (is_sticker_only or is_duplicate_allin_badge)
+                and prev_act in ("bet", "raise", "all-in")
+                and prev.get("size")
+            ):
                 prev["action"] = "All-In"
                 continue
         collapsed.append(e)
@@ -528,8 +547,13 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple
             if (nxt.get("type") == "opponent"
                     and (nxt.get("action") or "").lower() == "call"):
                 next_call_size = nxt.get("size") or 0.0
+        # Only infer from an actual following call.  If the next visible
+        # response is a fold, a nameless/sizeless "All-In" between villain's
+        # raise and that fold is usually villain's red all-in badge, not a
+        # separate hero jam (H3441).  Leaving it sizeless lets the final
+        # attribution pass collapse it back onto the prior villain raise.
         inferred = last_villain_to + next_call_size
-        if inferred > 0:
+        if next_call_size > 0 and inferred > 0:
             entries[hero_allin_idx]["size"] = inferred
 
     # Final pass: settle who shoved vs who called. Runs after the

@@ -103,6 +103,32 @@ def _compare_parse_fields(parsed: dict, expected: dict) -> list[str]:
             e_board = es.get("board", es.get("card", ""))
             if p_board != e_board:
                 errors.append(f"  street[{i}] board: got {p_board!r}, expected {e_board!r}")
+            if expected.get("_strict_actions"):
+                p_actions = ps.get("actions", [])
+                e_actions = es.get("actions", [])
+                if len(p_actions) != len(e_actions):
+                    errors.append(
+                        f"  street[{i}] actions count: got {len(p_actions)}, "
+                        f"expected {len(e_actions)}"
+                    )
+                    continue
+                for j, (pa, ea) in enumerate(zip(p_actions, e_actions)):
+                    for action_key in ("position", "action"):
+                        p_val = pa.get(action_key)
+                        e_val = ea.get(action_key)
+                        if p_val != e_val:
+                            errors.append(
+                                f"  street[{i}].actions[{j}].{action_key}: "
+                                f"got {p_val!r}, expected {e_val!r}"
+                            )
+                    if "size" in ea:
+                        p_size = pa.get("size")
+                        e_size = ea.get("size")
+                        if p_size is None or abs(float(p_size) - float(e_size)) > 0.05:
+                            errors.append(
+                                f"  street[{i}].actions[{j}].size: "
+                                f"got {p_size!r}, expected {e_size!r}"
+                            )
     return errors
 
 
