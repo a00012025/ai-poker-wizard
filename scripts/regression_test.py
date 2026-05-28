@@ -65,6 +65,103 @@ def assert_true(cond, msg=""):
         raise AssertionError(msg or "condition was False")
 
 
+@test
+def test_postflop_allin_resolution_preserves_sized_hero_backjam():
+    """OCR: a sized hero all-in must not be collapsed onto villain's raise.
+
+    Regression for H3442: Natural8 renders hero's back-jam as a yellow
+    "Raise 16.4 BB" row plus a red "All-In" badge.  The same-side collapse
+    correctly turns that into a sized hero All-In, but the final all-in
+    attribution pass then treated every nameless All-In as a badge and
+    attached it to BB's prior raise, fabricating "hero fold".
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.8},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 4.8},
+        {"type": "hero", "position": "BB", "action": "All-In", "size": 16.4},
+        {"type": "opponent", "position": "BB", "action": "Fold", "size": None},
+    ]
+
+    resolved = _resolve_allin_attribution(entries)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "Raise", "All-In", "Fold"])
+    assert_eq(resolved[3]["type"], "hero")
+    assert_eq(resolved[3]["size"], 16.4)
+    assert_eq(resolved[4]["type"], "opponent")
+
+
+@test
+def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
+    """OCR: sticker-only All-In fragments still belong to the prior raise.
+
+    Regression coverage for H3441's opposite case: BB's all-in badge was
+    OCR-classified as a nameless hero-looking red sticker.  With no size and
+    no position, it is a badge for the immediately previous BB raise, not a
+    separate hero jam.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.3},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 12.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None},
+        {"type": "opponent", "position": None, "action": "Fold", "size": None},
+    ]
+
+    resolved = _resolve_allin_attribution(entries)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "All-In", "Fold"])
+    assert_eq(resolved[2]["type"], "opponent")
+    assert_eq(resolved[2]["size"], 12.5)
+    assert_eq(resolved[3]["type"], "hero")
+
+
+@test
+def test_ev_comparison_suppresses_gto_mixed_taken_action():
+    """Formatter: do not show EV loss for a solver-approved mixed action.
+
+    Regression for H3441: exact-combo terminal call EV was numerically high,
+    but solver strategy folded the combo 93%.  A fold at 93% frequency is not
+    an EV-loss punt and must not produce "EV 損失 -5.7bb".
+    """
+    from gto_formatter import combo_index_for_hand, format_ev_comparison
+
+    combo_idx = combo_index_for_hand("6d6h")
+    range_arr = [0.0] * 1326
+    range_arr[combo_idx] = 0.1056
+    fold_strategy = [0.0] * 1326
+    call_strategy = [0.0] * 1326
+    fold_evs = [0.0] * 1326
+    call_evs = [0.0] * 1326
+    fold_strategy[combo_idx] = 0.933
+    call_strategy[combo_idx] = 0.067
+    call_evs[combo_idx] = 5.65
+
+    solution = {
+        "game": {"board": "2c8sJs", "current_street": {"type": "flop"}},
+        "players_info": [{
+            "player": {"position": "LJ"},
+            "range": range_arr,
+            "simple_hand_counters": {},
+        }],
+        "action_solutions": [
+            {"action": {"code": "F", "allin": False, "type": "FOLD"},
+             "strategy": fold_strategy, "evs": fold_evs},
+            {"action": {"code": "C", "allin": True, "type": "CALL", "betsize": "12.000"},
+             "strategy": call_strategy, "evs": call_evs},
+        ],
+    }
+
+    note = format_ev_comparison(
+        solution, "F", "66", "LJ", is_preflop=False, combo_idx=combo_idx
+    )
+    assert_true(note is None, f"GTO-approved fold should not show EV loss: {note}")
+
+
 # ── GTO auth context Tests ──
 
 @test
