@@ -109,9 +109,11 @@ def light_geometric(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
 def apply_all(img: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
     img = light_geometric(img, rng=rng)
     img = color_jitter(img, rng=rng, strength=0.2)
-    # 70% real overlay (when corpus available), 20% synthetic block, 10% clean.
-    # The real-overlay path no-ops when the library is empty, so this stays
-    # safe in CI/dev before Task A.1's harvest has run.
-    img = apply_real_win_overlay(img, rng=rng, p=0.70)
-    img = apply_win_sticker(img, rng=rng, p=0.20)
+    # The 41-tall hero crop has almost no spare resolution; aggressive
+    # occlusion makes the rank glyph (10px) unrecoverable. v3 attempt-1 at
+    # p=0.70 real overlay regressed card accuracy 0.967 → 0.960. Conservative
+    # rates keep most batches clean while still showing the model real-style
+    # overlays often enough to learn invariance.
+    img = apply_real_win_overlay(img, rng=rng, p=0.30)
+    img = apply_win_sticker(img, rng=rng, p=0.10)
     return img
