@@ -32,23 +32,31 @@ def apply_real_win_overlay(
     if overlay is None:
         return img
     h, w = img.shape[:2]
+    if h < 4 or w < 4:
+        return img
+    # Sticker covers the lower 70% of the crop; bound the available region first
+    # so we never request more rows/cols than exist.
+    y_lo = int(h * 0.30)
+    max_h = h - y_lo
     target_w = int(rng.uniform(0.6, 1.0) * w)
     target_w = max(1, min(target_w, w))
     scale = target_w / max(overlay.shape[1], 1)
     target_h = max(1, int(overlay.shape[0] * scale))
-    target_h = min(target_h, max(1, h - 1))
+    target_h = min(target_h, max_h)
     resized = cv2.resize(
         overlay, (target_w, target_h), interpolation=cv2.INTER_AREA
     )
-    x_hi = max(1, w - target_w)
+    x_hi = max(1, w - target_w + 1)
     x0 = int(rng.integers(0, x_hi))
-    y_lo = int(h * 0.30)
-    y_hi = max(y_lo + 1, h - target_h)
+    y_hi = max(y_lo + 1, h - target_h + 1)
     y0 = int(rng.integers(y_lo, y_hi))
-    out = img.copy()
-    bgr = resized[:, :, :3]
-    alpha = resized[:, :, 3:4].astype(np.float32) / 255.0
+    # Final guard against slice/overlay mismatch from earlier clamping.
+    target_h = min(target_h, h - y0)
+    target_w = min(target_w, w - x0)
+    bgr = resized[:target_h, :target_w, :3]
+    alpha = resized[:target_h, :target_w, 3:4].astype(np.float32) / 255.0
     alpha = alpha * float(rng.uniform(0.7, 1.0))
+    out = img.copy()
     roi = out[y0:y0 + target_h, x0:x0 + target_w]
     blended = (
         bgr.astype(np.float32) * alpha
