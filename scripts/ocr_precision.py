@@ -345,7 +345,18 @@ def main() -> int:
     ap.add_argument("--max-failures", type=int, default=40)
     ap.add_argument("--split", default="",
                     help="Optional card-classifier split JSON for held-out eval")
-    ap.add_argument("--bucket", default="test", choices=["train", "val", "test"])
+    ap.add_argument(
+        "--bucket",
+        default="test",
+        choices=[
+            "train",
+            "val",
+            "test",
+            "production_train",
+            "production_val",
+            "production_test",
+        ],
+    )
     ap.add_argument("--emit-threshold", type=float, default=0.88,
                     help=("Minimum confidence required for deterministic "
                           "emission. Lower-confidence parses count as "
@@ -367,6 +378,16 @@ def main() -> int:
                     help=("Dump every record (including emitted-exact) to "
                           "all_records.jsonl for calibrator training."))
     args = ap.parse_args()
+
+    # Production buckets read from data/cards_v2/production_v1/ instead of the
+    # PokerCraft replay corpus. The bucket selects the image root and gt path
+    # unless the user passed explicit --images/--ground-truth overrides.
+    if args.bucket.startswith("production_"):
+        prod_root = Path("data/cards_v2/production_v1")
+        if args.images == ap.get_default("images"):
+            args.images = str(prod_root / "images")
+        if args.ground_truth == ap.get_default("ground_truth"):
+            args.ground_truth = str(prod_root / "gt.jsonl")
 
     gt_path = str(Path(args.ground_truth).resolve())
     img_dir = Path(args.images)

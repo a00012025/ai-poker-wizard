@@ -59,3 +59,34 @@ def test_ocr_precision_writes_diagnostics(tmp_path):
     calib = json.loads(calib_path.read_text())
     assert "ece_10bin" in calib
     assert "precision_coverage_curve" in calib
+
+
+def test_ocr_precision_production_bucket(tmp_path):
+    """--bucket production_test walks data/cards_v2/production_v1/ via the
+    production split file and writes a separate summary."""
+    import pytest
+
+    split_path = Path("data/splits/production_v1.json")
+    if not split_path.exists():
+        pytest.skip("production_v1 split not seeded yet")
+    out = tmp_path / "out"
+    res = subprocess.run(
+        [
+            "python",
+            "scripts/ocr_precision.py",
+            "--split",
+            str(split_path),
+            "--bucket",
+            "production_test",
+            "--limit",
+            "3",
+            "--workers",
+            "1",
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"stderr={res.stderr}\nstdout={res.stdout}"
+    assert (out / "summary.json").exists()
