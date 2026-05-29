@@ -120,6 +120,143 @@ def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     assert_eq(resolved[3]["type"], "hero")
 
 
+# ── Visual All-In badge attribution (PR: fix/allin-visual-attribution) ──
+#
+# The red "All-In" sticker carries no name/position/size, so sequence rules
+# alone must guess whether a bare badge belongs to the prior raiser (a badge)
+# or is a standalone jam by the other player. N8 paints the red badge directly
+# on the all-in player's bet/raise sticker, so the rendered color just *above*
+# the red badge reveals whose sticker it sits on: yellow=hero, white=opponent.
+# Empirically (H3441/H3442 flop crops) the separation is clean (>0.7 vs 0.0).
+
+
+def _hsv_strip(h, s, v, rows, cols):
+    """Build a solid BGR strip from one HSV color (test fixture helper)."""
+    import cv2
+    import numpy as np
+    hsv = np.full((rows, cols, 3), (h, s, v), np.uint8)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def _region_with_band_above(badge_bbox, band_hsv, region_shape=(360, 174)):
+    """Synthetic column region: dark everywhere, a colored sticker band just
+    above the All-In badge, and a red badge in the badge bbox itself."""
+    import numpy as np
+    x_min, y_min, x_max, y_max = badge_bbox
+    region = np.zeros((region_shape[0], region_shape[1], 3), np.uint8)
+    # Sticker band above the badge top (the helper samples y_min-22 .. y_min-4).
+    by1, by2 = max(0, y_min - 24), max(0, y_min - 2)
+    if by2 > by1:
+        region[by1:by2, x_min:x_max] = _hsv_strip(*band_hsv, by2 - by1, x_max - x_min)
+    # Red badge in the badge's own row.
+    region[y_min:y_max, x_min:x_max] = _hsv_strip(0, 220, 200, y_max - y_min, x_max - x_min)
+    return region
+
+
+_HERO_BAND = (30, 200, 220)       # gold/yellow hero sticker
+_OPP_BAND = (0, 12, 235)          # near-white opponent sticker
+
+
+@test
+def test_visual_allin_owner_reads_hero_from_yellow_band_above():
+    """Yellow sticker above the red badge => hero owns the All-In."""
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    region = _region_with_band_above(bbox, _HERO_BAND)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, "hero", f"evidence={evidence}")
+    assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
+
+
+@test
+def test_visual_allin_owner_reads_opponent_from_white_band_above():
+    """White sticker above the red badge => opponent owns the All-In (H3441)."""
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    region = _region_with_band_above(bbox, _OPP_BAND)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, "opponent", f"evidence={evidence}")
+    assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
+
+
+@test
+def test_visual_allin_owner_abstains_when_inconclusive():
+    """No clear sticker color above or below => no opinion (fall back to rules)."""
+    import numpy as np
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    # All dark except a pure-red badge row — nothing to read color from.
+    region = np.zeros((360, 174, 3), np.uint8)
+    region[280:300, 75:125] = _hsv_strip(0, 220, 200, 20, 50)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, None, f"evidence={evidence}")
+
+
+@test
+def test_visual_allin_owner_requires_bbox_metadata():
+    """Without _bbox metadata the helper abstains (backward-compatible)."""
+    import numpy as np
+    from ocr.panel_parser import _infer_allin_badge_owner
+    region = np.zeros((360, 174, 3), np.uint8)
+    owner, conf, evidence = _infer_allin_badge_owner({"action": "All-In"}, region)
+    assert_eq(owner, None)
+
+
+@test
+def test_visual_attribution_keeps_sticker_only_hero_jam():
+    """Hardening: a sticker-only (sizeless) All-In after an opponent raise is
+    KEPT as a hero jam when the sticker above is yellow — sequence rules alone
+    would have collapsed it into an opponent all-in.
+
+    This is the gap visual attribution closes: when hero's back-jam size fails
+    to OCR, the bare badge looks identical to an opponent all-in badge to the
+    sequence rules. The rendered yellow sticker disambiguates it.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+    bbox = (60, 290, 130, 312)
+    region = _region_with_band_above(bbox, _HERO_BAND, region_shape=(360, 174))
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.3},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 12.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None, "_bbox": bbox},
+        {"type": "opponent", "position": None, "action": "Fold", "size": None},
+    ]
+    resolved = _resolve_allin_attribution(entries, column_region=region)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "Raise", "All-In", "Fold"],
+              "hero jam must survive (not collapse onto villain's raise)")
+    assert_eq(resolved[2]["action"], "Raise", "villain's raise must stay a raise")
+    assert_eq(resolved[3]["type"], "hero", "the All-In belongs to hero")
+
+
+@test
+def test_visual_attribution_collapses_opponent_badge():
+    """A sticker-only All-In after an opponent raise with a WHITE sticker above
+    is the opponent's all-in badge — collapse it onto their raise (H3441).
+    Visual agrees with the existing sequence rule here, so behavior is unchanged.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+    bbox = (60, 290, 130, 312)
+    region = _region_with_band_above(bbox, _OPP_BAND, region_shape=(360, 174))
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.3},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 12.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None, "_bbox": bbox},
+        {"type": "opponent", "position": None, "action": "Fold", "size": None},
+    ]
+    resolved = _resolve_allin_attribution(entries, column_region=region)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "All-In", "Fold"],
+              "opponent's all-in badge must collapse onto their raise")
+    assert_eq(resolved[2]["type"], "opponent")
+    assert_eq(resolved[2]["size"], 12.5)
+
+
 @test
 def test_ev_comparison_suppresses_gto_mixed_taken_action():
     """Formatter: do not show EV loss for a solver-approved mixed action.

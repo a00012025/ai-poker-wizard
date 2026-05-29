@@ -63,6 +63,16 @@ def _looks_like_allin_match(matched: str) -> bool:
 _BB_PATTERN = re.compile(r"(\d+\.?\d*)\s*BB", re.IGNORECASE)
 _NUMBER_PATTERN = re.compile(r"(\d+\.?\d*)")
 
+# Visual All-In badge attribution thresholds. N8 paints the red "All-In"
+# sticker directly on the all-in player's bet/raise sticker, so the rendered
+# color just *above* the red badge reveals whose sticker it sits on:
+# yellow=hero, white=opponent. Empirically (H3441/H3442 flop crops) the
+# dominant color above the badge is >0.7 with the other near 0.0, so a 0.30
+# floor with a 2x dominance margin is conservative.
+_ALLIN_VISUAL_MIN_RATIO = 0.30      # min dominant-color coverage to have an opinion
+_ALLIN_VISUAL_DOMINANCE = 2.0       # dominant must beat the other color by this factor
+_ALLIN_VISUAL_HIGH_CONF = 0.55      # confidence required before overriding sequence rules
+
 # Skip patterns
 _SKIP_PATTERNS = re.compile(r"(Wins|wins|10s|\d+\.\d+%|All Ante)", re.IGNORECASE)
 
@@ -218,7 +228,94 @@ def _find_header_end(gray: np.ndarray) -> int:
     return int(h * 0.10)
 
 
-def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
+def _sticker_color_ratios(strip: np.ndarray) -> tuple[float, float, float]:
+    """Return (yellow_ratio, white_ratio, red_ratio) for a BGR strip.
+
+    yellow = hero sticker (config ``hero_hsv`` hue band), white = opponent
+    sticker (low saturation, high value), red = the All-In badge itself.
+    Ratios are fraction-of-pixels in [0, 1]; an empty strip returns zeros.
+    """
+    if strip is None or strip.size == 0:
+        return 0.0, 0.0, 0.0
+    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+    h_lo, h_hi = _HERO_HSV["h_range"]
+    s_min = _HERO_HSV["s_min"]
+    v_min = _HERO_HSV["v_min"]
+    yellow = cv2.inRange(hsv, np.array([h_lo, s_min, v_min]),
+                         np.array([h_hi, 255, 255]))
+    white = cv2.inRange(hsv, np.array([0, 0, 170]), np.array([180, 55, 255]))
+    red1 = cv2.inRange(hsv, np.array([0, 90, 80]), np.array([10, 255, 255]))
+    red2 = cv2.inRange(hsv, np.array([170, 90, 80]), np.array([180, 255, 255]))
+    red = cv2.bitwise_or(red1, red2)
+    n = float(hsv.shape[0] * hsv.shape[1])
+    return (float(np.sum(yellow > 0)) / n,
+            float(np.sum(white > 0)) / n,
+            float(np.sum(red > 0)) / n)
+
+
+def _infer_allin_badge_owner(
+    allin_entry: dict, column_region: np.ndarray
+) -> tuple[str | None, float, list[str]]:
+    """Infer who owns a bare All-In badge from its rendered sticker color.
+
+    The red "All-In" sticker carries no name/position/size, so sequence rules
+    alone must guess whether it belongs to the prior raiser (a badge) or is a
+    standalone jam by the other player. N8 paints the red badge on top of the
+    all-in player's bet/raise sticker, so the color *above* the badge (and, as
+    a fallback, the non-red color of the badge row itself) reveals the
+    underlying sticker: yellow=hero, white=opponent.
+
+    Returns ``(owner_type, confidence, evidence)`` where ``owner_type`` is
+    ``"hero"``, ``"opponent"``, or ``None`` when the read is inconclusive.
+    Conservative by design: it abstains unless one color clearly dominates, so
+    callers fall back to the existing sequence rules. Per the PR #27 warning,
+    we read a band *above* the badge first (the red badge can corrupt the
+    in-row signal and nearby hero stickers can bleed in).
+    """
+    evidence: list[str] = []
+    bbox = allin_entry.get("_bbox")
+    if not bbox or column_region is None or getattr(column_region, "size", 0) == 0:
+        return None, 0.0, ["no bbox/region"]
+
+    ch, cw = column_region.shape[:2]
+    x_min, y_min, x_max, y_max = (int(round(v)) for v in bbox)
+    x_min = max(0, min(x_min, cw - 1))
+    x_max = max(x_min + 1, min(x_max, cw))
+
+    # Primary: a narrow band just above the badge top (avoids the red badge).
+    by2 = max(0, y_min - 4)
+    by1 = max(0, y_min - 22)
+    above = column_region[by1:by2, x_min:x_max] if by2 > by1 else None
+    ay, aw, ar = _sticker_color_ratios(above)
+    evidence.append(f"above y[{by1}:{by2}] yellow={ay:.2f} white={aw:.2f} red={ar:.2f}")
+
+    yellow, white = ay, aw
+    # Fallback: if the band above carried no sticker color (e.g. the badge sits
+    # at the very top, or the gap above is dark), read the badge row's own
+    # non-red color.
+    if max(ay, aw) < _ALLIN_VISUAL_MIN_RATIO:
+        ry2 = max(0, min(y_max, ch))
+        ry1 = max(0, min(y_min, ry2))
+        row = column_region[ry1:ry2, x_min:x_max] if ry2 > ry1 else None
+        ry, rw, rr = _sticker_color_ratios(row)
+        evidence.append(f"row y[{ry1}:{ry2}] yellow={ry:.2f} white={rw:.2f} red={rr:.2f}")
+        yellow, white = ry, rw
+
+    dominant = max(yellow, white)
+    other = min(yellow, white)
+    if dominant < _ALLIN_VISUAL_MIN_RATIO or dominant < other * _ALLIN_VISUAL_DOMINANCE:
+        evidence.append("inconclusive")
+        return None, dominant, evidence
+
+    owner = "hero" if yellow > white else "opponent"
+    confidence = min(1.0, dominant)
+    evidence.append(f"owner={owner} conf={confidence:.2f}")
+    return owner, confidence, evidence
+
+
+def _resolve_allin_attribution(
+    entries: list[dict], column_region: np.ndarray | None = None
+) -> list[dict]:
     """Disambiguate who shoved vs who called in an all-in street.
 
     N8 paints a red "All-In" badge on the all-in player's bet/raise
@@ -285,6 +382,24 @@ def _resolve_allin_attribution(entries: list[dict]) -> list[dict]:
                 and prev_act in ("bet", "raise", "all-in")
                 and prev.get("size")
             ):
+                # Visual veto: read the rendered sticker color under the red
+                # badge. If it clearly belongs to the *opposite* side from the
+                # prior aggressor, this is a standalone jam by that player, not
+                # a badge on the prior bet/raise — keep it. (When OCR drops the
+                # jam's size, the sequence rules can't tell it apart from an
+                # opponent all-in badge; the color can.) Only override on high
+                # confidence; otherwise fall through to the sequence rule.
+                owner, conf, _ev = _infer_allin_badge_owner(e, column_region)
+                prev_type = prev.get("type")
+                if (
+                    owner is not None
+                    and conf >= _ALLIN_VISUAL_HIGH_CONF
+                    and prev_type
+                    and owner != prev_type
+                ):
+                    e["type"] = owner
+                    collapsed.append(e)
+                    continue
                 prev["action"] = "All-In"
                 continue
         collapsed.append(e)
@@ -570,7 +685,14 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple
     # shifting hero_position to BB.  Preflop already has its narrower
     # raise-jam overlay cleanup above.
     if not is_preflop:
-        entries = _resolve_allin_attribution(entries)
+        entries = _resolve_allin_attribution(entries, column_region=column_region)
+
+    # Strip private geometry metadata (the `_`-prefixed keys attached in
+    # _classify_group for visual attribution) so it never leaks downstream
+    # into the hand JSON builder.
+    for e in entries:
+        for k in [k for k in e if k.startswith("_")]:
+            del e[k]
 
     return entries, pre_collapse_count
 
@@ -809,6 +931,19 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
     }
     if player_name:
         result["player_name"] = player_name
+    # Private group geometry, used by visual All-In attribution. Stripped
+    # before detect_entries returns so it never leaks into the hand JSON.
+    # ocr_full_image always supplies x_min/y_min/x_max/y_max; guard so
+    # hand-built token groups in unit tests (text/center_* only) still work.
+    if group and all(
+        all(k in t for k in ("x_min", "y_min", "x_max", "y_max")) for t in group
+    ):
+        result["_bbox"] = (
+            min(t["x_min"] for t in group),
+            min(t["y_min"] for t in group),
+            max(t["x_max"] for t in group),
+            max(t["y_max"] for t in group),
+        )
     return result
 
 
