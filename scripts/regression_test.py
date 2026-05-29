@@ -120,6 +120,214 @@ def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     assert_eq(resolved[3]["type"], "hero")
 
 
+# ── Visual All-In badge attribution (PR: fix/allin-visual-attribution) ──
+#
+# The red "All-In" sticker carries no name/position/size, so sequence rules
+# alone must guess whether a bare badge belongs to the prior raiser (a badge)
+# or is a standalone jam by the other player. N8 paints the red badge directly
+# on the all-in player's bet/raise sticker, so the rendered color just *above*
+# the red badge reveals whose sticker it sits on: yellow=hero, white=opponent.
+# Empirically (H3441/H3442 flop crops) the separation is clean (>0.7 vs 0.0).
+
+
+def _hsv_strip(h, s, v, rows, cols):
+    """Build a solid BGR strip from one HSV color (test fixture helper)."""
+    import cv2
+    import numpy as np
+    hsv = np.full((rows, cols, 3), (h, s, v), np.uint8)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def _region_with_band_above(badge_bbox, band_hsv, region_shape=(360, 174)):
+    """Synthetic column region: dark everywhere, a colored sticker band just
+    above the All-In badge, and a red badge in the badge bbox itself."""
+    import numpy as np
+    x_min, y_min, x_max, y_max = badge_bbox
+    region = np.zeros((region_shape[0], region_shape[1], 3), np.uint8)
+    # Sticker band above the badge top (the helper samples y_min-22 .. y_min-4).
+    by1, by2 = max(0, y_min - 24), max(0, y_min - 2)
+    if by2 > by1:
+        region[by1:by2, x_min:x_max] = _hsv_strip(*band_hsv, by2 - by1, x_max - x_min)
+    # Red badge in the badge's own row.
+    region[y_min:y_max, x_min:x_max] = _hsv_strip(0, 220, 200, y_max - y_min, x_max - x_min)
+    return region
+
+
+_HERO_BAND = (30, 200, 220)       # gold/yellow hero sticker
+_OPP_BAND = (0, 12, 235)          # near-white opponent sticker
+
+
+@test
+def test_visual_allin_owner_reads_hero_from_yellow_band_above():
+    """Yellow sticker above the red badge => hero owns the All-In."""
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    region = _region_with_band_above(bbox, _HERO_BAND)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, "hero", f"evidence={evidence}")
+    assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
+
+
+@test
+def test_visual_allin_owner_reads_opponent_from_white_band_above():
+    """White sticker above the red badge => opponent owns the All-In (H3441)."""
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    region = _region_with_band_above(bbox, _OPP_BAND)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, "opponent", f"evidence={evidence}")
+    assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
+
+
+@test
+def test_visual_allin_owner_abstains_when_inconclusive():
+    """No clear sticker color above or below => no opinion (fall back to rules)."""
+    import numpy as np
+    from ocr.panel_parser import _infer_allin_badge_owner
+    bbox = (75, 280, 125, 300)
+    # All dark except a pure-red badge row — nothing to read color from.
+    region = np.zeros((360, 174, 3), np.uint8)
+    region[280:300, 75:125] = _hsv_strip(0, 220, 200, 20, 50)
+    entry = {"action": "All-In", "size": None, "_bbox": bbox}
+    owner, conf, evidence = _infer_allin_badge_owner(entry, region)
+    assert_eq(owner, None, f"evidence={evidence}")
+
+
+@test
+def test_visual_allin_owner_requires_bbox_metadata():
+    """Without _bbox metadata the helper abstains (backward-compatible)."""
+    import numpy as np
+    from ocr.panel_parser import _infer_allin_badge_owner
+    region = np.zeros((360, 174, 3), np.uint8)
+    owner, conf, evidence = _infer_allin_badge_owner({"action": "All-In"}, region)
+    assert_eq(owner, None)
+
+
+@test
+def test_visual_attribution_keeps_sticker_only_hero_jam():
+    """Hardening: a sticker-only (sizeless) All-In after an opponent raise is
+    KEPT as a hero jam when the sticker above is yellow — sequence rules alone
+    would have collapsed it into an opponent all-in.
+
+    This is the gap visual attribution closes: when hero's back-jam size fails
+    to OCR, the bare badge looks identical to an opponent all-in badge to the
+    sequence rules. The rendered yellow sticker disambiguates it.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+    bbox = (60, 290, 130, 312)
+    region = _region_with_band_above(bbox, _HERO_BAND, region_shape=(360, 174))
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.3},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 12.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None, "_bbox": bbox},
+        {"type": "opponent", "position": None, "action": "Fold", "size": None},
+    ]
+    resolved = _resolve_allin_attribution(entries, column_region=region)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "Raise", "All-In", "Fold"],
+              "hero jam must survive (not collapse onto villain's raise)")
+    assert_eq(resolved[2]["action"], "Raise", "villain's raise must stay a raise")
+    assert_eq(resolved[3]["type"], "hero", "the All-In belongs to hero")
+
+
+@test
+def test_visual_attribution_collapses_opponent_badge():
+    """A sticker-only All-In after an opponent raise with a WHITE sticker above
+    is the opponent's all-in badge — collapse it onto their raise (H3441).
+    Visual agrees with the existing sequence rule here, so behavior is unchanged.
+    """
+    from ocr.panel_parser import _resolve_allin_attribution
+    bbox = (60, 290, 130, 312)
+    region = _region_with_band_above(bbox, _OPP_BAND, region_shape=(360, 174))
+    entries = [
+        {"type": "opponent", "position": "BB", "action": "Check", "size": None},
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 1.3},
+        {"type": "opponent", "position": "BB", "action": "Raise", "size": 12.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None, "_bbox": bbox},
+        {"type": "opponent", "position": None, "action": "Fold", "size": None},
+    ]
+    resolved = _resolve_allin_attribution(entries, column_region=region)
+    assert_eq([e["action"] for e in resolved],
+              ["Check", "Bet", "All-In", "Fold"],
+              "opponent's all-in badge must collapse onto their raise")
+    assert_eq(resolved[2]["type"], "opponent")
+    assert_eq(resolved[2]["size"], 12.5)
+
+
+# ── GTO snapshot text comparison tolerance ──
+#
+# Solver values wobble in the last digit between runs / cache states (a fresh
+# worktree that misses the snapshot .gto_cache re-fetches live and drifts
+# ±0.01bb / ±0.2pp). The strategy/structure is the contract, not the last
+# digit — so the L2 comparator tolerates tiny EV (bb) and frequency/equity (%)
+# drift while keeping combos counts, action sequences, ranges, and line count
+# exact. See _gto_text_compare.gto_text_matches.
+
+
+@test
+def test_gto_text_compare_exact_match():
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("EV: 7.57bb\nFold: 42.0%", "EV: 7.57bb\nFold: 42.0%")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_tolerates_ev_drift():
+    """0.01bb EV drift (H2504) is within tolerance => match."""
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("  EV: 7.57bb | Equity: 64.2%",
+                               "  EV: 7.56bb | Equity: 64.2%")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_tolerates_frequency_drift():
+    """0.2pp frequency drift (H2505) is within tolerance => match."""
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("  Fold: 42.0%（22 combos）",
+                               "  Fold: 42.2%（22 combos）")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_rejects_large_ev_drift():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("EV: 7.57bb", "EV: 7.70bb")
+    assert_true(not ok, "0.13bb EV drift must fail")
+
+
+@test
+def test_gto_text_compare_rejects_large_frequency_drift():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("Fold: 42.0%", "Fold: 43.0%")
+    assert_true(not ok, "1.0pp frequency drift must fail")
+
+
+@test
+def test_gto_text_compare_rejects_combos_count_change():
+    """Combos counts are part of the structure — compared exactly."""
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("Fold: 42.0%（22 combos）", "Fold: 42.2%（23 combos）")
+    assert_true(not ok, "combos count change must fail even within freq tolerance")
+
+
+@test
+def test_gto_text_compare_rejects_structural_change():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("  Fold: 42.0%（22 combos）", "  Call: 42.0%（22 combos）")
+    assert_true(not ok, "action label change must fail")
+
+
+@test
+def test_gto_text_compare_rejects_line_count_change():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("a\nb", "a\nb\nc")
+    assert_true(not ok, "line count change must fail")
+
+
 @test
 def test_ev_comparison_suppresses_gto_mixed_taken_action():
     """Formatter: do not show EV loss for a solver-approved mixed action.
@@ -4850,16 +5058,15 @@ def _register_snapshot_tests():
 
                 expected = strip_timing(gto_path.read_text())
                 if actual != expected:
-                    exp_lines = expected.split("\n")
-                    act_lines = actual.split("\n")
-                    for i, (el, al) in enumerate(zip(exp_lines, act_lines)):
-                        if el != al:
-                            raise AssertionError(
-                                f"GTO text mismatch at line {i+1}:\n"
-                                f"  expected: {el[:120]}\n"
-                                f"  actual:   {al[:120]}"
-                            )
-                    assert_eq(len(act_lines), len(exp_lines), "GTO text line count mismatch")
+                    # Tolerate tiny solver drift in EV (bb) / frequency (%);
+                    # combos counts, action sequences, ranges and line count
+                    # are still compared exactly. A fresh worktree that misses
+                    # the snapshot .gto_cache re-fetches live and wobbles the
+                    # last digit (±0.01bb / ±0.2pp); that is not a regression.
+                    from gto_text_compare import gto_text_matches
+                    ok, msg = gto_text_matches(expected, actual)
+                    if not ok:
+                        raise AssertionError(f"GTO text mismatch: {msg}")
             _test.__name__ = f"test_snapshot_l2_gto_{h}"
             _test.__doc__ = f"Snapshot L2-GTO: {h} analyze_hand_full() matches stored output."
             return _test
