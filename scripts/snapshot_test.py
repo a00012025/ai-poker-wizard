@@ -248,26 +248,21 @@ def run_layer2_gto(snapshot: dict) -> tuple[bool, str]:
     expected_stripped = strip_timing(expected_text)
     actual_stripped = strip_timing(actual_text)
 
-    if actual_stripped != expected_stripped:
-        # Find first difference for helpful error
-        exp_lines = expected_stripped.split("\n")
-        act_lines = actual_stripped.split("\n")
-        for i, (el, al) in enumerate(zip(exp_lines, act_lines)):
-            if el != al:
-                return False, (
-                    f"GTO text mismatch at line {i+1}:\n"
-                    f"  expected: {el[:120]}\n"
-                    f"  actual:   {al[:120]}"
-                )
-        if len(exp_lines) != len(act_lines):
-            return False, f"GTO text line count: expected {len(exp_lines)}, got {len(act_lines)}"
-        return False, "GTO text differs (unknown location)"
+    # Tolerate tiny solver drift in EV (bb) / frequency (%) values; combos
+    # counts, action sequences, ranges and line count are still exact. Without
+    # the snapshot .gto_cache (e.g. a fresh worktree) the live re-fetch wobbles
+    # the last digit (±0.01bb / ±0.2pp), which is not a regression.
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches(expected_stripped, actual_stripped)
+    if not ok:
+        return False, f"GTO text mismatch: {msg}"
 
     if expected_compact and actual_compact:
         expected_c = strip_timing(expected_compact)
         actual_c = strip_timing(actual_compact)
-        if actual_c != expected_c:
-            return False, "GTO compact text mismatch"
+        ok_c, msg_c = gto_text_matches(expected_c, actual_c)
+        if not ok_c:
+            return False, f"GTO compact text mismatch: {msg_c}"
 
     return True, "OK"
 

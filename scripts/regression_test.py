@@ -257,6 +257,77 @@ def test_visual_attribution_collapses_opponent_badge():
     assert_eq(resolved[2]["size"], 12.5)
 
 
+# ── GTO snapshot text comparison tolerance ──
+#
+# Solver values wobble in the last digit between runs / cache states (a fresh
+# worktree that misses the snapshot .gto_cache re-fetches live and drifts
+# ±0.01bb / ±0.2pp). The strategy/structure is the contract, not the last
+# digit — so the L2 comparator tolerates tiny EV (bb) and frequency/equity (%)
+# drift while keeping combos counts, action sequences, ranges, and line count
+# exact. See _gto_text_compare.gto_text_matches.
+
+
+@test
+def test_gto_text_compare_exact_match():
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("EV: 7.57bb\nFold: 42.0%", "EV: 7.57bb\nFold: 42.0%")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_tolerates_ev_drift():
+    """0.01bb EV drift (H2504) is within tolerance => match."""
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("  EV: 7.57bb | Equity: 64.2%",
+                               "  EV: 7.56bb | Equity: 64.2%")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_tolerates_frequency_drift():
+    """0.2pp frequency drift (H2505) is within tolerance => match."""
+    from gto_text_compare import gto_text_matches
+    ok, msg = gto_text_matches("  Fold: 42.0%（22 combos）",
+                               "  Fold: 42.2%（22 combos）")
+    assert_true(ok, msg)
+
+
+@test
+def test_gto_text_compare_rejects_large_ev_drift():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("EV: 7.57bb", "EV: 7.70bb")
+    assert_true(not ok, "0.13bb EV drift must fail")
+
+
+@test
+def test_gto_text_compare_rejects_large_frequency_drift():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("Fold: 42.0%", "Fold: 43.0%")
+    assert_true(not ok, "1.0pp frequency drift must fail")
+
+
+@test
+def test_gto_text_compare_rejects_combos_count_change():
+    """Combos counts are part of the structure — compared exactly."""
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("Fold: 42.0%（22 combos）", "Fold: 42.2%（23 combos）")
+    assert_true(not ok, "combos count change must fail even within freq tolerance")
+
+
+@test
+def test_gto_text_compare_rejects_structural_change():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("  Fold: 42.0%（22 combos）", "  Call: 42.0%（22 combos）")
+    assert_true(not ok, "action label change must fail")
+
+
+@test
+def test_gto_text_compare_rejects_line_count_change():
+    from gto_text_compare import gto_text_matches
+    ok, _ = gto_text_matches("a\nb", "a\nb\nc")
+    assert_true(not ok, "line count change must fail")
+
+
 @test
 def test_ev_comparison_suppresses_gto_mixed_taken_action():
     """Formatter: do not show EV loss for a solver-approved mixed action.
@@ -4987,16 +5058,15 @@ def _register_snapshot_tests():
 
                 expected = strip_timing(gto_path.read_text())
                 if actual != expected:
-                    exp_lines = expected.split("\n")
-                    act_lines = actual.split("\n")
-                    for i, (el, al) in enumerate(zip(exp_lines, act_lines)):
-                        if el != al:
-                            raise AssertionError(
-                                f"GTO text mismatch at line {i+1}:\n"
-                                f"  expected: {el[:120]}\n"
-                                f"  actual:   {al[:120]}"
-                            )
-                    assert_eq(len(act_lines), len(exp_lines), "GTO text line count mismatch")
+                    # Tolerate tiny solver drift in EV (bb) / frequency (%);
+                    # combos counts, action sequences, ranges and line count
+                    # are still compared exactly. A fresh worktree that misses
+                    # the snapshot .gto_cache re-fetches live and wobbles the
+                    # last digit (±0.01bb / ±0.2pp); that is not a regression.
+                    from gto_text_compare import gto_text_matches
+                    ok, msg = gto_text_matches(expected, actual)
+                    if not ok:
+                        raise AssertionError(f"GTO text mismatch: {msg}")
             _test.__name__ = f"test_snapshot_l2_gto_{h}"
             _test.__doc__ = f"Snapshot L2-GTO: {h} analyze_hand_full() matches stored output."
             return _test
