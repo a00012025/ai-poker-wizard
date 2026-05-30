@@ -107,6 +107,35 @@ accuracy now.
 
 ---
 
+## Full-pipeline precision/recall (test 718, all measured)
+
+| segment | hands | correct via Gemini re-parse | correct if OCR kept |
+|---|---|---|---|
+| high-conf OCR emit | 573 | — (OCR used) | **557 (97.2%)** |
+| confidence_abstain | 64 | **24 (38%)** | **40 (62%)** |
+| true parse_none | 81 | **24 (30%)** | 0 (no OCR hand) |
+
+- **Deterministic OCR alone:** 97.2% precision @ 79.8% recall (573/718 emitted).
+- **Full pipeline @ ~100% recall:**
+  - naive (route all low-conf → Gemini): (557+24+24)/718 = **84.3%**
+  - best (keep OCR on abstain, Gemini only on parse_none): (557+40+24)/718 = **86.5%**
+- vs target **99%@95% → ~12–13 pp precision short.**
+
+### KEY NEW FINDING — the Gemini fallback is NET-NEGATIVE on the abstain set
+On the 64 confidence-abstained hands, **keeping the OCR answer is correct 40×,
+but full Gemini re-parse is correct only 24×** — the fallback DESTROYS 16 correct
+hands by flipping OCR's right position/board fields. (Gemini only helps on true
+parse_none, where OCR produced no hand: 0 → 24.) This is the same failure the
+existing `cards-only fallback` mitigates (keep OCR structure, re-read only
+hero_hand) but it doesn't fire on all abstains.
+
+⇒ **Actionable, zero-cost precision lever:** production should default abstained-
+but-present-OCR hands to *keep OCR / cards-only fallback*, NOT full Gemini
+re-parse. That alone lifts full-pipeline precision 84.3% → 86.5%. This is more
+real than broadening the VLM trigger (which was net-negative).
+
+---
+
 ## Honest assessment of 99%@95%
 
 The v4 calibrator coverage curve on the test set:
