@@ -524,6 +524,32 @@ def _display_pot_pct(pct: float) -> float:
     return pct
 
 
+def _collapse_allin_into_call(af: dict, display_sol: dict) -> dict:
+    """Fold all-in frequency into Call for facing-an-all-in spots.
+
+    When hero is facing a villain all-in, calling commits every chip to a
+    showdown — the same real outcome as the solver's "All-in" line.  The solver
+    models a deeper stack where villain's bet could still be raised (so it
+    offers Fold / Call / All-in as distinct options), but once villain is
+    committed, Call and All-in collapse into one real action.  Summing the
+    all-in frequency into Call lets the deviation check treat a call as
+    matching the GTO commit, instead of flagging it against a raise that
+    cannot happen. H3459.
+    """
+    allin_codes = {
+        a["action"]["code"]
+        for a in display_sol.get("action_solutions", [])
+        if a["action"].get("allin")
+    }
+    if not allin_codes:
+        return af
+    merged: dict[str, float] = {}
+    for code, freq in af.items():
+        key = "C" if code in allin_codes else code
+        merged[key] = merged.get(key, 0.0) + freq
+    return merged
+
+
 def _solver_action_pot_pct(solution: dict, action_code: str | None) -> float | None:
     """Return the solver bucket's pot percentage for an action code."""
     if not solution or not action_code:
@@ -1499,6 +1525,12 @@ def _run_analysis(hand: dict) -> dict:
                     "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
                     "taken_code": taken_code,
                     "actual_pot_pct": actual_pot_pct,
+                    # True when the immediately preceding action was an
+                    # opponent all-in.  Hero is facing a shove: calling commits
+                    # every chip to showdown (same real outcome as the solver's
+                    # "All-in" line), so a call here must not be flagged as a
+                    # deviation from a raise that cannot exist. H3459.
+                    "facing_allin": _prev_allin,
                     # Snapshot of every prior action on this street so the
                     # spot categorizer can tell a fresh c-bet apart from a
                     # response to a donk/probe/check-raise. Copy because
@@ -1568,7 +1600,14 @@ def _run_analysis(hand: dict) -> dict:
             # the original action_type might be "R7" that got normalized to RAI
             if taken_code == "C" and _prev_allin:
                 all_in_resolved = True
-            _prev_allin = taken_code == "RAI" or action_type.startswith("AI")
+            # A sized all-in keeps its R{size} code, so rely on the explicit
+            # ``allin`` flag (set by the parser) in addition to the RAI/AI
+            # code forms. H3459.
+            _prev_allin = (
+                taken_code == "RAI"
+                or action_type.startswith("AI")
+                or bool(act.get("allin"))
+            )
 
         # After processing all actions on this street, check for incomplete
         # check-throughs.  When the parsed JSON only records one player's
@@ -2312,6 +2351,19 @@ def _run_analysis(hand: dict) -> dict:
                         if hd:
                             af = hd.get("actions_total_frequencies", {})
                         break
+                # Hero calling a villain all-in commits every chip to a
+                # showdown — the same real outcome as the solver's "All-in"
+                # line.  The solver models a deeper stack where villain's bet
+                # could still be raised (Fold / Call / All-in), but here villain
+                # is already committed, so Call and All-in collapse to one real
+                # action.  Merge the all-in frequency into Call so the call is
+                # not flagged as a deviation from a raise that cannot happen,
+                # and skip the (equally spurious) EV-loss check. H3459.
+                facing_allin_call = (
+                    bool(spot.get("facing_allin")) and taken_code == "C"
+                )
+                if af and facing_allin_call:
+                    af = _collapse_allin_into_call(af, display_sol)
                 if af:
                     top_code = max(af, key=af.get)
                     gto_top_freq = af[top_code]
@@ -2331,7 +2383,7 @@ def _run_analysis(hand: dict) -> dict:
                 #   ❌ if GTO top action ≥ 80% and hero took a different action
                 is_bad = False
                 ev_loss = 0.0
-                if ev_note:
+                if ev_note and not facing_allin_call:
                     m = re.search(r"EV 損失 ([\d.]+)bb", ev_note)
                     ev_loss = float(m.group(1)) if m else 0
                     if ev_loss >= 0.5:

@@ -1763,6 +1763,13 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             act_dict = {"position": pos, "action": act_code}
             if size is not None:
                 act_dict["size"] = size
+            # A sized all-in keeps the absolute R{size} code (so solver
+            # action-matching and golden snapshots are unchanged), but we tag
+            # it explicitly so downstream analysis knows the bettor is committed
+            # — a player who calls this is calling an all-in, not facing a bet
+            # they could still raise. H3459 (SB turn shove "Bet 17.1 / All-In").
+            if action_text == "all-in":
+                act_dict["allin"] = True
             actions.append(act_dict)
 
             # Track folds
