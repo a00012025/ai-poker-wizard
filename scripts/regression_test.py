@@ -5701,6 +5701,24 @@ def test_followup_question_not_parsed_as_hand():
               False, "H2672 BB question should not look like a new hand")
     assert_eq(session._text_looks_like_hand("H2489 hero 的翻牌範圍"),
               False, "Hxxx hero question should not look like a new hand")
+    # ICM stack-distribution follow-up: digits like 37/42/76 in stack lists
+    # must NOT be treated as poker hands (production timeout on 2026-05-30).
+    icm_followup = (
+        "那 icm final table 剩餘 7 人，stack size 分布從 utg 開始為 "
+        "12,14,37,15,42,11,7 這時當 hj raise hero co call/raise/all in range 如何"
+    )
+    assert_eq(session._text_looks_like_hand(icm_followup), False,
+              "ICM stack-distribution follow-up should not look like a new hand")
+    # Bare non-pair digit token (e.g., "76" without s/o suffix) plus an
+    # action word should NOT count as a hand — proper hand notation requires
+    # a suit/offsuit marker for non-pairs.
+    assert_eq(session._text_looks_like_hand("對手 76 持有 raise 範圍"),
+              False, "Bare '76' (no s/o suffix) should not look like a hand")
+    # Numeric pairs (22-99) and suited/offsuit digit pairs are still hands.
+    assert_eq(session._text_looks_like_hand("hero 77 raise"),
+              True, "Numeric pair '77' + action is a hand description")
+    assert_eq(session._text_looks_like_hand("hero 76s raise"),
+              True, "Suited digit pair '76s' + action is a hand description")
 
 
 @test

@@ -2283,8 +2283,18 @@ class GeminiSessionManager:
         has_board = bool(re.search(r'[akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣]', t))
         if has_board:
             return True
-        # Specific hand + action (e.g., "TT raise", "AKs open", "66 call")
-        has_hand = bool(re.search(r'\b[akqjt2-9]{2}[so]?\b', t))
+        # Specific hand + action (e.g., "TT raise", "AKs open", "66 call").
+        # Bare digit pairs without an s/o suffix are only valid as same-rank
+        # pairs (22-99); otherwise tournament stack lists like "37,15,42"
+        # get mistaken for hands.
+        has_hand = bool(re.search(
+            r'\b(?:'
+            r'[akqjt][akqjt2-9][so]?'      # at least one face rank
+            r'|22|33|44|55|66|77|88|99'    # numeric pair
+            r'|[2-9][2-9][so]'             # numeric non-pair requires s/o
+            r')\b',
+            t,
+        ))
         has_action = bool(re.search(
             r'\b(raise|call|fold|open|3bet|4bet|limp|all.?in|shove|jam)\b', t, re.I
         )) or bool(re.search(r'(加注|跟注|棄牌|全下)', t))
