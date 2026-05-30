@@ -22,6 +22,7 @@ analysis.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import TypedDict
@@ -319,14 +320,240 @@ def _calibrator_features(parser_output: dict) -> list[float]:
     ]
 
 
+_V2_FEATURES_PATH = Path("data/calibrator/v2_features.txt")
+_POSTFLOP_LOSS_MAX = int(os.environ.get("OCR_POSTFLOP_COLLAPSE_LOSS_MAX", "4"))
+
+
+def _load_v2_feature_names() -> list[str]:
+    """Read v2 schema; lines starting with '#' or blank are comments."""
+    if not _V2_FEATURES_PATH.exists():
+        return []
+    names: list[str] = []
+    for line in _V2_FEATURES_PATH.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        names.append(s)
+    return names
+
+
+_V2_FEATURE_NAMES = _load_v2_feature_names()
+
+
+def _top2_margin(top2: list) -> float:
+    if not top2 or len(top2) < 2:
+        return 0.0
+    try:
+        return float(top2[0][1]) - float(top2[1][1])
+    except (TypeError, IndexError):
+        return 0.0
+
+
+def _hero_detail(parser_output: dict, idx: int) -> dict:
+    details = parser_output.get("hero_card_details") or []
+    if idx < len(details) and isinstance(details[idx], dict):
+        return details[idx]
+    return {}
+
+
+def _max_postflop_collapse_loss(diag: dict) -> int:
+    pre = diag.get("street_entries_pre_collapse_count") or {}
+    post = diag.get("street_entries_count") or {}
+    worst = 0
+    for street, p in pre.items():
+        if p is None:
+            continue
+        loss = int(p) - int(post.get(street) or 0)
+        if loss > worst:
+            worst = loss
+    return worst
+
+
+def _calibrator_features_v2(parser_output: dict) -> list[float]:
+    """Build the v2 feature vector. First 27 entries are byte-identical
+    to v1; remaining entries capture post-Phase-10 signals (ensemble,
+    per-card top-2 margins, rank-source flags, raw-vs-masked suit swaps,
+    structural collapse demote-to-Gemini trigger).
+    """
+    base = _calibrator_features(parser_output)
+    diag = parser_output.get("diagnostics") or {}
+    parts = parser_output.get("confidence_parts") or {}
+    h0 = _hero_detail(parser_output, 0)
+    h1 = _hero_detail(parser_output, 1)
+    details = parser_output.get("hero_card_details") or []
+
+    ensemble_used_flag = 1.0 if diag.get("ensemble_used") else 0.0
+    ensemble_confs = [
+        float(d.get("ensemble_conf") or 0.0)
+        for d in details
+        if d.get("ensemble_conf")
+    ]
+    ensemble_conf_min = min(ensemble_confs) if ensemble_confs else 0.0
+    agreed_counts = [
+        sum(1 for v in (d.get("ensemble_votes") or [])
+            if v.get("label") and v.get("label") == d.get("ensemble_label"))
+        for d in details
+        if d.get("ensemble_used")
+    ]
+    ensemble_votes_agreed = float(min(agreed_counts)) if agreed_counts else 0.0
+
+    raw_vs_masked_swap = any(
+        d.get("raw_suit") and d.get("masked_suit")
+        and d["raw_suit"] != d["masked_suit"]
+        for d in details
+    )
+
+    collapse_loss = _max_postflop_collapse_loss(diag)
+    demote_fired = 1.0 if collapse_loss > _POSTFLOP_LOSS_MAX else 0.0
+
+    pre = diag.get("preflop_entries_pre_collapse_count")
+    post = diag.get("preflop_entries_count")
+    pre_loss = (
+        max(int(pre - post), 0)
+        if isinstance(pre, int) and isinstance(post, int)
+        else 0
+    )
+
+    hero_min_conf = min(
+        (float(d.get("conf") or 0.0) for d in details),
+        default=0.0,
+    ) if details else 0.0
+
+    extras = [
+        ensemble_used_flag,
+        ensemble_conf_min,
+        ensemble_votes_agreed,
+        _top2_margin(h0.get("rank_top2") or []),
+        _top2_margin(h0.get("suit_top2") or []),
+        _top2_margin(h1.get("rank_top2") or []),
+        _top2_margin(h1.get("suit_top2") or []),
+        1.0 if h0.get("rank_source") == "corner_ocr" else 0.0,
+        1.0 if h1.get("rank_source") == "corner_ocr" else 0.0,
+        1.0 if raw_vs_masked_swap else 0.0,
+        demote_fired,
+        float(pre_loss) * demote_fired,
+        hero_min_conf,
+    ]
+    return base + extras
+
+
+_V3_FEATURES_PATH = Path("data/calibrator/v3_features.txt")
+
+
+def _load_v3_feature_names() -> list[str]:
+    if not _V3_FEATURES_PATH.exists():
+        return []
+    names: list[str] = []
+    for line in _V3_FEATURES_PATH.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        names.append(s)
+    return names
+
+
+_V3_FEATURE_NAMES = _load_v3_feature_names()
+
+
+def _board_count_vs_street_mismatch(
+    board_n: int, street_entries: dict
+) -> float:
+    """1.0 when the detected board-card count is inconsistent with the
+    streets the action panel reached (e.g. river action seen but < 5 board
+    cards localized), or when the count is structurally invalid (1 or 2
+    cards never form a legal board). 0.0 otherwise (including the preflop
+    no-board / no-street case)."""
+    has_flop = int(street_entries.get("flop") or 0) > 0
+    has_turn = int(street_entries.get("turn") or 0) > 0
+    has_river = int(street_entries.get("river") or 0) > 0
+    expected = 5 if has_river else 4 if has_turn else 3 if has_flop else 0
+    if board_n < expected:
+        return 1.0
+    if board_n not in (0, 3, 4, 5):
+        return 1.0
+    return 0.0
+
+
+def _calibrator_features_v3(parser_output: dict) -> list[float]:
+    """Build the v3 feature vector. First 40 entries are byte-identical to
+    v2; the 10 new entries surface board-pipeline confidence (board_wrong
+    is 46% of wrong emits) and position-derivation provenance (position_wrong
+    is 39%) — both blind spots in the v2 schema.
+
+    Robust to v2-era parser_output that lacks ``board_card_details`` and the
+    position diagnostics: those default to neutral (non-suspicious) values so
+    the vector width stays at 50.
+    """
+    base = _calibrator_features_v2(parser_output)
+    diag = parser_output.get("diagnostics") or {}
+    board = parser_output.get("board_card_details") or []
+    street_entries = diag.get("street_entries_count") or {}
+
+    # ---- board features ----
+    board_n = len(board)
+    if board_n:
+        board_min_conf = min(float(d.get("conf") or 0.0) for d in board)
+        board_rank_margin_min = min(
+            _top2_margin(d.get("rank_top2") or []) for d in board
+        )
+        board_suit_margin_min = min(
+            _top2_margin(d.get("suit_top2") or []) for d in board
+        )
+        board_corner_disagree = float(
+            sum(1 for d in board if d.get("corner_disagree"))
+        )
+    else:
+        # No board (preflop) cannot be a board error — keep features neutral.
+        board_min_conf = 1.0
+        board_rank_margin_min = 1.0
+        board_suit_margin_min = 1.0
+        board_corner_disagree = 0.0
+    board_mismatch = _board_count_vs_street_mismatch(board_n, street_entries)
+
+    # ---- position features ----
+    src = diag.get("hero_position_source")
+    seat_idx = diag.get("hero_seat_index")
+    players_final = diag.get("players_at_table_final")
+    if (
+        isinstance(seat_idx, int)
+        and isinstance(players_final, int)
+        and players_final > 1
+    ):
+        hero_seat_y_norm = max(0.0, min(1.0, seat_idx / (players_final - 1)))
+    else:
+        hero_seat_y_norm = 0.0
+    # Default to consistent (1.0) when the field is absent — absence of a
+    # detected blind cannot contradict the position.
+    blind_consistent = 1.0 if diag.get("hero_blind_consistent", True) else 0.0
+
+    extras = [
+        board_min_conf,
+        board_rank_margin_min,
+        board_suit_margin_min,
+        board_corner_disagree,
+        board_mismatch,
+        1.0 if src == "preflop_index_order" else 0.0,
+        1.0 if src == "hero_fold_recovery" else 0.0,
+        1.0 if src == "blind_column" else 0.0,
+        hero_seat_y_norm,
+        blind_consistent,
+    ]
+    return base + extras
+
+
 class CalibratorScorer:
-    """Lazy-loading wrapper around the saved random-forest calibrator.
+    """Lazy-loading wrapper around the trained calibrator.
+
+    Auto-detects v2 (RF + GB + LR ensemble on the v2 feature vector) when
+    ``rf_model_v2.joblib`` is present in ``calibrator_dir``. Otherwise
+    loads the legacy v1 RF model and v1 feature vector. Override via
+    ``OCR_CALIBRATOR_VERSION`` (``"v1"`` or ``"v2"``).
 
     ``score(parser_output, hand_id=...)`` returns ``p(correct)`` in
     [0, 1]. When an OOF predictions file is available and the
     ``hand_id`` is present in it, the OOF value is returned (so the
-    test bucket gets honest, out-of-fold scores).  Otherwise the
-    full-fit model is invoked.  Returns None when neither source is
+    test bucket gets honest, out-of-fold scores). Otherwise the
+    full-fit model is invoked. Returns None when neither source is
     available so callers can fall back to the rule-based gate.
     """
 
@@ -334,28 +561,77 @@ class CalibratorScorer:
         self,
         model_path: str | Path = "data/calibrator/rf_model.joblib",
         oof_path: str | Path = "data/calibrator/rf_oof.json",
+        *,
+        calibrator_dir: str | Path | None = None,
     ) -> None:
-        self._model_path = Path(model_path)
-        self._oof_path = Path(oof_path)
+        cal_dir = Path(calibrator_dir) if calibrator_dir else None
+        version_env = os.environ.get("OCR_CALIBRATOR_VERSION", "").lower()
+        base = cal_dir or Path("data/calibrator")
+        rf_v2 = base / "rf_model_v2.joblib"
+        rf_v3 = base / "rf_model_v3.joblib"
+
+        if version_env in ("v1", "v2", "v3"):
+            self.version = version_env
+        elif rf_v3.exists():
+            self.version = "v3"
+        elif rf_v2.exists():
+            self.version = "v2"
+        else:
+            self.version = "v1"
+
+        if self.version in ("v2", "v3"):
+            sfx = self.version
+            self._rf_path = base / f"rf_model_{sfx}.joblib"
+            self._gb_path = base / f"gb_model_{sfx}.joblib"
+            self._lr_path = base / f"lr_model_{sfx}.joblib"
+            self._oof_path = base / f"oof_{sfx}.json"
+            self._iso_path = base / f"isotonic_{sfx}.joblib"
+            self._feature_fn = (
+                _calibrator_features_v3 if self.version == "v3"
+                else _calibrator_features_v2
+            )
+        else:
+            self._model_path = Path(model_path) if not cal_dir \
+                else cal_dir / "rf_model.joblib"
+            self._oof_path = Path(oof_path) if not cal_dir \
+                else cal_dir / "rf_oof.json"
+            self._iso_path = None
+
         self._bundle = None
+        self._rf = None
+        self._gb = None
+        self._lr_bundle = None
+        self._iso = None
         self._oof: dict[str, float] | None = None
 
     def _load(self) -> None:
-        if self._bundle is None:
-            try:
-                import joblib  # type: ignore
-                self._bundle = (
-                    joblib.load(self._model_path)
-                    if self._model_path.exists()
-                    else {"model": None}
-                )
-            except ImportError:
-                self._bundle = {"model": None}
         if self._oof is None:
             if self._oof_path.exists():
                 self._oof = json.loads(self._oof_path.read_text())
             else:
                 self._oof = {}
+        try:
+            import joblib  # type: ignore
+        except ImportError:
+            self._bundle = {"model": None}
+            return
+        if self.version in ("v2", "v3"):
+            if self._rf is None and self._rf_path.exists():
+                self._rf = joblib.load(self._rf_path)["model"]
+            if self._gb is None and self._gb_path.exists():
+                self._gb = joblib.load(self._gb_path)["model"]
+            if self._lr_bundle is None and self._lr_path.exists():
+                self._lr_bundle = joblib.load(self._lr_path)
+            if (self._iso is None and self._iso_path is not None
+                    and self._iso_path.exists()):
+                self._iso = joblib.load(self._iso_path)["model"]
+        else:
+            if self._bundle is None:
+                self._bundle = (
+                    joblib.load(self._model_path)
+                    if self._model_path.exists()
+                    else {"model": None}
+                )
 
     def score(
         self, parser_output: dict, *, hand_id: str | None = None,
@@ -364,11 +640,27 @@ class CalibratorScorer:
         # Prefer OOF score for honest eval on training-bucket hands.
         if hand_id and self._oof and hand_id in self._oof:
             return float(self._oof[hand_id])
+        import numpy as np  # type: ignore
+        if self.version in ("v2", "v3"):
+            if not (self._rf and self._gb and self._lr_bundle):
+                return None
+            feats = np.array([self._feature_fn(parser_output)])
+            p_rf = float(self._rf.predict_proba(feats)[0, 1])
+            p_gb = float(self._gb.predict_proba(feats)[0, 1])
+            scaler = self._lr_bundle["scaler"]
+            p_lr = float(
+                self._lr_bundle["model"].predict_proba(
+                    scaler.transform(feats)
+                )[0, 1]
+            )
+            avg = (p_rf + p_gb + p_lr) / 3.0
+            if self._iso is not None:
+                avg = float(self._iso.predict([avg])[0])
+            return avg
         model = (self._bundle or {}).get("model")
         if model is None:
             return None
         feats = _calibrator_features(parser_output)
-        import numpy as np  # type: ignore
         prob = float(model.predict_proba(np.array([feats]))[0, 1])
         return prob
 

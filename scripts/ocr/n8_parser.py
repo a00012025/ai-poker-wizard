@@ -6,6 +6,7 @@ assembly into the JSON format expected by analyze_hand_full().
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import cv2
@@ -151,6 +152,58 @@ def _board_cards_supported_by_panel(
             max_cards = max(max_cards, 5)
     return board_cards[:max_cards]
 
+def _vlm_recheck_enabled() -> bool:
+    return os.environ.get("OCR_VLM_RECHECK", "").lower() in ("1", "true", "on")
+
+
+def _maybe_vlm_recheck(
+    image_bytes, hand, confidence_parts, diagnostics, table_result, columns,
+    *, recheck_fn=None,
+):
+    """Apply the Phase 11.D-c VLM structural re-check when enabled.
+
+    On a suspect hand, asks a clean VLM oracle (gemini-3.5-flash) for the
+    true seat count + hero position. Three outcomes:
+      - VLM agrees with the parser → keep the parse (just flag agreement).
+      - VLM disagrees → re-derive via ``force_table_size``; if the re-derived
+        hero_position now matches the VLM, use the corrected hand.
+      - Still disagrees after re-derivation → ABSTAIN (return hand=None) so a
+        confident-but-wrong structure never emits; production routes these to
+        the full Gemini fallback instead.
+
+    ``recheck_fn`` is injectable for tests; defaults to the live VLM call.
+    """
+    if hand is None or not _vlm_recheck_enabled():
+        return hand, confidence_parts, diagnostics
+    from .vlm_recheck import is_suspect, recheck_structure
+    if not is_suspect({"hand": hand}):
+        return hand, confidence_parts, diagnostics
+    rc = (recheck_fn or recheck_structure)(image_bytes)
+    if not rc:
+        diagnostics["vlm_recheck"] = "no_result"
+        return hand, confidence_parts, diagnostics
+    vlm_ts = rc["players_at_table"]
+    vlm_pos = rc["hero_position"]
+    diagnostics["vlm_recheck"] = dict(rc)
+    if (hand.get("players_at_table") == vlm_ts
+            and hand.get("hero_position") == vlm_pos):
+        diagnostics["vlm_recheck_outcome"] = "agree"
+        return hand, confidence_parts, diagnostics
+    hand2, cp2, diag2 = _assemble_hand(
+        table_result, columns, force_table_size=vlm_ts,
+    )
+    diag2["vlm_recheck"] = dict(rc)
+    if hand2 is not None and hand2.get("hero_position") == vlm_pos:
+        diag2["vlm_recheck_outcome"] = "corrected"
+        return hand2, cp2, diag2
+    # Residual disagreement → abstain rather than emit a confident wrong parse.
+    diagnostics["vlm_recheck_outcome"] = "abstain"
+    cp = dict(confidence_parts)
+    cp["ocr_confidence"] = 0.0
+    cp["card_confidence"] = 0.0
+    return None, cp, diagnostics
+
+
 def parse_n8_screenshot(image_bytes: bytes) -> dict:
     """Parse N8 replay screenshot into hand JSON.
 
@@ -194,6 +247,15 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
 
     # Step 4: assemble hand JSON
     hand, confidence_parts, diagnostics = _assemble_hand(table_result, columns)
+
+    # Step 4b (Phase 11.D-c): selective VLM structural re-check. Flag-gated;
+    # only fires on suspect (all-in/multiway) hands. Fixes the confident
+    # table-size/position errors the row-counting estimate can't catch.
+    hand, confidence_parts, diagnostics = _maybe_vlm_recheck(
+        image_bytes, hand, confidence_parts, diagnostics,
+        table_result, columns,
+    )
+
     duplicate_cards = _duplicate_known_cards(hand)
     if duplicate_cards:
         diagnostics["duplicate_cards"] = duplicate_cards
@@ -223,6 +285,8 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
         "card_confidence": confidence_parts.get("card_confidence", 0.0),
         "confidence_parts": confidence_parts,
         "diagnostics": diagnostics,
+        "hero_card_details": table_result.get("hero_card_details") or [],
+        "board_card_details": table_result.get("board_card_details") or [],
         "safe_emit_reason": safe_emit_reason,
     }
 
@@ -1051,6 +1115,7 @@ def _build_diagnostics(
         "estimate_used_reaction_signal": estimate_used_reaction_signal,
         "dealer_button_seat": table_result.get("dealer_button_seat"),
         "dealer_button_conf": float(table_result.get("dealer_button_conf") or 0.0),
+        "ensemble_used": bool(table_result.get("ensemble_used")),
         "preflop_entries_count": len(action_entries or []),
         "preflop_entries_pre_collapse_count": (
             preflop_col.get("entries_pre_collapse_count") if preflop_col else None
@@ -1060,8 +1125,17 @@ def _build_diagnostics(
     }
 
 
-def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None, dict, dict]:
+def _assemble_hand(
+    table_result: dict,
+    columns: list[dict],
+    *,
+    force_table_size: int | None = None,
+) -> tuple[dict | None, dict, dict]:
     """Assemble hand JSON from parsed table and panel data.
+
+    ``force_table_size`` (Phase 11.D-c) overrides the row-counting table-size
+    estimate with a trusted VLM value, re-deriving positions through the
+    existing path.
 
     Uses position-order-based inference: in N8 PreFlop column, entries
     appear in strict position order (UTG first, BB last). Combined with
@@ -1152,6 +1226,15 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
 
     # Determine table size from entry count
     players_at_table_raw, estimate_used_reaction_signal = _estimate_table_size(action_entries)
+
+    # VLM structural override (Phase 11.D-c): the row-counting estimate fails
+    # confidently on all-in/multiway hands. When a gemini-3.5-flash re-check
+    # supplies the true seat count we trust it (validated clean oracle) and let
+    # the existing, well-tested position-assignment path re-derive everything
+    # from the corrected table size — no bespoke re-alignment needed.
+    if force_table_size is not None:
+        players_at_table_raw = force_table_size
+        estimate_used_reaction_signal = False
     players_at_table = players_at_table_raw
 
     # Natural8 tournament replays in the paired PokerCraft corpus are 8-max.
@@ -1159,7 +1242,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # fragment (often an all-in overlay or caller response), not a real ninth
     # seat.  Cap the N8 parser at eight seats so those fragments stay in the
     # re-action tail instead of shifting all positions through a 9-max order.
-    players_at_table = min(max(players_at_table, 2), 8)
+    # A trusted VLM override may legitimately report 9-max, so only clamp the
+    # heuristic estimate; respect an explicit override up to 9.
+    if force_table_size is not None:
+        players_at_table = min(max(players_at_table, 2), 9)
+    else:
+        players_at_table = min(max(players_at_table, 2), 8)
     first_round_count = players_at_table
 
     # If every visible preflop entry is a fold, action stops once the last
@@ -1174,7 +1262,10 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
         2 <= len(action_entries) < 9
         and all((e.get("action") or "").lower() == "fold" for e in action_entries)
     ):
-        players_at_table = min(len(action_entries) + 1, 8)
+        # A forced (VLM) seat count is authoritative; only adjust the action
+        # string length (first_round_count), not the table size itself.
+        if force_table_size is None:
+            players_at_table = min(len(action_entries) + 1, 8)
         first_round_count = len(action_entries)
 
     diagnostics = _build_diagnostics(
@@ -1192,12 +1283,14 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # entries are re-actions (hero acting again after being raised).
     hero_position = None
     hero_index = None
+    hero_position_source = None
     for i, entry in enumerate(action_entries[:first_round_count]):
         if i < len(pos_order):
             entry["position"] = pos_order[i]
             if entry["type"] == "hero" and hero_position is None:
                 hero_position = pos_order[i]
                 hero_index = i
+                hero_position_source = "preflop_index_order"
 
     # Mark re-action entries (beyond first round)
     for i, entry in enumerate(action_entries[first_round_count:], first_round_count):
@@ -1226,9 +1319,11 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                     elif j < len(pos_order):
                         hero_position = pos_order[j]
                     hero_index = j
+                    hero_position_source = "hero_fold_recovery"
                     break
 
     # Check blinds column for hero position override
+    hero_blind_detected = 0.0
     if blinds_col:
         blinds_entries = blinds_col.get("entries", [])
         for entry in blinds_entries:
@@ -1237,8 +1332,12 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
                 size = entry.get("size")
                 if "sb" in action_text or size == 0.5:
                     hero_position = "SB"
+                    hero_blind_detected = 0.5
+                    hero_position_source = "blind_column"
                 elif "bb" in action_text or size == 1.0:
                     hero_position = "BB"
+                    hero_blind_detected = 1.0
+                    hero_position_source = "blind_column"
 
     # Do not override the action-panel hero position from table dealer-button
     # detection.  The button detector uses fixed seat anchors for table
@@ -1246,6 +1345,26 @@ def _assemble_hand(table_result: dict, columns: list[dict]) -> tuple[dict | None
     # high-confidence button blob maps to the wrong seat.  The action panel is
     # already ordered by preflop seat and gives the direct hero row; overriding
     # it shifted otherwise exact 8-max hands to BB.
+
+    # Surface how hero_position was derived + blind-consistency for the
+    # calibrator. position_wrong is 39% of wrong emits and the v2 schema is
+    # blind to it (position was only "assigned or not"). The derivation
+    # source, hero's seat ordinality, and whether a detected blind agrees
+    # with the assigned position give the calibrator something to reject on.
+    diagnostics["hero_position_source"] = hero_position_source
+    diagnostics["hero_seat_index"] = hero_index
+    diagnostics["hero_blind_detected"] = hero_blind_detected
+    expected_blind = (
+        1.0 if hero_position == "BB"
+        else 0.5 if hero_position == "SB"
+        else 0.0
+    )
+    # Consistent when no blind was detected (can't contradict) or the
+    # detected blind matches the position's expected blind. A detected
+    # blind that disagrees with the assigned position is the tell.
+    diagnostics["hero_blind_consistent"] = (
+        hero_blind_detected == 0.0 or hero_blind_detected == expected_blind
+    )
 
     if not hero_position:
         return None, conf_parts, diagnostics
@@ -1557,7 +1676,16 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
     folded_in_streets = set()
 
     runout_after_allin_call = False
+    allin_closed = False
     for col in street_cols:
+        # Once a postflop all-in resolves a street, every later street is a
+        # physical runout with no decisions. The solver-relevant board stops at
+        # the all-in street (matches the hand-history ground truth), so drop the
+        # runout turn/river — the dominant board_wrong cause (27/28) was the
+        # parser appending these visible-but-irrelevant runout cards.
+        if allin_closed:
+            break
+
         name = col["name"].lower()
         entries = col.get("entries", [])
 
@@ -1568,8 +1696,6 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         # parsed panel row; otherwise leave it for Gemini fallback/hints rather
         # than corrupting deterministic hand_exact with phantom runout cards.
         if not entries:
-            if name == "river" and river_card and runout_after_allin_call:
-                streets.append({"card": river_card, "actions": []})
             continue
 
         street = {}
@@ -1647,6 +1773,10 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
         street["actions"] = actions
         if actions:
             streets.append(street)
+            # A called or uncalled all-in closes the decision tree; subsequent
+            # streets are runout only and must not contribute board cards.
+            if pending_all_in:
+                allin_closed = True
 
     return streets
 
