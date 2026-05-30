@@ -49,11 +49,15 @@ def is_suspect(parser_result: dict) -> bool:
         all-in — confident table-size errors cluster there (82% of them).
       - ``reaction``: superset of ``allin`` that ALSO re-checks hands whose
         table size was estimated using the reaction signal
-        (``estimate_used_reaction_signal``). That signal fires precisely on
-        the collapsed-row hands where the row count under-reads seats, which
-        is the residual ~18% of structural errors the all-in trigger misses.
-        Since the override never breaks a correct hand, this is a pure
-        coverage/latency knob.
+        (``estimate_used_reaction_signal``).
+        MEASURED NET-NEGATIVE on the test set (2026-05-30): vs ``allin`` it did
+        NOT reduce position_wrong (stayed 4 — the residual errors are not
+        reaction-signal hands) and demoted 16 emitted-CORRECT hands to
+        parse_none, because the flash re-check sometimes disagrees with a
+        correct parse and the re-derivation can't reconcile it → abstain. The
+        override is NOT 100% safe on correct hands at scale (the "30/30
+        preserved" validation was too small). Keep ``allin`` as the default;
+        this mode is retained for experimentation only.
       - ``all``: re-check every parsable hand (max coverage, max latency).
       - ``off``: never re-check.
 

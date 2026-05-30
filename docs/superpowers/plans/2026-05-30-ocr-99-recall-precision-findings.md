@@ -51,10 +51,26 @@ the residual ~18% of structural errors the all-in trigger misses. Wired
 signal. Override is safe on correct hands (30/30 preserved) → pure
 coverage/latency knob. +5 unit tests (`test_vlm_recheck.py`), all green.
 
-To validate its coverage gain, re-dump with
-`OCR_VLM_RECHECK=1 OCR_VLM_RECHECK_TRIGGER=reaction` and compare `position_wrong`
-against the `allin` baseline (phase11e: position_wrong=4). Not yet run (needs a
-~13-min real-flash dump).
+**MEASURED (real-flash dump, `data/ocr_precision_reaction_test` vs phase11e
+`allin` baseline) — net-negative, so `allin` stays the default:**
+
+| | allin (phase11e) | reaction |
+|---|---|---|
+| position_wrong | 4 | **4 (no change)** |
+| true parse_none | 81 | **96 (+15)** |
+
+Hand-level diff: **16 hands newly demoted to parse_none under `reaction` were
+ALL emitted-CORRECT under `allin`** (0 were wrong). The flash re-check fired on
+16 more correct hands, disagreed, and the re-derivation couldn't reconcile →
+abstain. vlm_recheck outcomes: corrected 17, agree 229, **abstain 20** (16 of
+them previously-correct). This **refutes the D-c handoff's "30/30 preserved,
+pure latency knob" claim** — at scale the override is NOT 100% safe on correct
+hands. In production the 16 go to the Gemini fallback (~30% recovered), so the
+net is ~−11 correct hands for 0 precision gain.
+
+⇒ The `reaction`/`all` triggers are net-negative on the current parser. Keep
+`allin` as the default. The mode is retained as an experimentation knob (and
+the diagnostics wiring is correct), but should not be enabled in production.
 
 ### 3. CardCNN hero-card retrain — INVESTIGATED, NO-SHIP (corpus saturated)
 
@@ -121,9 +137,12 @@ is already done by the Gemini fallback.
 1. **Grow the hard-hand corpus.** Mine confident-wrong hero cards from
    `analysis_snapshots` into `data/cards_v2`, re-split, retrain. This is the
    ONLY thing that lifts rank accuracy past 0.972.
-2. **Validate + default the `reaction` trigger.** Re-dump test with
-   `OCR_VLM_RECHECK_TRIGGER=reaction`; if `position_wrong` drops 4→~1 with no
-   correct-hand regressions, make it the production default.
+2. **Improve the override's abstain logic, not the trigger.** `reaction`/`all`
+   were measured net-negative (above) — broadening the trigger just abstains
+   correct hands when flash disagrees. The lever is making the re-check
+   *trust the parser more* on disagreement (e.g. require flash to be confident,
+   or only override when the parser's own structural signals are weak) so it
+   stops demoting correct hands. Keep `allin` default until then.
 3. **Fix the `retrain-card-classifier` skill** to target the v2 pipeline
    (`data/cards_v2` + `card_classifier_v2.json`), or it will keep retraining a
    model that production doesn't use.
