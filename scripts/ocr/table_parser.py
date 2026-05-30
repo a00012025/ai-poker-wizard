@@ -4,10 +4,18 @@ Extracts board cards, hero cards, player stacks, and table color
 from the upper (table) region of an N8 replay screenshot.
 """
 
+import os
+
 import cv2
 import numpy as np
 
 from .button_detector import detect_button
+
+# Route the hero crop through the multi-crop ensemble when any card's raw
+# confidence (min of rank/suit head) falls below this floor. Picked at 0.50
+# so we only fire on genuinely uncertain reads — confident classifications
+# (the vast majority) take the single-pass path unchanged.
+ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
 
 
 def _detect_table_color(table_region: np.ndarray) -> str:
@@ -215,24 +223,53 @@ def _locate_board_cards(table_region: np.ndarray) -> list[np.ndarray]:
     return crops
 
 
-def _find_board_cards(table_region: np.ndarray) -> list[str]:
-    """Find and identify board cards in the center of the table via CardCNN."""
+def _find_board_cards(
+    table_region: np.ndarray,
+) -> tuple[list[str], list[dict]]:
+    """Find and identify board cards in the center of the table via CardCNN.
+
+    Returns ``(cards, details)`` where ``cards`` is the list of board card
+    labels (e.g. ``["Ks", "9d", "3d"]``) and ``details`` is a parallel
+    list of per-card dicts mirroring the hero-card detail structure
+    (rank, rank_conf, suit, suit_conf, rank_top2, suit_top2, rank_source,
+    conf) plus a ``corner_disagree`` flag set when corner OCR overrode the
+    classifier rank. The calibrator consumes these signals (board
+    classifier confidence, top-2 margins, corner disagreement) to catch
+    board_wrong emits the v2 schema was blind to.
+    """
     from .classifier.infer import CardClassifier
 
     crops = _locate_board_cards(table_region)
     if not crops:
-        return []
+        return [], []
     results = CardClassifier().classify_batch_detailed(crops)
-    cards = []
+    cards: list[str] = []
+    details: list[dict] = []
     for crop, detail in zip(crops, results):
         rank = detail.get("rank")
         suit = detail.get("suit")
+        rank_conf = float(detail.get("rank_conf") or 0.0)
+        suit_conf = float(detail.get("suit_conf") or 0.0)
+        rank_source = "classifier"
+        corner_disagree = False
         corner_rank, corner_conf = _rank_from_corner_ocr(crop)
         if corner_rank and corner_conf >= 0.90 and corner_rank != rank:
+            corner_disagree = True
             rank = corner_rank
+            rank_conf = float(corner_conf)
+            rank_source = "corner_ocr"
+        details.append({
+            "rank": rank, "rank_conf": rank_conf,
+            "suit": suit, "suit_conf": suit_conf,
+            "rank_top2": detail.get("rank_top2", []),
+            "suit_top2": detail.get("suit_top2", []),
+            "rank_source": rank_source,
+            "corner_disagree": corner_disagree,
+            "conf": min(rank_conf, suit_conf),
+        })
         if rank and suit:
             cards.append(f"{rank}{suit}")
-    return cards
+    return cards, details
 
 
 def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
@@ -561,7 +598,7 @@ def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -
 
 def _find_hero_cards(
     table_region: np.ndarray,
-) -> tuple[list[str], float, list[dict]]:
+) -> tuple[list[str], float, list[dict], bool]:
     """Find and identify hero's hole cards via CardCNN.
 
     Returns (cards, confidence, details) where confidence is min over all
@@ -580,10 +617,11 @@ def _find_hero_cards(
     detected), masked == raw and this collapses to a single prediction.
     """
     from .classifier.infer import CardClassifier
+    from .classifier.ensemble import predict_with_ensemble
 
     crops = _locate_hero_cards(table_region)
     if not crops:
-        return [], 0.0, []
+        return [], 0.0, [], False
     crops = [_trim_above_card_edge(c) for c in crops]
     masked_crops = [_mask_win_overlay(c) for c in crops]
     clf = CardClassifier()
@@ -655,12 +693,35 @@ def _find_hero_cards(
             "rank_top2": raw.get("rank_top2", []),
             "suit_top2": masked.get("suit_top2", []),
             "rank_source": rank_source,
+            "raw_suit": raw_suit,
+            "raw_suit_conf": raw_suit_conf,
+            "masked_suit": masked_suit,
+            "masked_suit_conf": masked.get("suit_conf", 0.0),
             "conf": min(rank_conf, suit_conf),
         })
+    ensemble_used = False
+    for i, d in enumerate(details):
+        if d["conf"] >= ENSEMBLE_FLOOR:
+            continue
+        ens = predict_with_ensemble(crops[i], classifier=clf)
+        d["ensemble_label"] = ens["label"]
+        d["ensemble_conf"] = ens["card_conf"]
+        d["ensemble_votes"] = ens["votes"]
+        if ens["label"] and ens["card_conf"] > d["conf"]:
+            ens_rank, ens_suit = ens["label"][0], ens["label"][1]
+            d["rank"] = ens_rank
+            d["suit"] = ens_suit
+            d["rank_conf"] = ens["card_conf"]
+            d["suit_conf"] = ens["card_conf"]
+            d["conf"] = ens["card_conf"]
+            d["ensemble_used"] = True
+            ensemble_used = True
+        else:
+            d["ensemble_used"] = False
     cards = [f"{d['rank']}{d['suit']}" for d in details
              if d["rank"] and d["suit"]]
     conf = min((d["conf"] for d in details), default=0.0)
-    return cards, conf, details
+    return cards, conf, details, ensemble_used
 
 
 def _find_player_stacks(table_region: np.ndarray) -> list[float]:
@@ -742,6 +803,7 @@ def parse_table(table_region: np.ndarray) -> dict:
     if table_region is None or table_region.size == 0:
         return {
             "board_cards": [],
+            "board_card_details": [],
             "hero_cards": [],
             "player_stacks": [],
             "table_color": "unknown",
@@ -758,8 +820,9 @@ def parse_table(table_region: np.ndarray) -> dict:
     else:
         dealer_button = None
         dealer_button_seat, dealer_button_conf = None, 0.0
-    board_cards = _find_board_cards(table_region)
-    hero_cards, hero_card_conf, hero_card_details = _find_hero_cards(table_region)
+    board_cards, board_card_details = _find_board_cards(table_region)
+    hero_cards, hero_card_conf, hero_card_details, hero_ensemble_used = \
+        _find_hero_cards(table_region)
     all_stacks_named = _find_all_stacks(table_region)
     hero_stack = _find_hero_stack(table_region)
 
@@ -768,9 +831,11 @@ def parse_table(table_region: np.ndarray) -> dict:
 
     return {
         "board_cards": board_cards,
+        "board_card_details": board_card_details,
         "hero_cards": hero_cards,
         "hero_card_conf": hero_card_conf,
         "hero_card_details": hero_card_details,
+        "ensemble_used": hero_ensemble_used,
         "hero_stack": hero_stack,
         "player_stacks": all_stacks,
         "named_stacks": all_stacks_named,

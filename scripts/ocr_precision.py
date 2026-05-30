@@ -234,6 +234,9 @@ def _run_one(img_path_str: str) -> dict:
     safe_emit_reason = result.get("safe_emit_reason")
 
     if parsed is None:
+        from ocr.confidence_gate import (
+            _calibrator_features_v2, _calibrator_features_v3,
+        )
         return {
             "hand_id": hand_id,
             "image": str(p),
@@ -242,10 +245,19 @@ def _run_one(img_path_str: str) -> dict:
             "card_confidence": card_conf,
             "confidence_parts": parts,
             "diagnostics": diagnostics,
+            "hero_card_details": result.get("hero_card_details") or [],
+            "board_card_details": result.get("board_card_details") or [],
+            "v2_features": _calibrator_features_v2(result),
+            "v3_features": _calibrator_features_v3(result),
             "safe_emit_reason": safe_emit_reason,
             "elapsed_s": time.time() - t0,
         }
     fields = compare(parsed, gt)
+    from ocr.confidence_gate import (
+        _calibrator_features_v2, _calibrator_features_v3,
+    )
+    v2_features = _calibrator_features_v2(result)
+    v3_features = _calibrator_features_v3(result)
     record = {
         "hand_id": hand_id,
         "image": str(p),
@@ -253,6 +265,10 @@ def _run_one(img_path_str: str) -> dict:
         "card_confidence": card_conf,
         "confidence_parts": parts,
         "diagnostics": diagnostics,
+        "hero_card_details": result.get("hero_card_details") or [],
+        "board_card_details": result.get("board_card_details") or [],
+        "v2_features": v2_features,
+        "v3_features": v3_features,
         "safe_emit_reason": safe_emit_reason,
         "fields": fields,
         "failure_mode": None if fields["hand_exact"] else _classify_failure(parsed, gt, fields),
@@ -334,9 +350,8 @@ def _run_one(img_path_str: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--images", default="data/hand_images/img")
-    ap.add_argument("--ground-truth",
-                    default="data/pokercraft_corpus/ground_truth/ground_truth.jsonl")
+    ap.add_argument("--images", default="")
+    ap.add_argument("--ground-truth", default="")
     ap.add_argument("--out", default="data/ocr_precision")
     ap.add_argument("--limit", type=int, default=0,
                     help="Evenly sample N pairs (for fast iteration)")
@@ -345,7 +360,10 @@ def main() -> int:
     ap.add_argument("--max-failures", type=int, default=40)
     ap.add_argument("--split", default="",
                     help="Optional card-classifier split JSON for held-out eval")
-    ap.add_argument("--bucket", default="test", choices=["train", "val", "test"])
+    ap.add_argument("--bucket", default="test",
+                    choices=["train", "val", "test",
+                             "production_train", "production_val",
+                             "production_test"])
     ap.add_argument("--emit-threshold", type=float, default=0.88,
                     help=("Minimum confidence required for deterministic "
                           "emission. Lower-confidence parses count as "
@@ -367,6 +385,20 @@ def main() -> int:
                     help=("Dump every record (including emitted-exact) to "
                           "all_records.jsonl for calibrator training."))
     args = ap.parse_args()
+
+    is_production = args.bucket.startswith("production_")
+    if is_production:
+        if not args.images:
+            args.images = "data/cards_v2/production_v1/images"
+        if not args.ground_truth:
+            args.ground_truth = "data/cards_v2/production_v1/gt.jsonl"
+        if not args.split:
+            args.split = "data/splits/production_v1.json"
+    else:
+        if not args.images:
+            args.images = "data/hand_images/img"
+        if not args.ground_truth:
+            args.ground_truth = "data/pokercraft_corpus/ground_truth/ground_truth.jsonl"
 
     gt_path = str(Path(args.ground_truth).resolve())
     img_dir = Path(args.images)

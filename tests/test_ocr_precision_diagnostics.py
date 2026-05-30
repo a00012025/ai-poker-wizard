@@ -59,3 +59,30 @@ def test_ocr_precision_writes_diagnostics(tmp_path):
     calib = json.loads(calib_path.read_text())
     assert "ece_10bin" in calib
     assert "precision_coverage_curve" in calib
+
+
+def test_ocr_precision_production_bucket(tmp_path):
+    """--bucket production_test auto-routes to data/cards_v2/production_v1
+    images + gt.jsonl without requiring --images / --ground-truth /
+    --split overrides."""
+    out = tmp_path / "out"
+    subprocess.run(
+        [
+            "python",
+            "scripts/ocr_precision.py",
+            "--bucket",
+            "production_test",
+            "--limit",
+            "3",
+            "--workers",
+            "1",
+            "--out",
+            str(out),
+        ],
+        check=True,
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary.get("paired", 0) >= 1, (
+        f"production_test bucket should produce at least one paired hand; "
+        f"got summary={summary}"
+    )
