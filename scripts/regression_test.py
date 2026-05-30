@@ -120,6 +120,85 @@ def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     assert_eq(resolved[3]["type"], "hero")
 
 
+# ── Calling a villain all-in == committing (PR: fix/allin-call-deviation) ──
+# H3459: SB shoves the turn ("Bet 17.1 / All-In"), hero calls.  The solver
+# models a deeper 35bb world where 17.1 is just a big bet (Fold/Call/All-in),
+# and the compact renderer flagged hero's call ❌ against "GTO建議 all-in".
+# But facing a shove, Call and All-in are the same real action — both commit
+# every chip to a showdown.  The fix tags the shove and merges its frequency
+# into Call so the call is scored as a match, not a deviation.
+
+
+@test
+def test_build_streets_tags_sized_allin():
+    """OCR: a sized villain all-in keeps R{size} but is tagged ``allin``.
+
+    The action code must stay ``R17.1`` so solver action-matching and golden
+    snapshots are unchanged, while the explicit flag tells analyze_hand the
+    bettor is committed (so a caller is calling an all-in, not facing a
+    raisable bet). H3459 turn.
+    """
+    from ocr.n8_parser import _build_streets
+
+    street_cols = [{
+        "name": "Turn",
+        "entries": [
+            {"type": "opponent", "position": "SB", "action": "All-In", "size": 17.1},
+            {"type": "hero", "position": None, "action": "Call", "size": 17.1},
+        ],
+    }]
+    streets = _build_streets(
+        street_cols, board_cards=["Qs", "Qd", "5d", "3c"],
+        pos_order=["SB", "BTN"], hero_position="BTN",
+        active_positions=["SB", "BTN"],
+    )
+    turn = streets[0]["actions"]
+    assert_eq(turn[0]["action"], "R17.1", "sized all-in keeps absolute raise code")
+    assert_eq(turn[0]["allin"], True, "villain all-in must be tagged")
+    assert_eq(turn[1]["action"], "C", "hero call code unchanged")
+    assert_true("allin" not in turn[1], "a plain call is not an all-in")
+
+
+@test
+def test_collapse_allin_into_call_merges_shove_frequency():
+    """A call facing a shove matches the GTO commit, not a phantom raise.
+
+    With the solver offering Fold 8% / Call 7% / All-in 85% (H3459 turn for
+    99), merging the all-in line into Call yields Call 92% / Fold 8%, so the
+    top action becomes Call — hero's call is no longer a deviation.
+    """
+    from analyze_hand import _collapse_allin_into_call
+
+    display_sol = {
+        "action_solutions": [
+            {"action": {"code": "F"}},
+            {"action": {"code": "C"}},
+            {"action": {"code": "R27.2", "allin": True}},
+        ]
+    }
+    af = {"F": 0.08, "C": 0.07, "R27.2": 0.85}
+    merged = _collapse_allin_into_call(af, display_sol)
+    assert_eq(round(merged["C"], 2), 0.92, "call absorbs the all-in frequency")
+    assert_eq(round(merged["F"], 2), 0.08, "fold frequency preserved")
+    assert_true("R27.2" not in merged, "all-in code folded into call")
+    assert_eq(max(merged, key=merged.get), "C", "call is now the top action")
+
+
+@test
+def test_collapse_allin_into_call_noop_without_allin_option():
+    """When no solver action is an all-in, frequencies are untouched."""
+    from analyze_hand import _collapse_allin_into_call
+
+    display_sol = {
+        "action_solutions": [
+            {"action": {"code": "X"}},
+            {"action": {"code": "R5"}},
+        ]
+    }
+    af = {"X": 0.6, "R5": 0.4}
+    assert_eq(_collapse_allin_into_call(af, display_sol), af)
+
+
 # ── Visual All-In badge attribution (PR: fix/allin-visual-attribution) ──
 #
 # The red "All-In" sticker carries no name/position/size, so sequence rules
