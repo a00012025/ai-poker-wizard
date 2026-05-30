@@ -481,23 +481,38 @@ class PokerWizardBot:
                 f"用戶問題：{user_text}\n\n"
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
                 f"請根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
+                "FOLLOWUP: 問題一\n"
+                "FOLLOWUP: 問題二\n"
+                "FOLLOWUP: 問題三\n"
             )
             response = await self.session_manager._chat_with_tools(
                 chat_id, coaching_prompt,
                 user_id=user_id, refresh_token=refresh_token,
             )
+            response, followups = self.session_manager._extract_followups(response)
+            if followups:
+                ctx = self.session_manager.hand_contexts.get(chat_id)
+                if ctx is not None:
+                    ctx["followup_questions"] = followups
 
             elapsed = time.time() - t0
             self.log.info(f"[{label}] HH follow-up done ({elapsed:.1f}s)")
 
             formatted = _format_for_telegram(response)
+            markup = self._build_followup_markup(chat_id)
+            sent_markup = False
             for chunk in _split_message(formatted):
                 if not chunk.strip():
                     continue
                 try:
-                    await update.message.reply_text(chunk, parse_mode='Markdown')
+                    await update.message.reply_text(
+                        chunk, parse_mode='Markdown',
+                        reply_markup=markup if not sent_markup else None)
                 except Exception:
-                    await update.message.reply_text(chunk)
+                    await update.message.reply_text(
+                        chunk, reply_markup=markup if not sent_markup else None)
+                sent_markup = True
 
             # Flush any range images queued by tool calls during this turn.
             await self._send_pending_range_images(update, chat_id, label)
@@ -548,8 +563,9 @@ class PokerWizardBot:
                         title = f"{hero_pos} {st}"
                         if board:
                             title += f" | {board}"
+                        solver_pos = last_spot.get("solver_hero_pos", hero_pos)
                         img = generate_range_grid(
-                            last_sol, hero_pos, title=title)
+                            last_sol, solver_pos, title=title)
                         if img:
                             await chat.send_photo(
                                 photo=img, caption=f"📊 {title}")
@@ -573,7 +589,7 @@ class PokerWizardBot:
             hand = ctx.get("hand", {})
             hero_hand = hand.get("hero_hand", "")
             hero_pos = hand.get("hero_position", "")
-            if not hero_hand or not hero_pos or hand.get("no_hero_hand"):
+            if not hero_pos:
                 return None
 
             # Use LLM-generated follow-up questions if available
@@ -600,7 +616,9 @@ class PokerWizardBot:
                     else:
                         questions.append(f"{opp_pos} 的範圍是什麼？")
 
-                if len(streets) > 1:
+                if hand.get("no_hero_hand"):
+                    questions.append(f"{hero_pos} 這個 range 面對 3-bet 要怎麼防守？")
+                elif len(streets) > 1:
                     questions.append(
                         f"{hero_hand} 在這裡應該用什麼 size？")
                 elif is_icm:
@@ -620,19 +638,15 @@ class PokerWizardBot:
             if not questions:
                 return None
 
-            # Truncate to fit Telegram's 64-byte callback_data limit
-            trimmed = []
-            for q in questions:
-                cb = f"fq:{q}"
-                if len(cb.encode('utf-8')) > 64:
-                    while len(f"fq:{q}".encode('utf-8')) > 61:
-                        q = q[:-1]
-                    q += "…"
-                trimmed.append(q)
+            # Store full questions in context and use short callback IDs.
+            # callback_data has a 64-byte limit; Chinese strategy questions
+            # often exceed it and used to be truncated before execution.
+            button_map = {str(i): q for i, q in enumerate(questions)}
+            ctx["_followup_buttons"] = button_map
 
             keyboard = [
-                [InlineKeyboardButton(q, callback_data=f"fq:{q}")]
-                for q in trimmed
+                [InlineKeyboardButton(q, callback_data=f"fq:{i}")]
+                for i, q in button_map.items()
             ]
             ctx["_followup_sent"] = True
             return InlineKeyboardMarkup(keyboard)
@@ -653,8 +667,10 @@ class PokerWizardBot:
         data = query.data or ""
         if not data.startswith("fq:"):
             return
-        question = data[3:]
         chat_id = update.effective_chat.id
+        key_or_question = data[3:]
+        ctx = self.session_manager.hand_contexts.get(chat_id, {})
+        question = (ctx.get("_followup_buttons", {}) or {}).get(key_or_question, key_or_question)
         user_id = update.effective_user.id
         label = f"followup-{chat_id}"
         self.log.info(f"[{label}] Button: {question}")

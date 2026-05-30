@@ -357,6 +357,8 @@ def find_icm_params(
     if players_at_table is None:
         players_at_table = len(player_stacks)
 
+    user_player_stacks = list(player_stacks)
+
     # Track empty seats (zero-stack positions from 8-max padding).
     # These are filled with small values for config length matching but
     # should be ignored in the ICM distance calculation.
@@ -393,7 +395,7 @@ def find_icm_params(
     # Build approximation note with clear user stacks vs solver stacks comparison
     notes = []
     notes.append(f"ICM 模式: {gametype}")
-    notes.append(f"用戶籌碼: {' / '.join(f'{s:.0f}' for s in player_stacks)}")
+    notes.append(f"用戶籌碼: {' / '.join(f'{s:.0f}' for s in user_player_stacks)}")
     notes.append(f"Solver 籌碼: {' / '.join(f'{s:.0f}' for s in actual_stacks)}")
 
     # Show stack differences
@@ -407,6 +409,8 @@ def find_icm_params(
         "depth": depth_str,
         "stacks": stacks_str,
         "approximation_note": "\n".join(notes),
+        "user_stacks": user_player_stacks,
+        "solver_stacks": actual_stacks,
     }
 
 

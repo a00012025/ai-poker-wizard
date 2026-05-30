@@ -1540,6 +1540,25 @@ class GeminiSessionManager:
                 )
                 self._logger.debug(f"[chat={chat_id}] GTO data:\n{gto_data}")
 
+                # Exact ICM range requests should be answered from the solver
+                # artifact directly.  Letting the coaching LLM rewrite these
+                # has caused two user-visible failures: it skipped the
+                # approximation note and reordered the user's FT stack list.
+                # The detailed solver text already contains the selected ICM
+                # mode, user stacks, solver stacks, action frequencies, and
+                # range-by-action breakdown; Telegram will attach follow-up
+                # buttons from the cached context.
+                if context.get("no_hero_hand") and context.get("is_icm") and not hand_json.get("streets"):
+                    result = gto_data
+                    _aio.create_task(self._update_snapshot_coaching(
+                        hand_id, chat_id, result))
+                    if hand_id:
+                        result = f"📋 `{hand_id}`\n\n{result}"
+                    t_total = time.time()
+                    await self._save_usage(chat_id, "hand_analysis", self.model,
+                                           usage_acc, int((t_total - t0) * 1000))
+                    return result
+
                 # Step 4: Coaching from LLM (with tools for follow-up queries)
                 await _status("分析回覆中...")
                 if context.get("no_hero_hand"):
@@ -2144,6 +2163,116 @@ class GeminiSessionManager:
         return None
 
     @staticmethod
+    def _parse_structured_icm_range_query(user_text: str) -> dict | None:
+        """Parse explicit text-only ICM range requests without an LLM round.
+
+        This catches messages like:
+
+            icm final table 剩餘 7 人, stack size 15/68/35/50/18/10/26
+            這時 hero hj open range 如何
+
+        The normal "existing context + not a hand" guard intentionally skips
+        many follow-up questions so stack lists such as ``37/42/76`` are not
+        misread as hole cards.  But explicit ICM + FT + stack-distribution
+        range requests are complete solver scenarios, and sending them to the
+        free-form chat path lets the LLM reorder stacks or answer from theory.
+        Deterministically building the no-hero hand JSON preserves the user's
+        exact stack order and lets analyze_hand.py choose the approximate FT
+        solver config.
+        """
+        text = user_text.strip()
+        low = text.lower()
+
+        has_icm = "icm" in low or "決賽桌" in text or "final table" in low or re.search(r"\bft\b", low)
+        has_stack = "stack" in low or "籌碼" in text
+        asks_range = (
+            "range" in low or "範圍" in text or "open" in low or "raise" in low
+            or "all in" in low or "all-in" in low or "全下" in text
+        )
+        if not (has_icm and has_stack and asks_range):
+            return None
+
+        # Prefer the stack list immediately after "stack size"/"籌碼".
+        stack_match = re.search(
+            r"(?:stack(?:\s*size)?|籌碼(?:量|分佈|分布)?)[^\d]{0,20}"
+            r"(\d+(?:\.\d+)?(?:\s*[/,，、]\s*\d+(?:\.\d+)?){1,8})",
+            text,
+            re.I,
+        )
+        if not stack_match:
+            return None
+
+        stacks = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", stack_match.group(1))]
+        if not (2 <= len(stacks) <= 9):
+            return None
+
+        # "剩餘 7 人" on an FT means 7 players are seated.  If omitted, the
+        # stack count is the best table-size signal.
+        n_match = re.search(r"(?:剩(?:餘|下)?|剩餘|剩下)?\s*(\d)\s*(?:人|players?)", text, re.I)
+        players_at_table = int(n_match.group(1)) if n_match else len(stacks)
+        if players_at_table != len(stacks):
+            # Keep exact user stacks.  If the count and list disagree, the
+            # list is safer because it maps one-to-one onto solver positions.
+            players_at_table = len(stacks)
+
+        position_order = {
+            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            5: ["HJ", "CO", "BTN", "SB", "BB"],
+            4: ["CO", "BTN", "SB", "BB"],
+            3: ["BTN", "SB", "BB"],
+            2: ["SB", "BB"],
+        }.get(players_at_table)
+        if not position_order:
+            return None
+
+        pos_pattern = r"\b(utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)\b"
+        hero_match = re.search(r"hero\s*" + pos_pattern, low, re.I)
+        if not hero_match:
+            # Fall back to "HJ open range" without the word hero.
+            hero_match = re.search(pos_pattern + r"\s*(?:open|raise|range|範圍)", low, re.I)
+        if not hero_match:
+            return None
+
+        raw_pos = (hero_match.group(1) or hero_match.group(0)).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+        raw_pos = raw_pos.split()[0]
+        if raw_pos not in position_order:
+            return None
+
+        hero_idx = position_order.index(raw_pos)
+        effective_bb = stacks[hero_idx]
+
+        # Build the decision point.  For "HJ open range", everyone before HJ
+        # folded and HJ raises in the complete hand line; analyze_hand.py will
+        # query the node before HJ acts.
+        actions = ["F"] * players_at_table
+        action_after_pos = low[hero_match.end(): hero_match.end() + 40]
+        is_open_query = "open" in action_after_pos or "open" in low
+        if is_open_query:
+            actions[hero_idx] = "R2"
+        else:
+            raiser_match = re.search(pos_pattern + r"\s*(?:open|raise|加注)", low, re.I)
+            if raiser_match:
+                raiser_pos = raiser_match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                if raiser_pos in position_order and position_order.index(raiser_pos) < hero_idx:
+                    actions[position_order.index(raiser_pos)] = "R2"
+
+        return {
+            "gametype": "MTTGeneral",
+            "tournament_type": "icm",
+            "phase": "FT" if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low)) else "BUBBLE",
+            "players_at_table": players_at_table,
+            "player_stacks": stacks,
+            "effective_bb": effective_bb,
+            "hero_position": raw_pos,
+            "hero_hand": "AA",
+            "no_hero_hand": True,
+            "preflop_actions": "-".join(actions),
+        }
+
+    @staticmethod
     def _fix_folded_players(hand: dict):
         """Remove actions from players who folded in earlier streets."""
         POSITION_ORDERS = {
@@ -2305,6 +2434,14 @@ class GeminiSessionManager:
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed."""
+        structured_icm = self._parse_structured_icm_range_query(user_text)
+        if structured_icm:
+            self._logger.info(
+                f"[chat={chat_id}] Parsed structured ICM range query: "
+                f"{json.dumps(structured_icm, ensure_ascii=False)}"
+            )
+            return structured_icm
+
         # If there's already a hand context and the text doesn't look like a new
         # hand description, skip parsing to prevent follow-up questions from being
         # hallucinated into fake hands by the LLM parser.
@@ -3483,10 +3620,16 @@ class GeminiSessionManager:
         """Strip FOLLOWUP: lines from response, return (clean_text, questions)."""
         followups: list[str] = []
         clean_lines: list[str] = []
+        followup_re = re.compile(
+            r"^\s*(?:[-*•]\s*)?(?:\d+[.)]\s*)?(?:\*\*)?"
+            r"FOLLOW[\s_-]*UP(?:\*\*)?\s*[:：](?:\*\*)?\s*(.+?)\s*$",
+            re.I,
+        )
         for line in text.split("\n"):
             stripped = line.strip()
-            if stripped.startswith("FOLLOWUP:") or stripped.startswith("FOLLOWUP："):
-                q = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
+            m = followup_re.match(stripped)
+            if m:
+                q = m.group(1).strip()
                 if q:
                     followups.append(q)
             else:
