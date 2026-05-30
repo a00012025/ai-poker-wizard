@@ -1244,6 +1244,34 @@ def test_chip_ev_percentage_size_analysis():
 
 # ── Formatter Tests ──
 
+
+@test
+def test_solver_detail_uses_exact_postflop_combo_for_coaching_text():
+    """Analyze text: coach data must use exact postflop combo.
+
+    Regression for H3451: compact output used AdTh's exact river strategy
+    (check 14%), but the full solver text fed to the coach used aggregate ATo
+    (check 4.6%), causing contradictory advice.
+    """
+    from analyze_hand import _hero_hand_for_solver_detail
+
+    assert_eq(
+        _hero_hand_for_solver_detail("ATo", "AdTh", "river", 1210),
+        "AdTh",
+        "postflop detail should preserve the exact combo for coach grounding",
+    )
+    assert_eq(
+        _hero_hand_for_solver_detail("ATo", "AdTh", "preflop", 1210),
+        "ATo",
+        "preflop detail should remain on the 169 hand class",
+    )
+    assert_eq(
+        _hero_hand_for_solver_detail("ATo", "ATo", "river", None),
+        "ATo",
+        "non-specific hands should keep aggregate display",
+    )
+
+
 @test
 def test_formatter_action_summary():
     """Formatter: format_action_summary produces readable output."""

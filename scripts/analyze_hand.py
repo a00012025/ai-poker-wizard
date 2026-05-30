@@ -57,6 +57,29 @@ POSITION_ORDERS = {
 }
 
 
+def _hero_hand_for_solver_detail(
+    hero_hand: str,
+    hero_hand_raw: str,
+    street: str,
+    hero_combo_idx: int | None,
+) -> str:
+    """Return the hand token to show in detailed solver text.
+
+    Preflop solver data is keyed by the 169 hand classes (ATo, AKs, etc.),
+    but postflop strategy/EV rows are combo-specific.  The compact summary
+    already uses the exact 1326-combo row; the full text fed to the coaching
+    LLM must do the same so it does not mix aggregate ATo frequencies with an
+    exact-combo verdict like AdTh.
+    """
+    if (
+        street != "preflop"
+        and hero_combo_idx is not None
+        and len(hero_hand_raw or "") == 4
+    ):
+        return hero_hand_raw
+    return hero_hand
+
+
 def _run_with_gto_token(parent_token: str | None, fn, *args, **kwargs):
     """Run a GTO API call with the caller's per-user token, then restore it.
 
@@ -2119,8 +2142,13 @@ def _run_analysis(hand: dict) -> dict:
                             results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
 
         if display_sol:
-            # When no hero hand specified, show only range-level summary (no hero-specific detail)
-            spot_text = format_full_spot(display_sol, None if no_hero_hand else hero_hand, spot_hero_pos)
+            # When no hero hand specified, show only range-level summary (no hero-specific detail).
+            # For postflop hero hands, pass the exact combo (e.g. AdTh) so the
+            # detailed text used by the coach matches the compact verdict.
+            detail_hand = None if no_hero_hand else _hero_hand_for_solver_detail(
+                hero_hand, hero_hand_raw, spot["street"], hero_combo_idx
+            )
+            spot_text = format_full_spot(display_sol, detail_hand, spot_hero_pos)
             results.append(spot_text)
 
             # Include full range breakdown when no hero hand specified or ICM

@@ -11,6 +11,6 @@ GTO: Bet 1.8（33% pot） 43% / Bet 1.1（20% pot） 30% / Bet 3（55% pot） 17
 ─── Turn: 6s ───
 🎯 Ace high + 卡順聽牌
 GTO: Check 93%
-→ Hero bet 83% pot ❌ (GTO建議 check)
-GTO: Call 74% / Fold 26%
+→ Hero bet 75% pot ❌ (GTO建議 check)
+GTO: 此手牌 0% 到達此節點
 → Hero fold ✅

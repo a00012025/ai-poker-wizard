@@ -11,7 +11,7 @@ GTO: Bet 3.15（55% pot） 74% / Bet 1.9（33% pot） 18% / Bet 4.75（83% pot�
 ─── Turn: 4c ───
 🎯 頂對 (A) + 花聽牌
 GTO: Bet 6.65（83% pot） 100%
-→ Hero bet 83% pot ✅
+→ Hero bet 75% pot ✅
 
 ─── River: 9d ───
 🎯 頂對 (A)

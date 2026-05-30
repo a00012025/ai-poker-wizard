@@ -30,13 +30,10 @@ Hero A4s 牌型: 三條 (A)
   RAISE 8.1（33% pot）: 18.3%（6 combos）
   All-in 15.000: 1.0%（0 combos）
 
-【CO A4s】
-  Range 頻率: 30.6%（0.6/2 combos）
-  EV: 8.43bb | Equity: 74.3%
-  策略:
-    RAISE 8.1（33% pot）: 57.5%（0.4 combos） EV 7.97bb
-    Call: 41.0%（0.3 combos） EV 9.11bb
-    All-in: 1.5%（0.0 combos） EV 7.68bb
+【CO Ah4h（A4s）】
+  策略: Call 41%, RAISE 8.1（33% pot） 58%, All-in 2%（EV 8.43bb）
+  A4s 其他花色:
+    Ac4c: Call 41%, RAISE 8.1（33% pot） 58%, All-in 2%（EV 8.4bb）
   → 實際行動: CO C 3.7bb（solver code: C）
 
 
@@ -48,13 +45,10 @@ Hero A4s 牌型: 三條 (A)
   Call: 59.9%（10 combos）
   All-in 11.400: 26.6%（4 combos）
 
-【CO A4s】
-  Range 頻率: 12.5%（0.3/2 combos）
-  EV: 8.29bb | Equity: 60.4%
-  策略:
-    Call: 80.9%（0.2 combos） EV 7.97bb
-    All-in: 18.9%（0.0 combos） EV 9.78bb
-    Fold: 0.2%（0.0 combos） EV 0.00bb
+【CO Ah4h（A4s）】
+  策略: Call 81%, All-in 19%（EV 8.29bb）
+  A4s 其他花色:
+    Ac4c: Call 81%, All-in 19%（EV 8.3bb）
 ⚠ EV 損失 1.81bb（Call 7.97bb vs All-in 9.78bb）
   → 實際行動: CO C 5.5bb（solver code: C）
 
@@ -66,11 +60,10 @@ Hero A4s 牌型: 三條 (A)
   Fold: 30.9%（3 combos）
   Call: 69.1%（7 combos）
 
-【CO A4s】
-  Range 頻率: 10.1%（0.2/2 combos）
-  EV: 3.12bb | Equity: 32.2%
-  策略:
-    Call: 100.0%（0.2 combos） EV 3.12bb
+【CO Ah4h（A4s）】
+  策略: Call 100%（EV 3.12bb）
+  A4s 其他花色:
+    Ac4c: Call 100%（EV 3.1bb）
   → 實際行動: CO C 5.9bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

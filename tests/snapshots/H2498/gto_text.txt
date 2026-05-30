@@ -31,15 +31,12 @@ Hero AQs 牌型: Ace high + 卡順聽牌
   BET 3（55% pot）: 17.1%（27 combos）
   BET 4.55（83% pot）: 0.7%（1 combos）
 
-【LJ AQs】
-  Range 頻率: 86.8%（3.5/4 combos）
-  EV: 3.81bb | Equity: 63.3%
-  策略:
-    Bet 1.8（33% pot）: 38.8%（1.3 combos） EV 3.82bb
-    Bet 1.1（20% pot）: 38.4%（1.3 combos） EV 3.81bb
-    Check: 11.9%（0.4 combos） EV 3.80bb
-    Bet 3（55% pot）: 10.7%（0.4 combos） EV 3.81bb
-    Bet 4.55（83% pot）: 0.2%（0.0 combos） EV 3.77bb
+【LJ AsQs（AQs）】
+  策略: Check 10%, Bet 1.1（20% pot） 30%, Bet 1.8（33% pot） 43%, Bet 3（55% pot） 17%（EV 3.09bb）
+  AQs 其他花色:
+    AhQh: Check 10%, Bet 1.1（20% pot） 30%, Bet 1.8（33% pot） 43%, Bet 3（55% pot） 17%（EV 3.1bb）
+    AcQc: Bet 1.1（20% pot） 45%, Bet 1.8（33% pot） 50%, Bet 3（55% pot） 5%（EV 5.7bb）
+    AdQd: Check 27%, Bet 1.1（20% pot） 49%, Bet 1.8（33% pot） 19%, Bet 3（55% pot） 4%（EV 3.4bb）
   → 實際行動: LJ R1.9 1.9bb（solver code: R1.8）
 
 
@@ -52,13 +49,12 @@ Hero AQs 牌型: Ace high + 卡順聽牌
   BET 5（55% pot）: 59.2%（39 combos）
   BET 7.55（83% pot）: 0.3%（0 combos）
 
-【LJ AQs】
-  Range 頻率: 33.6%（1.3/4 combos）
-  EV: 3.14bb | Equity: 37.3%
-  策略:
-    Check: 82.0%（1.1 combos） EV 3.14bb
-    Bet 5（55% pot）: 14.4%（0.2 combos） EV 3.12bb
-    Bet 3（33% pot）: 3.6%（0.0 combos） EV 3.12bb
+【LJ AsQs（AQs）】
+  策略: Check 93%, Bet 3（33% pot） 4%, Bet 5（55% pot） 3%（EV 2.17bb）
+  AQs 其他花色:
+    AcQc: Check 53%, Bet 3（33% pot） 7%, Bet 5（55% pot） 41%（EV 5.1bb）
+    AdQd: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
+    AhQh: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
 ⚠ EV 損失 0.14bb（Bet 7.55（83% pot） 2.03bb vs Check 2.17bb）
   → 實際行動: LJ R7.1 7.1bb（solver code: R7.55）
 
