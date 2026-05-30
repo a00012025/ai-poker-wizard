@@ -47,6 +47,17 @@ def is_suspect(parser_result: dict) -> bool:
     Trigger is governed by ``OCR_VLM_RECHECK_TRIGGER``:
       - ``allin`` (default): re-check hands whose preflop action contains an
         all-in — confident table-size errors cluster there (82% of them).
+      - ``reaction``: superset of ``allin`` that ALSO re-checks hands whose
+        table size was estimated using the reaction signal
+        (``estimate_used_reaction_signal``).
+        MEASURED NET-NEGATIVE on the test set (2026-05-30): vs ``allin`` it did
+        NOT reduce position_wrong (stayed 4 — the residual errors are not
+        reaction-signal hands) and demoted 16 emitted-CORRECT hands to
+        parse_none, because the flash re-check sometimes disagrees with a
+        correct parse and the re-derivation can't reconcile it → abstain. The
+        override is NOT 100% safe on correct hands at scale (the "30/30
+        preserved" validation was too small). Keep ``allin`` as the default;
+        this mode is retained for experimentation only.
       - ``all``: re-check every parsable hand (max coverage, max latency).
       - ``off``: never re-check.
 
@@ -61,9 +72,14 @@ def is_suspect(parser_result: dict) -> bool:
         return False
     if mode == "all":
         return True
-    # default: all-in trigger
     actions = hand.get("preflop_actions") or ""
-    return "AI" in actions
+    if "AI" in actions:
+        return True
+    if mode == "reaction":
+        diag = parser_result.get("diagnostics") or {}
+        return bool(diag.get("estimate_used_reaction_signal"))
+    # default: all-in trigger only
+    return False
 
 
 def _parse_vlm_response(text: str) -> dict | None:
