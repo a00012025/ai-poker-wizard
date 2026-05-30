@@ -3147,6 +3147,43 @@ def test_icm_ft_7player_stacks():
 
 
 @test
+def test_structured_icm_open_range_query_preserves_stack_order():
+    """ICM text range query: exact slash-delimited stacks map UTG→BB without LLM reorder."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "icm final table 剩餘 7 人, stack size 15/68/35/50/18/10/26 "
+        "這時 hero hj open range 如何"
+    )
+
+    assert_true(hand is not None, "explicit ICM FT stack/range query should parse deterministically")
+    assert_eq(hand["player_stacks"], [15.0, 68.0, 35.0, 50.0, 18.0, 10.0, 26.0])
+    assert_eq(hand["players_at_table"], 7)
+    assert_eq(hand["hero_position"], "HJ")
+    assert_eq(hand["effective_bb"], 35.0, "7-max HJ is the third stack, not LJ's 68bb")
+    assert_eq(hand["preflop_actions"], "F-F-R2-F-F-F-F")
+    assert_eq(hand["no_hero_hand"], True)
+    assert_eq(hand["phase"], "FT")
+
+
+@test
+def test_structured_icm_facing_range_query_prefers_explicit_hero():
+    """ICM text range query: 'HJ raise hero CO ...' should query CO facing HJ, not HJ."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "那 icm final table 剩餘 7 人，stack size 分布從 utg 開始為 "
+        "12,14,37,15,42,11,7 這時當 hj raise hero co call/raise/all in range 如何"
+    )
+
+    assert_true(hand is not None, "explicit hero in ICM range query should parse")
+    assert_eq(hand["player_stacks"], [12.0, 14.0, 37.0, 15.0, 42.0, 11.0, 7.0])
+    assert_eq(hand["hero_position"], "CO")
+    assert_eq(hand["effective_bb"], 15.0)
+    assert_eq(hand["preflop_actions"], "F-F-R2-F-F-F-F")
+
+
+@test
 def test_icm_ft_9player_stacks():
     """ICM FT: 9-player final table (full ring) finds valid ICM mode."""
     from icm_modes import find_icm_params
@@ -5904,11 +5941,43 @@ def test_extract_followups_strips_from_text():
     clean2, followups2 = GeminiSession._extract_followups(text2)
     assert_eq(len(followups2), 1, "should handle full-width colon")
     assert_true("FOLLOWUP" not in clean2, "clean text should not contain full-width FOLLOWUP")
+    # Markdown/bullet variants should also be removed from user-visible text.
+    text_md = "分析內容\n- **FOLLOWUP:** 如果 CO 3-bet all-in 要跟哪些牌？"
+    clean_md, followups_md = GeminiSession._extract_followups(text_md)
+    assert_eq(followups_md, ["如果 CO 3-bet all-in 要跟哪些牌？"],
+              "should strip bullet+bold FOLLOWUP marker")
+    assert_true("FOLLOWUP" not in clean_md, "markdown followup marker should not leak")
     # No followups
     text3 = "普通分析文字，沒有 followup"
     clean3, followups3 = GeminiSession._extract_followups(text3)
     assert_eq(clean3, text3, "text without followups unchanged")
     assert_eq(len(followups3), 0, "no followups extracted")
+
+
+@test
+def test_followup_markup_for_no_hero_uses_callback_ids():
+    """Telegram follow-ups: no-hero range spots still get buttons without truncating callback data."""
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    long_q = "如果 CO 3-bet all-in，我們應該用哪些牌跟注，哪些牌改成 4-bet all-in？"
+    ctx = {
+        "hand": {
+            "hero_position": "HJ",
+            "hero_hand": "AA",
+            "no_hero_hand": True,
+        },
+        "followup_questions": [long_q],
+    }
+    bot.session_manager = type("SessionStub", (), {"hand_contexts": {123: ctx}})()
+
+    markup = bot._build_followup_markup(123)
+
+    assert_true(markup is not None, "no-hero range analysis should still render follow-up buttons")
+    button = markup.inline_keyboard[0][0]
+    assert_eq(button.text, long_q, "button text should show the full question")
+    assert_eq(button.callback_data, "fq:0", "callback_data should be an ID, not truncated Chinese text")
+    assert_eq(ctx["_followup_buttons"]["0"], long_q, "full question should be stored in context")
 
 
 # ── Lane A2: EV loss + DeviationMeta + aggression direction tests ──
