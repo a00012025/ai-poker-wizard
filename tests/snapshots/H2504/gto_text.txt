@@ -22,11 +22,11 @@ Hero A9s 牌型: 頂對 (A) + 後門花聽牌
 【BB 在 Flop AhQs3d】底池 5.500bb
   Check: 100.0%（809 combos）
 
-【BB A9s】
-  Range 頻率: 88.0%（2.6/3 combos）
-  EV: 7.17bb | Equity: 74.8%
-  策略:
-    Check: 100.0%（2.6 combos） EV 7.17bb
+【BB Ad9d（A9s）】
+  策略: Check 100%（EV 7.35bb）
+  A9s 其他花色:
+    Ac9c: Check 100%（EV 7.0bb）
+    As9s: Check 100%（EV 7.2bb）
   → 實際行動: BB X（solver code: X）
 
 【BB 在 Flop AhQs3d】底池 6.600bb
@@ -34,12 +34,11 @@ Hero A9s 牌型: 頂對 (A) + 後門花聽牌
   Call: 25.2%（203 combos）
   RAISE 3.65（33% pot）: 18.1%（146 combos）
 
-【BB A9s】
-  Range 頻率: 88.0%（2.6/3 combos）
-  EV: 5.86bb | Equity: 72.9%
-  策略:
-    RAISE 3.65（33% pot）: 86.7%（2.3 combos） EV 5.86bb
-    Call: 13.3%（0.4 combos） EV 5.85bb
+【BB Ad9d（A9s）】
+  策略: Call 21%, RAISE 3.65（33% pot） 79%（EV 6.08bb）
+  A9s 其他花色:
+    Ac9c: RAISE 3.65（33% pot） 100%（EV 5.7bb）
+    As9s: Call 19%, RAISE 3.65（33% pot） 81%（EV 5.8bb）
   → 實際行動: BB C 1.0bb（solver code: C）
 
 
@@ -49,11 +48,10 @@ Hero A9s 牌型: 頂對 (A) + 堅果花聽牌
 【BB 在 Turn AhQs3dJd】底池 7.700bb
   Check: 100.0%（194 combos）
 
-【BB A9s】
-  Range 頻率: 11.7%（0.4/3 combos）
-  EV: 5.49bb | Equity: 64.3%
-  策略:
-    Check: 99.9%（0.4 combos） EV 5.49bb
+【BB Ad9d（A9s）】
+  策略: Check 100%（EV 6.65bb）
+  A9s 其他花色:
+    As9s: Check 100%（EV 4.2bb）
   → 實際行動: BB X（solver code: X）
 
 【BB 在 Turn AhQs3dJd】底池 10.250bb
@@ -62,13 +60,10 @@ Hero A9s 牌型: 頂對 (A) + 堅果花聽牌
   RAISE 6.75（33% pot）: 11.3%（22 combos）
   All-in 10.900: 0.8%（2 combos）
 
-【BB A9s】
-  Range 頻率: 11.7%（0.4/3 combos）
-  EV: 4.59bb | Equity: 59.0%
-  策略:
-    Call: 70.1%（0.2 combos） EV 4.59bb
-    All-in: 16.3%（0.1 combos） EV 4.52bb
-    RAISE 6.75（33% pot）: 13.6%（0.0 combos） EV 4.57bb
+【BB Ad9d（A9s）】
+  策略: Call 100%（EV 5.70bb）
+  A9s 其他花色:
+    As9s: Call 37%, RAISE 6.75（33% pot） 29%, All-in 35%（EV 3.4bb）
   → 實際行動: BB C 2.0bb（solver code: C）
 
 
@@ -78,22 +73,20 @@ Hero A9s 牌型: 頂對 (A)
 【BB 在 River AhQs3dJd3c】底池 12.800bb
   Check: 100.0%（121 combos）
 
-【BB A9s】
-  Range 頻率: 8.2%（0.2/3 combos）
-  EV: 7.57bb | Equity: 64.2%
-  策略:
-    Check: 100.0%（0.2 combos） EV 7.57bb
+【BB Ad9d（A9s）】
+  策略: Check 100%（EV 7.45bb）
+  A9s 其他花色:
+    As9s: Check 100%（EV 7.9bb）
   → 實際行動: BB X（solver code: X）
 
 【BB 在 River AhQs3dJd3c】底池 21.150bb
   Fold: 40.9%（50 combos）
   Call: 59.1%（72 combos）
 
-【BB A9s】
-  Range 頻率: 8.2%（0.2/3 combos）
-  EV: 4.60bb | Equity: 43.9%
-  策略:
-    Call: 100.0%（0.2 combos） EV 4.60bb
+【BB Ad9d（A9s）】
+  策略: Call 100%（EV 4.45bb）
+  A9s 其他花色:
+    As9s: Call 100%（EV 5.0bb）
   → 實際行動: BB C 6.4bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -43,12 +43,15 @@ Hero KQo 牌型: 兩對 (K, Q)
   Call: 81.6%（152 combos）
   RAISE 16.4（33% pot）: 1.7%（3 combos）
 
-【CO KQo】
-  Range 頻率: 99.6%（7.0/7 combos）
-  EV: 37.06bb | Equity: 85.2%
-  策略:
-    Call: 93.4%（6.5 combos） EV 37.07bb
-    RAISE 16.4（33% pot）: 6.6%（0.5 combos） EV 37.05bb
+【CO KhQd（KQo）】
+  策略: Call 95%, RAISE 16.4（33% pot） 5%（EV 36.92bb）
+  KQo 其他花色:
+    KcQd: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.1bb）
+    KdQs: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.2bb）
+    KdQh: Call 89%, RAISE 16.4（33% pot） 11%（EV 36.8bb）
+    KcQh: Call 96%, RAISE 16.4（33% pot） 4%（EV 36.9bb）
+    KcQs: Call 97%, RAISE 16.4（33% pot） 3%（EV 37.3bb）
+    KhQs: Call 99%, RAISE 16.4（33% pot） 1%（EV 37.1bb）
   → 實際行動: CO C 7.5bb（solver code: C）
 
 
@@ -62,15 +65,15 @@ Hero KQo 牌型: 兩對 (K, Q)
   BET 16.55（50% pot）: 42.3%（64 combos）
   BET 24.8（75% pot）: 0.1%（0 combos）
 
-【CO KQo】
-  Range 頻率: 93.0%（6.5/7 combos）
-  EV: 40.71bb | Equity: 93.8%
-  策略:
-    Bet 16.55（50% pot）: 93.9%（6.1 combos） EV 40.71bb
-    Check: 4.3%（0.3 combos） EV 40.68bb
-    Bet 8.3（25% pot）: 0.9%（0.1 combos） EV 40.46bb
-    Bet 3.3（10% pot）: 0.8%（0.1 combos） EV 40.35bb
-    Bet 24.8（75% pot）: 0.1%（0.0 combos） EV 40.29bb
+【CO KhQd（KQo）】
+  策略: Check 11%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 88%（EV 40.62bb）
+  KQo 其他花色:
+    KcQs: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
+    KdQs: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
+    KcQd: Check 2%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 97%（EV 40.4bb）
+    KhQs: Check 3%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 95%（EV 41.1bb）
+    KcQh: Check 6%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 92%（EV 40.5bb）
+    KdQh: Check 9%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 90%（EV 40.5bb）
 ⚠ EV 損失 0.01bb（Check 40.61bb vs Bet 16.55（50% pot） 40.62bb）
   → 實際行動: CO X（solver code: X）
 
@@ -85,19 +88,13 @@ Hero KQo 牌型: 兩對 (K, Q)
   BET 29（88% pot）: 22.6%（18 combos）
   All-in 44.200: 12.4%（10 combos）
 
-【CO KQo】
-  Range 頻率: 4.0%（0.3/7 combos）
-  EV: 38.58bb | Equity: 99.5%
-  策略:
-    Bet 20.5（62% pot）: 63.6%（0.2 combos） EV 38.57bb
-    Bet 29（88% pot）: 36.2%（0.1 combos） EV 38.56bb
-    All-in: 0.1%（0.0 combos） EV 38.41bb
-  花色差異:
+【CO KhQd（KQo）】
+  策略: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.60bb）
+  KQo 其他花色:
     KcQd: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.9bb）
-    KhQd: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.6bb）
     KhQs: Bet 20.5（62% pot） 47%, Bet 29（88% pot） 53%（EV 38.6bb）
     KdQh: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.5bb）
     KcQh: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.6bb）
   → 實際行動: CO R22.4 22.4bb（solver code: R20.5）
 
-⏱ Discovery: 0.0s | Analysis: 0.3s | Total: 0.3s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

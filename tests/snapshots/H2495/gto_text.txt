@@ -30,14 +30,14 @@ Hero 88 牌型: 口袋對 (88) < 牌面
   BET 11.05（50% pot）: 33.5%（31 combos）
   BET 16.6（75% pot）: 0.7%（1 combos）
 
-【BB 88】
-  Range 頻率: 9.6%（0.6/6 combos）
-  EV: 3.11bb | Equity: 36.2%
-  策略:
-    Check: 58.3%（0.3 combos） EV 3.12bb
-    Bet 2.2（10% pot）: 25.2%（0.1 combos） EV 3.08bb
-    Bet 5.5（25% pot）: 15.9%（0.1 combos） EV 3.00bb
-    Bet 16.6（75% pot）: 0.6%（0.0 combos） EV 2.95bb
+【BB 8s8d（88）】
+  策略: Check 72%, Bet 2.2（10% pot） 28%, Bet 16.6（75% pot） 1%（EV 2.74bb）
+  88 其他花色:
+    8h8d: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8s8h: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8h8c: Check 45%, Bet 2.2（10% pot） 32%, Bet 5.5（25% pot） 23%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8d8c: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
+    8s8c: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
 ⚠ EV 損失 0.26bb（Bet 5.5（25% pot） 2.49bb vs Check 2.75bb）
   → 實際行動: BB R5 5.0bb（solver code: R5.5）
 
@@ -52,6 +52,10 @@ Hero 88 牌型: 口袋對 (88) < 牌面
   EV: -0.00bb | Equity: 24.3%
   策略:
     Fold: 100.0%（0.1 combos） EV -0.00bb
+  花色差異:
+    8h8c: Fold 100%（EV -0.0bb）
+    8h8d: Fold 100%（EV -0.0bb）
+    8s8h: Fold 100%（EV -0.0bb）
   → 實際行動: BB F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

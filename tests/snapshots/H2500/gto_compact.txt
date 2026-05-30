@@ -5,6 +5,7 @@ GTO: RAISE 2.3（37% pot） 100%
 
 ─── Preflop — Facing 3-bet ───
 GTO: Call 100%
+→ Hero call ✅
 
 ─── Flop: Ks2dQc ───
 🎯 兩對 (K, Q)
@@ -19,4 +20,4 @@ GTO: Bet 16.55（50% pot） 88% / Check 11%
 ─── River: 4c ───
 🎯 兩對 (K, Q)
 GTO: Bet 29（88% pot） 69% / Bet 20.5（62% pot） 31%
-→ Hero bet 62% pot ✅ (GTO建議 bet 88% pot)
+→ Hero bet 61% pot ✅ (GTO建議 bet 88% pot)

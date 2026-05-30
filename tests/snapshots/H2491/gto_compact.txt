@@ -10,10 +10,10 @@ GTO: Check 97%
 
 ─── Turn: 6d ───
 🎯 Ace high + 堅果花聽牌
-GTO: Check 50% / Bet 5.5（55% pot） 46%
+GTO: 此手牌 0% 到達此節點
 → Hero check ✅
 
 ─── River: 2h ───
 🎯 Ace high
-GTO: Call 100%
+GTO: 此手牌 0% 到達此節點
 → Hero fold ❌ (GTO建議 call)
