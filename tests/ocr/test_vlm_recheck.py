@@ -15,10 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from ocr.vlm_recheck import is_suspect, _parse_vlm_response, recheck_structure
 
 
-def _result(preflop_actions, hand=True):
+def _result(preflop_actions, hand=True, reaction=False):
     h = {"preflop_actions": preflop_actions, "players_at_table": 6,
          "hero_position": "BTN"} if hand else None
-    return {"hand": h}
+    return {"hand": h,
+            "diagnostics": {"estimate_used_reaction_signal": reaction}}
 
 
 # ---- trigger ----
@@ -44,6 +45,34 @@ def test_trigger_mode_all_routes_everything(monkeypatch):
 def test_trigger_mode_off_routes_nothing(monkeypatch):
     monkeypatch.setenv("OCR_VLM_RECHECK_TRIGGER", "off")
     assert is_suspect(_result("F-F-F-AI20-F-F")) is False
+
+
+# ---- reaction trigger (broadens allin to catch non-all-in structural errors) ----
+
+def test_reaction_mode_triggers_on_reaction_signal(monkeypatch):
+    # A non-all-in hand whose table size was estimated using the reaction
+    # signal is exactly the residual structural-error population the all-in
+    # trigger misses — re-check it.
+    monkeypatch.setenv("OCR_VLM_RECHECK_TRIGGER", "reaction")
+    assert is_suspect(_result("F-F-R2-F-F-C", reaction=True)) is True
+
+
+def test_reaction_mode_is_superset_of_allin(monkeypatch):
+    monkeypatch.setenv("OCR_VLM_RECHECK_TRIGGER", "reaction")
+    # all-in still triggers even without the reaction signal
+    assert is_suspect(_result("F-F-F-AI20-F-F", reaction=False)) is True
+
+
+def test_reaction_mode_skips_plain_hand(monkeypatch):
+    # No all-in AND no reaction signal → still skipped (pure latency saver).
+    monkeypatch.setenv("OCR_VLM_RECHECK_TRIGGER", "reaction")
+    assert is_suspect(_result("F-F-R2-F-F-C", reaction=False)) is False
+
+
+def test_allin_mode_ignores_reaction_signal(monkeypatch):
+    # Default trigger is unchanged: reaction signal alone does NOT fire it.
+    monkeypatch.delenv("OCR_VLM_RECHECK_TRIGGER", raising=False)
+    assert is_suspect(_result("F-F-R2-F-F-C", reaction=True)) is False
 
 
 # ---- response parsing ----

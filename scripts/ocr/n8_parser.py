@@ -176,7 +176,10 @@ def _maybe_vlm_recheck(
     if hand is None or not _vlm_recheck_enabled():
         return hand, confidence_parts, diagnostics
     from .vlm_recheck import is_suspect, recheck_structure
-    if not is_suspect({"hand": hand}):
+    # Pass diagnostics so the ``reaction`` trigger mode can see
+    # ``estimate_used_reaction_signal`` (the residual non-all-in structural
+    # errors). The default ``allin`` mode ignores it.
+    if not is_suspect({"hand": hand, "diagnostics": diagnostics}):
         return hand, confidence_parts, diagnostics
     rc = (recheck_fn or recheck_structure)(image_bytes)
     if not rc:
