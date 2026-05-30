@@ -1540,16 +1540,17 @@ class GeminiSessionManager:
                 )
                 self._logger.debug(f"[chat={chat_id}] GTO data:\n{gto_data}")
 
-                # Exact ICM range requests should be answered from the solver
-                # artifact directly.  Letting the coaching LLM rewrite these
-                # has caused two user-visible failures: it skipped the
-                # approximation note and reordered the user's FT stack list.
-                # The detailed solver text already contains the selected ICM
-                # mode, user stacks, solver stacks, action frequencies, and
-                # range-by-action breakdown; Telegram will attach follow-up
-                # buttons from the cached context.
+                # Exact ICM range requests must stay deterministic.  Letting
+                # the coaching LLM rewrite these has caused two user-visible
+                # failures: it skipped the approximation note and reordered
+                # the user's FT stack list.  But returning the raw solver
+                # artifact is too terse, so build a deterministic coach
+                # response from the cached solver data: exact stack order,
+                # explicit approximation details, action frequencies, and the
+                # range breakdown without free-form hallucination risk.
                 if context.get("no_hero_hand") and context.get("is_icm") and not hand_json.get("streets"):
-                    result = gto_data
+                    result = self._format_icm_range_coach_response(context, gto_data)
+                    context["followup_questions"] = self._build_icm_range_followups(context)
                     _aio.create_task(self._update_snapshot_coaching(
                         hand_id, chat_id, result))
                     if hand_id:
@@ -3637,6 +3638,220 @@ class GeminiSessionManager:
         if followups:
             return "\n".join(clean_lines).rstrip(), followups
         return text, []
+
+    @staticmethod
+    def _position_order(num_players: int) -> list[str]:
+        """Return the preflop position order used by parser/analyzer."""
+        return {
+            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            5: ["HJ", "CO", "BTN", "SB", "BB"],
+            4: ["CO", "BTN", "SB", "BB"],
+            3: ["BTN", "SB", "BB"],
+            2: ["SB", "BB"],
+        }.get(num_players, [])
+
+    @staticmethod
+    def _format_stack_list(stacks: list[Any]) -> str:
+        """Format bb stacks without noisy .0 decimals."""
+        formatted = []
+        for stack in stacks:
+            try:
+                value = float(stack)
+                formatted.append(f"{value:.0f}" if value.is_integer() else f"{value:g}")
+            except (TypeError, ValueError):
+                formatted.append(str(stack))
+        return " / ".join(formatted)
+
+    @staticmethod
+    def _solver_stack_list(stacks: Any) -> list[float]:
+        """Convert GTO Wizard ICM stack string (15.125-20.125) to bb values."""
+        if not stacks:
+            return []
+        if isinstance(stacks, str):
+            parts = [p for p in stacks.split("-") if p]
+        elif isinstance(stacks, list):
+            parts = stacks
+        else:
+            return []
+
+        result: list[float] = []
+        for part in parts:
+            try:
+                value = float(part)
+            except (TypeError, ValueError):
+                continue
+            # GTO Wizard stack configs include the 0.125bb ante suffix.
+            if value >= 0.125:
+                value -= 0.125
+            result.append(value)
+        return result
+
+    @staticmethod
+    def _find_preflop_solution(context: dict) -> tuple[dict | None, dict | None]:
+        """Return the cached preflop spot + solution for no-hero range coaching."""
+        for spot, solution in zip(context.get("hero_spots", []), context.get("solutions", [])):
+            if spot and spot.get("street") == "preflop" and solution:
+                return spot, solution
+        return None, None
+
+    @staticmethod
+    def _format_action_mix(solution: dict) -> str:
+        """Format aggregate action frequencies from a spot solution."""
+        from gto_formatter import _action_label
+
+        lines = []
+        for action_solution in solution.get("action_solutions", []):
+            freq = float(action_solution.get("total_frequency", 0))
+            if freq < 0.001:
+                continue
+            combos = float(action_solution.get("total_combos", 0))
+            code = action_solution.get("action", {}).get("code", "")
+            label = _action_label(code, solution)
+            lines.append(f"- {label}: {freq * 100:.1f}%（{combos:.0f} combos）")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_nonfold_ranges(solution: dict, position: str) -> str:
+        """Format the playable range by non-fold action for a position."""
+        from gto_formatter import _action_label, _compress_range
+
+        player_info = None
+        for pi in solution.get("players_info", []):
+            if pi.get("player", {}).get("position") == position:
+                player_info = pi
+                break
+        if not player_info:
+            return ""
+
+        action_groups: dict[str, list[tuple[str, float, float]]] = {}
+        for hand_name, data in (player_info.get("simple_hand_counters") or {}).items():
+            freqs = data.get("actions_total_frequencies") or {}
+            combos_by_action = data.get("actions_total_combos") or {}
+            for code, freq in freqs.items():
+                if code == "F" or float(freq) < 0.001:
+                    continue
+                combos = float(combos_by_action.get(code, 0))
+                if combos < 0.01:
+                    continue
+                action_groups.setdefault(code, []).append((hand_name, float(freq), combos))
+
+        if not action_groups:
+            return ""
+
+        lines = []
+        for code, group in sorted(
+            action_groups.items(), key=lambda item: -sum(h[2] for h in item[1])
+        ):
+            group.sort(key=lambda hand: -hand[2])
+            total = sum(hand[2] for hand in group)
+            lines.append(f"- {_action_label(code, solution)}（{total:.0f} combos）: {_compress_range(group)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_icm_range_followups(context: dict) -> list[str]:
+        """Deterministic follow-up buttons for no-hero ICM preflop ranges."""
+        hand = context.get("hand") or {}
+        hero_pos = hand.get("hero_position") or context.get("hero_position") or "Hero"
+        return [
+            f"如果 {hero_pos} open 後被後位 3-bet all-in，要用哪些牌跟注？",
+            f"這個 {hero_pos} open range 和 Chip EV 相比差在哪裡？",
+            "如果短碼籌碼改變，ICM open range 會怎麼調整？",
+        ]
+
+    @staticmethod
+    def _format_icm_range_coach_response(context: dict, fallback_text: str = "") -> str:
+        """Build a deterministic coach response for no-hero ICM range queries.
+
+        This deliberately does not call the LLM: stack order and approximation
+        metadata are user-critical and must be reproduced exactly from the
+        solver context.
+        """
+        hand = context.get("hand") or {}
+        hero_pos = hand.get("hero_position") or context.get("hero_position", "Hero")
+        num_players = int(hand.get("players_at_table") or len(hand.get("player_stacks") or []) or 0)
+        pos_order = GeminiSessionManager._position_order(num_players)
+
+        user_stacks = hand.get("player_stacks") or []
+        solver_stacks = GeminiSessionManager._solver_stack_list(context.get("stacks"))
+        user_stack_text = GeminiSessionManager._format_stack_list(user_stacks)
+        solver_stack_text = GeminiSessionManager._format_stack_list(solver_stacks)
+        gametype = context.get("gametype", "")
+
+        hero_stack_line = ""
+        if hero_pos in pos_order and len(user_stacks) > pos_order.index(hero_pos):
+            hero_stack = user_stacks[pos_order.index(hero_pos)]
+            hero_stack_line = f"按 {num_players} 人桌位置順序（{' / '.join(pos_order)}），{hero_pos} 對應 {hero_stack:g}bb。"
+
+        max_diff = None
+        if user_stacks and solver_stacks:
+            diffs = [abs(float(a) - float(b)) for a, b in zip(user_stacks, solver_stacks)]
+            if diffs:
+                max_diff = max(diffs)
+
+        spot, solution = GeminiSessionManager._find_preflop_solution(context)
+        solver_pos = (spot or {}).get("solver_hero_pos", hero_pos)
+        action_mix = GeminiSessionManager._format_action_mix(solution) if solution else ""
+        nonfold_ranges = GeminiSessionManager._format_nonfold_ranges(solution, solver_pos) if solution else ""
+
+        top_nonfold = ""
+        if solution:
+            nonfold_actions = [
+                a for a in solution.get("action_solutions", [])
+                if a.get("action", {}).get("code") != "F"
+            ]
+            if nonfold_actions:
+                best = max(nonfold_actions, key=lambda a: float(a.get("total_frequency", 0)))
+                code = best.get("action", {}).get("code", "")
+                from gto_formatter import _action_label
+                top_nonfold = (
+                    f"主要可玩動作是 {_action_label(code, solution)}，"
+                    f"總頻率 {float(best.get('total_frequency', 0)) * 100:.1f}%。"
+                )
+
+        lines = [
+            "🎯 教練解讀",
+            "",
+            f"這是 {num_players} 人決賽桌 ICM 的 {hero_pos} preflop range 查詢。{hero_stack_line}",
+            "",
+            "⚠ 近似說明",
+        ]
+        if gametype:
+            lines.append(f"- ICM 模式: {gametype}")
+        if user_stack_text:
+            lines.append(f"- 用戶籌碼: {user_stack_text}")
+        if solver_stack_text:
+            lines.append(f"- Solver 籌碼: {solver_stack_text}")
+        if max_diff is not None:
+            lines.append(f"- 最大差異: {max_diff:.0f}bb")
+        lines.append(
+            "- GTO Wizard ICM 只能查內建的 FT stack configuration；系統會用你的原始 stack order 去找最接近的 solver config。"
+        )
+        if max_diff is not None and max_diff > 10:
+            lines.append(
+                "- 這次最大差異偏大，所以請把它當作方向性近似：range 的鬆緊與核心手牌可參考，但邊界混頻手牌要更保守解讀。"
+            )
+        else:
+            lines.append("- 這次 stack 差異較小，可把頻率當作較接近的參考。")
+
+        if action_mix:
+            lines.extend(["", "📊 Solver 策略", action_mix])
+        if top_nonfold:
+            lines.extend(["", f"重點：{top_nonfold}ICM 壓力下，這裡不是用一般 Chip EV 的寬 open，而是先保留能承受後位反擊的核心牌。"])
+        if nonfold_ranges:
+            lines.extend(["", f"✅ {hero_pos} 可玩範圍", nonfold_ranges])
+
+        lines.extend([
+            "",
+            "實戰上可以這樣記：先照 solver 的主要 raise range 開局；像低對子、弱 Kxs/Qxs、弱 offsuit broadway 這類邊界牌，因為本次 solver stack 近似差異不小，不要把混頻數字當成絕對精準。"
+        ])
+
+        if not solution and fallback_text:
+            lines.extend(["", "Solver 原始摘要：", fallback_text])
+
+        return "\n".join(lines).strip()
 
     def _build_hand_summary(self, chat_id: int) -> str:
         """Build a concise hand summary for the system prompt."""
