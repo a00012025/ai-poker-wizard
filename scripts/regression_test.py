@@ -3184,6 +3184,84 @@ def test_structured_icm_facing_range_query_prefers_explicit_hero():
 
 
 @test
+def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
+    """ICM range coaching: no-hero FT response should be explanatory but deterministic."""
+    from gemini_session import GeminiSessionManager
+
+    raise_hands = {
+        "AA": 6, "KK": 6, "QQ": 6, "JJ": 6, "TT": 6, "99": 6, "88": 6,
+        "77": 6, "66": 6, "A3s": 4, "A4s": 4, "A5s": 4, "AKo": 12,
+        "AQo": 12, "AJo": 12, "ATo": 12, "KQo": 12, "KJo": 12,
+        "JTs": 4, "T9s": 4,
+    }
+    shc = {
+        hand: {
+            "actions_total_frequencies": {"R2": 1.0},
+            "actions_total_combos": {"R2": combos},
+        }
+        for hand, combos in raise_hands.items()
+    }
+    shc["55"] = {
+        "actions_total_frequencies": {"R2": 0.32, "F": 0.68},
+        "actions_total_combos": {"R2": 1.92, "F": 4.08},
+    }
+    shc["22"] = {
+        "actions_total_frequencies": {"F": 1.0},
+        "actions_total_combos": {"F": 6},
+    }
+    solution = {
+        "game": {
+            "active_position": "HJ",
+            "board": "",
+            "current_street": {"type": "preflop"},
+            "pot": 2.375,
+            "bet_display_name": "RAISE",
+        },
+        "action_solutions": [
+            {
+                "action": {"code": "F"},
+                "total_frequency": 0.827,
+                "total_combos": 1096,
+            },
+            {
+                "action": {"code": "R2", "betsize": "2", "betsize_by_pot": 0.30},
+                "total_frequency": 0.173,
+                "total_combos": 230,
+            },
+        ],
+        "players_info": [
+            {"player": {"position": "HJ"}, "simple_hand_counters": shc}
+        ],
+    }
+    context = {
+        "hand": {
+            "players_at_table": 7,
+            "player_stacks": [15.0, 68.0, 35.0, 50.0, 18.0, 10.0, 26.0],
+            "hero_position": "HJ",
+        },
+        "gametype": "MTTGeneral_ICM7m1000PTFT",
+        "stacks": "15.125-20.125-30.125-45.125-40.125-10.125-50.125",
+        "hero_spots": [{"street": "preflop", "solver_hero_pos": "HJ"}],
+        "solutions": [solution],
+    }
+
+    text = GeminiSessionManager._format_icm_range_coach_response(context)
+
+    assert_in("🎯 教練解讀", text)
+    assert_in("近似說明", text)
+    assert_in("用戶籌碼: 15 / 68 / 35 / 50 / 18 / 10 / 26", text)
+    assert_in("Solver 籌碼: 15 / 20 / 30 / 45 / 40 / 10 / 50", text)
+    assert_in("最大差異: 48bb", text)
+    assert_in("HJ 對應 35bb", text)
+    assert_in("GTO Wizard ICM 只能查內建的 FT stack configuration", text)
+    assert_in("Fold: 82.7%", text)
+    assert_in("RAISE 2（30% pot）: 17.3%", text)
+    assert_in("可玩範圍", text)
+    assert_not_in("Discovery:", text)
+    assert_not_in("==================================================", text)
+
+
+@test
 def test_icm_ft_9player_stacks():
     """ICM FT: 9-player final table (full ring) finds valid ICM mode."""
     from icm_modes import find_icm_params
