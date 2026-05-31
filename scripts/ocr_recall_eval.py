@@ -33,7 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ocr_precision import compare  # noqa: E402
-from gemini_session import IMAGE_PARSE_PROMPT, GeminiSessionManager  # noqa: E402
+from gemini_session import (  # noqa: E402
+    HERO_HAND_ONLY_PROMPT,
+    IMAGE_PARSE_PROMPT,
+    GeminiSessionManager,
+)
 
 _DEFAULT_MODEL = os.environ.get("GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest")
 
@@ -47,7 +51,12 @@ def load_gt(gt_path: str) -> dict[str, dict]:
     return gt
 
 
-def select_parse_none(records_path: str, include_abstain: bool = False) -> list[dict]:
+def select_parse_none(
+    records_path: str,
+    include_abstain: bool = False,
+    *,
+    only_abstain: bool = False,
+) -> list[dict]:
     """Return the records the Gemini fallback would fire on.
 
     By default only TRUE parse_none (assembly failed) — these are the recall
@@ -59,6 +68,10 @@ def select_parse_none(records_path: str, include_abstain: bool = False) -> list[
     with open(records_path, encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
+            if only_abstain:
+                if r.get("abstained_confidence"):
+                    out.append(r)
+                continue
             if not r.get("parsed_none"):
                 continue
             if r.get("abstained_confidence") and not include_abstain:
@@ -137,7 +150,97 @@ def gemini_parse_image(
     return hand
 
 
-def _eval_one(rec: dict, gt_map: dict, model: str) -> dict:
+def gemini_hero_hand_only(
+    image_bytes: bytes,
+    *,
+    ocr_hand: dict | None = None,
+    hints: dict | None = None,
+    model: str | None = None,
+    mime_type: str = "image/png",
+    client=None,
+) -> str | None:
+    """Synchronous version of production's cards-only micro-route."""
+    from google.genai import types  # type: ignore
+
+    prompt_text = HERO_HAND_ONLY_PROMPT
+    ctx = {
+        "hero_position": (ocr_hand or {}).get("hero_position"),
+        "players_at_table": (ocr_hand or {}).get("players_at_table"),
+    }
+    prompt_text += (
+        f"\n\nOCR 已確定的上下文（請僅作為定位 hero 的參考，不要重新判斷）："
+        f"{json.dumps(ctx, ensure_ascii=False)}"
+    )
+    if hints and hints.get("hero_card_suits"):
+        prompt_text += (
+            f"\n\nCardCNN suit 分類器對 hero 兩張牌花色高信心，"
+            f"由左至右為 {hints['hero_card_suits']}（hero_hand 須以 rank 大者排前）。"
+        )
+
+    hero_bytes, hero_mime = GeminiSessionManager._hero_cards_image_for_micro_read(
+        image_bytes, fallback_mime_type=mime_type
+    )
+    cl = client if client is not None else _get_client()
+    try:
+        resp = cl.models.generate_content(
+            model=model or _DEFAULT_MODEL,
+            contents=[types.Content(role="user", parts=[
+                types.Part.from_bytes(data=hero_bytes, mime_type=hero_mime),
+                types.Part(text=prompt_text),
+            ])],
+            config=types.GenerateContentConfig(
+                temperature=0,
+                thinking_config=types.ThinkingConfig(thinking_budget=2048),
+            ),
+        )
+    except Exception:
+        return None
+
+    text = getattr(resp, "text", "") or ""
+    m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    json_str = m.group(1) if m else text.strip()
+    try:
+        result = json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    hero_hand = result.get("hero_hand") if isinstance(result, dict) else None
+    if not isinstance(hero_hand, str) or len(hero_hand) != 4:
+        return None
+    ranks = set("23456789TJQKA")
+    suits = set("cdhs")
+    if (hero_hand[0] not in ranks or hero_hand[2] not in ranks
+            or hero_hand[1] not in suits or hero_hand[3] not in suits):
+        return None
+    return hero_hand
+
+
+def ocr_hand_from_record(rec: dict) -> dict | None:
+    """Rebuild the OCR hand stored in an ``ocr_precision`` JSONL record.
+
+    ``all_records.jsonl`` stores core hand fields under ``parsed`` and the
+    canonical board runout separately as ``parsed_streets``.  Recall A/B modes
+    that keep OCR structure must restore those streets before scoring;
+    otherwise exact OCR abstains with correct boards look like board failures.
+    """
+    parsed = rec.get("parsed")
+    if not isinstance(parsed, dict):
+        return None
+    hand = dict(parsed)
+    streets = []
+    for idx, cards in enumerate(rec.get("parsed_streets") or []):
+        if not cards:
+            continue
+        card_list = list(cards)
+        if idx == 0 or len(card_list) >= 3:
+            streets.append({"board": "".join(card_list), "actions": []})
+        else:
+            streets.append({"card": "".join(card_list), "actions": []})
+    if streets:
+        hand["streets"] = streets
+    return hand
+
+
+def _eval_one(rec: dict, gt_map: dict, model: str, mode: str) -> dict:
     hand_id = rec.get("hand_id")
     img_path = rec.get("image")
     gt = gt_map.get(hand_id)
@@ -147,7 +250,42 @@ def _eval_one(rec: dict, gt_map: dict, model: str) -> dict:
         res.update(recovered=False, reason="no_gt_or_image")
         return res
     t0 = time.time()
-    hand = gemini_parse_image(Path(img_path).read_bytes(), model=model)
+    image_bytes = Path(img_path).read_bytes()
+    if mode == "full":
+        hand = gemini_parse_image(image_bytes, model=model)
+    elif mode == "keep-ocr":
+        hand = ocr_hand_from_record(rec)
+    elif mode in ("cards-only", "production-cards"):
+        ocr_hand = ocr_hand_from_record(rec)
+        if not ocr_hand:
+            hand = None
+        else:
+            hints = {}
+            hero_suits = []
+            for d in rec.get("hero_card_details") or []:
+                if d.get("suit") and float(d.get("suit_conf") or 0.0) >= 0.90:
+                    hero_suits.append(d["suit"])
+            if len(hero_suits) == 2:
+                hints["hero_card_suits"] = hero_suits
+            hero = gemini_hero_hand_only(
+                image_bytes, ocr_hand=ocr_hand, hints=hints, model=model
+            )
+            hand = dict(ocr_hand)
+            if hero:
+                hand = GeminiSessionManager._merge_ocr_with_gemini_hero_hand(
+                    hand, hero
+                )
+            GeminiSessionManager._normalize_cards(hand)
+            GeminiSessionManager._fix_folded_players(hand)
+            if mode == "production-cards":
+                ocr_result = dict(rec)
+                ocr_result["hand"] = ocr_hand
+                if not GeminiSessionManager._cards_only_merge_safe(
+                    ocr_result, hero
+                ):
+                    hand = None
+    else:
+        raise ValueError(f"unknown mode: {mode}")
     res["elapsed_s"] = round(time.time() - t0, 1)
     if hand is None:
         res.update(recovered=False, reason="gemini_none")
@@ -178,6 +316,14 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--include-abstain", action="store_true",
                     help="Also run Gemini on confidence-abstained hands.")
+    ap.add_argument("--only-abstain", action="store_true",
+                    help="Run only confidence-abstained hands (for cards-only A/B).")
+    ap.add_argument("--mode", choices=("full", "cards-only", "production-cards", "keep-ocr"),
+                    default="full",
+                    help=("Fallback strategy to score. full = production full "
+                          "Gemini parse; cards-only = keep OCR structure and "
+                          "micro-read hero cards; production-cards = cards-only "
+                          "plus production safety selector; keep-ocr = no VLM."))
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -195,17 +341,24 @@ def main() -> int:
         abstain = s.get("abstained_confidence", 0)
 
     gt_map = load_gt(str(Path(args.ground_truth).resolve()))
-    targets = select_parse_none(records_path, include_abstain=args.include_abstain)
+    targets = select_parse_none(
+        records_path,
+        include_abstain=args.include_abstain,
+        only_abstain=args.only_abstain,
+    )
     if args.limit:
         targets = targets[: args.limit]
     print(f"[recall_eval] dump={args.dump} targets={len(targets)} "
-          f"model={args.model} workers={args.workers} "
+          f"model={args.model} mode={args.mode} workers={args.workers} "
           f"(total={total} parse_none={parse_none} abstain={abstain})")
 
     results: list[dict] = []
     t_start = time.time()
     with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(_eval_one, r, gt_map, args.model): r for r in targets}
+        futs = {
+            ex.submit(_eval_one, r, gt_map, args.model, args.mode): r
+            for r in targets
+        }
         done = 0
         for fut in cf.as_completed(futs):
             results.append(fut.result())
@@ -234,11 +387,13 @@ def main() -> int:
     summary = {
         "dump": args.dump,
         "model": args.model,
+        "mode": args.mode,
         "total_hands": total,
         "parse_none_in_dump": parse_none,
         "abstain_in_dump": abstain,
         "targets_run": len(targets),
         "include_abstain": args.include_abstain,
+        "only_abstain": args.only_abstain,
         "recovered_any": len(recovered),
         "recovered_correct": len(correct),
         "recovery_rate": round(len(recovered) / max(1, len(targets)), 4),

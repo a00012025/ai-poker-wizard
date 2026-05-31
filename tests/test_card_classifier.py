@@ -122,6 +122,17 @@ def test_empty_batch_returns_empty_list(tmp_path):
     assert clf.classify_batch([]) == []
 
 
+def test_tta_variants_include_contrast_and_translations():
+    crop = np.zeros((20, 16, 3), dtype=np.uint8) + 100
+    crop[:, 4:8] = 180
+    variants = CardClassifier._tta_variants(crop)
+    assert len(variants) >= 4
+    assert np.array_equal(variants[0], crop)
+    assert not np.array_equal(variants[1], crop)  # contrast variant
+    assert variants[2].shape == crop.shape
+    assert variants[3].shape == crop.shape
+
+
 # Tests that need a real checkpoint — auto-skip if missing.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CKPT = REPO_ROOT / "scripts" / "ocr" / "models" / "card_cnn_v1.pt"
@@ -177,15 +188,22 @@ def test_train_smoke(tmp_path):
                 cv2.imwrite(str(p), img)
     out_ckpt = tmp_path / "model.pt"
     out_meta = tmp_path / "model.json"
+    split_path = tmp_path / "split.json"
+    split_path.write_text(json.dumps({
+        "train": ["H0", "H1"],
+        "val": ["H2"],
+        "test": [],
+    }))
     _train(
-        data_root=tmp_path, out_ckpt=out_ckpt, out_meta=out_meta,
-        epochs=2, batch_size=16, seed=0,
+        data_root=tmp_path, split_path=split_path,
+        out_ckpt=out_ckpt, out_meta=out_meta,
+        epochs=2, batch_size=16, seed=0, device="cpu",
     )
     assert out_ckpt.exists()
     assert out_meta.exists()
     meta = json.loads(out_meta.read_text())
-    assert "val_accuracy_rank" in meta
-    assert "val_accuracy_suit" in meta
+    assert "val_acc_rank" in meta
+    assert "val_acc_suit" in meta
     assert "data_hash" in meta
     assert len(meta["data_hash"]) == 16
     assert meta["class_map"]["rank"] == RANK_CLASSES

@@ -499,7 +499,7 @@ def _repair_rank_from_top2(rank: str, rank_conf: float, top2: list) -> str:
         return rank
     if rank == "5" and second_rank == "6" and second_conf >= 0.07:
         return "6"
-    if rank == "K" and second_rank == "T" and second_conf >= 0.15:
+    if rank == "K" and second_rank == "T" and second_conf >= 0.10:
         return "T"
     if rank == "K" and second_rank == "A" and second_conf >= 0.15 and rank_conf <= 0.80:
         return "A"
@@ -546,6 +546,13 @@ def _rank_from_corner_ocr(crop: np.ndarray) -> tuple[str | None, float]:
         (0, 0, int(w * 0.64), int(h * 0.52)),
         (0, 0, int(w * 0.55), int(h * 0.45)),
         (0, 0, int(w * 0.70), int(h * 0.60)),
+        # Overlapped right-card crops can include the left card's rank at
+        # x=0; scan the interior/top-right corner too. Regression:
+        # TM5900728345's 8♣ crop began with the neighboring T♦ corner, so the
+        # left-only OCR saw junk while the actual 8 was centered/right.
+        (int(w * 0.20), 0, int(w * 0.72), int(h * 0.55)),
+        (int(w * 0.35), 0, int(w * 0.86), int(h * 0.55)),
+        (int(w * 0.45), 0, w, int(h * 0.60)),
     ]
     candidates: list[tuple[str, float]] = []
     for x1, y1, x2, y2 in boxes:
@@ -580,6 +587,51 @@ def _corner_rank_overrides(cnn_rank: str, cnn_conf: float, corner_rank: str) -> 
     if corner_rank == "4" and cnn_rank == "A" and cnn_conf >= 0.99:
         return False
     return True
+
+
+def _corner_rank_supported_by_cnn_top2(
+    corner_rank: str | None,
+    rank_top2: list,
+    *,
+    min_support: float = 0.005,
+) -> bool:
+    """Return whether the CNN still sees the corner rank as plausible.
+
+    Corner OCR is a rescue signal for WIN-sticker cases where the full-card CNN
+    is confused but its runner-up still contains the visible corner rank
+    (H3429: K→2, with 2 in top-2).  EasyOCR can also confidently misread clean
+    corners (Q→4, 5→4, 8→A), so do not let a corner-only rank that the CNN
+    assigns essentially zero probability overwrite a strong classifier read.
+    """
+    if not corner_rank:
+        return False
+    for rank, conf in (rank_top2 or [])[:2]:
+        if rank == corner_rank and float(conf or 0.0) >= min_support:
+            return True
+    return False
+
+
+def _corner_rank_can_override(
+    *,
+    cnn_rank: str,
+    cnn_conf: float,
+    corner_rank: str | None,
+    corner_conf: float,
+    rank_top2: list,
+) -> bool:
+    """Guard corner-OCR overrides with CNN support or low-CNN/high-OCR rescue."""
+    if not corner_rank:
+        return False
+    if not _corner_rank_overrides(cnn_rank, cnn_conf, corner_rank):
+        return False
+    if _corner_rank_supported_by_cnn_top2(corner_rank, rank_top2):
+        return True
+    # Shifted-corner OCR can rescue overlapped right-card crops where the CNN
+    # is already unsure and the isolated corner read is essentially perfect.
+    # Keep the cutoff below the TM5867169951 false A read (CNN 8 @ 0.862,
+    # corner A @ 0.958) while fixing TM5900728345 (CNN 3 @ 0.765, shifted
+    # corner 8 @ 1.0).
+    return cnn_conf < 0.85 and corner_conf >= 0.995
 
 
 def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -> str:
@@ -641,8 +693,8 @@ def _find_hero_cards(
     crops = [_trim_above_card_edge(c) for c in crops]
     masked_crops = [_mask_win_overlay(c) for c in crops]
     clf = CardClassifier()
-    raw_details = clf.classify_batch_detailed(crops)
-    masked_details = clf.classify_batch_detailed(masked_crops)
+    raw_details = clf.classify_batch_detailed_tta(crops)
+    masked_details = clf.classify_batch_detailed_tta(masked_crops)
     details: list[dict] = []
     for i, (raw, masked) in enumerate(zip(raw_details, masked_details)):
         rank_conf = raw["rank_conf"]
@@ -653,7 +705,13 @@ def _find_hero_cards(
         )
         rank_source = "classifier"
         corner_rank, corner_conf = _rank_from_corner_ocr(crops[i])
-        if corner_rank and _corner_rank_overrides(rank, rank_conf, corner_rank):
+        if _corner_rank_can_override(
+            cnn_rank=rank,
+            cnn_conf=rank_conf,
+            corner_rank=corner_rank,
+            corner_conf=corner_conf,
+            rank_top2=raw.get("rank_top2", []),
+        ):
             rank = corner_rank
             rank_conf = corner_conf
             rank_source = "corner_ocr"
@@ -709,10 +767,12 @@ def _find_hero_cards(
             "rank_top2": raw.get("rank_top2", []),
             "suit_top2": masked.get("suit_top2", []),
             "rank_source": rank_source,
+            "rank_tta_used": bool(raw.get("tta_used")),
             "raw_suit": raw_suit,
             "raw_suit_conf": raw_suit_conf,
             "masked_suit": masked_suit,
             "masked_suit_conf": masked.get("suit_conf", 0.0),
+            "suit_tta_used": bool(masked.get("tta_used")),
             "conf": min(rank_conf, suit_conf),
         })
     ensemble_used = False

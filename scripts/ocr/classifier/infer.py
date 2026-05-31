@@ -5,6 +5,7 @@ import logging
 import json
 from pathlib import Path
 from typing import Optional
+import os
 
 import numpy as np
 
@@ -108,6 +109,45 @@ class CardClassifier:
         (conf = min(rank_conf, suit_conf)). When the checkpoint is missing,
         returns dicts with None ranks/suits and 0.0 confidences.
         """
+        return self._classify_batch_detailed_from_crops(crops)
+
+    def classify_batch_detailed_tta(
+        self,
+        crops: list[np.ndarray],
+        *,
+        trigger_conf_below: float | None = None,
+    ) -> list[dict]:
+        """Classify crops, re-running marginal crops with small test-time aug.
+
+        Hero-card failures in the PokerCraft tail are dominated by local pixel
+        noise (WIN overlays, tiny localization shifts), not a lack of clean-card
+        corpus capacity.  For marginal crops only, average logits over the
+        original crop, a +20% contrast variant, and ±2px translations.  Confident
+        crops stay on the normal fast path.
+        """
+        if trigger_conf_below is None:
+            trigger_conf_below = float(
+                os.getenv("OCR_HERO_TTA_CONF_MAX", "0.90")
+            )
+        base = self._classify_batch_detailed_from_crops(crops)
+        if not crops or not self._ensure_loaded():
+            return base
+        out = list(base)
+        for i, detail in enumerate(base):
+            conf = float(detail.get("conf") or 0.0)
+            if conf <= 0.0 or conf >= trigger_conf_below:
+                continue
+            tta_detail = self._classify_one_tta(crops[i])
+            if tta_detail.get("conf", 0.0) >= conf:
+                tta_detail["tta_used"] = True
+                tta_detail["base_rank_top2"] = detail.get("rank_top2", [])
+                tta_detail["base_suit_top2"] = detail.get("suit_top2", [])
+                out[i] = tta_detail
+        return out
+
+    def _classify_batch_detailed_from_crops(
+        self, crops: list[np.ndarray]
+    ) -> list[dict]:
         if not crops:
             return []
         if not self._ensure_loaded():
@@ -143,3 +183,73 @@ class CardClassifier:
                 "conf": min(r_c, s_c),
             })
         return out
+
+    def _classify_one_tta(self, crop: np.ndarray) -> dict:
+        """Average logits over small crop variants and return one detail dict."""
+        from .model import RANK_CLASSES, SUIT_CLASSES
+
+        variants = self._tta_variants(crop)
+        x = self._torch.stack([
+            self._to_tensor(self._letterbox(v)) for v in variants
+        ])
+        with self._torch.no_grad():
+            rl, sl = self._net(x)
+            temp_rank = float(
+                self._meta.get(
+                    "temperature_rank",
+                    self._meta.get("temperature", 1.0),
+                ) or 1.0
+            )
+            temp_suit = float(
+                self._meta.get(
+                    "temperature_suit",
+                    self._meta.get("temperature", 1.0),
+                ) or 1.0
+            )
+            r_probs = self._torch.softmax(rl / temp_rank, dim=1).mean(dim=0)
+            s_probs = self._torch.softmax(sl / temp_suit, dim=1).mean(dim=0)
+
+        r_idx = int(r_probs.argmax())
+        s_idx = int(s_probs.argmax())
+        r_c = float(r_probs[r_idx])
+        s_c = float(s_probs[s_idx])
+        rank_top = self._torch.topk(r_probs, k=min(2, len(RANK_CLASSES)))
+        suit_top = self._torch.topk(s_probs, k=min(2, len(SUIT_CLASSES)))
+        return {
+            "rank": RANK_CLASSES[r_idx], "rank_conf": r_c,
+            "suit": SUIT_CLASSES[s_idx], "suit_conf": s_c,
+            "rank_top2": [
+                (RANK_CLASSES[int(idx)], float(prob))
+                for prob, idx in zip(rank_top.values, rank_top.indices)
+            ],
+            "suit_top2": [
+                (SUIT_CLASSES[int(idx)], float(prob))
+                for prob, idx in zip(suit_top.values, suit_top.indices)
+            ],
+            "conf": min(r_c, s_c),
+        }
+
+    @staticmethod
+    def _tta_variants(crop: np.ndarray) -> list[np.ndarray]:
+        """Return original, contrast, and ±2px horizontal translations."""
+        variants = [crop]
+        contrast = np.clip(
+            (crop.astype(np.float32) - 128.0) * 1.20 + 128.0,
+            0,
+            255,
+        ).astype(np.uint8)
+        variants.append(contrast)
+        try:
+            import cv2
+            h, w = crop.shape[:2]
+            for dx in (-2, 2):
+                mat = np.float32([[1, 0, dx], [0, 1, 0]])
+                shifted = cv2.warpAffine(
+                    crop, mat, (w, h),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REPLICATE,
+                )
+                variants.append(shifted)
+        except Exception:
+            pass
+        return variants
