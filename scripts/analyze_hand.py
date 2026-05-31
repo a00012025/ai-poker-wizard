@@ -2098,6 +2098,47 @@ def _run_analysis(hand: dict) -> dict:
             if previous_same_street_size_mismatch:
                 offrange_no_solver_idxs.add(i)
 
+    # If the first preflop node is an unopened RFI but the solver's dominant
+    # action for this exact hand is code C (displayed as Limp), explicitly show
+    # Hero's real open raise.  Otherwise compact/full output can look like the
+    # hand was played as a limp/call even though preflop_actions has R.
+    if not no_hero_hand and hero_spots and solutions and solutions[0]:
+        actual_first = (
+            pf_parts[hero_idx]
+            if hero_idx < len(pf_parts)
+            else ""
+        )
+        all_fold_before_hero = all(p == "F" for p in pf_parts[:hero_idx])
+        actual_solver_code = "RAI" if actual_first.startswith("AI") else actual_first
+        action_codes = {
+            asol.get("action", {}).get("code")
+            for asol in solutions[0].get("action_solutions", [])
+        }
+        hand_freqs = None
+        for pi in solutions[0].get("players_info", []):
+            if pi.get("player", {}).get("position") != solver_hero_pos:
+                continue
+            hand_data = (
+                pi.get("simple_hand_counters", {})
+                .get(normalize_hand_name(hero_hand))
+            )
+            if hand_data:
+                hand_freqs = hand_data.get("actions_total_frequencies", {})
+            break
+        top_code = max(hand_freqs, key=hand_freqs.get) if hand_freqs else None
+        if (
+            all_fold_before_hero
+            and actual_first.startswith(("R", "AI"))
+            and actual_solver_code in action_codes
+            and top_code == "C"
+            and float(hand_freqs.get("C") or 0.0) >= 0.80
+        ):
+            hero_spots[0]["taken_code"] = actual_solver_code
+            hero_spots[0]["action_desc"] = (
+                f"  → 實際行動: {hero_pos} {actual_first}"
+                f"（solver code: {actual_solver_code}）"
+            )
+
     t_phase2 = time.time()
 
     # ── Phase 3: Format results ──
@@ -2403,8 +2444,14 @@ def _run_analysis(hand: dict) -> dict:
                     ev_loss = float(m.group(1)) if m else 0
                     if ev_loss >= 0.5:
                         is_bad = True
-                if gto_top_label and gto_top_freq >= 0.80:
+                if (
+                    gto_top_label
+                    and gto_top_freq >= 0.80
+                    and not (is_pf and ev_loss < 0.5)
+                ):
                     is_bad = True
+                if is_pf and not is_bad and ev_loss < 0.5:
+                    sizing_hint = ""
 
                 if is_bad:
                     ev_part = f" EV損失 -{ev_loss:.1f}bb" if ev_loss >= 0.5 else ""

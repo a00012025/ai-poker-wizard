@@ -1490,10 +1490,10 @@ def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
     """Analyze text: H3471 is HJ RFI, not HJ calling a prior raise.
 
     The solver's unopened 14bb HJ node encodes open-limp as action code C.
-    Regression: compact/full text showed "Call 98%" and no hero preflop
-    action_desc, so the coach hallucinated that HJ faced an open raise and
-    called.  The analysis must label C as Limp so the coach cannot invent a
-    prior raiser from solver terminology.
+    Regression: compact/full text showed only "Call 98%" and no hero
+    preflop action line, so the coach hallucinated that HJ faced an open
+    raise and called.  The analysis must show Hero's actual open raise
+    while ensuring solver C cannot be misread as a call versus a prior raiser.
     """
     from analyze_hand import analyze_hand_full
 
@@ -1529,7 +1529,10 @@ def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
     assert_eq(result["preflop_actions"], "F-F-F-R2-F-C-F-F")
     assert_in("Limp: 98.5%", result["text"])
     assert_in("GTO: Limp 98%", result["text_compact"])
+    assert_in("→ 實際行動: HJ R2", result["text"])
+    assert_in("→ Hero open raise 29% pot ✅", result["text_compact"])
     assert_not_in("GTO: Call 98%", result["text_compact"])
+    assert_not_in("→ Hero limp", result["text_compact"])
 
 
 @test
