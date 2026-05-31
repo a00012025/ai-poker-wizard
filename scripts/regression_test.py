@@ -94,6 +94,27 @@ def test_postflop_allin_resolution_preserves_sized_hero_backjam():
 
 
 @test
+def test_corner_ocr_does_not_override_confident_ace():
+    """OCR: EasyOCR misreads the Ace corner glyph as '4' (H2878).
+
+    The corner-OCR cross-check exists to rescue confident CNN face-card
+    hallucinations (H3429: 2 read as K), but it must never let a corner '4'
+    override a CNN that is certain the card is an Ace.
+    """
+    from ocr.table_parser import _corner_rank_overrides
+
+    # H2878: CNN certain it's an Ace; corner OCR misreads it as '4'. Keep A.
+    assert_true(not _corner_rank_overrides("A", 1.00, "4"),
+                "corner '4' must not override a confident CNN Ace (H2878)")
+    # H3429-style: CNN confidently hallucinated a face card; corner rescues it.
+    assert_true(_corner_rank_overrides("K", 0.99, "2"),
+                "corner OCR must still rescue a CNN face-card hallucination")
+    # Ordinary disagreement still defers to the corner reading.
+    assert_true(_corner_rank_overrides("Q", 0.80, "K"),
+                "corner OCR should override a non-Ace CNN rank")
+
+
+@test
 def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     """OCR: sticker-only All-In fragments still belong to the prior raise.
 
