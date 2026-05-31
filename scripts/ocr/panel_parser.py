@@ -615,6 +615,14 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple
     for group in groups:
         entry = _classify_group(group, column_region)
         if entry is None:
+            size_only = _bb_amount_from_group(group)
+            if (
+                size_only is not None
+                and entries
+                and entries[-1].get("size") is None
+                and (entries[-1].get("action") or "") in ("Call", "Bet", "Raise")
+            ):
+                entries[-1]["size"] = size_only
             continue
         if entry["action"] == "Skip":
             continue
@@ -706,6 +714,19 @@ def detect_entries(column_region: np.ndarray, is_preflop: bool = False) -> tuple
             del e[k]
 
     return entries, pre_collapse_count
+
+
+def _bb_amount_from_group(group: list[dict]) -> float | None:
+    """Return a standalone ``X BB`` amount from an OCR group, if present."""
+    text = " ".join(str(t.get("text") or "") for t in group)
+    m = _BB_PATTERN.search(text)
+    if not m:
+        return None
+    try:
+        value = float(m.group(1))
+    except ValueError:
+        return None
+    return value if 0 < value <= 300 else None
 
 
 def _split_multi_action_groups(groups: list[list[dict]]) -> list[list[dict]]:
@@ -866,6 +887,8 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
                 size = float(num_match.group(1))
             except ValueError:
                 pass
+    if size is None and action in ("Call", "Bet", "Raise"):
+        size = _recover_size_from_group_crop(group, column_region)
 
     # Detect position — try exact match first, then longest substring
     # to avoid "UTG" matching "UTG1" before "UTG1" itself.
@@ -956,6 +979,66 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
             max(t["y_max"] for t in group),
         )
     return result
+
+
+def _recover_size_from_group_crop(
+    group: list[dict],
+    column_region: np.ndarray,
+) -> float | None:
+    """Recover a missed ``X BB`` amount by re-OCRing just the action sticker.
+
+    Full-column EasyOCR can drop a digit when a white opponent sticker sits
+    next to a green ``BB`` position badge: the group text becomes
+    ``"Ralse BB"`` even though a tighter crop reads ``"Raise 5 BB"``.  Keep
+    this as a second-pass fallback only for action groups that *should* have a
+    size and only accept explicit BB amounts from the focused crop.
+    """
+    if (
+        column_region is None
+        or getattr(column_region, "size", 0) == 0
+        or not group
+        or not all(
+            all(k in t for k in ("x_min", "y_min", "x_max", "y_max"))
+            for t in group
+        )
+    ):
+        return None
+
+    h, w = column_region.shape[:2]
+    x1 = max(0, int(min(t["x_min"] for t in group)) - 12)
+    y1 = max(0, int(min(t["y_min"] for t in group)) - 8)
+    x2 = min(w, int(max(t["x_max"] for t in group)) + 12)
+    y2 = min(h, int(max(t["y_max"] for t in group)) + 10)
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    crop = column_region[y1:y2, x1:x2]
+    # 2x was enough to recover TM5867249527's hidden "5 BB" while keeping
+    # this cheap.  If the crop is very small, 3x gives EasyOCR usable glyphs.
+    scales = (2, 3) if max(crop.shape[:2]) < 70 else (2,)
+    candidates: list[tuple[float, float]] = []
+    for scale in scales:
+        enlarged = cv2.resize(
+            crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+        )
+        for text in ocr_full_image(enlarged):
+            raw = text.get("text") or ""
+            m = _BB_PATTERN.search(raw)
+            if not m:
+                continue
+            try:
+                value = float(m.group(1))
+            except ValueError:
+                continue
+            # Guard against OCR garbage and percentage/showdown rows.  Action
+            # stickers in this parser are BB amounts, not chip counts.
+            if 0 < value <= 300:
+                candidates.append((value, float(text.get("conf") or 0.0)))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates[0][0]
 
 
 def _normalize_action(action_raw: str) -> str:

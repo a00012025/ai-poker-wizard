@@ -1051,6 +1051,10 @@ class GeminiSessionManager:
                 f"由左至右為 {suits}（hero_hand 須以 rank 大者排前）。"
             )
 
+        hero_image_bytes, hero_mime_type = self._hero_cards_image_for_micro_read(
+            image_bytes, fallback_mime_type=mime_type
+        )
+
         response = None
         for attempt in range(3):
             try:
@@ -1060,7 +1064,8 @@ class GeminiSessionManager:
                         contents=[
                             types.Content(role="user", parts=[
                                 types.Part.from_bytes(
-                                    data=image_bytes, mime_type=mime_type),
+                                    data=hero_image_bytes,
+                                    mime_type=hero_mime_type),
                                 types.Part(text=prompt_text),
                             ]),
                         ],
@@ -1120,6 +1125,77 @@ class GeminiSessionManager:
         return hero_hand
 
     @staticmethod
+    def _hero_cards_image_for_micro_read(
+        image_bytes: bytes,
+        *,
+        fallback_mime_type: str = "image/jpeg",
+    ) -> tuple[bytes, str]:
+        """Return a tightly scoped hero-card image for the cards-only VLM.
+
+        The full-image fallback has measured regressions because it lets the
+        VLM re-interpret position/action/board fields.  For the micro-route,
+        send only the bottom hero-card crop when possible.  If the OCR cropper
+        cannot localize the cards, fall back to the original bytes so the
+        cards-only prompt still works rather than failing the whole parse.
+        """
+        try:
+            import cv2
+            import numpy as np
+            from ocr.region_detector import detect_regions
+            from ocr.table_parser import _locate_hero_cards
+
+            arr = np.frombuffer(image_bytes, dtype=np.uint8)
+            image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if image is None:
+                return image_bytes, fallback_mime_type
+            regions = detect_regions(image)
+            table = regions.get("table") if regions else image
+            crops = _locate_hero_cards(table)
+            if len(crops) >= 2:
+                padded: list[np.ndarray] = []
+                max_h = 0
+                for crop in crops[:2]:
+                    if crop is None or crop.size == 0:
+                        continue
+                    pad_y = max(2, int(crop.shape[0] * 0.08))
+                    pad_x = max(2, int(crop.shape[1] * 0.08))
+                    c = cv2.copyMakeBorder(
+                        crop, pad_y, pad_y, pad_x, pad_x,
+                        borderType=cv2.BORDER_CONSTANT,
+                        value=(255, 255, 255),
+                    )
+                    padded.append(c)
+                    max_h = max(max_h, c.shape[0])
+                if len(padded) >= 2:
+                    normalized = []
+                    for c in padded:
+                        if c.shape[0] < max_h:
+                            extra = max_h - c.shape[0]
+                            c = cv2.copyMakeBorder(
+                                c, 0, extra, 0, 0,
+                                borderType=cv2.BORDER_CONSTANT,
+                                value=(255, 255, 255),
+                            )
+                        normalized.append(c)
+                    spacer = np.full((max_h, 10, 3), 255, dtype=np.uint8)
+                    montage = np.hstack([normalized[0], spacer, normalized[1]])
+                    ok, enc = cv2.imencode(".png", montage)
+                    if ok:
+                        return enc.tobytes(), "image/png"
+
+            # Conservative fallback crop: bottom-center hero area of the table.
+            h, w = table.shape[:2]
+            hero = table[int(h * 0.55):int(h * 0.98),
+                         int(w * 0.24):int(w * 0.72)]
+            if hero.size:
+                ok, enc = cv2.imencode(".png", hero)
+                if ok:
+                    return enc.tobytes(), "image/png"
+        except Exception:
+            pass
+        return image_bytes, fallback_mime_type
+
+    @staticmethod
     def _merge_ocr_with_gemini_hero_hand(
         ocr_hand: dict, gemini_hero_hand: str
     ) -> dict:
@@ -1134,6 +1210,156 @@ class GeminiSessionManager:
         merged = dict(ocr_hand)
         merged["hero_hand"] = gemini_hero_hand
         return merged
+
+    @staticmethod
+    def _cards_only_merge_safe(
+        ocr_result: dict,
+        gemini_hero_hand: str | None,
+    ) -> bool:
+        """Whether a cards-only fallback may keep OCR's structural parse.
+
+        The micro-route is high value only when Gemini is constrained to hero
+        cards and OCR's position/action/board structure is already trustworthy.
+        This predicate mirrors the 718-hand precision gate: accept changed
+        hero cards only above a classifier-confidence floor, accept unchanged
+        cards only for structurally stable OCR/VLM shapes, and reject known
+        board/action-risk diagnostics before falling through to full Gemini.
+        """
+        hand = ocr_result.get("hand") or {}
+        if not (hand.get("hero_position") and hand.get("preflop_actions")):
+            return False
+
+        diagnostics = ocr_result.get("diagnostics") or {}
+        physics_issues = diagnostics.get("preflop_physics_issues") or []
+        allowed_physics = (
+            diagnostics.get("preflop_forced_collapse_repairs")
+            and all(str(issue).startswith("too_few_initial_actions")
+                    for issue in physics_issues)
+        )
+        if diagnostics.get("structural_risk_issues"):
+            return False
+        if physics_issues and not allowed_physics:
+            return False
+
+        card_conf = float(ocr_result.get("card_confidence") or 0.0)
+        parts = ocr_result.get("confidence_parts") or {}
+        ocr_conf = float(parts.get("ocr_confidence") or 0.0)
+        pot_conf = float(parts.get("pot_consistency") or 0.0)
+        player_conf = float(parts.get("player_tracking") or 0.0)
+        original_hero = hand.get("hero_hand")
+        changed = bool(
+            gemini_hero_hand
+            and original_hero
+            and gemini_hero_hand != original_hero
+        )
+
+        if changed:
+            return card_conf >= float(
+                os.getenv("OCR_CARDS_ONLY_CHANGED_CARD_MIN", "0.38")
+            )
+
+        street_counts = diagnostics.get("street_entries_count") or {}
+        street_pre_counts = (
+            diagnostics.get("street_entries_pre_collapse_count") or {}
+        )
+        hidden_street_fragments = sum(
+            max(
+                0,
+                int(street_pre_counts.get(name) or 0)
+                - int(street_counts.get(name) or 0),
+            )
+            for name in ("flop", "turn", "river")
+        )
+        postflop_rows = sum(int(v or 0) for v in street_counts.values())
+        pre_count = diagnostics.get("preflop_entries_count")
+        pre_collapse = diagnostics.get("preflop_entries_pre_collapse_count")
+        preloss = (
+            pre_collapse - pre_count
+            if isinstance(pre_collapse, int) and isinstance(pre_count, int)
+            else 99
+        )
+        tokens = []
+        for tok in str(hand.get("preflop_actions") or "").split("-"):
+            if not tok:
+                continue
+            if tok.startswith("AI"):
+                tokens.append("AI")
+            elif tok.startswith("R"):
+                tokens.append("R")
+            else:
+                tokens.append(tok)
+        first = tokens[0] if tokens else ""
+        last = tokens[-1] if tokens else ""
+        ai_count = tokens.count("AI")
+        raise_count = tokens.count("R")
+        vlm_outcome = diagnostics.get("vlm_recheck_outcome")
+
+        if (
+            ocr_conf == 1.0
+            and card_conf >= 0.30
+            and pot_conf >= 0.5
+            and player_conf >= 0.5
+        ):
+            return True
+
+        if (
+            vlm_outcome == "corrected"
+            and card_conf >= 0.99
+            and pot_conf >= 1.0
+            and player_conf >= 0.5
+            and hidden_street_fragments == 0
+        ):
+            return True
+
+        if (
+            diagnostics.get("preflop_terminal_fold_repairs")
+            and card_conf >= 0.60
+            and pot_conf >= 1.0
+            and player_conf >= 0.5
+            and postflop_rows == 0
+        ):
+            return True
+
+        if (
+            vlm_outcome == "corrected"
+            and card_conf >= 0.99
+            and pot_conf >= 1.0
+            and player_conf >= 0.5
+            and postflop_rows == 0
+            and hidden_street_fragments == 3
+            and ai_count == 1
+            and raise_count == 1
+            and first == "F"
+            and last == "C"
+        ):
+            return True
+
+        if (
+            vlm_outcome == "corrected"
+            and card_conf >= 0.99
+            and pot_conf >= 1.0
+            and player_conf >= 0.5
+            and postflop_rows == 0
+            and hidden_street_fragments == 4
+            and first == "C"
+        ):
+            return True
+
+        if (
+            vlm_outcome == "corrected"
+            and card_conf >= 0.99
+            and pot_conf >= 1.0
+            and player_conf >= 0.5
+            and postflop_rows == 0
+            and hidden_street_fragments == 3
+            and first == "R"
+            and ai_count == 1
+            and raise_count == 1
+            and preloss >= 10
+        ):
+            return True
+
+        return False
 
     @staticmethod
     def _cards_disagreement(ocr_hand: dict, gemini_hand: dict) -> dict | None:
@@ -1939,7 +2165,12 @@ class GeminiSessionManager:
                 cards_need_fallback = (
                     not hero_hand_present or card_conf < MIN_CARD_CONF
                 )
-                if struct_ok and cards_need_fallback:
+                confidence_abstain_with_ocr = (
+                    hand_ok and ocr_conf < MEDIUM_TIER_MIN
+                )
+                if struct_ok and (
+                    cards_need_fallback or confidence_abstain_with_ocr
+                ):
                     parts = ocr_result.get("confidence_parts") or {}
                     structural_conf = (
                         parts.get("pot_consistency", 0.0)
@@ -1948,6 +2179,14 @@ class GeminiSessionManager:
                     ) / 3.0
                     STRUCTURAL_MIN = float(
                         os.getenv("OCR_STRUCTURAL_MIN", "0.80")
+                    )
+                    ABSTAIN_STRUCTURAL_MIN = float(
+                        os.getenv("OCR_ABSTAIN_STRUCTURAL_MIN", "0.50")
+                    )
+                    required_structural_min = (
+                        STRUCTURAL_MIN
+                        if cards_need_fallback
+                        else ABSTAIN_STRUCTURAL_MIN
                     )
                     # Postflop entry-collapse loss is a hidden structural risk:
                     # pot/player/ocr consistency can all read 1.0 even when the
@@ -1975,18 +2214,26 @@ class GeminiSessionManager:
                             max_postflop_loss = loss
                             worst_street = s
                     postflop_collapse_ok = max_postflop_loss <= POSTFLOP_LOSS_MAX
-                    if structural_conf >= STRUCTURAL_MIN and postflop_collapse_ok:
-                        reason = (
-                            "hero_hand missing"
-                            if not hero_hand_present
-                            else f"card_conf={card_conf:.2f} < "
-                                 f"{MIN_CARD_CONF:.2f}"
-                        )
+                    cards_only_attempt_ok = structural_conf >= required_structural_min
+                    if (structural_conf >= required_structural_min
+                            and (postflop_collapse_ok or confidence_abstain_with_ocr)):
+                        if not hero_hand_present:
+                            reason = "hero_hand missing"
+                        elif cards_need_fallback:
+                            reason = (
+                                f"card_conf={card_conf:.2f} < "
+                                f"{MIN_CARD_CONF:.2f}"
+                            )
+                        else:
+                            reason = (
+                                f"confidence_abstain conf={ocr_conf:.2f} < "
+                                f"{MEDIUM_TIER_MIN:.2f}"
+                            )
                         self._logger.info(
                             f"[chat={chat_id}] Cards-only Gemini fallback "
                             f"({reason}, structural_conf="
                             f"{structural_conf:.2f} >= "
-                            f"{STRUCTURAL_MIN:.2f}) — keeping OCR's structural "
+                            f"{required_structural_min:.2f}) — keeping OCR's structural "
                             f"parse, asking Gemini for hero_hand only"
                         )
                         gemini_hero_hand = None
@@ -2008,8 +2255,37 @@ class GeminiSessionManager:
                             )
                             self._normalize_cards(hand)
                             self._fix_folded_players(hand)
-                            hand["__ocr_conf__"] = float(ocr_conf)
-                            return hand
+                            if self._cards_only_merge_safe(
+                                ocr_result, gemini_hero_hand
+                            ):
+                                hand["__ocr_conf__"] = float(ocr_conf)
+                                return hand
+                            self._logger.info(
+                                f"[chat={chat_id}] Cards-only Gemini hero_hand "
+                                f"{gemini_hero_hand} did not satisfy OCR "
+                                f"structure safety gate; falling through to "
+                                f"full Gemini parse"
+                            )
+                        if (
+                            confidence_abstain_with_ocr
+                            and hero_hand_present
+                            and (
+                                not gemini_hero_hand
+                                or gemini_hero_hand
+                                == ocr_result["hand"].get("hero_hand")
+                            )
+                        ):
+                            hand = ocr_result["hand"]
+                            if self._cards_only_merge_safe(ocr_result, None):
+                                self._logger.info(
+                                    f"[chat={chat_id}] Cards-only Gemini returned "
+                                    f"no usable hero_hand; keeping OCR abstain "
+                                    f"structure instead of destructive full parse"
+                                )
+                                self._normalize_cards(hand)
+                                self._fix_folded_players(hand)
+                                hand["__ocr_conf__"] = float(ocr_conf)
+                                return hand
                         # else fall through to full Gemini parse below
                     collapse_note = (
                         f", postflop_collapse_loss={max_postflop_loss}"
@@ -2021,8 +2297,9 @@ class GeminiSessionManager:
                         f"[chat={chat_id}] Demoting to full Gemini fallback "
                         f"(card_conf={card_conf:.2f} < {MIN_CARD_CONF:.2f}, "
                         f"hero_hand_present={hero_hand_present}, "
-                        f"overall={ocr_conf:.2f}{collapse_note}) — bad hero "
-                        f"card prediction shouldn't pass even when actions look fine"
+                        f"overall={ocr_conf:.2f}, cards_only_attempt_ok="
+                        f"{cards_only_attempt_ok}{collapse_note}) — OCR "
+                        f"abstain is not safe for field-level merge"
                     )
                     hand_ok = False
 

@@ -115,6 +115,70 @@ def test_corner_ocr_does_not_override_confident_ace():
 
 
 @test
+def test_corner_ocr_override_requires_cnn_top2_support():
+    """OCR: corner OCR must not invent ranks absent from the CNN top-2.
+
+    Precision-push regressions TM5867169951/TM5920473278/TM5962778472 had
+    EasyOCR confidently read clean corners as A/4/4 while the CNN top-2 did
+    not contain those ranks.  H3429 remains covered because the true 2 is the
+    CNN runner-up under a WIN sticker.
+    """
+    from ocr.table_parser import _corner_rank_supported_by_cnn_top2
+
+    assert_true(
+        _corner_rank_supported_by_cnn_top2(
+            "2", [("K", 0.985), ("2", 0.009)]
+        ),
+        "H3429-style corner rescue should stay enabled",
+    )
+    assert_true(
+        not _corner_rank_supported_by_cnn_top2(
+            "4", [("Q", 0.999), ("J", 0.0006)]
+        ),
+        "Q→4 EasyOCR hallucination must not override a strong CNN Q",
+    )
+    assert_true(
+        not _corner_rank_supported_by_cnn_top2(
+            "A", [("8", 0.862), ("3", 0.104)]
+        ),
+        "8→A EasyOCR hallucination must not override when A is absent top-2",
+    )
+
+
+@test
+def test_corner_ocr_can_rescue_low_conf_overlapped_card():
+    """OCR: shifted corner OCR can rescue an overlapped low-confidence crop.
+
+    TM5900728345's right hero card crop included the neighboring T♦ on the
+    left edge; the CNN read 3♣ at low confidence while shifted corner OCR read
+    the true 8 at 1.0.  This rescue must stay narrower than the false A/4
+    corner reads guarded by the top-2-support test above.
+    """
+    from ocr.table_parser import _corner_rank_can_override
+
+    assert_true(
+        _corner_rank_can_override(
+            cnn_rank="3",
+            cnn_conf=0.765,
+            corner_rank="8",
+            corner_conf=1.0,
+            rank_top2=[("3", 0.765), ("6", 0.074)],
+        ),
+        "low-confidence CNN + perfect shifted corner OCR should override",
+    )
+    assert_true(
+        not _corner_rank_can_override(
+            cnn_rank="8",
+            cnn_conf=0.862,
+            corner_rank="A",
+            corner_conf=0.958,
+            rank_top2=[("8", 0.862), ("3", 0.104)],
+        ),
+        "moderate-confidence CNN plus imperfect unsupported corner OCR is unsafe",
+    )
+
+
+@test
 def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     """OCR: sticker-only All-In fragments still belong to the prior raise.
 
@@ -3689,6 +3753,72 @@ def test_ocr_action_pattern_raise_misread_as_ralse():
 
 
 @test
+def test_ocr_focused_crop_recovers_missing_bb_amount():
+    """OCR: focused action-sticker re-read recovers a digit lost in full-column OCR.
+
+    TM5867249527's white BB 5-bet sticker was read as ``Ralse BB`` in the
+    full-column pass; a tight 2x crop reads ``Raise 5 BB``.  Recovering the
+    size keeps the all-in preflop chain assemblable instead of forcing a
+    parse-none/full-Gemini fallback.
+    """
+    import cv2
+    from pathlib import Path
+    from ocr.region_detector import detect_regions
+    from ocr.panel_parser import (
+        _classify_group,
+        _group_by_y,
+        _split_multi_action_groups,
+        split_columns,
+    )
+    from ocr.ocr_utils import ocr_full_image
+
+    img_path = Path(__file__).resolve().parent.parent / "data" / "hand_images" / "img" / "TM5867249527.png"
+    if not img_path.exists():
+        return
+    image = cv2.imread(str(img_path))
+    regions = detect_regions(image)
+    preflop = split_columns(regions["panel"])[1]
+    groups = _split_multi_action_groups(
+        _group_by_y(ocr_full_image(preflop["region"]), y_threshold=25)
+    )
+    target = next(
+        g for g in groups
+        if "Ralse" in " ".join(t["text"] for t in g)
+        and "BB" in " ".join(t["text"] for t in g)
+        and "29" not in " ".join(t["text"] for t in g)
+    )
+    entry = _classify_group(target, preflop["region"])
+    assert_true(entry is not None, "target group should classify")
+    assert_eq(entry["action"], "Raise")
+    assert_eq(entry["size"], 5.0, "focused crop should recover the missing 5 BB")
+
+
+@test
+def test_ocr_split_amount_group_attaches_to_previous_action():
+    """OCR: a standalone ``2 BB`` group belongs to the previous Raise sticker.
+
+    On tall screenshots EasyOCR can put the yellow ``Raise`` text and its
+    ``2 BB`` amount more than the y-group threshold apart.  The amount-only
+    group must be attached back to the preceding action instead of leaving the
+    raise sizeless and parse-none.
+    """
+    import cv2
+    from pathlib import Path
+    from ocr.region_detector import detect_regions
+    from ocr.panel_parser import parse_panel
+
+    img_path = Path(__file__).resolve().parent.parent / "data" / "hand_images" / "img" / "TM5901972230.png"
+    if not img_path.exists():
+        return
+    image = cv2.imread(str(img_path))
+    regions = detect_regions(image)
+    preflop = parse_panel(regions["panel"])["columns"][1]["entries"]
+    hero_raise = next(e for e in preflop if e.get("type") == "hero")
+    assert_eq(hero_raise["action"], "Raise")
+    assert_eq(hero_raise["size"], 2.0)
+
+
+@test
 def test_resolve_allin_attribution_opp_shoves_hero_calls_deeper():
     """panel_parser: opponent donk-shoves all-in, hero calls with the
     deeper stack — hero must be the CALLER, never re-classified as the
@@ -4057,9 +4187,9 @@ def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     import inspect
     from ocr import table_parser
     src = inspect.getsource(table_parser._find_hero_cards)
-    assert_in("classify_batch_detailed(crops)", src,
+    assert_in("classify_batch_detailed_tta(crops)", src,
               "_find_hero_cards should classify the raw crops too")
-    assert_in("classify_batch_detailed(masked_crops)", src,
+    assert_in("classify_batch_detailed_tta(masked_crops)", src,
               "_find_hero_cards should classify the masked crops too")
     # Sanity: rank starts from raw, can be repaired by raw top-2/corner OCR,
     # and suit comes from the masked crop.
@@ -4273,12 +4403,12 @@ def test_field_level_fallback_used_when_structural_high():
         "hand": ocr_hand,
         "hints": None,
         "confidence": 0.72,
-        "card_confidence": 0.30,
+        "card_confidence": 0.40,
         "confidence_parts": {
             "pot_consistency": 1.0,
             "player_tracking": 1.0,
             "ocr_confidence": 0.95,
-            "card_confidence": 0.30,
+            "card_confidence": 0.40,
         },
     }
 
@@ -4407,6 +4537,160 @@ def test_field_level_fallback_skipped_when_structural_low():
               "cards-only fallback must NOT fire when structural_conf is low")
     assert_true(sentinel_hit,
                 "full Gemini path should be reached when structural_conf is low")
+
+
+@test
+def test_field_level_fallback_used_for_confidence_abstain_with_ocr():
+    """gemini_session: confidence-abstained OCR hands with usable structure
+    should use the cards-only micro-route instead of full Gemini reparse.
+
+    The 718-hand precision study found full-image Gemini is net-negative on
+    confidence-abstained-but-present OCR parses: it often flips correct
+    structure.  This locks the intended routing: keep OCR structure and only
+    re-read hero cards.
+    """
+    import asyncio as _aio
+    import logging as _l
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from gemini_session import GeminiSessionManager
+
+    ocr_hand = {
+        "gametype": "MTTGeneral",
+        "players_at_table": 7,
+        "hero_position": "SB",
+        "hero_hand": "8h7c",
+        "preflop_actions": "F-F-F-F-R500-F-AI485-F",
+    }
+    fake_ocr_result = {
+        "hand": ocr_hand,
+        "hints": None,
+        "confidence": 0.79,
+        "card_confidence": 0.99,
+        "confidence_parts": {
+            "pot_consistency": 0.5,
+            "player_tracking": 0.5,
+            "ocr_confidence": 1.0,
+            "card_confidence": 0.99,
+        },
+    }
+
+    import ocr.n8_parser as _np
+    orig_parse = _np.parse_n8_screenshot
+    _np.parse_n8_screenshot = lambda b: fake_ocr_result
+
+    cards_only_calls = []
+    async def _fake_cards_only(self, *a, **k):
+        cards_only_calls.append(k)
+        return "8h7c"
+    orig_cards_only = GeminiSessionManager._gemini_hero_hand_only
+    GeminiSessionManager._gemini_hero_hand_only = _fake_cards_only
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session._logger = _l.getLogger("test_field_level_abstain")
+    session._logger.setLevel(_l.WARNING)
+    session.client = None
+    session.image_parse_model = "fake-model"
+
+    prev_enabled = os.environ.get("OCR_ENABLED")
+    prev_abstain_struct = os.environ.get("OCR_ABSTAIN_STRUCTURAL_MIN")
+    os.environ["OCR_ENABLED"] = "true"
+    os.environ.pop("OCR_ABSTAIN_STRUCTURAL_MIN", None)
+    try:
+        result = _aio.run(session._parse_hand_from_image(
+            chat_id=1, image_bytes=b"\x00", mime_type="image/jpeg"
+        ))
+    finally:
+        _np.parse_n8_screenshot = orig_parse
+        GeminiSessionManager._gemini_hero_hand_only = orig_cards_only
+        if prev_enabled is None:
+            os.environ.pop("OCR_ENABLED", None)
+        else:
+            os.environ["OCR_ENABLED"] = prev_enabled
+        if prev_abstain_struct is not None:
+            os.environ["OCR_ABSTAIN_STRUCTURAL_MIN"] = prev_abstain_struct
+
+    assert_eq(len(cards_only_calls), 1)
+    assert_eq(result["hero_position"], "SB")
+    assert_eq(result["preflop_actions"], "F-F-F-F-R500-F-AI485-F")
+
+
+@test
+def test_cards_only_merge_selector_rejects_low_conf_changed_hero():
+    """gemini_session: a changed cards-only hero read is accepted only when
+    CardCNN was not in the ultra-low-confidence tail.
+
+    This prevents the micro-route from replacing one bad hero read with a
+    second hallucinated one while still allowing the 0.38+ confidence hero-fix
+    cluster recovered in the 718-hand recall pass.
+    """
+    from gemini_session import GeminiSessionManager
+
+    base = {
+        "hand": {
+            "hero_hand": "Ah9d",
+            "hero_position": "CO",
+            "preflop_actions": "R2-F-F-F-F",
+        },
+        "diagnostics": {},
+        "confidence_parts": {
+            "pot_consistency": 1.0,
+            "player_tracking": 0.5,
+            "ocr_confidence": 1.0,
+        },
+    }
+    low = dict(base, card_confidence=0.30)
+    high = dict(base, card_confidence=0.39)
+
+    assert_eq(
+        GeminiSessionManager._cards_only_merge_safe(low, "AdAd"),
+        False,
+    )
+    assert_eq(
+        GeminiSessionManager._cards_only_merge_safe(high, "Ad9d"),
+        True,
+    )
+
+
+@test
+def test_cards_only_merge_selector_accepts_vlm_hidden_three_single_allin_raise():
+    """gemini_session: VLM-corrected hidden-three all-in/raise tails can keep
+    OCR structure when Gemini confirms hero cards unchanged.
+
+    TM5873873878/TM5875585050-like shapes were exact OCR abstains: the VLM
+    corrected seat structure, cards are high confidence, and the action tail
+    has one all-in plus one raise ending in a call.
+    """
+    from gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "hand": {
+            "hero_hand": "AhAc",
+            "hero_position": "BB",
+            "preflop_actions": "F-F-F-F-F-C-R3-AI52-C",
+        },
+        "card_confidence": 0.999,
+        "confidence_parts": {
+            "pot_consistency": 1.0,
+            "player_tracking": 0.5,
+            "ocr_confidence": 0.0,
+        },
+        "diagnostics": {
+            "vlm_recheck_outcome": "corrected",
+            "preflop_entries_count": 9,
+            "preflop_entries_pre_collapse_count": 16,
+            "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+            "street_entries_pre_collapse_count": {
+                "flop": 0,
+                "turn": 0,
+                "river": 3,
+            },
+        },
+    }
+
+    assert_eq(
+        GeminiSessionManager._cards_only_merge_safe(ocr_result, "AhAc"),
+        True,
+    )
 
 
 @test
@@ -7888,6 +8172,940 @@ def test_duplicate_runout_detected_for_full_gemini_fallback():
     }
     assert_eq(_duplicate_known_cards(corrected), [],
               "valid KhJsKsAdAs runout must not be flagged")
+
+
+@test
+def test_preflop_physics_rejects_non_monotone_raise():
+    """n8_parser: impossible preflop raise sequences are precision rejects."""
+    from ocr.n8_parser import _validate_preflop_bet_physics
+
+    issues = _validate_preflop_bet_physics(
+        "F-F-R8-F-R6-F-F-C", 8, effective_bb=20
+    )
+    assert_true(
+        any("non_monotone_raise" in issue for issue in issues),
+        "a later raise to less than the outstanding bet is impossible",
+    )
+
+
+@test
+def test_open_raise_one_bb_is_snapped_before_physics():
+    """n8_parser: impossible OCR ``R1`` opens are repaired to legal min-raises.
+
+    Precision-push tails include several exact hands where Natural8 displayed a
+    normal 2bb-ish open, but EasyOCR lost the leading digit and produced
+    ``Raise 1 BB``.  A real limp is rendered as ``Call 1 BB``, so pre-raise
+    ``R1`` is a size OCR failure; snap only that open-size case and keep true
+    post-raise non-monotone raises rejected.
+    """
+    from ocr.n8_parser import (
+        _repair_implausible_open_raise_sizes,
+        _validate_preflop_bet_physics,
+    )
+
+    repaired, repairs = _repair_implausible_open_raise_sizes(
+        "F-F-F-R1-C-F-F"
+    )
+    assert_eq(repaired, "F-F-F-R2-C-F-F")
+    assert_true(repairs and repairs[0].startswith("open_raise_min_snap@3"))
+    assert_eq(_validate_preflop_bet_physics(repaired, 7), [])
+
+    still_bad, repairs = _repair_implausible_open_raise_sizes(
+        "R2-F-F-R1-F-AI12.85-F-AI15.02-F-C"
+    )
+    assert_eq(still_bad, "R2-F-F-R1-F-AI12.85-F-AI15.02-F-C")
+    assert_eq(repairs, [])
+    assert_true(
+        any(
+            "non_monotone_raise" in issue
+            for issue in _validate_preflop_bet_physics(still_bad, 8)
+        ),
+        "post-raise R1 must remain a physics reject",
+    )
+
+
+@test
+def test_missing_allin_reaction_fold_repair_is_low_collapse_only():
+    """n8_parser: missing preflop all-in reaction folds are repaired narrowly.
+
+    TM5846884791/TM5866478558/TM5895757896 lost one final fold after an all-in
+    re-raise, which breaks action-type exactness.  Similar high-collapse
+    VLM-corrected tails can be exact already, so the repair is gated by raw
+    fragment loss and only inserts/appends one fold.
+    """
+    from ocr.n8_parser import _repair_missing_allin_reaction_folds
+
+    repaired, repairs = _repair_missing_allin_reaction_folds(
+        "F-F-R320-F-F-F-AI2-F",
+        8,
+        raw_loss=2,
+    )
+    assert_eq(repaired, "F-F-R320-F-F-F-AI2-F-F")
+    assert_eq(repairs, ["append_prior_fold_after_ai@6"])
+
+    repaired, repairs = _repair_missing_allin_reaction_folds(
+        "F-R3-F-F-F-AI12.25-C",
+        7,
+        raw_loss=7,
+    )
+    assert_eq(repaired, "F-R3-F-F-F-AI12.25-F-C")
+    assert_eq(repairs, ["insert_remaining_fold_after_ai@5"])
+
+    unchanged, repairs = _repair_missing_allin_reaction_folds(
+        "R2.1-F-F-AI27.7-F-C",
+        6,
+        raw_loss=12,
+    )
+    assert_eq(unchanged, "R2.1-F-F-AI27.7-F-C")
+    assert_eq(repairs, [])
+
+
+@test
+def test_preflop_physics_allows_short_allin_call():
+    """n8_parser: short all-in calls are legal and must not be rejected."""
+    from ocr.n8_parser import _validate_preflop_bet_physics
+
+    issues = _validate_preflop_bet_physics(
+        "F-F-R8-F-AI5-F-F-C", 8, effective_bb=8
+    )
+    assert_eq(issues, [])
+
+
+@test
+def test_duplicate_bare_allin_after_call_is_dropped():
+    """n8_parser: bare AI after C is a duplicated badge, not an action.
+
+    TM5901639322 parsed ``F-AI16.86-F-F-C-AI-F-F-F`` while the hand history is
+    ``F-AI16.9-F-F-C-F-F-F``.  The second bare AI has no amount and follows a
+    call, matching the N8 all-in badge split pattern; dropping only the bare
+    token preserves sized all-ins.
+    """
+    from ocr.n8_parser import _drop_duplicate_bare_allin_after_call
+
+    assert_eq(
+        _drop_duplicate_bare_allin_after_call("F-AI16.86-F-F-C-AI-F-F-F"),
+        "F-AI16.86-F-F-C-F-F-F",
+    )
+    assert_eq(
+        _drop_duplicate_bare_allin_after_call("F-F-C-AI12-F"),
+        "F-F-C-AI12-F",
+    )
+
+
+@test
+def test_safe_emit_recovers_no_allin_structural_high_card_tails():
+    """n8_parser: safe emit can recover low-scored but structurally clean
+    non-all-in hands.
+
+    Precision-push v3 left exact hands below the 0.88 blended gate when only
+    stack/pot side channels were weak.  If cards, OCR, and the non-all-in action
+    chain are all stable, recovering them improves recall without trusting the
+    known all-in danger tail.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "Tc7c",
+        "hero_position": "SB",
+        "players_at_table": 6,
+        "preflop_actions": "R3-F-R5.77-F-F-F-C",
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.5,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.60,
+    }
+    diag = {
+        "preflop_entries_count": 7,
+        "preflop_entries_pre_collapse_count": 7,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "no_allin_structural_high_card",
+    )
+    cp["player_tracking"] = 0.2
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        None,
+        "weak player tracking must not revive post-size-recovery tails",
+    )
+
+
+@test
+def test_safe_emit_recovers_narrow_vlm_recovered_preflop_subset():
+    """n8_parser: VLM recovered hands can emit only in a narrow stable subset.
+
+    Recovered all-in tails were net-negative overall, but the v5 tail showed a
+    small fully preflop, high-card, low-collapse subset that was exact.  Keep
+    generic recovered/corrected hands abstained; only this verifier-like shape
+    may safe-emit.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "7h2s",
+        "hero_position": "HJ",
+        "players_at_table": 8,
+        "preflop_actions": "F-F-R2-F-F-AI26.81-F-F-C",
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "vlm_recheck_outcome": "recovered",
+        "preflop_entries_count": 9,
+        "preflop_entries_pre_collapse_count": 18,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "vlm_recovered_stable_preflop",
+    )
+    diag["preflop_entries_pre_collapse_count"] = 19
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
+
+
+@test
+def test_safe_emit_recovers_vlm_recovered_high_card_preflop_tail():
+    """n8_parser: VLM recovered high-card preflop tails can emit.
+
+    Size-recovery v6 left exact recovered all-in hands below the blended gate
+    because ``ocr_confidence`` is intentionally zeroed after VLM anchoring.
+    When cards are very strong, no postflop board is involved, and player
+    tracking is at least usable, the recovered structure was exact in the
+    measured tail.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "Kd9d",
+        "hero_position": "LJ",
+        "players_at_table": 8,
+        "preflop_actions": "R1-F-F-F-C-F-F-AI12-C-F",
+    }
+    cp = {
+        "pot_consistency": 0.5,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "vlm_recheck_outcome": "recovered",
+        "preflop_entries_count": 11,
+        "preflop_entries_pre_collapse_count": 15,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 0, "turn": 0, "river": 5},
+    }
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "vlm_recovered_preflop_high_card",
+    )
+
+
+@test
+def test_safe_emit_recovers_no_allin_low_street_collapse_tail():
+    """n8_parser: non-all-in low street-collapse tails can emit.
+
+    These hands were confidence-abstained only because side-channel player
+    tracking was weak; the card/action/board shape has no all-in grammar and
+    at most two OCR fragments lost on any postflop street.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "5c4d",
+        "hero_position": "UTG",
+        "players_at_table": 8,
+        "preflop_actions": "F-F-F-R2-F-R5.35-F-F-C",
+        "streets": [{"board": "Ah7d2c", "actions": []}],
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.33,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "preflop_entries_count": 9,
+        "preflop_entries_pre_collapse_count": 12,
+        "street_entries_count": {"flop": 3, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 5, "turn": 0, "river": 0},
+    }
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "no_allin_low_street_collapse",
+    )
+    diag["preflop_physics_issues"] = ["all_fold_walk_hero_first"]
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
+
+
+@test
+def test_safe_emit_recovers_all_fold_high_card_walks_after_seat_guard():
+    """n8_parser: all-fold rows can safe-emit only after the hero-first walk
+    guard has had a chance to reject unsafe seat assignments.
+
+    This recovers exact low-pot-confidence walk/fold hands while keeping
+    ``all_fold_walk_hero_first`` blocked by the preflop-physics guard.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "6h2h",
+        "hero_position": "CO",
+        "players_at_table": 8,
+        "preflop_actions": "F-F-F-F-F-F-F",
+    }
+    cp = {
+        "pot_consistency": 0.3,
+        "player_tracking": 0.5,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "preflop_entries_count": 7,
+        "preflop_entries_pre_collapse_count": 7,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), "all_fold_high_card")
+    diag["preflop_physics_issues"] = ["all_fold_walk_hero_first"]
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
+
+
+@test
+def test_safe_emit_recovers_large_table_all_fold_hero_first_rows():
+    """n8_parser: large-table all-fold hero-first walks can safe-emit.
+
+    TM5963073078 showed this physics warning is unsafe at six-max because hero
+    can shift from BTN to LJ.  The measured 7/8-player tail had exact UTG walks,
+    so recover only larger-table all-fold rows with strong card/player signals.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "8s2c",
+        "hero_position": "UTG",
+        "players_at_table": 7,
+        "preflop_actions": "F-F-F-F-F-F",
+    }
+    cp = {
+        "pot_consistency": 0.5,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "preflop_physics_issues": ["all_fold_walk_hero_first"],
+        "preflop_entries_count": 6,
+        "preflop_entries_pre_collapse_count": 8,
+        "players_at_table_final": 7,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "all_fold_hero_first_large_table",
+    )
+    diag["players_at_table_final"] = 6
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
+
+
+@test
+def test_misnamed_flop_column_promotes_short_preflop_rows():
+    """n8_parser: physical Pre-Flop columns mislabeled as Flop are promoted
+    even when only a short all-in/fold tail is visible.
+
+    TM5873874017-like screenshots had the second physical column header OCR'd
+    as Flop with only four preflop rows.  The old 5+ entry guard sent them to
+    full Gemini fallback instead of focused VLM structure recovery.
+    """
+    from ocr.n8_parser import _promote_misnamed_preflop_column
+
+    first = {
+        "name": "Flop",
+        "entries": [
+            {"action": "Fold"},
+            {"action": "Fold"},
+            {"action": "All-In", "size": 4.1},
+            {"action": "Fold"},
+        ],
+    }
+    preflop, streets = _promote_misnamed_preflop_column(None, [first])
+
+    assert_eq(preflop, first)
+    assert_eq(streets, [])
+
+
+@test
+def test_preflop_filter_drops_anonymous_sizeless_bet_fragments():
+    """n8_parser: nameless/positionless sizeless Bet fragments in Pre-Flop are
+    OCR chrome bleed, not real preflop actions.
+
+    TM5880331313/TM5920325572 parsed none because this fragment tripped the
+    missing-raise-size guard.  Dropping only the anonymous/sizeless form keeps
+    real named or sized rows available to later validation.
+    """
+    from ocr.n8_parser import _filter_action_entries
+
+    entries = [
+        {"type": "opponent", "action": "Fold", "position": "UTG"},
+        {"type": "hero", "action": "Raise", "size": 2.0},
+        {"type": "opponent", "action": "Bet", "size": None},
+        {"type": "opponent", "action": "Raise", "size": 5.0},
+    ]
+
+    filtered = _filter_action_entries(entries)
+    assert_eq([e["action"] for e in filtered], ["Fold", "Raise", "Raise"])
+
+    named = [
+        {"type": "opponent", "action": "Bet", "size": None,
+         "player_name": "real_name"},
+    ]
+    assert_eq(_filter_action_entries(named), named)
+
+
+@test
+def test_preflop_filter_drops_leading_anonymous_check_fragment():
+    """n8_parser: a nameless leading preflop Check is a duplicate blind-option
+    fragment and should not create an illegal X before UTG acts.
+    """
+    from ocr.n8_parser import _filter_action_entries
+
+    entries = [
+        {"type": "opponent", "action": "Check"},
+        {"type": "opponent", "action": "Fold", "position": "UTG"},
+        {"type": "hero", "action": "Check"},
+    ]
+    filtered = _filter_action_entries(entries)
+    assert_eq([e["action"] for e in filtered], ["Fold", "Check"])
+
+
+@test
+def test_terminal_fold_trim_safe_emit_single_allin_tail():
+    """n8_parser: the duplicate terminal-fold trimmer can safe-emit only the
+    single-sized-all-in tail; bare/multiple-AI chains stay abstained.
+    """
+    from ocr.n8_parser import (
+        _repair_terminal_fold_after_vlm_allin_call,
+        _safe_emit_override_reason,
+    )
+
+    diag = {
+        "forced_structure_reassembly": True,
+        "preflop_entries_count": 8,
+        "preflop_entries_pre_collapse_count": 13,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 0, "turn": 0, "river": 3},
+        "vlm_recheck_outcome": "corrected",
+    }
+    repaired, repairs = _repair_terminal_fold_after_vlm_allin_call(
+        "AI14.4-C-F-F-F-F-F-F", diag,
+    )
+    assert_eq(repaired, "AI14.4-C-F-F-F-F-F")
+    diag["preflop_terminal_fold_repairs"] = repairs
+
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.99,
+    }
+    assert_eq(
+        _safe_emit_override_reason(
+            {"preflop_actions": repaired}, cp, diag,
+        ),
+        "terminal_fold_trimmed_single_allin",
+    )
+    assert_eq(
+        _safe_emit_override_reason(
+            {"preflop_actions": "AI-AI16.4-F-C-F-F-F"}, cp, diag,
+        ),
+        None,
+    )
+
+
+@test
+def test_preflop_builder_preserves_original_missing_position_flag():
+    """n8_parser: VLM reassembly must remember whether a hero all-in sticker
+    was originally positionless before order assignment mutated the row.
+
+    TM5867350464/TM5873208650 first parse assigned a position to the duplicate
+    bare All-In badge, then the forced VLM pass overwrote the real hero fold.
+    Keeping the original-missing marker prevents that bare sticker from
+    replacing a concrete fold.
+    """
+    from ocr.n8_parser import _build_preflop_actions_from_order
+
+    entries = [
+        {"type": "hero", "position": "UTG", "action": "Fold",
+         "_position_missing_before_order": True},
+        {"type": "opponent", "position": "LJ", "action": "All-In",
+         "size": 16.4},
+        {"type": "hero", "position": "SB", "action": "All-In",
+         "size": None, "_position_missing_before_order": True},
+        {"type": "opponent", "position": "BB", "action": "Fold"},
+    ]
+
+    assert_eq(
+        _build_preflop_actions_from_order(
+            entries,
+            ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+            "UTG",
+            7,
+            first_round_count=4,
+        ),
+        "F-AI16.4-F-F",
+    )
+
+
+@test
+def test_forced_collapse_action_tail_repairs_and_safe_emit():
+    """n8_parser: narrow VLM-forced collapse repairs recover exact action
+    tails and can pass the safe-emission gate.
+    """
+    from ocr.n8_parser import (
+        _repair_forced_collapse_action_tail,
+        _safe_emit_override_reason,
+    )
+
+    base_diag = {
+        "forced_structure_reassembly": True,
+        "vlm_recheck_outcome": "corrected",
+        "preflop_entries_count": 8,
+        "preflop_entries_pre_collapse_count": 20,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 0, "turn": 0, "river": 6},
+    }
+    repaired, repairs = _repair_forced_collapse_action_tail(
+        "R3.5-F-AI39.03-F-C-F-F-C",
+        dict(base_diag),
+    )
+    assert_eq(repaired, "R3.5-F-AI39.03-F-C-F-C")
+    assert_eq(repairs, ["drop_duplicate_fold_before_final_call"])
+
+    diag = dict(base_diag, preflop_forced_collapse_repairs=repairs)
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.999,
+    }
+    assert_eq(
+        _safe_emit_override_reason({"preflop_actions": repaired}, cp, diag),
+        "forced_collapse_repaired_vlm",
+    )
+
+
+@test
+def test_safe_emit_recovers_promoted_short_allin_vlm_corrections():
+    """n8_parser: VLM-corrected action chains normally abstain, but a promoted
+    short physical-Pre-Flop column with 3-4 visible all-in rows can emit.
+
+    The promoted-column flag distinguishes these deterministic hidden-fold
+    recoveries from generic VLM-corrected row-collapse tails whose action
+    chains remain unsafe.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "Kh6h",
+        "hero_position": "SB",
+        "players_at_table": 7,
+        "preflop_actions": "F-F-AI4.1-F-F-F-F",
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 0.5,
+        "ocr_confidence": 0.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "vlm_recheck_outcome": "corrected",
+        "promoted_misnamed_preflop": True,
+        "preflop_entries_count": 4,
+        "preflop_entries_pre_collapse_count": 8,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "street_entries_pre_collapse_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        "promoted_preflop_short_allin_vlm",
+    )
+    diag["preflop_entries_count"] = 2
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        None,
+        "Two-row all-in/call columns are still action-order ambiguous",
+    )
+    diag["preflop_entries_count"] = 4
+    diag.pop("promoted_misnamed_preflop")
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        None,
+        "Generic VLM-corrected all-in tails remain abstained",
+    )
+
+
+@test
+def test_safe_emit_blocks_large_raw_collapse_walk_tail():
+    """n8_parser: large raw-fragment loss with no postflop signal is unsafe.
+
+    TM5947799144 looked like a simple high-card preflop tail, but 16 raw
+    fragments collapsed to 6 entries and shifted hero_position.  This shape
+    has no street signal to repair the seat assignment, so safe emit must not
+    revive it below the gate.
+    """
+    from ocr.n8_parser import _safe_emit_override_reason
+
+    hand = {
+        "hero_hand": "7d2h",
+        "hero_position": "SB",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-F-C-F",
+    }
+    cp = {
+        "pot_consistency": 0.5,
+        "player_tracking": 0.5,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "preflop_entries_count": 6,
+        "preflop_entries_pre_collapse_count": 16,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+    }
+    assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
+
+
+@test
+def test_structural_demotions_block_threshold_emit_for_known_bad_tails():
+    """n8_parser: structural-risk demotions must lower threshold confidence.
+
+    Safe-emit blocking alone is insufficient when a bad tail scores above the
+    0.88 threshold.  TM5947799144 (large preflop collapse/no postflop) and
+    TM5912802228 (postflop rows but no board streets) need OCR confidence
+    demoted before the final score is computed.
+    """
+    from ocr.n8_parser import _apply_structural_confidence_demotions
+
+    hand = {
+        "hero_hand": "7d2h",
+        "hero_position": "SB",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-F-C-F",
+    }
+    cp = {
+        "pot_consistency": 0.5,
+        "player_tracking": 0.5,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.999,
+    }
+    diag = {
+        "preflop_entries_count": 6,
+        "preflop_entries_pre_collapse_count": 16,
+        "street_entries_count": {"flop": 0, "turn": 0, "river": 0},
+        "estimate_used_reaction_signal": False,
+    }
+    _apply_structural_confidence_demotions(hand, cp, diag)
+    assert_eq(cp["ocr_confidence"], 0.0)
+    assert_in("large_preflop_collapse_no_postflop", diag["structural_risk_issues"])
+
+    cp_reaction = dict(cp, ocr_confidence=1.0)
+    diag_reaction = dict(diag, estimate_used_reaction_signal=True)
+    _apply_structural_confidence_demotions(hand, cp_reaction, diag_reaction)
+    assert_eq(
+        cp_reaction["ocr_confidence"],
+        1.0,
+        "reaction/table evidence keeps exact large-collapse tails recoverable",
+    )
+
+    cp2 = {
+        "pot_consistency": 0.5,
+        "player_tracking": 1.0,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.995,
+    }
+    diag2 = {
+        "preflop_entries_count": 4,
+        "preflop_entries_pre_collapse_count": 10,
+        "street_entries_count": {"flop": 3, "turn": 2, "river": 2},
+    }
+    _apply_structural_confidence_demotions(
+        {
+            "hero_hand": "AhKh",
+            "preflop_actions": "F-R2.2-F-C",
+            "streets": [
+                {"actions": [{"position": "BB", "action": "X"}]},
+                {"actions": [{"position": "BB", "action": "X"}]},
+            ],
+        },
+        cp2,
+        diag2,
+    )
+    assert_eq(cp2["ocr_confidence"], 0.0)
+    assert_in(
+        "postflop_rows_without_matching_board_streets",
+        diag2["structural_risk_issues"],
+    )
+
+
+@test
+def test_vlm_residual_disagreement_keeps_hand_for_field_routing():
+    """n8_parser: VLM structural disagreement should confidence-abstain with
+    the OCR hand preserved, not erase it.
+
+    This lets gemini_session route the abstained-but-present OCR parse through
+    field-level cards-only repair instead of the measured net-negative full
+    Gemini reparse.
+    """
+    import os as _os
+    from ocr import n8_parser as _np
+
+    hand = {
+        "hero_hand": "Jh2c",
+        "hero_position": "BB",
+        "players_at_table": 8,
+        "preflop_actions": "F-F-F-F-AI10-F-F-C",
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 1.0,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.99,
+    }
+    diag = {}
+
+    orig_assemble = _np._assemble_hand
+    _np._assemble_hand = lambda *a, **k: (dict(hand, hero_position="CO"), cp, {})
+    prev = _os.environ.get("OCR_VLM_RECHECK")
+    _os.environ["OCR_VLM_RECHECK"] = "1"
+    try:
+        out_hand, out_cp, out_diag = _np._maybe_vlm_recheck(
+            b"x", hand, cp, diag, {}, [],
+            recheck_fn=lambda b: {"players_at_table": 7, "hero_position": "UTG"},
+        )
+    finally:
+        _np._assemble_hand = orig_assemble
+        if prev is None:
+            _os.environ.pop("OCR_VLM_RECHECK", None)
+        else:
+            _os.environ["OCR_VLM_RECHECK"] = prev
+
+    assert_eq(out_hand, hand)
+    assert_eq(out_diag.get("vlm_recheck_outcome"), "abstain")
+    assert_eq(out_cp.get("ocr_confidence"), 0.0)
+    assert_eq(out_cp.get("card_confidence"), 0.99)
+    assert_eq(
+        _np._safe_emit_override_reason(out_hand, out_cp, out_diag),
+        None,
+        "VLM-disagreed hands must stay confidence-abstained, not safe-emitted",
+    )
+
+
+@test
+def test_vlm_corrected_structure_confidence_abstains_actions():
+    """n8_parser: VLM-corrected structure is not an action verifier.
+
+    Precision-push v3 showed VLM ``corrected`` hands often had the right
+    hero_position but still-wrong all-in action chains.  Keep the corrected
+    hand for field-preserving fallback, but demote OCR confidence so it cannot
+    deterministically emit before a grammar verifier accepts the actions.
+    """
+    import os as _os
+    from ocr import n8_parser as _np
+
+    hand = {
+        "hero_hand": "AsKs",
+        "hero_position": "CO",
+        "players_at_table": 6,
+        "preflop_actions": "F-F-F-AI12-C-C",
+    }
+    corrected = {**hand, "hero_position": "BTN"}
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 1.0,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.99,
+    }
+    orig_assemble = _np._assemble_hand
+    _np._assemble_hand = lambda *a, **k: (corrected, cp, {})
+    prev = _os.environ.get("OCR_VLM_RECHECK")
+    _os.environ["OCR_VLM_RECHECK"] = "1"
+    try:
+        out_hand, out_cp, out_diag = _np._maybe_vlm_recheck(
+            b"x", hand, cp, {}, {}, [{"name": "Pre-Flop", "entries": []}],
+            recheck_fn=lambda b: {"players_at_table": 6, "hero_position": "BTN"},
+        )
+    finally:
+        _np._assemble_hand = orig_assemble
+        if prev is None:
+            _os.environ.pop("OCR_VLM_RECHECK", None)
+        else:
+            _os.environ["OCR_VLM_RECHECK"] = prev
+
+    assert_eq(out_hand, corrected)
+    assert_eq(out_diag.get("vlm_recheck_outcome"), "corrected")
+    assert_eq(out_cp.get("ocr_confidence"), 0.0)
+    assert_eq(
+        _np._safe_emit_override_reason(out_hand, out_cp, out_diag),
+        None,
+        "VLM-corrected action chains are hints until independently verified",
+    )
+
+
+@test
+def test_vlm_recovers_parse_none_with_partial_allin_panel():
+    """n8_parser: parse_none all-in tails can be reassembled with focused VLM
+    structure instead of going straight to full Gemini.
+
+    This is the recall-side companion to field-level micro-routing: when OCR
+    has cards/action rows but no trusted hero position, ask only for table size
+    + hero position and re-run deterministic assembly with those anchors.
+    """
+    import os as _os
+    from ocr import n8_parser as _np
+
+    columns = [{
+        "name": "Pre-Flop",
+        "entries": [
+            {"type": "opponent", "action": "Fold"},
+            {"type": "opponent", "action": "Raise", "size": 2.0},
+            {"type": "opponent", "action": "Fold"},
+            {"type": "hero", "action": "All-In", "size": None},
+        ],
+    }]
+    recovered = {
+        "hero_hand": "AsKs",
+        "hero_position": "BTN",
+        "players_at_table": 6,
+        "preflop_actions": "F-R2-F-AI",
+    }
+    cp = {
+        "pot_consistency": 1.0,
+        "player_tracking": 1.0,
+        "ocr_confidence": 1.0,
+        "card_confidence": 0.99,
+    }
+    orig_assemble = _np._assemble_hand
+    calls = []
+    def _fake_assemble(*a, **k):
+        calls.append(k)
+        if k.get("force_hero_position") == "BTN":
+            return recovered, cp, {}
+        return None, cp, {}
+    _np._assemble_hand = _fake_assemble
+    prev = _os.environ.get("OCR_VLM_RECHECK")
+    _os.environ["OCR_VLM_RECHECK"] = "1"
+    try:
+        out_hand, out_cp, out_diag = _np._maybe_vlm_recheck(
+            b"x", None, cp, {}, {}, columns,
+            recheck_fn=lambda b: {"players_at_table": 6, "hero_position": "BTN"},
+        )
+    finally:
+        _np._assemble_hand = orig_assemble
+        if prev is None:
+            _os.environ.pop("OCR_VLM_RECHECK", None)
+        else:
+            _os.environ["OCR_VLM_RECHECK"] = prev
+
+    assert_eq(out_hand, recovered)
+    assert_eq(out_cp.get("ocr_confidence"), 0.0)
+    assert_eq(calls[-1].get("force_table_size"), 6)
+    assert_eq(calls[-1].get("force_hero_position"), "BTN")
+    assert_eq(out_diag.get("vlm_recheck_outcome"), "recovered")
+    assert_eq(
+        _np._safe_emit_override_reason(out_hand, out_cp, out_diag),
+        None,
+        "VLM-recovered action chains are hints until independently verified",
+    )
+
+
+@test
+def test_all_fold_walk_with_hero_first_confidence_abstains():
+    """n8_parser: all-fold walk with hero at first row is unsafe to emit.
+
+    TM5963073078 showed a five-row all-fold walk at a six-handed table where
+    the first row was tagged hero, shifting hero_position to LJ instead of BTN.
+    This shape carries no betting signal to repair the seat assignment, so it
+    must stay available as a hint but confidence-abstain.
+    """
+    from ocr.n8_parser import _assemble_hand, _safe_emit_override_reason
+
+    columns = [{
+        "name": "Pre-Flop",
+        "entries": [
+            {"type": "hero", "action": "Fold"},
+            {"type": "opponent", "action": "Fold"},
+            {"type": "opponent", "action": "Fold"},
+            {"type": "opponent", "action": "Fold"},
+            {"type": "opponent", "action": "Fold"},
+        ],
+    }]
+    table = {
+        "hero_cards": ["6s", "4h"],
+        "hero_card_conf": 0.99,
+        "board_cards": [],
+        "table_color": "green",
+    }
+    hand, cp, diag = _assemble_hand(table, columns, force_table_size=6)
+    assert_true(hand is not None, "unsafe shape is preserved for fallback hints")
+    assert_eq(cp.get("ocr_confidence"), 0.0)
+    assert_in("all_fold_walk_hero_first", diag.get("preflop_physics_issues") or [])
+    assert_eq(
+        _safe_emit_override_reason(hand, cp, diag),
+        None,
+        "preflop physics rejects must not be revived by safe emit",
+    )
+
+
+@test
+def test_seven_max_sb_open_with_postflop_confidence_abstains():
+    """n8_parser: 7-max SB open prefix with postflop is seat-count fragile.
+
+    TM5913201917 parsed as 7-max SB with preflop ``R2-...`` and postflop
+    action, but the correct structure was 8-max BTN; the missing leading seat
+    shifts the hero one position.  The same preflop-only shape can be exact, so
+    only postflop hands get confidence-abstained.
+    """
+    from ocr.n8_parser import _assemble_hand
+
+    columns = [
+        {
+            "name": "Pre-Flop",
+            "entries": [
+                {"type": "opponent", "action": "Raise", "size": 2.0},
+                {"type": "opponent", "action": "Call"},
+                {"type": "opponent", "action": "Call"},
+                {"type": "opponent", "action": "Fold"},
+                {"type": "opponent", "action": "Call"},
+                {"type": "hero", "action": "Fold"},
+                {"type": "opponent", "action": "Call"},
+            ],
+        },
+        {
+            "name": "Flop",
+            "entries": [{"type": "hero", "action": "Check"}],
+        },
+    ]
+    table = {
+        "hero_cards": ["Kh", "Jd"],
+        "hero_card_conf": 0.99,
+        "board_cards": ["2c", "3d", "4h"],
+        "table_color": "green",
+    }
+    hand, cp, diag = _assemble_hand(table, columns)
+    assert_true(hand is not None, "unsafe structure is preserved for fallback")
+    assert_eq(hand.get("hero_position"), "SB")
+    assert_eq(cp.get("ocr_confidence"), 0.0)
+    assert_in(
+        "seven_max_sb_open_postflop_ambiguous",
+        diag.get("preflop_physics_issues") or [],
+    )
 
 
 @test
