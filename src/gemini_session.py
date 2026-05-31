@@ -397,6 +397,8 @@ Solver 數據是 ground truth（最高原則，絕對不可違反！）：
   preflop_actions 中 hero 的 R 代表 raise（可能是 open raise 或 3bet）。
   如果 hero 是第一個 raise 的人（前面都是 F），那就是 open raise，不是跟注！
   如果 hero 的 R 前面有別人的 R，那才是 3bet。
+  如果 unopened preflop 節點的 solver 顯示「Limp」或 code C，那是 open limp / complete，不是跟注別人的 raise。
+  action_desc 若寫「open raise」，必須照實描述為 raise first in (RFI)，不可說成「面對 open raise 跟注」。
   絕對不要把 open raise 說成「跟注」！
 - 極重要：不可捏造 action line 中不存在的玩家行動！
   只能根據「GTO Solver 數據」列出的實際 action_desc / preflop_actions 描述誰 raise、誰 call、誰 fold。

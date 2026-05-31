@@ -1486,6 +1486,53 @@ def test_solver_detail_uses_exact_postflop_combo_for_coaching_text():
 
 
 @test
+def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
+    """Analyze text: H3471 is HJ RFI, not HJ calling a prior raise.
+
+    The solver's unopened 14bb HJ node encodes open-limp as action code C.
+    Regression: compact/full text showed "Call 98%" and no hero preflop
+    action_desc, so the coach hallucinated that HJ faced an open raise and
+    called.  The analysis must label C as Limp so the coach cannot invent a
+    prior raiser from solver terminology.
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "streets": [
+            {
+                "board": "As7cAc",
+                "actions": [
+                    {"action": "X", "position": "HJ"},
+                    {"size": 1.5, "action": "R1.5", "position": "BTN"},
+                    {"size": 4.0, "action": "R4", "position": "HJ"},
+                    {"size": 2.5, "action": "C", "position": "BTN"},
+                ],
+            },
+            {
+                "card": "7h",
+                "actions": [
+                    {"size": 8.5, "allin": True, "action": "R8.5", "position": "HJ"},
+                    {"size": 8.5, "action": "C", "position": "BTN"},
+                ],
+            },
+        ],
+        "gametype": "MTTGeneral",
+        "hero_hand": "TdTc",
+        "effective_bb": 14.5,
+        "hero_position": "HJ",
+        "player_stacks": [48.8, 16.3, 31.2, 11.0, 57.8],
+        "preflop_actions": "R2-F-C-F-F",
+        "players_at_table": 5,
+        "hero_starting_stack": 14.5,
+    })
+
+    assert_eq(result["preflop_actions"], "F-F-F-R2-F-C-F-F")
+    assert_in("Limp: 98.5%", result["text"])
+    assert_in("GTO: Limp 98%", result["text_compact"])
+    assert_not_in("GTO: Call 98%", result["text_compact"])
+
+
+@test
 def test_formatter_action_summary():
     """Formatter: format_action_summary produces readable output."""
     from gto_api import get_spot_solution

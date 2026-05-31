@@ -10,7 +10,7 @@ Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2-F-F-F-F-C
 【Preflop】
 【LJ 在 Preflop 】底池 2.500bb
   Fold: 78.7%（1043 combos）
-  Call: 5.6%（75 combos）
+  Limp: 5.6%（75 combos）
   RAISE 2（29% pot）: 14.3%（190 combos）
   All-in 17.000: 1.4%（18 combos）
 
@@ -19,7 +19,7 @@ Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2-F-F-F-F-C
   EV: 2.02bb | Equity: 0.0%
   策略:
     RAISE 2（29% pot）: 86.8%（3.5 combos） EV 2.02bb
-    Call: 13.2%（0.5 combos） EV 2.02bb
+    Limp: 13.2%（0.5 combos） EV 2.02bb
 
 ==================================================
 【Flop: KcJc8d】

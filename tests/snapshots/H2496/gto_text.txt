@@ -9,7 +9,7 @@ Hero: BTN 55
 【Preflop】
 【BTN 在 Preflop 】底池 2.500bb
   Fold: 58.9%（781 combos）
-  Call: 8.4%（112 combos）
+  Limp: 8.4%（112 combos）
   All-in 10.000: 32.6%（433 combos）
 
 【BTN 55】

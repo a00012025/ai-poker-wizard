@@ -2300,14 +2300,29 @@ def _run_analysis(hand: dict) -> dict:
                         elif taken_code == "F":
                             hero_action_short = "fold"
                         elif taken_code == "C":
-                            hero_action_short = "call"
+                            hero_action_short = _action_label_short(
+                                taken_code, display_sol, spot["street"])
                         elif act.get("allin"):
                             hero_action_short = "all-in"
                         else:
                             # "raise" if preflop or facing a bet
                             has_fc = any(a["action"]["code"] in ("F", "C")
                                          for a in display_sol.get("action_solutions", []))
-                            verb = "raise" if (spot["street"] == "preflop" or has_fc) else "bet"
+                            is_unopened_preflop = (
+                                spot["street"] == "preflop"
+                                and not any(
+                                    p not in ("F", "")
+                                    for p in str(
+                                        spot.get("params", {}).get("preflop_actions", "")
+                                    ).split("-")
+                                    if p
+                                )
+                            )
+                            verb = (
+                                "open raise"
+                                if is_unopened_preflop
+                                else ("raise" if (spot["street"] == "preflop" or has_fc) else "bet")
+                            )
                             actual_pct = spot.get("actual_pot_pct")
                             pct = (
                                 float(actual_pct) * 100
