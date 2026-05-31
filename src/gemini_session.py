@@ -6,6 +6,7 @@ Follow-ups: user message → parse (null) → Pro chat WITH query_gto tool → r
 """
 import asyncio
 import contextvars
+import copy
 import json
 import logging
 import os
@@ -1364,6 +1365,76 @@ class GeminiSessionManager:
         return False
 
     @staticmethod
+    def _can_keep_ocr_abstain_after_cards_only(
+        *,
+        confidence_abstain_with_ocr: bool,
+        hero_hand_present: bool,
+        cards_need_fallback: bool,
+        original_hero_hand: str | None,
+        gemini_hero_hand: str | None,
+    ) -> bool:
+        """Whether to keep OCR after a cards-only re-read produced no repair.
+
+        This is intentionally false when the card-confidence gate fired.  In
+        that case OCR already told us its hero cards are untrustworthy; keeping
+        the original hero_hand after Gemini returns nothing (or repeats the
+        same bad value) reintroduces the exact low-confidence card hallucination.
+        Regression: H3473, hero KhJc was emitted/coached as AhAs.
+        """
+        return (
+            confidence_abstain_with_ocr
+            and hero_hand_present
+            and not cards_need_fallback
+            and (
+                not gemini_hero_hand
+                or gemini_hero_hand == original_hero_hand
+            )
+        )
+
+    @staticmethod
+    def _gemini_ocr_context(
+        ocr_result: dict | None,
+        min_card_conf: float,
+    ) -> tuple[dict | None, dict | None, bool]:
+        """Return OCR hints/partial hand safe to pass into full Gemini parse.
+
+        OCR structural context is valuable, but a below-threshold hero-card
+        classifier prediction must not be used as a strong visual hint.  When
+        card_confidence is below the hard floor, remove only the card-specific
+        hero fields while preserving board/action/stacks context for Gemini.
+        """
+        if not ocr_result:
+            return None, None, False
+
+        hints = copy.deepcopy(ocr_result.get("hints") or {})
+        partial = copy.deepcopy(ocr_result.get("hand") or {})
+        try:
+            card_conf = float(ocr_result.get("card_confidence") or 0.0)
+        except (TypeError, ValueError):
+            card_conf = 0.0
+        low_card_conf = bool(partial) and card_conf < min_card_conf
+
+        if low_card_conf:
+            hints.pop("hero_cards", None)
+            partial_hint = hints.get("partial_hand")
+            if isinstance(partial_hint, dict):
+                partial_hint.pop("hero_hand", None)
+                partial_hint["hero_hand_low_confidence"] = True
+            if partial:
+                partial.pop("hero_hand", None)
+                partial["hero_hand_low_confidence"] = True
+            hints["hero_cards_low_confidence"] = {
+                "card_confidence": card_conf,
+                "min_required": min_card_conf,
+                "instruction": (
+                    "Ignore OCR hero_cards/hero_hand; re-read hero's two "
+                    "bottom-center cards from the image."
+                ),
+            }
+
+        return (hints or None), (partial or None), low_card_conf
+
+    @staticmethod
     def _cards_disagreement(ocr_hand: dict, gemini_hand: dict) -> dict | None:
         """Compare hero_hand + per-street board cards. Return a small dict
         describing the disagreement, or None if the two parses agree on
@@ -2268,14 +2339,12 @@ class GeminiSessionManager:
                                 f"structure safety gate; falling through to "
                                 f"full Gemini parse"
                             )
-                        if (
-                            confidence_abstain_with_ocr
-                            and hero_hand_present
-                            and (
-                                not gemini_hero_hand
-                                or gemini_hero_hand
-                                == ocr_result["hand"].get("hero_hand")
-                            )
+                        if self._can_keep_ocr_abstain_after_cards_only(
+                            confidence_abstain_with_ocr=confidence_abstain_with_ocr,
+                            hero_hand_present=hero_hand_present,
+                            cards_need_fallback=cards_need_fallback,
+                            original_hero_hand=ocr_result["hand"].get("hero_hand"),
+                            gemini_hero_hand=gemini_hero_hand,
                         ):
                             hand = ocr_result["hand"]
                             if self._cards_only_merge_safe(ocr_result, None):
@@ -2347,15 +2416,29 @@ class GeminiSessionManager:
         if user_text.strip():
             prompt_text += f"\n\n用戶留言：{user_text.strip()}"
 
-        # Append OCR hints if available
-        if ocr_hints:
-            hints_str = json.dumps(ocr_hints, ensure_ascii=False, default=str)
+        safe_ocr_hints, safe_partial, low_card_conf = self._gemini_ocr_context(
+            ocr_result, MIN_CARD_CONF
+        )
+        if ocr_hints and safe_ocr_hints is None:
+            safe_ocr_hints = ocr_hints
+
+        # Append OCR hints if available. Low-confidence hero cards are removed
+        # by _gemini_ocr_context so Gemini gets structural anchors without
+        # being anchored to the bad card-classifier guess.
+        if safe_ocr_hints:
+            hints_str = json.dumps(safe_ocr_hints, ensure_ascii=False, default=str)
             prompt_text += f"\n\nOCR 預處理提示（僅供參考，可能有誤）：{hints_str}"
+            if low_card_conf:
+                prompt_text += (
+                    "\n\n重要：OCR hero card confidence 低於門檻；"
+                    "上述 OCR 提示已刻意移除 hero_cards/hero_hand。"
+                    "請直接從截圖底部中央兩張明牌重新讀取 hero_hand，"
+                    "不要沿用 OCR 的低信心猜測。"
+                )
 
         # Include partial hand from OCR if available
-        if ocr_result and ocr_result.get("hand"):
-            partial = ocr_result["hand"]
-            partial_str = json.dumps(partial, ensure_ascii=False, default=str)
+        if safe_partial:
+            partial_str = json.dumps(safe_partial, ensure_ascii=False, default=str)
             prompt_text += f"\n\nOCR 解析結果（需要你驗證和補充，特別是 hero_hand）：{partial_str}"
 
         # Retry on transient Gemini server errors (503 UNAVAILABLE, 500 INTERNAL, 429)

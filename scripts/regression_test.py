@@ -3014,6 +3014,90 @@ def test_standalone_board_override():
 
 
 @test
+def test_h3473_low_conf_ocr_hero_cards_do_not_anchor_gemini():
+    """Image parse: below-threshold hero cards must not survive fallback.
+
+    Regression for H3473: OCR card_conf=0.43 misread hero KhJc as AhAs.
+    Cards-only Gemini returned no usable repair in production, and the
+    confidence-abstain branch kept OCR's low-confidence AhAs anyway; the full
+    Gemini prompt also included the bad hero_cards hint, anchoring the parse.
+    """
+    from src.gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "card_confidence": 0.4307,
+        "hints": {
+            "board_cards": ["7s", "Td", "7d", "Qh", "9d"],
+            "hero_cards": ["Ah", "As"],
+            "partial_hand": {
+                "gametype": "MTTGeneral",
+                "hero_position": "BTN",
+                "hero_hand": "AhAs",
+                "preflop_actions": "F-F-R2-F-F-C-F-F",
+            },
+        },
+        "hand": {
+            "gametype": "MTTGeneral",
+            "hero_position": "BTN",
+            "hero_hand": "AhAs",
+            "preflop_actions": "F-F-R2-F-F-C-F-F",
+        },
+    }
+
+    assert_true(
+        not GeminiSessionManager._can_keep_ocr_abstain_after_cards_only(
+            confidence_abstain_with_ocr=True,
+            hero_hand_present=True,
+            cards_need_fallback=True,
+            original_hero_hand="AhAs",
+            gemini_hero_hand=None,
+        ),
+        "low-confidence card fallback must not keep the original OCR hand",
+    )
+
+    hints, partial, low_card_conf = GeminiSessionManager._gemini_ocr_context(
+        ocr_result, min_card_conf=0.70
+    )
+
+    assert_true(low_card_conf)
+    assert_not_in("hero_cards", hints)
+    assert_in("hero_cards_low_confidence", hints)
+    assert_not_in("hero_hand", hints["partial_hand"])
+    assert_true(hints["partial_hand"]["hero_hand_low_confidence"])
+    assert_not_in("hero_hand", partial)
+    assert_true(partial["hero_hand_low_confidence"])
+
+    # Structural anchors remain useful for the full Gemini reparse.
+    assert_eq(hints["board_cards"], ["7s", "Td", "7d", "Qh", "9d"])
+    assert_eq(partial["hero_position"], "BTN")
+    assert_eq(partial["preflop_actions"], "F-F-R2-F-F-C-F-F")
+
+
+@test
+def test_high_conf_ocr_hero_cards_still_anchor_gemini():
+    """Image parse: confident hero card hints stay available to Gemini."""
+    from src.gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "card_confidence": 0.92,
+        "hints": {
+            "hero_cards": ["Kh", "Jc"],
+            "partial_hand": {"hero_hand": "KhJc", "hero_position": "BTN"},
+        },
+        "hand": {"hero_hand": "KhJc", "hero_position": "BTN"},
+    }
+
+    hints, partial, low_card_conf = GeminiSessionManager._gemini_ocr_context(
+        ocr_result, min_card_conf=0.70
+    )
+
+    assert_true(not low_card_conf)
+    assert_eq(hints["hero_cards"], ["Kh", "Jc"])
+    assert_eq(hints["partial_hand"]["hero_hand"], "KhJc")
+    assert_eq(partial["hero_hand"], "KhJc")
+
+
+@test
 def test_collapsed_streets_4card_board():
     """Collapsed streets: 4-card board split into flop + turn."""
     from analyze_hand import _fix_collapsed_streets
