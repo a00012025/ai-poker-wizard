@@ -120,6 +120,55 @@ def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     assert_eq(resolved[3]["type"], "hero")
 
 
+@test
+def test_dup_allin_badge_on_call_keeps_call_size():
+    """OCR: a bare All-In badge on hero's own Call must keep the call size.
+
+    H3462 river: villain bets 13.6, hero calls all-in for their last 6.8bb.
+    N8 stamps a red "All-In" badge on the call sticker, which OCR splits into
+    a trailing same-side All-In entry (size=None, no name). Dropping it keeps
+    the 6.8 call so hero's starting stack reconstructs to ~19bb; without the
+    drop the sizeless badge wipes hero_street and effective_bb collapsed
+    19→12bb. The call stays a Call (hero called for less than the bet — not a
+    jam); only bet/raise badges promote to All-In.
+    """
+    from ocr.panel_parser import _collapse_dup_allin_badge
+
+    entries = [
+        {"type": "hero", "position": None, "action": "Check", "size": None},
+        {"type": "opponent", "position": "CO", "action": "Bet", "size": 13.6},
+        {"type": "hero", "position": "BB", "action": "Call", "size": 6.8},
+        {"type": "hero", "position": None, "action": "All-In", "size": None},
+    ]
+
+    cleaned = _collapse_dup_allin_badge(entries)
+    assert_eq([e["action"] for e in cleaned], ["Check", "Bet", "Call"],
+              "bare All-In badge dropped, call preserved")
+    assert_eq(cleaned[2]["action"], "Call", "calling all-in stays a Call")
+    assert_eq(cleaned[2]["size"], 6.8, "call size must survive")
+
+
+@test
+def test_dup_allin_badge_on_bet_promotes_to_allin():
+    """OCR: a bare All-In badge on a bet/raise promotes it to All-In (H2852).
+
+    The badge sits on the same player's bet; dropping it but promoting the
+    bet to All-In preserves both the wager size (for stack accounting) and
+    the all-in label (for the summary).
+    """
+    from ocr.panel_parser import _collapse_dup_allin_badge
+
+    entries = [
+        {"type": "hero", "position": "BB", "action": "Bet", "size": 15.5},
+        {"type": "hero", "position": None, "action": "All-In", "size": None},
+    ]
+
+    cleaned = _collapse_dup_allin_badge(entries)
+    assert_eq([e["action"] for e in cleaned], ["All-In"],
+              "badge dropped, bet promoted to All-In")
+    assert_eq(cleaned[0]["size"], 15.5, "bet size must survive")
+
+
 # ── Calling a villain all-in == committing (PR: fix/allin-call-deviation) ──
 # H3459: SB shoves the turn ("Bet 17.1 / All-In"), hero calls.  The solver
 # models a deeper 35bb world where 17.1 is just a big bet (Fold/Call/All-in),
