@@ -220,7 +220,7 @@ def format_action_summary(spot_solution: dict) -> str:
         elif code == "F":
             label = "Fold"
         elif code == "C":
-            label = "Call"
+            label = _action_label(code, spot_solution)
         elif code.startswith("R"):
             if act.get("allin"):
                 label = f"All-in {act['betsize']}"
@@ -984,6 +984,8 @@ def _action_label(code: str, spot_solution: dict) -> str:
     if code == "F":
         return "Fold"
     if code == "C":
+        if _is_preflop_limp_call(code, spot_solution):
+            return "Limp"
         return "Call"
     if code == "RAI":
         return "All-in"
@@ -1016,6 +1018,8 @@ def _action_label_short(code: str, spot_solution: dict, street: str = "") -> str
     if code == "F":
         return "fold"
     if code == "C":
+        if _is_preflop_limp_call(code, spot_solution):
+            return "limp"
         return "call"
     if code == "RAI":
         return "all-in"
@@ -1035,3 +1039,30 @@ def _action_label_short(code: str, spot_solution: dict, street: str = "") -> str
                 return f"{verb} {pct:.0f}% pot"
             return verb
     return code
+
+
+def _is_preflop_limp_call(code: str, spot_solution: dict) -> bool:
+    """Return True when solver code C means an unopened preflop limp.
+
+    GTO Wizard represents open-limps/completions with the same ``C`` code used
+    for calling a raise.  In unopened preflop spots that "call" amount is the
+    blind price (1bb total), so label it as Limp to keep the coaching layer
+    from inventing a previous raiser.
+    """
+    if code != "C":
+        return False
+    street = spot_solution.get("game", {}).get("current_street", {}).get("type", "")
+    if str(street).lower() != "preflop":
+        return False
+    call_action = next(
+        (
+            sol.get("action", {})
+            for sol in spot_solution.get("action_solutions", [])
+            if sol.get("action", {}).get("code") == "C"
+        ),
+        {},
+    )
+    try:
+        return float(call_action.get("betsize", 0)) <= 1.0001
+    except (TypeError, ValueError):
+        return False

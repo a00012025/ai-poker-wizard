@@ -1,7 +1,7 @@
 ♠ LJ AQs | 17bb MTT
 
 ─── Preflop ───
-GTO: RAISE 2（29% pot） 87% / Call 13%
+GTO: RAISE 2（29% pot） 87% / Limp 13%
 
 ─── Flop: KcJc8d ───
 🎯 Ace high + 卡順聽牌

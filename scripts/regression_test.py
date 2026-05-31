@@ -1486,6 +1486,56 @@ def test_solver_detail_uses_exact_postflop_combo_for_coaching_text():
 
 
 @test
+def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
+    """Analyze text: H3471 is HJ RFI, not HJ calling a prior raise.
+
+    The solver's unopened 14bb HJ node encodes open-limp as action code C.
+    Regression: compact/full text showed only "Call 98%" and no hero
+    preflop action line, so the coach hallucinated that HJ faced an open
+    raise and called.  The analysis must show Hero's actual open raise
+    while ensuring solver C cannot be misread as a call versus a prior raiser.
+    """
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "streets": [
+            {
+                "board": "As7cAc",
+                "actions": [
+                    {"action": "X", "position": "HJ"},
+                    {"size": 1.5, "action": "R1.5", "position": "BTN"},
+                    {"size": 4.0, "action": "R4", "position": "HJ"},
+                    {"size": 2.5, "action": "C", "position": "BTN"},
+                ],
+            },
+            {
+                "card": "7h",
+                "actions": [
+                    {"size": 8.5, "allin": True, "action": "R8.5", "position": "HJ"},
+                    {"size": 8.5, "action": "C", "position": "BTN"},
+                ],
+            },
+        ],
+        "gametype": "MTTGeneral",
+        "hero_hand": "TdTc",
+        "effective_bb": 14.5,
+        "hero_position": "HJ",
+        "player_stacks": [48.8, 16.3, 31.2, 11.0, 57.8],
+        "preflop_actions": "R2-F-C-F-F",
+        "players_at_table": 5,
+        "hero_starting_stack": 14.5,
+    })
+
+    assert_eq(result["preflop_actions"], "F-F-F-R2-F-C-F-F")
+    assert_in("Limp: 98.5%", result["text"])
+    assert_in("GTO: Limp 98%", result["text_compact"])
+    assert_in("→ 實際行動: HJ R2", result["text"])
+    assert_in("→ Hero open raise 29% pot ✅", result["text_compact"])
+    assert_not_in("GTO: Call 98%", result["text_compact"])
+    assert_not_in("→ Hero limp", result["text_compact"])
+
+
+@test
 def test_formatter_action_summary():
     """Formatter: format_action_summary produces readable output."""
     from gto_api import get_spot_solution
@@ -2964,6 +3014,90 @@ def test_standalone_board_override():
     assert_eq(params["board"], "QhTd3c3s")
     assert_eq(params["flop_actions"], "X-R1.15-C")
     assert_eq(params["turn_actions"], "X")
+
+
+@test
+def test_h3473_low_conf_ocr_hero_cards_do_not_anchor_gemini():
+    """Image parse: below-threshold hero cards must not survive fallback.
+
+    Regression for H3473: OCR card_conf=0.43 misread hero KhJc as AhAs.
+    Cards-only Gemini returned no usable repair in production, and the
+    confidence-abstain branch kept OCR's low-confidence AhAs anyway; the full
+    Gemini prompt also included the bad hero_cards hint, anchoring the parse.
+    """
+    from src.gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "card_confidence": 0.4307,
+        "hints": {
+            "board_cards": ["7s", "Td", "7d", "Qh", "9d"],
+            "hero_cards": ["Ah", "As"],
+            "partial_hand": {
+                "gametype": "MTTGeneral",
+                "hero_position": "BTN",
+                "hero_hand": "AhAs",
+                "preflop_actions": "F-F-R2-F-F-C-F-F",
+            },
+        },
+        "hand": {
+            "gametype": "MTTGeneral",
+            "hero_position": "BTN",
+            "hero_hand": "AhAs",
+            "preflop_actions": "F-F-R2-F-F-C-F-F",
+        },
+    }
+
+    assert_true(
+        not GeminiSessionManager._can_keep_ocr_abstain_after_cards_only(
+            confidence_abstain_with_ocr=True,
+            hero_hand_present=True,
+            cards_need_fallback=True,
+            original_hero_hand="AhAs",
+            gemini_hero_hand=None,
+        ),
+        "low-confidence card fallback must not keep the original OCR hand",
+    )
+
+    hints, partial, low_card_conf = GeminiSessionManager._gemini_ocr_context(
+        ocr_result, min_card_conf=0.70
+    )
+
+    assert_true(low_card_conf)
+    assert_not_in("hero_cards", hints)
+    assert_in("hero_cards_low_confidence", hints)
+    assert_not_in("hero_hand", hints["partial_hand"])
+    assert_true(hints["partial_hand"]["hero_hand_low_confidence"])
+    assert_not_in("hero_hand", partial)
+    assert_true(partial["hero_hand_low_confidence"])
+
+    # Structural anchors remain useful for the full Gemini reparse.
+    assert_eq(hints["board_cards"], ["7s", "Td", "7d", "Qh", "9d"])
+    assert_eq(partial["hero_position"], "BTN")
+    assert_eq(partial["preflop_actions"], "F-F-R2-F-F-C-F-F")
+
+
+@test
+def test_high_conf_ocr_hero_cards_still_anchor_gemini():
+    """Image parse: confident hero card hints stay available to Gemini."""
+    from src.gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "card_confidence": 0.92,
+        "hints": {
+            "hero_cards": ["Kh", "Jc"],
+            "partial_hand": {"hero_hand": "KhJc", "hero_position": "BTN"},
+        },
+        "hand": {"hero_hand": "KhJc", "hero_position": "BTN"},
+    }
+
+    hints, partial, low_card_conf = GeminiSessionManager._gemini_ocr_context(
+        ocr_result, min_card_conf=0.70
+    )
+
+    assert_true(not low_card_conf)
+    assert_eq(hints["hero_cards"], ["Kh", "Jc"])
+    assert_eq(hints["partial_hand"]["hero_hand"], "KhJc")
+    assert_eq(partial["hero_hand"], "KhJc")
 
 
 @test

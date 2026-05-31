@@ -7,7 +7,7 @@ Hero: CO ATs
 【Preflop】
 【CO 在 Preflop 】底池 2.500bb
   Fold: 67.3%（893 combos）
-  Call: 7.2%（95 combos）
+  Limp: 7.2%（95 combos）
   RAISE 2（29% pot）: 19.1%（253 combos）
   All-in 17.000: 6.4%（85 combos）
 
