@@ -566,6 +566,22 @@ def _rank_from_corner_ocr(crop: np.ndarray) -> tuple[str | None, float]:
     return candidates[0]
 
 
+def _corner_rank_overrides(cnn_rank: str, cnn_conf: float, corner_rank: str) -> bool:
+    """Whether the corner-OCR rank should override the CNN rank.
+
+    Corner OCR rescues confident CNN face-card hallucinations off sticker/avatar
+    noise (H3429: 2♥ read as K♥). But EasyOCR misreads the Ace corner glyph as
+    "4" (H2878: A♣ read as 4♣), so a corner "4" must never override a CNN that
+    is certain the card is an Ace — the CNN rank head is reliable at high
+    confidence and the A→4 corner confusion is a known EasyOCR failure.
+    """
+    if corner_rank == cnn_rank:
+        return False
+    if corner_rank == "4" and cnn_rank == "A" and cnn_conf >= 0.99:
+        return False
+    return True
+
+
 def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -> str:
     """Repair narrow low-margin suit confusions from masked crop top-2.
 
@@ -637,7 +653,7 @@ def _find_hero_cards(
         )
         rank_source = "classifier"
         corner_rank, corner_conf = _rank_from_corner_ocr(crops[i])
-        if corner_rank and corner_rank != rank:
+        if corner_rank and _corner_rank_overrides(rank, rank_conf, corner_rank):
             rank = corner_rank
             rank_conf = corner_conf
             rank_source = "corner_ocr"
