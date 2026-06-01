@@ -88,6 +88,30 @@ def _classify_actions(actions_freq: dict, action_solutions: list | None = None
     return result
 
 
+def _legend_labels(action_solutions: list | None, game: dict | None
+                   ) -> tuple[str, str, bool]:
+    """Pick legend labels (passive, aggressive, show_fold) for the node.
+
+    A first-to-act spot (Check available, no Call) must read Check/Bet, while a
+    spot facing a bet reads Call/Raise. Preflop aggression is conventionally a
+    "raise" (over the forced blind), so it stays Raise even when first-in.
+    Returns (passive_label, aggressive_label, show_fold).
+    """
+    codes = {
+        a["action"]["code"]
+        for a in (action_solutions or [])
+        if a.get("action", {}).get("code")
+    }
+    can_check = "X" in codes
+    has_fold = "F" in codes
+    street = ((game or {}).get("current_street", {}) or {}).get("type", "") or ""
+    is_preflop = street.lower() == "preflop"
+
+    passive_label = "Check" if can_check else "Call"
+    aggressive_label = "Bet" if (can_check and not is_preflop) else "Raise"
+    return passive_label, aggressive_label, has_fold
+
+
 def generate_range_grid(spot_solution: dict, position: str,
                         title: str = "") -> bytes:
     """Generate a 13x13 range grid image from solver data.
@@ -186,13 +210,21 @@ def generate_range_grid(spot_solution: dict, position: str,
             draw.text((tx + 1, ty + 1), hand, fill=(0, 0, 0), font=small_font, anchor="lt")
             draw.text((tx, ty), hand, fill=COLOR_TEXT, font=small_font, anchor="lt")
 
-    # Legend
+    # Legend — labels adapt to the node type so a first-to-act (check/bet)
+    # spot is not mislabeled as call/raise. The passive bucket lumps Check (X)
+    # with Call (C) and the aggressive buckets lump bets with raises (see
+    # _classify_actions), so the legend text is the only thing that tells the
+    # two apart. Derive the node type from the actually-available action codes.
+    pas_label, agg_label, show_fold = _legend_labels(
+        action_solutions, spot_solution.get("game", {}))
     ly = title_h + HEADER + grid_size + 8
-    legend_items = [
-        ("Fold", COLOR_FOLD),
-        ("Call", COLOR_CALL),
-        ("Raise", COLOR_RAISE),
-        ("Big Raise/AI", COLOR_BIG_RAISE),
+    legend_items = []
+    if show_fold:
+        legend_items.append(("Fold", COLOR_FOLD))
+    legend_items += [
+        (pas_label, COLOR_CALL),
+        (agg_label, COLOR_RAISE),
+        (f"Big {agg_label}/AI", COLOR_BIG_RAISE),
         ("N/A", COLOR_NOT_IN_RANGE),
     ]
     lx = HEADER

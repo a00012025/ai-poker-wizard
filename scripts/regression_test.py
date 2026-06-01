@@ -10011,6 +10011,52 @@ def test_postflop_pre_collapse_in_diagnostics():
                 f"H3433 river must show large collapse loss; got {losses}")
 
 
+@test
+def test_range_image_legend_check_bet_vs_call_raise():
+    """range_image: legend labels follow the node type.
+
+    Regression for H3469: the range grid is sent alongside a follow-up. On a
+    first-to-act (check/bet) spot the legend was hardcoded to Fold/Call/Raise,
+    mislabeling Check as Call and Bet as Raise (and listing a Fold that can't
+    happen). It must read Check/Bet with no Fold there, while a facing-bet node
+    keeps Call/Raise/Fold, and preflop aggression stays Raise.
+    """
+    from range_image import _legend_labels
+
+    # First-to-act postflop: Check + two bet sizes, no Call, no Fold.
+    check_node = [
+        {"action": {"code": "X"}},
+        {"action": {"code": "R5.2"}},
+        {"action": {"code": "R8.7"}},
+    ]
+    game_turn = {"current_street": {"type": "turn"}}
+    pas, agg, show_fold = _legend_labels(check_node, game_turn)
+    assert_eq(pas, "Check", "first-to-act passive bucket must read Check")
+    assert_eq(agg, "Bet", "first-to-act aggressive bucket must read Bet")
+    assert_true(not show_fold, "check/bet node must not show a Fold legend entry")
+
+    # Facing a bet: Fold/Call/Raise available.
+    facing_bet = [
+        {"action": {"code": "F"}},
+        {"action": {"code": "C"}},
+        {"action": {"code": "R12"}},
+    ]
+    pas, agg, show_fold = _legend_labels(facing_bet, game_turn)
+    assert_eq(pas, "Call", "facing-bet passive bucket must read Call")
+    assert_eq(agg, "Raise", "facing-bet aggressive bucket must read Raise")
+    assert_true(show_fold, "facing-bet node must show a Fold legend entry")
+
+    # Preflop first-in (Fold + raise, no check): aggression is a Raise, not Bet.
+    preflop_rfi = [
+        {"action": {"code": "F"}},
+        {"action": {"code": "R2.5"}},
+    ]
+    game_pre = {"current_street": {"type": "preflop"}}
+    pas, agg, show_fold = _legend_labels(preflop_rfi, game_pre)
+    assert_eq(agg, "Raise", "preflop open must read Raise, not Bet")
+    assert_true(show_fold, "preflop RFI node must show a Fold legend entry")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
