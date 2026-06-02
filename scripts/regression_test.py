@@ -7055,6 +7055,191 @@ def test_build_url_contains_solution_type():
     assert_eq(qs["solution_type"], ["gwiz"])
 
 
+# ── Lane B2: GTOW /solutions strategy URL builder tests ──
+
+import gtow_solution_url as _gsu
+from gtow_solution_url import (
+    build_solution_url,
+    build_last_node_url,
+    canonical_board_through_street,
+    enumerate_hero_decisions,
+)
+
+# Resolver result that reproduces the hand-verified H3476 reference URL.
+_H3476_RESOLVED = {
+    "preflop_actions": "F-F-R2.3-F-F-F-F-C",
+    "flop_actions": "X-R2-C",
+    "turn_actions": "X-R8.4",
+    "river_actions": "",
+    "history_spot": 13,
+    "depth": 40.0,
+    "gametype": "MTTGeneral",
+}
+_H3476_URL = (
+    "https://app.gtowizard.com/solutions"
+    "?gametype=MTTGeneral&depth=40.125"
+    "&gmfft_sort_key=0&gmfft_sort_order=desc"
+    "&solution_type=gwiz&gmfs_solution_tab=ai_sols&soltab=strategy"
+    "&preflop_actions=F-F-R2.3-F-F-F-F-C&history_spot=13"
+    "&gmff_favorite=false&board=8h7d2hAh"
+    "&flop_actions=X-R2-C&turn_actions=X-R8.4"
+)
+
+
+@test
+def test_solution_url_matches_h3476_reference():
+    """build_solution_url: exact match to the hand-verified H3476 URL"""
+    url = build_solution_url(_H3476_RESOLVED, "8h7d2hAh")
+    assert_eq(url, _H3476_URL)
+
+
+@test
+def test_solution_url_canonical_flop_rank_descending():
+    """_canonical_flop: flop reordered rank-descending, suits follow rank"""
+    assert_eq(_gsu._canonical_flop("7d8h2h"), "8h7d2h")
+    # Paired flop: grouped by rank, deterministic suit order (shdc). GTOW's
+    # exact paired-board suit order is unverified — flagged in the module.
+    assert_eq(_gsu._canonical_flop("2c2d2h"), "2h2d2c")
+    assert_eq(_gsu._canonical_flop("AhKsQd"), "AhKsQd")
+    assert_eq(_gsu._canonical_flop("2h3h4h"), "4h3h2h")
+
+
+@test
+def test_solution_url_board_truncated_to_decision_street():
+    """canonical_board_through_street: turn node excludes a dealt river card"""
+    hand = {"streets": [
+        {"board": "7d8h2h", "actions": []},
+        {"card": "Ah", "actions": []},
+        {"card": "Ks", "actions": []},
+    ]}
+    assert_eq(canonical_board_through_street(hand, "preflop"), "")
+    assert_eq(canonical_board_through_street(hand, "flop"), "8h7d2h")
+    assert_eq(canonical_board_through_street(hand, "turn"), "8h7d2hAh")
+    assert_eq(canonical_board_through_street(hand, "river"), "8h7d2hAhKs")
+
+
+@test
+def test_solution_url_preflop_node_has_no_board():
+    """build_solution_url: preflop node omits board / postflop action params"""
+    resolved = {
+        "preflop_actions": "F-F-R2.3-F-F-F-F-C", "flop_actions": "",
+        "turn_actions": "", "river_actions": "", "history_spot": 8,
+        "depth": 40.0, "gametype": "MTTGeneral",
+    }
+    url = build_solution_url(resolved, "")
+    qs = parse_qs(urlparse(url).query)
+    assert_true("board" not in qs, "preflop URL must not carry a board param")
+    assert_true("flop_actions" not in qs, "preflop URL must not carry flop_actions")
+    assert_eq(qs["history_spot"], ["8"])
+
+
+@test
+def test_solution_url_includes_river_actions():
+    """build_solution_url: river_actions emitted when present"""
+    resolved = dict(_H3476_RESOLVED, river_actions="X-C", history_spot=15)
+    url = build_solution_url(resolved, "8h7d2hAhKs")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["river_actions"], ["X-C"])
+    assert_eq(qs["board"], ["8h7d2hAhKs"])
+
+
+@test
+def test_solution_url_no_preflop_raises():
+    """build_solution_url: empty preflop line → ValueError"""
+    try:
+        build_solution_url({"preflop_actions": "", "depth": 40.0}, "")
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for empty preflop_actions")
+
+
+@test
+def test_solution_url_cash_depth_no_125_suffix():
+    """build_solution_url: non-MTT gametype keeps a plain depth (no .125)"""
+    resolved = {
+        "preflop_actions": "R2.5-C", "flop_actions": "", "turn_actions": "",
+        "river_actions": "", "history_spot": 2, "depth": 100.0,
+        "gametype": "Cash6m",
+    }
+    url = build_solution_url(resolved, "")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["depth"], ["100"])
+
+
+@test
+def test_enumerate_hero_decisions_action_indices():
+    """enumerate_hero_decisions: per-street hero action indices, in play order"""
+    context = {
+        "hero_spots": [
+            {"street": "preflop"}, {"street": "flop"},
+            {"street": "flop"}, {"street": "turn"},
+        ],
+        "solutions": [{"action_solutions": []}] * 4,
+    }
+    assert_eq(enumerate_hero_decisions(context),
+              [("preflop", 0), ("flop", 0), ("flop", 1), ("turn", 0)])
+
+
+@test
+def test_enumerate_hero_decisions_skips_dataless_spots():
+    """enumerate_hero_decisions: spots without a solution are skipped"""
+    context = {
+        "hero_spots": [{"street": "preflop"}, {"street": "flop"}],
+        "solutions": [{"action_solutions": []}, None],
+    }
+    assert_eq(enumerate_hero_decisions(context), [("preflop", 0)])
+
+
+@test
+def test_build_last_node_falls_back_to_earlier_node():
+    """build_last_node_url: off-tree last node falls back to nearest earlier"""
+    hand = {"streets": [
+        {"board": "7d8h2h", "actions": []},
+        {"card": "Ah", "actions": []},
+    ]}
+    context = {
+        "hand": hand,
+        "hero_spots": [{"street": "flop"}, {"street": "turn"}],
+        "solutions": [{"action_solutions": []}, {"action_solutions": []}],
+    }
+
+    def stub(_hand, street, action_index):
+        if (street, action_index) == ("turn", 0):
+            raise ValueError("off-tree size")
+        return {
+            "preflop_actions": "F-F-R2.3-F-F-F-F-C", "flop_actions": "X-X",
+            "turn_actions": "", "river_actions": "", "history_spot": 10,
+            "depth": 40.0, "gametype": "MTTGeneral",
+        }
+
+    url = build_last_node_url(context, _resolver=stub)
+    assert_true(url is not None, "should fall back to the flop node")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["flop_actions"], ["X-X"])
+    assert_eq(qs["board"], ["8h7d2h"])  # turn card excluded — fell back to flop
+
+
+@test
+def test_build_last_node_returns_none_when_nothing_builds():
+    """build_last_node_url: None when every decision node fails to build"""
+    context = {
+        "hand": {"streets": [{"board": "7d8h2h", "actions": []}]},
+        "hero_spots": [{"street": "flop"}],
+        "solutions": [{"action_solutions": []}],
+    }
+
+    def always_fail(_hand, _street, _idx):
+        raise ValueError("nope")
+
+    assert_true(build_last_node_url(context, _resolver=always_fail) is None)
+
+
+@test
+def test_build_last_node_none_when_no_decisions():
+    """build_last_node_url: None when context has no hero decisions"""
+    assert_true(build_last_node_url({"hand": {}, "hero_spots": [], "solutions": []}) is None)
+
+
 # ── Runner ──
 
 def run_tests():
