@@ -7144,6 +7144,32 @@ def test_solution_url_includes_river_actions():
 
 
 @test
+def test_solution_url_matches_river_reference():
+    """build_solution_url: core params match a hand-verified river URL
+
+    Reference (clicked in GTOW): a 20bb river node, hero faces a river X.
+    Param ORDER differs from ours (GTOW emits board first, adds depth_list)
+    so we compare via parse_qs — pinning the 5-card board ordering
+    (flop rank-desc + turn + river) and the river_actions param name.
+    """
+    resolved = {
+        "preflop_actions": "F-F-F-F-F-F-R3-C", "flop_actions": "X-R2.1-C",
+        "turn_actions": "X-X", "river_actions": "X", "history_spot": 14,
+        "depth": 20.0, "gametype": "MTTGeneral",
+    }
+    url = build_solution_url(resolved, "Jh8d2c6hJd")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["board"], ["Jh8d2c6hJd"], "5-card board ordering")
+    assert_eq(qs["depth"], ["20.125"])
+    assert_eq(qs["history_spot"], ["14"])
+    assert_eq(qs["preflop_actions"], ["F-F-F-F-F-F-R3-C"])
+    assert_eq(qs["flop_actions"], ["X-R2.1-C"])
+    assert_eq(qs["turn_actions"], ["X-X"])
+    assert_eq(qs["river_actions"], ["X"])
+    assert_eq(qs["soltab"], ["strategy"])
+
+
+@test
 def test_solution_url_no_preflop_raises():
     """build_solution_url: empty preflop line → ValueError"""
     try:
