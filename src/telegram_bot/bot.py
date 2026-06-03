@@ -393,7 +393,7 @@ class PokerWizardBot:
                 self.log.warning(f"[{label}] Empty response from session manager")
                 await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
-            markup = self._build_followup_markup(chat_id)
+            markup = self._build_followup_markup(chat_id, include_gto_link=True)
             await _send_reply(update.message, response, self.log, label,
                               reply_markup=markup)
 
@@ -580,8 +580,14 @@ class PokerWizardBot:
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
-    def _build_followup_markup(self, chat_id: int) -> InlineKeyboardMarkup | None:
-        """Build follow-up question buttons from hand analysis context."""
+    def _build_followup_markup(self, chat_id: int,
+                               include_gto_link: bool = False) -> InlineKeyboardMarkup | None:
+        """Build follow-up question buttons from hand analysis context.
+
+        When include_gto_link is True (image/text analysis flow only — not HH
+        batch follow-ups), append a URL button deep-linking to hero's last
+        decision node in GTO Wizard's /solutions strategy view.
+        """
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
             if not ctx or ctx.get("_followup_sent"):
@@ -635,8 +641,6 @@ class PokerWizardBot:
                     questions.append("這手牌有哪些常見的錯誤打法？")
 
             questions = questions[:3]
-            if not questions:
-                return None
 
             # Store full questions in context and use short callback IDs.
             # callback_data has a 64-byte limit; Chinese strategy questions
@@ -648,10 +652,32 @@ class PokerWizardBot:
                 [InlineKeyboardButton(q, callback_data=f"fq:{i}")]
                 for i, q in button_map.items()
             ]
+
+            if include_gto_link:
+                gto_url = self._build_gto_solution_url(ctx)
+                if gto_url:
+                    keyboard.append([InlineKeyboardButton(
+                        "🧙 在 GTO Wizard 開啟", url=gto_url)])
+
+            if not keyboard:
+                return None
+
             ctx["_followup_sent"] = True
             return InlineKeyboardMarkup(keyboard)
 
         except Exception:
+            return None
+
+    def _build_gto_solution_url(self, ctx: dict) -> str | None:
+        """Deep-link to hero's last decision node in GTOW /solutions.
+
+        Never raises — a failed build just means no button.
+        """
+        try:
+            from gtow_solution_url import build_last_node_url
+            return build_last_node_url(ctx)
+        except Exception:
+            self.log.debug("GTOW solution URL build failed", exc_info=True)
             return None
 
     async def handle_followup_button(self, update: Update,
@@ -840,7 +866,8 @@ class PokerWizardBot:
                 if not gto_sent:
                     await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
-            markup = self._build_followup_markup(update.effective_chat.id)
+            markup = self._build_followup_markup(update.effective_chat.id,
+                                                 include_gto_link=True)
             await _send_reply(update.message, response, self.log, label,
                               reply_markup=markup)
 
