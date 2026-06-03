@@ -49,9 +49,9 @@ _STATIC_UI: tuple[tuple[str, str], ...] = (
 )
 
 _RANK_ORDER = "23456789TJQKA"
-# Secondary key for same-rank flop cards (paired flops). GTOW renders
-# spade-high; distinct-rank flops never hit this path. Flagged for manual
-# verification on a paired-flop hand.
+# Secondary key for same-rank flop cards (paired flops). Verified by hand:
+# a KhKd5c link (Kh before Kd) opens to the correct GTOW node. Distinct-rank
+# flops never hit this path.
 _SUIT_ORDER = "shdc"
 
 # streets[] index count to include for a decision on each postflop street.

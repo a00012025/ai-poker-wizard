@@ -7097,8 +7097,8 @@ def test_solution_url_matches_h3476_reference():
 def test_solution_url_canonical_flop_rank_descending():
     """_canonical_flop: flop reordered rank-descending, suits follow rank"""
     assert_eq(_gsu._canonical_flop("7d8h2h"), "8h7d2h")
-    # Paired flop: grouped by rank, deterministic suit order (shdc). GTOW's
-    # exact paired-board suit order is unverified — flagged in the module.
+    # Paired flop: grouped by rank, suit order shdc — verified by hand against
+    # GTOW (a KhKd5c link opens to the correct node).
     assert_eq(_gsu._canonical_flop("2c2d2h"), "2h2d2c")
     assert_eq(_gsu._canonical_flop("AhKsQd"), "AhKsQd")
     assert_eq(_gsu._canonical_flop("2h3h4h"), "4h3h2h")
