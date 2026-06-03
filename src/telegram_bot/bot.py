@@ -668,6 +668,24 @@ class PokerWizardBot:
         except Exception:
             return None
 
+    def _build_gto_link_markup(self, chat_id: int) -> InlineKeyboardMarkup | None:
+        """Build a markup with ONLY the "Open in GTO Wizard" deep-link button.
+
+        Attached to the compact GTO summary (📋) message in the image flow so
+        the link sits on the analysis card, not the coaching reply.
+        """
+        try:
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if not ctx:
+                return None
+            gto_url = self._build_gto_solution_url(ctx)
+            if not gto_url:
+                return None
+            return InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]])
+        except Exception:
+            return None
+
     def _build_gto_solution_url(self, ctx: dict) -> str | None:
         """Deep-link to hero's last decision node in GTOW /solutions.
 
@@ -840,7 +858,11 @@ class PokerWizardBot:
         async def send_gto_summary(text: str):
             nonlocal gto_sent
             await status_msg.delete()
-            await _send_reply(update.message, text, self.log, label)
+            # Put the "Open in GTO Wizard" deep-link on the analysis card (📋),
+            # not the coaching reply that follows.
+            gto_markup = self._build_gto_link_markup(update.effective_chat.id)
+            await _send_reply(update.message, text, self.log, label,
+                              reply_markup=gto_markup)
             gto_sent = True
 
         try:
@@ -866,8 +888,11 @@ class PokerWizardBot:
                 if not gto_sent:
                     await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
+            # GTO Wizard link rides on the 📋 summary card; coaching reply only
+            # carries the follow-up question buttons. Fall back to putting the
+            # link on the coaching reply if the summary card never went out.
             markup = self._build_followup_markup(update.effective_chat.id,
-                                                 include_gto_link=True)
+                                                 include_gto_link=not gto_sent)
             await _send_reply(update.message, response, self.log, label,
                               reply_markup=markup)
 

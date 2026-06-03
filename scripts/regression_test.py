@@ -6653,6 +6653,49 @@ def test_followup_markup_for_no_hero_uses_callback_ids():
     assert_eq(ctx["_followup_buttons"]["0"], long_q, "full question should be stored in context")
 
 
+@test
+def test_gto_link_lives_on_summary_card_not_coaching():
+    """"Open in GTO Wizard" button rides the 📋 summary card, not the coaching reply."""
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    ctx = {
+        "hand": {"hero_position": "BB", "hero_hand": "85s"},
+        "followup_questions": ["BB 在 turn 的 check-raise 範圍是什麼？"],
+    }
+    bot.session_manager = type("SessionStub", (), {"hand_contexts": {7: ctx}})()
+    # Avoid the network resolver — pin the deep-link URL.
+    bot._build_gto_solution_url = lambda c: "https://app.gtowizard.com/solutions?x=1"
+
+    # Summary card: a single GTO Wizard link button, no follow-up buttons.
+    link_markup = bot._build_gto_link_markup(7)
+    assert_true(link_markup is not None, "summary card should carry the GTO link")
+    assert_eq(len(link_markup.inline_keyboard), 1, "summary card has exactly one button row")
+    btn = link_markup.inline_keyboard[0][0]
+    assert_in("GTO Wizard", btn.text)
+    assert_eq(btn.url, "https://app.gtowizard.com/solutions?x=1")
+
+    # Coaching reply (image flow): follow-up buttons only, no GTO link.
+    coach_markup = bot._build_followup_markup(7, include_gto_link=False)
+    assert_true(coach_markup is not None, "coaching reply still renders follow-up buttons")
+    texts = [b.text for row in coach_markup.inline_keyboard for b in row]
+    assert_true(all("GTO Wizard" not in t for t in texts),
+                "coaching reply must NOT carry the GTO Wizard link")
+
+
+@test
+def test_gto_link_markup_none_without_url():
+    """No deep-link buildable → no summary-card button (graceful)."""
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    ctx = {"hand": {"hero_position": "BB", "hero_hand": "85s"}}
+    bot.session_manager = type("SessionStub", (), {"hand_contexts": {9: ctx}})()
+    bot._build_gto_solution_url = lambda c: None
+    assert_true(bot._build_gto_link_markup(9) is None,
+                "no URL → no markup, never raises")
+
+
 # ── Lane A2: EV loss + DeviationMeta + aggression direction tests ──
 
 from leak_service import (  # noqa: E402
