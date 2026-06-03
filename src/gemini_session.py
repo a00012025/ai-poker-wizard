@@ -2686,9 +2686,21 @@ class GeminiSessionManager:
                 street["card"] = re.sub(r"10", "T", street["card"])
             # Fix: vision model sometimes returns actions as a flat string
             # e.g. "X-X-R1.52-C" instead of [{position, action}, ...]
-            if isinstance(street.get("actions"), str):
+            acts = street.get("actions")
+            if isinstance(acts, str):
                 street["actions"] = GeminiSessionManager._parse_street_actions_string(
-                    street["actions"], hand
+                    acts, hand
+                )
+            # …or as a list of bare action strings, e.g.
+            # ["X", "R1.4", "R5.2", "F"]. Reuse the same positional
+            # assignment by joining on "-" so _fix_folded_players (which
+            # calls a.get("position")) doesn't choke on the raw strings.
+            # Regression: 8h5h BB screenshot — un-normalized list raised
+            # 'str' object has no attribute 'get' → bogus "無法辨識" reply.
+            elif (isinstance(acts, list) and acts
+                    and all(isinstance(a, str) for a in acts)):
+                street["actions"] = GeminiSessionManager._parse_street_actions_string(
+                    "-".join(acts), hand
                 )
 
     @staticmethod

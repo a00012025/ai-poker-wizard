@@ -9530,6 +9530,53 @@ def test_field_level_fallback_fires_on_empty_hero_hand():
 
 
 @test
+def test_normalize_cards_handles_list_of_string_actions():
+    """gemini_session: _normalize_cards must convert a street whose
+    `actions` is a LIST OF BARE STRINGS into structured {position, action}
+    dicts — not just the flat-string case.
+
+    Regression: production screenshot (chat 556028753, hero 8h5h, BB,
+    board 5d6dQh). The full Gemini fallback returned
+    `"actions": ["X", "R1.4", "R5.2", "F"]` (list of strings) instead of
+    either structured dicts or the flat "X-R1.4-R5.2-F" string. The old
+    _normalize_cards only handled `isinstance(actions, str)`, so the list
+    passed through unconverted. _fix_folded_players then called
+    `a.get("position")` on the string "X" → `'str' object has no attribute
+    'get'`, the exception was swallowed, _parse_hand_from_image returned
+    None, and the bot wrongly told the user "無法從截圖中辨識出撲克手牌"
+    despite a fully valid parse.
+    """
+    from gemini_session import GeminiSessionManager
+    hand = {
+        "players_at_table": 8,
+        "hero_position": "BB",
+        "hero_hand": "8h5h",
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [{
+            "board": "5d6dQh",
+            "actions": ["X", "R1.4", "R5.2", "F"],
+        }],
+    }
+    # Must not raise, and must structure the actions.
+    GeminiSessionManager._normalize_cards(hand)
+    acts = hand["streets"][0]["actions"]
+    assert_true(all(isinstance(a, dict) for a in acts),
+                f"actions must be dicts after normalize, got {acts}")
+    # Positional assignment must match the OCR-detected structure:
+    # postflop order for active [LJ, BB] is [BB, LJ].
+    assert_eq(acts[0]["position"], "BB")
+    assert_eq(acts[0]["action"], "X")
+    assert_eq(acts[1]["position"], "LJ")
+    assert_eq(acts[1]["action"], "R1.4")
+    assert_eq(acts[2]["position"], "BB")
+    assert_eq(acts[2]["action"], "R5.2")
+    assert_eq(acts[3]["position"], "LJ")
+    assert_eq(acts[3]["action"], "F")
+    # And _fix_folded_players must run cleanly on the normalized result.
+    GeminiSessionManager._fix_folded_players(hand)
+
+
+@test
 def test_postflop_position_reconciliation_with_preflop_index():
     """n8_parser: postflop entries inherit the preflop's index-assigned
     canonical positions when player_name matches.
