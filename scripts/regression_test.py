@@ -8359,6 +8359,90 @@ def test_resolve_cash_game_depth_has_no_125():
 
 
 @test
+def test_resolve_h3480_multiway_coldcall_and_pot_ratio():
+    """gtow_action_resolver: H3480 turn fold — full deep-link resolution.
+
+    Live end-to-end of the multiway → HU deep-link approximation, verified by
+    hand against GTOW:
+      - CO cold-calls then folds to the SB 3-bet → collapsed to a single fold
+        (preflop F-R2.3-C-F-F-F-R10.3-F-F-C; opener and hero preserved).
+      - Flop SB bet 10.6bb is ~1/3 of the REAL pot (~30bb incl. CO's dead call),
+        so it snaps to R6.2 (25% bucket) by pot ratio — NOT R12.45 (50%), which
+        is what absolute bb against the smaller solver pot would pick.
+      - Turn SB bet 40.6bb is ~93% of the 43.5bb stack → all-in (RAI), preserved
+        over the 75%-pot bucket the pot ratio alone would choose.
+    """
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    hand_data = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 62.1,
+        "hero_position": "LJ",
+        "players_at_table": 8,
+        "preflop_actions": "F-R2-C-F-C-F-R12-F-F-C-F",
+        "streets": [
+            {"board": "6h3cQc", "actions": [
+                {"position": "SB", "action": "R10.6", "size": 10.6},
+                {"position": "LJ", "action": "C"},
+            ]},
+            {"card": "8h", "actions": [
+                {"position": "SB", "action": "R40.6", "size": 40.6},
+                {"position": "LJ", "action": "F"},
+            ]},
+        ],
+    }
+    result = resolve_actions_for_deviation(hand_data, street="turn", action_index=0)
+
+    assert_eq(result["preflop_actions"], "F-R2.3-C-F-F-F-R10.3-F-F-C")
+    assert_eq(result["flop_actions"], "R6.2-C")
+    assert_eq(result["turn_actions"], "RAI")
+    assert_eq(result["history_spot"], 13)
+    assert_eq(result["depth"], 60.125)
+    assert_eq(result["hero_pos"], "LJ")
+    assert_eq(result["villain_pos"], "SB")
+
+
+@test
+def test_collapse_coldcall_folder_h3480():
+    """gtow_action_resolver: a cold-caller who folds before the flop collapses
+    to a single preflop fold so the HU postflop node stays on-tree (H3480).
+
+    Raw H3480 preflop (8-max): UTG+1 opens, hero LJ flat-calls, CO cold-calls,
+    SB 3-bets, UTG+1 and CO fold, hero calls. CO's cold-call-then-fold must
+    collapse to a fold at its first action; the opener (a raiser) and hero are
+    left intact. Result is the verified GTOW deep-link preflop line.
+    """
+    from gtow_action_resolver import _collapse_coldcall_folders, POSITION_ORDERS
+
+    pos = POSITION_ORDERS[8]
+    raw = "F-R2-C-F-C-F-R12-F-F-C-F"
+    assert_eq(_collapse_coldcall_folders(raw, pos, "LJ"),
+              "F-R2-C-F-F-F-R12-F-F-C")
+
+
+@test
+def test_collapse_coldcall_preserves_raisers_and_flop_caller():
+    """gtow_action_resolver: collapse only rewrites cold-call-then-fold players.
+
+    - A flat-caller who SEES the flop (last action is a call, not a fold) is
+      untouched — it is the heads-up postflop villain.
+    - A raiser who later folds (opener facing a 3-bet) is untouched — its bet
+      defines the node.
+    """
+    from gtow_action_resolver import _collapse_coldcall_folders, POSITION_ORDERS
+
+    pos = POSITION_ORDERS[8]
+    # Hero BTN opens, BB flat-calls and reaches the flop → unchanged.
+    hu_call = "F-F-F-F-F-R2.3-F-C"
+    assert_eq(_collapse_coldcall_folders(hu_call, pos, "BTN"), hu_call)
+
+    # UTG opens, hero CO 3-bets, blinds fold, UTG folds to the 3-bet.
+    # UTG raised (then folded) so it is NOT collapsed → unchanged.
+    opener_folds = "R2.3-F-F-F-R7-F-F-F-F"
+    assert_eq(_collapse_coldcall_folders(opener_folds, pos, "CO"), opener_folds)
+
+
+@test
 def test_build_custom_spot_url_h2665():
     """gtow_custom_url: H2665 turn fold → URL with all expected params.
 

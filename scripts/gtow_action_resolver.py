@@ -26,6 +26,7 @@ from gto_api import (
     nearest_depth,
     nearest_cash_depth,
     find_closest_action,
+    find_closest_action_postflop,
 )
 
 POSITION_ORDERS: dict[int, list[str]] = {
@@ -67,6 +68,89 @@ def _pad_preflop_to_mtt_tree(
     return padded, hero_position, POSITION_ORDERS[MTT_TREE_SIZE]
 
 
+def _replay_preflop_actors(tokens: list[str], positions: list[str]) -> list[str]:
+    """Assign each preflop token to the position that took it.
+
+    Replays standard preflop betting: action rotates clockwise; a raise
+    reopens the action for every still-live player except the raiser, so
+    tokens beyond round 1 (responses to a 3-bet/4-bet) map back to the right
+    seats. Returns a list parallel to ``tokens`` of actor position strings.
+    """
+    n = len(positions)
+    folded = [False] * n
+    pending = set(range(n))  # seats that still owe an action before betting closes
+    actors: list[str] = []
+    seat = 0
+    for tok in tokens:
+        steps = 0
+        while (folded[seat] or seat not in pending) and steps <= n:
+            seat = (seat + 1) % n
+            steps += 1
+        actors.append(positions[seat])
+        pending.discard(seat)
+        t = (tok or "").strip()
+        if t in ("F", ""):
+            folded[seat] = True
+        elif t.startswith("R") or t == "AI":
+            pending = {s for s in range(n) if not folded[s] and s != seat}
+        # C / X close nothing
+        seat = (seat + 1) % n
+    return actors
+
+
+def _collapse_coldcall_folders(
+    preflop_actions: str,
+    positions: list[str],
+    hero_pos: str,
+) -> str:
+    """Collapse non-hero cold-call-then-fold players into a single fold.
+
+    A multiway pot where an extra player flat-calls preflop and then folds
+    before the flop (e.g. CO cold-calls hero's open, the SB 3-bets, CO folds)
+    is off-tree for the heads-up GTOW solution node the bot analysed. Such a
+    player reaches neither the flop nor changes the eventual HU pot, so we
+    approximate their first action as a fold and drop their later fold — the
+    line stays on-tree and lands on the same HU flop (H3480).
+
+    Preserved as-is:
+      - Raisers (openers, 3-bettors): their bet defines the node.
+      - Players still live on the flop (last preflop action is not a fold).
+      - Hero.
+    """
+    tokens = [t for t in (preflop_actions or "").split("-") if t]
+    if not tokens:
+        return preflop_actions
+    actors = _replay_preflop_actors(tokens, positions)
+
+    by_actor: dict[str, list[int]] = {}
+    for i, pos in enumerate(actors):
+        by_actor.setdefault(pos, []).append(i)
+
+    drop: set[int] = set()
+    fold_in_place: set[int] = set()
+    for pos, idxs in by_actor.items():
+        if pos == hero_pos:
+            continue
+        toks = [tokens[i] for i in idxs]
+        has_raise = any(t.startswith("R") or t == "AI" for t in toks)
+        has_call = "C" in toks
+        ends_folded = toks[-1] == "F"
+        if has_raise or not has_call or not ends_folded:
+            continue
+        # cold-call-then-fold: keep one fold at the first action, drop the rest
+        fold_in_place.add(idxs[0])
+        drop.update(idxs[1:])
+
+    if not drop and not fold_in_place:
+        return preflop_actions
+    out = [
+        "F" if i in fold_in_place else tok
+        for i, tok in enumerate(tokens)
+        if i not in drop
+    ]
+    return "-".join(out)
+
+
 def _resolve_one_raise(
     gametype: str,
     depth: float,
@@ -76,8 +160,17 @@ def _resolve_one_raise(
     turn_actions: str,
     river_actions: str,
     target_size: float,
+    actual_pot: float = 0.0,
 ) -> str:
-    """Call next_actions at the current node and snap target_size to R* code."""
+    """Call next_actions at the current node and snap target_size to R* code.
+
+    When ``actual_pot`` is given (>0), the opening bet of a postflop street is
+    snapped by *pot ratio* rather than absolute bb — matching the analysis
+    pipeline's ``_find_action_by_pot_pct``. This matters in multiway pots where
+    the deep-link's preflop line drops dead money (folded cold-callers), so the
+    solver's modeled pot is smaller than the real pot and a bet that was e.g.
+    ~1/3 of the real pot would otherwise snap to the 1/2-pot bucket (H3480).
+    """
     resp = get_next_actions(
         gametype=gametype, depth=depth, stacks="",
         preflop_actions=preflop_actions, board=board,
@@ -85,7 +178,22 @@ def _resolve_one_raise(
         river_actions=river_actions,
     )
     available = resp.get("next_actions", {}).get("available_actions", []) or []
-    code = find_closest_action(available, target_size)
+    if actual_pot > 0:
+        # All-in protection: a near-shove must snap to the all-in node, not to
+        # the pot-fraction bucket. find_closest_action_postflop keeps the all-in
+        # only when the bet is genuinely close to the stack (e.g. turn 40.6 into
+        # a 43.5 stack → RAI). Otherwise pot-ratio drives the bucket choice.
+        postflop_code = find_closest_action_postflop(available, target_size)
+        allin_codes = {
+            a["action"]["code"] for a in available if a.get("action", {}).get("allin")
+        }
+        if postflop_code in allin_codes:
+            code = postflop_code
+        else:
+            from analyze_hand import _find_action_by_pot_pct
+            code = _find_action_by_pot_pct(available, target_size, actual_pot)
+    else:
+        code = find_closest_action(available, target_size)
 
     if target_size > 0 and code == "X":
         raise ValueError(
@@ -165,13 +273,25 @@ def _resolve_street_codes(
     street_key: str,  # "flop" | "turn" | "river"
     raw_actions: list[dict],
     stop_after_n: int,
-) -> str:
-    """Resolve actions for one postflop street, emitting only actions[0:stop_after_n]."""
+    actual_pot: float = 0.0,
+) -> tuple[str, float]:
+    """Resolve actions for one postflop street, emitting only actions[0:stop_after_n].
+
+    Returns (action_string, updated_actual_pot). When ``actual_pot`` > 0 the
+    street's OPENING bet is snapped by pot ratio (the meaningful signal in a
+    multiway pot where dead money inflates the bet's apparent solver-pot
+    fraction); later raises keep absolute snapping. The running pot is advanced
+    through every emitted action so downstream streets see the right pot.
+    """
     out_tokens: list[str] = []
+    outstanding_bet = 0.0
+    street_investments: dict[str, float] = {}
     for i, act in enumerate(raw_actions):
         if i >= stop_after_n:
             break
         action = act.get("action", "")
+        pos = act.get("position")
+        target = 0.0
         if action.startswith("R"):
             target = float(act.get("size") or action[1:] or 0)
             code = _resolve_one_raise(
@@ -182,11 +302,27 @@ def _resolve_street_codes(
                 turn_actions=prior_streets.get("turn", "") if street_key != "turn" else "-".join(out_tokens),
                 river_actions=prior_streets.get("river", "") if street_key != "river" else "-".join(out_tokens),
                 target_size=target,
+                # Pot-ratio snap only the street's opening bet.
+                actual_pot=actual_pot if outstanding_bet == 0 else 0.0,
             )
             out_tokens.append(code)
         else:
             out_tokens.append(action)
-    return "-".join(out_tokens)
+
+        # Advance the running pot (mirrors analyze_hand's postflop tracking).
+        if actual_pot > 0:
+            if action in ("X", "F", ""):
+                pass
+            elif action == "C":
+                prev = street_investments.get(pos, 0.0)
+                actual_pot += outstanding_bet - prev
+                street_investments[pos] = outstanding_bet
+            else:  # bet / raise / all-in
+                prev = street_investments.get(pos, 0.0)
+                actual_pot += target - prev
+                street_investments[pos] = target
+                outstanding_bet = target
+    return "-".join(out_tokens), actual_pot
 
 
 def _identify_villain(
@@ -270,8 +406,26 @@ def resolve_actions_for_deviation(
         preflop_codes = _resolve_preflop_codes(gametype, depth, truncated, 0)
         flop_codes = turn_codes = river_codes = ""
     else:
-        preflop_codes = _resolve_preflop_codes(gametype, depth, padded_preflop, 0)
+        # Collapse extra cold-callers who folded before the flop into folds so
+        # the preflop line stays on-tree for the heads-up postflop node the bot
+        # analysed (H3480: CO cold-calls then folds to the SB 3-bet).
+        collapse_positions = (
+            POSITION_ORDERS[players] if _is_cash(gametype) else POSITION_ORDERS[MTT_TREE_SIZE]
+        )
+        hu_preflop = _collapse_coldcall_folders(padded_preflop, collapse_positions, hero_pos_8)
+        preflop_codes = _resolve_preflop_codes(gametype, depth, hu_preflop, 0)
         flop_codes = turn_codes = river_codes = ""
+
+        # Real pot at the flop, from the ORIGINAL (un-collapsed) preflop line so
+        # dead money from folded cold-callers is counted. Postflop opening bets
+        # are snapped against this pot by ratio (see _resolve_street_codes).
+        from analyze_hand import _compute_preflop_pot
+        ante = 0.0 if _is_cash(gametype) else 0.125
+        pot_players = players if _is_cash(gametype) else MTT_TREE_SIZE
+        actual_pot = _compute_preflop_pot(
+            padded_preflop, effective_bb, num_players=pot_players, ante_per_player=ante,
+        )
+
         streets = hand_data.get("streets") or []
         board_parts: list[str] = []
         prior: dict[str, str] = {}
@@ -285,9 +439,9 @@ def resolve_actions_for_deviation(
             board_now = "".join(board_parts)
             actions = s.get("actions") or []
             if i + 1 < target_idx:
-                resolved = _resolve_street_codes(
+                resolved, actual_pot = _resolve_street_codes(
                     gametype, depth, preflop_codes, board_now, prior, s_name,
-                    actions, stop_after_n=len(actions),
+                    actions, stop_after_n=len(actions), actual_pot=actual_pot,
                 )
                 prior[s_name] = resolved
                 if s_name == "flop":
@@ -299,9 +453,9 @@ def resolve_actions_for_deviation(
             elif i + 1 == target_idx:
                 # Convert hero-scoped action_index to raw-stream index
                 raw_stop = _hero_action_to_raw_index(actions, hero_pos_8, action_index)
-                resolved = _resolve_street_codes(
+                resolved, actual_pot = _resolve_street_codes(
                     gametype, depth, preflop_codes, board_now, prior, s_name,
-                    actions, stop_after_n=raw_stop,
+                    actions, stop_after_n=raw_stop, actual_pot=actual_pot,
                 )
                 if s_name == "flop":
                     flop_codes = resolved
