@@ -333,6 +333,50 @@ def test_collapse_allin_into_call_noop_without_allin_option():
     assert_eq(_collapse_allin_into_call(af, display_sol), af)
 
 
+@test
+def test_find_action_by_pot_pct_preserves_near_shove_allin():
+    """A near-shove opening bet snaps to all-in, not a pot-fraction bucket.
+
+    The solver models a small pot (24.8) but the real multiway pot is inflated
+    (60) by dead money from folded cold-callers. Hero shoves ~40bb into a
+    43.5bb effective stack. Pure pot-ratio matching computes a 16.5 solver bet
+    and snaps to the 1/2-pot bucket (R12.4) — wrong. The all-in guard recognises
+    the bet is within 15% of the stack and keeps RAI. Same guard already proven
+    in gtow_action_resolver._resolve_one_raise; now shared in the matcher.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    available = [
+        {"action": {"code": "X", "betsize": 0, "betsize_by_pot": 0}},
+        {"action": {"code": "R6.2", "betsize": 6.2, "betsize_by_pot": 0.25}},
+        {"action": {"code": "R12.4", "betsize": 12.4, "betsize_by_pot": 0.5}},
+        {"action": {"code": "RAI", "betsize": 43.5, "betsize_by_pot": 1.754,
+                    "allin": True}},
+    ]
+    code = _find_action_by_pot_pct(available, bet_size=40.0, actual_pot=60.0)
+    assert_eq(code, "RAI", "near-shove must keep all-in, not snap to 1/2-pot")
+
+
+@test
+def test_find_action_by_pot_pct_normal_bet_unaffected_by_allin_guard():
+    """A genuine pot-fraction bet is unchanged by the all-in guard.
+
+    Hero bets 6.2bb (1/4 pot) into the same tree; nowhere near the 43.5 stack,
+    so the guard must not fire and pot-ratio matching still selects R6.2.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    available = [
+        {"action": {"code": "X", "betsize": 0, "betsize_by_pot": 0}},
+        {"action": {"code": "R6.2", "betsize": 6.2, "betsize_by_pot": 0.25}},
+        {"action": {"code": "R12.4", "betsize": 12.4, "betsize_by_pot": 0.5}},
+        {"action": {"code": "RAI", "betsize": 43.5, "betsize_by_pot": 1.754,
+                    "allin": True}},
+    ]
+    code = _find_action_by_pot_pct(available, bet_size=6.2, actual_pot=24.8)
+    assert_eq(code, "R6.2", "quarter-pot bet must not be hijacked by all-in guard")
+
+
 # ── Visual All-In badge attribution (PR: fix/allin-visual-attribution) ──
 #
 # The red "All-In" sticker carries no name/position/size, so sequence rules

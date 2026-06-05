@@ -471,7 +471,23 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     "R size=40" meaning 40% pot): if bet_size/actual_pot exceeds 2.0
     the value is almost certainly not raw bb, so defer to
     find_closest_action_postflop which has percentage-detection logic.
+
+    All-in protection: a near-shove must snap to the all-in node, not to a
+    pot-fraction bucket. ``find_closest_action_postflop`` keeps the all-in only
+    when the bet is genuinely close to the stack (e.g. a 40bb shove into a 43.5bb
+    stack); otherwise it returns a real raise and pot-ratio matching proceeds.
+    This guard is shared by the deep-link resolver (gtow_action_resolver) so the
+    two pipelines snap shoves identically (H3480).
     """
+    postflop_code = find_closest_action_postflop(available_actions, bet_size)
+    allin_codes = {
+        a["action"]["code"]
+        for a in available_actions
+        if a.get("action", {}).get("allin")
+    }
+    if postflop_code in allin_codes:
+        return postflop_code
+
     target_pct = bet_size / actual_pot
 
     # Guard: bet_size that looks like a percentage rather than raw bb.
