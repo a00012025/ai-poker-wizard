@@ -6627,6 +6627,70 @@ def test_extract_followups_strips_from_text():
     assert_eq(len(followups3), 0, "no followups extracted")
 
 
+def _followup_bot_stub(contexts):
+    """A bare PokerWizardBot wired to a session stub exposing _extract_followups."""
+    from telegram_bot.bot import PokerWizardBot
+    from gemini_session import GeminiSessionManager as GeminiSession
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.session_manager = type("SessionStub", (), {
+        "hand_contexts": contexts,
+        "_extract_followups": staticmethod(GeminiSession._extract_followups),
+    })()
+    return bot
+
+
+@test
+def test_finalize_followups_recovers_leaked_lines():
+    """Follow-up answers whose FOLLOWUP lines leaked become buttons, not raw text.
+
+    Regression: the plain-chat follow-up path (_chat) never ran
+    _extract_followups, so FOLLOWUP: lines surfaced as visible text instead of
+    inline buttons. _finalize_followups is the send-time safety net.
+    """
+    ctx = {
+        # Initial analysis already emitted its button set on this hand.
+        "hand": {"hero_position": "BB", "hero_hand": "JJ"},
+        "_followup_sent": True,
+    }
+    bot = _followup_bot_stub({5: ctx})
+
+    response = (
+        "JJ 在這裡用來抓詐唬，66 用來詐唬。\n\n"
+        "FOLLOWUP: BB 在 flop 面對這個 all-in 的跟注範圍是什麼？\n"
+        "FOLLOWUP: 如果 Hero 在 flop 只是跟注，turn 9s 會如何遊戲？\n"
+        "FOLLOWUP: 為什麼像 KJs 這種頂對，跟注頻率遠高於 all-in？"
+    )
+    clean, markup = bot._finalize_followups(5, response)
+
+    assert_true("FOLLOWUP" not in clean,
+                "leaked FOLLOWUP lines must be stripped from visible text")
+    assert_true(markup is not None,
+                "recovered followups should re-render as buttons")
+    assert_eq(len(markup.inline_keyboard), 3,
+              "three recovered questions → three buttons")
+    assert_eq(markup.inline_keyboard[0][0].callback_data, "fq:0",
+              "buttons use short callback IDs, not Chinese text")
+    assert_in("flop", markup.inline_keyboard[0][0].text,
+              "button shows the recovered question text")
+
+
+@test
+def test_finalize_followups_noop_when_already_clean():
+    """Already-extracted responses pass through unchanged, keeping prior followups."""
+    ctx = {
+        "hand": {"hero_position": "CO", "hero_hand": "AKs"},
+        "followup_questions": ["問題一？", "問題二？", "問題三？"],
+    }
+    bot = _followup_bot_stub({9: ctx})
+
+    response = "乾淨的分析文字，沒有任何 followup 標記。"
+    clean, markup = bot._finalize_followups(9, response)
+
+    assert_eq(clean, response, "clean text is unchanged")
+    assert_true(markup is not None, "existing followups still render buttons")
+    assert_eq(len(markup.inline_keyboard), 3, "three stored questions → three buttons")
+
+
 @test
 def test_followup_markup_for_no_hero_uses_callback_ids():
     """Telegram follow-ups: no-hero range spots still get buttons without truncating callback data."""

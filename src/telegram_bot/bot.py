@@ -393,7 +393,8 @@ class PokerWizardBot:
                 self.log.warning(f"[{label}] Empty response from session manager")
                 await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
-            markup = self._build_followup_markup(chat_id, include_gto_link=True)
+            response, markup = self._finalize_followups(
+                chat_id, response, include_gto_link=True)
             await _send_reply(update.message, response, self.log, label,
                               reply_markup=markup)
 
@@ -580,6 +581,31 @@ class PokerWizardBot:
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
+    def _finalize_followups(self, chat_id: int, response: str,
+                            include_gto_link: bool = False
+                            ) -> tuple[str, InlineKeyboardMarkup | None]:
+        """Strip any leaked FOLLOWUP lines from a reply and turn them into buttons.
+
+        Safety net for the plain-chat follow-up path (_chat), which never ran
+        _extract_followups — so the LLM's FOLLOWUP: lines surfaced as raw text
+        instead of inline buttons. Re-extract here right before sending: strip
+        the lines from the visible text and, when fresh questions are found,
+        register them and rebuild the button set (clearing _followup_sent so the
+        new questions render even after an earlier batch was already shown).
+
+        On the initial-analysis paths the response is already clean (extraction
+        happened upstream), so this is a no-op that just builds the markup.
+        """
+        clean, recovered = self.session_manager._extract_followups(response)
+        if recovered:
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if ctx is not None:
+                ctx["followup_questions"] = recovered
+                ctx["_followup_sent"] = False
+        markup = self._build_followup_markup(
+            chat_id, include_gto_link=include_gto_link)
+        return clean, markup
+
     def _build_followup_markup(self, chat_id: int,
                                include_gto_link: bool = False) -> InlineKeyboardMarkup | None:
         """Build follow-up question buttons from hand analysis context.
@@ -747,18 +773,24 @@ class PokerWizardBot:
             )
             await status_msg.delete()
             if response and response.strip():
+                # Follow-up answers can carry their own fresh FOLLOWUP: lines;
+                # strip them from the text and re-render them as buttons so a
+                # button press leads to more buttons, never raw FOLLOWUP text.
+                response, markup = self._finalize_followups(chat_id, response)
                 formatted = _format_for_telegram(response)
-                for chunk in _split_message(formatted):
-                    if not chunk.strip():
-                        continue
+                chunks = [c for c in _split_message(formatted) if c.strip()]
+                for i, chunk in enumerate(chunks):
+                    chunk_markup = markup if i == len(chunks) - 1 else None
                     try:
                         await context.bot.send_message(
                             chat_id, chunk, parse_mode='Markdown',
+                            reply_markup=chunk_markup,
                             read_timeout=30, write_timeout=30,
                             connect_timeout=30)
                     except Exception:
                         await context.bot.send_message(
                             chat_id, _strip_markdown(chunk),
+                            reply_markup=chunk_markup,
                             read_timeout=30, write_timeout=30,
                             connect_timeout=30)
 
