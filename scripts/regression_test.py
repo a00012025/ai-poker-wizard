@@ -8447,6 +8447,62 @@ def test_resolve_h3480_multiway_coldcall_and_pot_ratio():
 
 
 @test
+def test_build_last_node_url_h3490_no_double_pad():
+    """build_last_node_url: H3490 turn fold deep-links to the verified node.
+
+    Two bugs sat between the analysis and the GTOW button URL:
+
+    1. Double-pad: analyze_hand_full normalizes the 6-max preflop to the 8-max
+       MTT tree in ctx["hand"] (F-F-R2-... → F-F-F-F-R2-...) but leaves
+       players_at_table=6. The resolver pads to the tree itself from
+       players_at_table, so it padded the already-padded line AGAIN
+       (F-F-F-F-F-F-R2-..., 11 tokens), shifting every actor to the wrong seat.
+       Fixed by carrying the un-padded line through ctx["deeplink_raw_preflop"].
+
+    2. Undersized-3bet → Call: BB's 5bb 3-bet sits between Call (2.1) and the
+       solver's only 3-bet size (8.2), so absolute matching mis-snapped it to
+       Call, putting the line off-tree (...C-C → empty actions). Fixed by
+       restricting raise resolution to raise/all-in candidates.
+
+    Verified GTOW node: preflop F-F-F-F-R2.1-F-F-R8.2-C, flop R8.95-C, turn RAI,
+    board Kc5d3h2c, depth 30.125, history_spot 12.
+    """
+    from analyze_hand import analyze_hand_full
+    from gtow_solution_url import build_last_node_url
+
+    parsed = {
+        "gametype": "MTTGeneral", "hero_hand": "Ac3c", "effective_bb": 29,
+        "hero_position": "CO", "players_at_table": 6,
+        "player_stacks": [14.9, 30.6, 42.6, 14.5, 39.5, 29.1],
+        "preflop_actions": "F-F-R2-F-F-R5-C",  # raw 6-max: CO open, BB 3bet, CO call
+        "streets": [
+            {"board": "5dKc3h", "actions": [
+                {"position": "BB", "action": "R5.8", "size": 5.8},
+                {"position": "CO", "action": "C"}]},
+            {"card": "2c", "actions": [
+                {"position": "BB", "action": "R18.3", "size": 18.3},
+                {"position": "CO", "action": "F"}]},
+        ],
+    }
+
+    ctx = analyze_hand_full(parsed)
+    # analyze padded to the 8-max tree → must preserve the raw line for the resolver
+    assert_eq(ctx.get("deeplink_raw_preflop"), "F-F-R2-F-F-R5-C")
+    assert_eq(ctx.get("deeplink_raw_players"), 6)
+
+    url = build_last_node_url(ctx)
+    assert_true(url is not None, "H3490 turn node must build a URL")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["preflop_actions"], ["F-F-F-F-R2.1-F-F-R8.2-C"],
+              "preflop padded once, BB 3bet kept as a raise")
+    assert_eq(qs["flop_actions"], ["R8.95-C"], "flop bet snaps by pot ratio")
+    assert_eq(qs["turn_actions"], ["RAI"], "turn shove is all-in")
+    assert_eq(qs["board"], ["Kc5d3h2c"], "canonical board through the turn")
+    assert_eq(qs["depth"], ["30.125"])
+    assert_eq(qs["history_spot"], ["12"])
+
+
+@test
 def test_collapse_coldcall_folder_h3480():
     """gtow_action_resolver: a cold-caller who folds before the flop collapses
     to a single preflop fold so the HU postflop node stays on-tree (H3480).

@@ -177,20 +177,26 @@ def _resolve_one_raise(
         river_actions=river_actions,
     )
     available = resp.get("next_actions", {}).get("available_actions", []) or []
+    # This only ever resolves a raise/bet token, so the answer must be a raise or
+    # all-in (code "R*"/"RAI") — never Call/Check/Fold. The solver may offer a
+    # single 3-bet size, so an undersized 3-bet (e.g. 5bb that sits between Call
+    # at 2.1 and the solver's R8.2) would otherwise mis-snap to Call and put the
+    # line off-tree (H3490). Restrict candidates to raises before matching.
+    raises = [a for a in available
+              if str(a.get("action", {}).get("code", "")).startswith("R")]
+    if not raises:
+        raise ValueError(
+            f"no raise options at this node (target={target_size}) — off-tree"
+        )
     if actual_pot > 0:
         # Pot-ratio snapping with shared all-in protection: _find_action_by_pot_pct
         # keeps a near-shove on the all-in node and otherwise drives the bucket by
         # pot ratio (the guard used to live here; now shared so the two pipelines
         # can't drift apart — H3480).
         from analyze_hand import _find_action_by_pot_pct
-        code = _find_action_by_pot_pct(available, target_size, actual_pot)
+        code = _find_action_by_pot_pct(raises, target_size, actual_pot)
     else:
-        code = find_closest_action(available, target_size)
-
-    if target_size > 0 and code == "X":
-        raise ValueError(
-            f"no raise options at this node (target={target_size}) — off-tree"
-        )
+        code = find_closest_action(raises, target_size)
     return code
 
 

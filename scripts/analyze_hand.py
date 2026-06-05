@@ -962,12 +962,20 @@ def _run_analysis(hand: dict) -> dict:
         target_players = num_players
 
     hero_preflop_idx_override = None
+    # Un-padded line kept for the GTOW deep-link resolver, which pads to the
+    # 8-max tree itself from players_at_table. Feeding it the padded preflop +
+    # the physical players_at_table makes it pad a SECOND time and misplace every
+    # actor (H3490). None when no padding happened (the line is already raw).
+    deeplink_raw_preflop = None
+    deeplink_raw_players = None
     if target_players > num_players:
         pad_count = target_players - num_players
         original_pos_order = _get_position_order(num_players)
         if hero_pos in original_pos_order:
             hero_preflop_idx_override = pad_count + original_pos_order.index(hero_pos)
         padding = "-".join(["F"] * pad_count)
+        deeplink_raw_preflop = hand["preflop_actions"]
+        deeplink_raw_players = num_players
         hand = dict(hand)  # shallow copy to avoid mutating original
         hand["preflop_actions"] = padding + "-" + hand["preflop_actions"]
         if hand.get("player_stacks"):
@@ -2497,6 +2505,10 @@ def _run_analysis(hand: dict) -> dict:
         },
         "hero_spots": hero_spots,
         "solutions": solutions,
+        # Un-padded preflop + physical table size for the GTOW deep-link
+        # resolver (None unless analyze padded to the 8-max tree). See H3490.
+        "deeplink_raw_preflop": deeplink_raw_preflop,
+        "deeplink_raw_players": deeplink_raw_players,
     }
 
 
