@@ -4381,6 +4381,74 @@ def test_multiway_simplification_remaps_dropped_opponent_bets():
 
 
 @test
+def test_hero_pair_healthy_rejects_degenerate_geometry():
+    """OCR: _hero_pair_healthy gates the whiteness-localizer retry.
+
+    The bright-blob localizer fails on WIN-sticker / window-clipped / merged
+    flag-badge cases by latching onto a ~40px-tall sliver or a >2.5-aspect
+    merged blob. Those degenerate crops collapse CardCNN to ~0.13 noise and
+    force the Gemini cards-only fallback (~43% of live screenshots). The
+    geometry check must accept a square-ish ~120px pair and reject the
+    degenerate shapes so the retry path can fire.
+    """
+    import numpy as np
+    from ocr import table_parser
+    healthy = [np.zeros((120, 58, 3), np.uint8), np.zeros((120, 58, 3), np.uint8)]
+    sliver = [np.zeros((41, 34, 3), np.uint8), np.zeros((41, 33, 3), np.uint8)]
+    too_wide = [np.zeros((85, 140, 3), np.uint8), np.zeros((85, 80, 3), np.uint8)]
+    assert_true(table_parser._hero_pair_healthy(healthy),
+                "~120px square-ish pair must be healthy")
+    assert_true(not table_parser._hero_pair_healthy(sliver),
+                "41px sliver (WIN-sticker fragment / window clip) must be rejected")
+    assert_true(not table_parser._hero_pair_healthy(too_wide),
+                "merged flag/badge wide blob (ar>2.5) must be rejected")
+    assert_true(not table_parser._hero_pair_healthy([]), "empty pair not healthy")
+
+
+@test
+def test_find_hero_cards_confidence_gated_whiteness_retry():
+    """OCR: _find_hero_cards retries with the whiteness localizer only when the
+    bright read is weak, adopting it only if strictly more confident.
+
+    This is what cuts the cards-only Gemini fallback rate (TM corpus 4.8% →
+    2.8%, 38 hands fixed / 0 regressed) without disturbing confident reads:
+    the retry is gated on `< HERO_RELOCATE_CONF` and `white_result[1] >
+    result[1]`, so every already-correct high-confidence hand is untouched.
+    """
+    import inspect
+    from ocr import table_parser
+    src = inspect.getsource(table_parser._find_hero_cards)
+    assert_in("_locate_hero_bright", src, "default pass is the bright localizer")
+    assert_in("HERO_RELOCATE_CONF", src, "retry must be confidence-gated")
+    assert_in("_locate_hero_white", src, "weak reads retry the whiteness localizer")
+    assert_in("white_result[1] > result[1]", src,
+              "whiteness result adopted only if strictly more confident")
+
+
+@test
+def test_locate_hero_white_recovers_win_sticker_pair():
+    """OCR: _locate_hero_white isolates the white card bodies past a saturated
+    WIN sticker that fragments the bright-blob localizer.
+
+    Synthetic table: two white cards low-center with an orange sticker over
+    their lower half (the live failure mode, e.g. H3436/H3454). The card body
+    is high-value/low-saturation; the sticker is saturated, so whiteness
+    masking + an aggressive close rebuilds the full pair rectangle.
+    """
+    import numpy as np
+    from ocr import table_parser
+    table = np.full((400, 300, 3), 45, np.uint8)  # dark felt
+    # pair low-center, inside the [0.55:1.0, 0.24:0.72] whiteness window
+    table[248:356, 100:148] = (255, 255, 255)      # left card (white)
+    table[248:356, 152:200] = (255, 255, 255)      # right card (white)
+    table[330:356, 100:200] = (0, 140, 255)        # orange WIN sticker (BGR)
+    crops = table_parser._locate_hero_white(table)
+    assert_eq(len(crops), 2, "must locate a two-card pair past the sticker")
+    assert_true(table_parser._hero_pair_healthy(crops),
+                "recovered pair must have healthy geometry")
+
+
+@test
 def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     """OCR: _find_hero_cards classifies both raw and masked crops, taking
     rank from the raw prediction (rank corner sits at the top — masking
@@ -4394,11 +4462,13 @@ def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     """
     import inspect
     from ocr import table_parser
-    src = inspect.getsource(table_parser._find_hero_cards)
+    # The raw+masked classification body lives in _classify_hero_crops, shared
+    # by both localizer passes in _find_hero_cards (bright + whiteness retry).
+    src = inspect.getsource(table_parser._classify_hero_crops)
     assert_in("classify_batch_detailed_tta(crops)", src,
-              "_find_hero_cards should classify the raw crops too")
+              "_classify_hero_crops should classify the raw crops too")
     assert_in("classify_batch_detailed_tta(masked_crops)", src,
-              "_find_hero_cards should classify the masked crops too")
+              "_classify_hero_crops should classify the masked crops too")
     # Sanity: rank starts from raw, can be repaired by raw top-2/corner OCR,
     # and suit comes from the masked crop.
     assert_in('raw["rank"]', src)

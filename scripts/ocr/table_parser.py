@@ -16,6 +16,12 @@ from .button_detector import detect_button
 # so we only fire on genuinely uncertain reads — confident classifications
 # (the vast majority) take the single-pass path unchanged.
 ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
+# Below this hero card_conf the bright-blob localization is treated as failed
+# (WIN-sticker fragment / window-clipped sliver / merged flag-badge), and the
+# whiteness localizer is retried. Matches the MIN_CARD_CONF Gemini-fallback
+# gate: anything under it already pays a network round-trip, so a cheap local
+# retry is strictly worth attempting.
+HERO_RELOCATE_CONF = float(os.getenv("OCR_HERO_RELOCATE_CONF", "0.70"))
 
 
 def _detect_table_color(table_region: np.ndarray) -> str:
@@ -331,11 +337,43 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
     return []
 
 
-def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
-    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
+def _split_hero_blob(region: np.ndarray, blob: tuple) -> list[np.ndarray]:
+    """Split a located card-pair blob into [left_card, right_card] at 48%.
 
-    Pure localization — no rank/suit detection. Same blob logic currently
-    used inside _find_hero_cards.
+    Left card is slightly narrower due to N8's overlap rendering; the ±3px
+    overlap keeps each crop's own rank corner intact after the split.
+    """
+    x, y, cw, ch_ = blob[:4]
+    split = int(cw * 0.48)
+    card1 = region[y:y + ch_, x:x + split + 3]
+    card2 = region[y:y + ch_, x + split - 3:x + cw]
+    return [card1, card2]
+
+
+def _hero_pair_healthy(crops: list[np.ndarray]) -> bool:
+    """Whether a located pair has plausible card-pair geometry.
+
+    Degenerate blobs (a ~40px-tall sliver left by a WIN sticker / clipped
+    by the window bottom, or a >2.5 aspect blob with an adjacent flag/badge
+    merged in) produce junk crops that CardCNN reads as ~0.13 noise → the
+    Gemini cards-only fallback. A healthy hero pair is ~120px tall with the
+    pair wider than one card but not absurdly wide.
+    """
+    if len(crops) != 2:
+        return False
+    bh = crops[0].shape[0]
+    bw = crops[0].shape[1] + crops[1].shape[1]
+    if bh < 75:
+        return False
+    return 0.85 < bw / max(bh, 1) < 2.5
+
+
+def _locate_hero_bright(table_region: np.ndarray) -> list[np.ndarray]:
+    """Original localizer: largest bright (grayscale) blob in a fixed window.
+
+    Works well on clean replays where the hero pair is the dominant bright
+    object. Fragile when bright COLORED UI (WIN sticker, chips, flags) sits
+    over/beside the cards — see _locate_hero_white for that case.
     """
     h, w = table_region.shape[:2]
     hero = table_region[int(h * 0.58):int(h * 0.98), int(w * 0.28):int(w * 0.68)]
@@ -386,13 +424,62 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     if not best_blob:
         return []
 
-    x, y, cw, ch_, _ = best_blob
+    return _split_hero_blob(hero, best_blob)
 
-    # Split at 48% (left card slightly narrower due to overlap rendering)
-    split = int(cw * 0.48)
-    card1 = hero[y:y + ch_, x:x + split + 3]
-    card2 = hero[y:y + ch_, x + split - 3:x + cw]
-    return [card1, card2]
+
+def _locate_hero_white(table_region: np.ndarray) -> list[np.ndarray]:
+    """Whiteness-based localizer for cards crowded by bright COLORED UI.
+
+    The card body is high-value + low-saturation (white); WIN stickers,
+    chips, country flags and the dealer badge are bright but SATURATED.
+    Masking on whiteness isolates the card bodies and ignores the colored
+    overlays. A WIN sticker punches a hole in the lower half, so an
+    aggressive morphological close rebuilds the full card rectangle. The
+    search window reaches the table bottom to recover low-positioned cards
+    the bright window's 0.98 cutoff would clip.
+
+    Used only when _locate_hero_bright yields a degenerate blob, so clean
+    replays keep their exact existing crops.
+    """
+    h, w = table_region.shape[:2]
+    y0, x0 = int(h * 0.55), int(w * 0.24)
+    hero = table_region[y0:h, x0:int(w * 0.72)]
+    ah, aw = hero.shape[:2]
+    if ah < 30 or aw < 30:
+        return []
+
+    hsv = cv2.cvtColor(hero, cv2.COLOR_BGR2HSV)
+    white = cv2.inRange(hsv, np.array([0, 0, 165]), np.array([180, 70, 255]))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    closed = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kernel, iterations=3)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    best_blob = None
+    for c in contours:
+        x, y, cw, ch_ = cv2.boundingRect(c)
+        if ch_ < 75 or cw < 60:
+            continue
+        if not 0.85 < cw / ch_ < 2.5:
+            continue
+        area = cw * ch_
+        if best_blob is None or area > best_blob[4]:
+            best_blob = (x, y, cw, ch_, area)
+
+    if not best_blob:
+        return []
+
+    return _split_hero_blob(hero, best_blob)
+
+
+def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
+
+    The default localizer is the bright-blob detector. The whiteness localizer
+    is a confidence-gated retry driven by CardCNN inside _find_hero_cards, not
+    here, so callers that only need a best-effort crop keep the original
+    behavior and clean replays produce identical crops.
+    """
+    return _locate_hero_bright(table_region)
 
 
 def _trim_above_card_edge(crop: np.ndarray) -> np.ndarray:
@@ -685,14 +772,37 @@ def _find_hero_cards(
     detected), masked == raw and this collapses to a single prediction.
     """
     from .classifier.infer import CardClassifier
+
+    clf = CardClassifier()
+    bright = _locate_hero_bright(table_region)
+    result = _classify_hero_crops(bright, clf) if bright else ([], 0.0, [], False)
+    # Confidence-gated whiteness retry: only when the bright read is weak. A
+    # WIN-sticker fragment, a window-clipped sliver, or a merged flag/badge
+    # crop collapses CardCNN to ~0.13 noise → the Gemini cards-only fallback.
+    # Confident bright reads are never touched, so clean replays and all
+    # already-correct hands keep identical crops (no regression by design).
+    if result[1] < HERO_RELOCATE_CONF:
+        white = _locate_hero_white(table_region)
+        if white:
+            white_result = _classify_hero_crops(white, clf)
+            if white_result[1] > result[1]:
+                result = white_result
+    return result
+
+
+def _classify_hero_crops(
+    located: list[np.ndarray], clf
+) -> tuple[list[str], float, list[dict], bool]:
+    """Classify a located hero pair → (cards, conf, details, ensemble_used).
+
+    Shared by both localizer passes in _find_hero_cards. Trimming, WIN
+    masking, corner-OCR rank rescue, top-2 repairs and the ensemble floor all
+    run here; `located` is the raw pair from a localizer.
+    """
     from .classifier.ensemble import predict_with_ensemble
 
-    crops = _locate_hero_cards(table_region)
-    if not crops:
-        return [], 0.0, [], False
-    crops = [_trim_above_card_edge(c) for c in crops]
+    crops = [_trim_above_card_edge(c) for c in located]
     masked_crops = [_mask_win_overlay(c) for c in crops]
-    clf = CardClassifier()
     raw_details = clf.classify_batch_detailed_tta(crops)
     masked_details = clf.classify_batch_detailed_tta(masked_crops)
     details: list[dict] = []
