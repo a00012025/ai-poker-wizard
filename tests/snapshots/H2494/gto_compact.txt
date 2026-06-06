@@ -1,5 +1,5 @@
 ♠ HJ ATs | 41bb MTT
-⚠ 多人底池，簡化為 HJ open vs SB call 單挑分析
+⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌（翻後單挑 HJ vs SB）
 
 ─── Preflop ───
 GTO: RAISE 2.3（37% pot） 100%

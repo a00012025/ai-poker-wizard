@@ -1,7 +1,5 @@
 ♠ CO A4s | 17bb MTT
-⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析
-有效籌碼調整: 17.1bb → 15bb（扣除底池死錢 ~2bb）
-⚠ 此深度 A4s 不在 postflop range，postflop 使用 17bb solver 近似（僅供參考）
+⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌（翻後單挑 CO vs HJ）
 
 ─── Preflop ───
 GTO: Fold 61% / Call 30% / All-in 8%
@@ -13,8 +11,8 @@ GTO: RAISE 8.1（33% pot） 58% / Call 41%
 
 ─── Turn: 2d ───
 🎯 三條 (A)
-GTO: Call 81% / All-in 19%
-→ Hero call ❌ EV損失 -1.8bb
+GTO: Call 54% / All-in 46%
+→ Hero call ✅
 
 ─── River: 3h ───
 🎯 三條 (A)

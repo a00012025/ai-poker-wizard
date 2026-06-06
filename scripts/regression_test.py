@@ -5550,9 +5550,11 @@ def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
 @test
 def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
     """H2905: HJ open, CO overcall, BB call is a 3-way pot, not 4-way.
-    Simplify postflop to HJ-vs-CO heads-up and escalate to a depth where
-    the CO flat line exists, rather than reducing the shallow effective
-    stack until every street has no solver data.
+    Reduce to HJ-vs-CO heads-up. With real-structure simplification the BB
+    cold-caller (folds the flop) collapses to a single pre-flop fold and hero
+    CO keeps his TRUE role — a flat-caller facing HJ's open — so the preflop
+    node is CO's call/jam range, not a recast opener range. Every street must
+    still have solver data.
     """
     from analyze_hand import analyze_hand_full
 
@@ -5584,8 +5586,9 @@ def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
     })
 
     compact = result["text_compact"]
-    assert_in("⚠ 多人底池，簡化為 HJ open vs CO call 單挑分析", compact,
-              "must simplify the 3-way HJ+CO+BB pot to HJ/CO")
+    assert_in("多人底池", compact, "must note the multiway simplification")
+    assert_in("CO vs HJ", compact,
+              "must simplify the 3-way HJ+CO+BB pot to the real CO-vs-HJ HU")
     assert_not_in("4-way", compact, "must not describe this hand as 4-way")
     assert_in("─── Preflop ───\nGTO:", compact,
               "CO preflop facing HJ open must have solver data")

@@ -583,60 +583,70 @@ def _solver_action_pot_pct(solution: dict, action_code: str | None) -> float | N
     return None
 
 
-def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str, set[str] | None]:
-    """Detect multiway pot and simplify to heads-up if needed.
+def _collapse_multiway_to_hu(preflop: str, hero_pos: str, villain_pos: str) -> str:
+    """Fold every non-hero, non-villain *pure cold-caller* into a single pre-flop
+    fold, keeping hero, the villain, and all raisers.
 
-    Returns (preflop_actions, adjusted_depth, simplification_note, active_positions).
-    active_positions is the set of 2 positions in the simplified HU, or None if no simplification.
-    If not multiway, returns (original_preflop, original_depth, "", None).
+    Reduces a multiway line to the real heads-up structure hero actually
+    navigated (flat-caller / 3-bettor / squeezer) WITHOUT recasting hero as the
+    opener. A raiser is kept because hero faced their raise; a pure cold-caller
+    (only calls/folds, never raises) is collapsed to one fold at its first action.
     """
-    preflop = hand["preflop_actions"]
-    streets = hand.get("streets") or hand.get("postflop_actions", [])
-    parts = preflop.split("-")
+    from gtow_action_resolver import _replay_preflop_actors
 
-    # Count non-fold actions in first 8 positions
-    non_fold = [i for i in range(min(len(parts), 8)) if parts[i] not in ("F", "")]
-    if len(non_fold) <= 2:
-        return preflop, depth, "", None
+    tokens = [t for t in (preflop or "").split("-") if t]
+    if not tokens:
+        return preflop
+    actors = _replay_preflop_actors(tokens, POSITION_ORDER)
+    by_actor: dict[str, list[int]] = {}
+    for i, pos in enumerate(actors):
+        by_actor.setdefault(pos, []).append(i)
 
-    # Multiway — find earliest point where hand becomes HU involving hero.
-    # Walk street by street: track who's still in. As soon as it drops to
-    # 2 players including hero, simplify to that HU.
-    if streets:
-        active = set()
-        folded = set()
-        # Collect all positions that appear in any street
-        for street in streets:
-            for act in street.get("actions", []):
-                active.add(act["position"])
+    drop: set[int] = set()
+    fold_in_place: set[int] = set()
+    for pos, idxs in by_actor.items():
+        if pos in (hero_pos, villain_pos):
+            continue
+        toks = [tokens[i] for i in idxs]
+        if any(t.startswith("R") or t == "AI" for t in toks):
+            continue  # keep raisers — hero faced their raise
+        if "C" not in toks:
+            continue  # already only folds, nothing to collapse
+        fold_in_place.add(idxs[0])
+        drop.update(idxs[1:])
 
-        # Walk streets in order to find when it becomes HU
-        villain_pos = None
-        for street in streets:
-            for act in street.get("actions", []):
-                if act["action"] == "F":
-                    folded.add(act["position"])
+    if not drop and not fold_in_place:
+        return preflop
+    return "-".join(
+        "F" if i in fold_in_place else tok
+        for i, tok in enumerate(tokens) if i not in drop
+    )
 
-            remaining = [p for p in active if p not in folded]
-            if len(remaining) == 2 and hero_pos in remaining:
-                villain_pos = next(p for p in remaining if p != hero_pos)
-                break
-            elif len(remaining) == 1 and hero_pos in remaining:
-                # Only hero remains — everyone else folded.
-                # Find the last non-hero opponent who was active (even if they folded)
-                for act in reversed(street.get("actions", [])):
-                    if act["position"] != hero_pos and act["action"] not in ("X",):
-                        villain_pos = act["position"]
-                        break
-                if villain_pos:
-                    break
 
-        if not villain_pos:
-            # Still multiway at end of all streets, or no villain found
-            return preflop, depth, "", None
-    else:
-        # Preflop-only: solver handles multiway preflop natively, no simplification needed
-        return preflop, depth, "", None
+def _reaches_flop(preflop: str) -> set[str]:
+    """Positions whose last pre-flop action is not a fold (they see the flop)."""
+    from gtow_action_resolver import _replay_preflop_actors
+
+    tokens = [t for t in (preflop or "").split("-") if t]
+    actors = _replay_preflop_actors(tokens, POSITION_ORDER)
+    last: dict[str, str] = {}
+    for pos, tok in zip(actors, tokens):
+        last[pos] = tok
+    return {p for p, t in last.items() if t not in ("F", "")}
+
+
+def _recast_hero_as_opener(
+    hand: dict, hero_pos: str, villain_pos: str,
+    gametype: str, depth: float, parts: list[str], non_fold: list[int],
+) -> tuple[str, float, str, set[str]]:
+    """Fallback HU approximation when the pot stays multiway to the flop.
+
+    Recasts the two surviving players as opener vs 3-bettor/caller and synthesizes
+    a clean HU preflop line the solver always has data for, subtracting estimated
+    dead money from the effective stack. Less faithful than the real structure but
+    guarantees a solvable node (used only when `_collapse_multiway_to_hu` can't
+    reduce the flop to {hero, villain}).
+    """
     hero_idx = POSITION_ORDER.index(hero_pos)
     villain_idx = POSITION_ORDER.index(villain_pos)
 
@@ -754,6 +764,87 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
         )
 
     return full, adjusted_depth, "\n".join(note_parts), {first_pos, second_pos}
+
+
+def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -> tuple[str, float, str, set[str] | None]:
+    """Detect multiway pot and simplify to heads-up if needed.
+
+    Returns (preflop_actions, adjusted_depth, simplification_note, active_positions).
+    active_positions is the set of 2 positions in the simplified HU, or None if no simplification.
+    If not multiway, returns (original_preflop, original_depth, "", None).
+    """
+    preflop = hand["preflop_actions"]
+    streets = hand.get("streets") or hand.get("postflop_actions", [])
+    parts = preflop.split("-")
+
+    # Count non-fold actions in first 8 positions
+    non_fold = [i for i in range(min(len(parts), 8)) if parts[i] not in ("F", "")]
+    if len(non_fold) <= 2:
+        return preflop, depth, "", None
+
+    # Multiway — find earliest point where hand becomes HU involving hero.
+    # Walk street by street: track who's still in. As soon as it drops to
+    # 2 players including hero, simplify to that HU.
+    if streets:
+        active = set()
+        folded = set()
+        # Collect all positions that appear in any street
+        for street in streets:
+            for act in street.get("actions", []):
+                active.add(act["position"])
+
+        # Walk streets in order to find when it becomes HU
+        villain_pos = None
+        for street in streets:
+            for act in street.get("actions", []):
+                if act["action"] == "F":
+                    folded.add(act["position"])
+
+            remaining = [p for p in active if p not in folded]
+            if len(remaining) == 2 and hero_pos in remaining:
+                villain_pos = next(p for p in remaining if p != hero_pos)
+                break
+            elif len(remaining) == 1 and hero_pos in remaining:
+                # Only hero remains — everyone else folded.
+                # Find the last non-hero opponent who was active (even if they folded)
+                for act in reversed(street.get("actions", [])):
+                    if act["position"] != hero_pos and act["action"] not in ("X",):
+                        villain_pos = act["position"]
+                        break
+                if villain_pos:
+                    break
+
+        if not villain_pos:
+            # Still multiway at end of all streets, or no villain found
+            return preflop, depth, "", None
+    else:
+        # Preflop-only: solver handles multiway preflop natively, no simplification needed
+        return preflop, depth, "", None
+    # ── Simplify to heads-up ──
+    # Prefer the REAL betting structure: fold every non-hero, non-villain pure
+    # cold-caller into a single pre-flop fold, keeping hero, the villain, and
+    # every raiser hero faced. When that leaves only {hero, villain} reaching the
+    # flop, it solves the exact node the hand reached (H3480: hero LJ flat-called
+    # UTG+1's open then called the SB squeeze — NOT opened), mirroring the GTOW
+    # deep-link so analysis == deep-link == reality.
+    real = _collapse_multiway_to_hu(preflop, hero_pos, villain_pos)
+    if _reaches_flop(real) <= {hero_pos, villain_pos}:
+        note = (
+            f"⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌"
+            f"（翻後單挑 {hero_pos} vs {villain_pos}）"
+        )
+        # Real HU effective depth (no dead-money subtraction); the action loop
+        # pot-ratio-snaps postflop bets against the REAL pot (computed from the
+        # un-collapsed preflop incl. dead money), so dead money still shapes bet
+        # sizing without distorting the solver's stack depth.
+        return real, depth, note, {hero_pos, villain_pos}
+
+    # Still multiway to the flop — a non-hero, non-villain raiser also reaches the
+    # flop, so no faithful HU node exists. Fall back to recasting hero/villain as
+    # opener/3-bettor: less faithful preflop, but the solver always has data.
+    return _recast_hero_as_opener(
+        hand, hero_pos, villain_pos, gametype, depth, parts, non_fold
+    )
 
 
 def _explain_missing_solution(
