@@ -190,6 +190,14 @@ def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
         resolver = resolve_actions_for_deviation
 
     hand = context.get("hand") or {}
+    # analyze_hand_full normalizes the preflop to the 8-max MTT tree in ctx hand
+    # but leaves players_at_table at the physical count. The resolver pads to the
+    # tree itself, so hand it the un-padded line + physical table size instead,
+    # or it pads a SECOND time and misplaces every actor (H3490).
+    raw_preflop = context.get("deeplink_raw_preflop")
+    if raw_preflop is not None:
+        hand = {**hand, "preflop_actions": raw_preflop,
+                "players_at_table": context.get("deeplink_raw_players")}
     decisions = enumerate_hero_decisions(context)
     if not decisions:
         return None

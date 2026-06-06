@@ -333,6 +333,50 @@ def test_collapse_allin_into_call_noop_without_allin_option():
     assert_eq(_collapse_allin_into_call(af, display_sol), af)
 
 
+@test
+def test_find_action_by_pot_pct_preserves_near_shove_allin():
+    """A near-shove opening bet snaps to all-in, not a pot-fraction bucket.
+
+    The solver models a small pot (24.8) but the real multiway pot is inflated
+    (60) by dead money from folded cold-callers. Hero shoves ~40bb into a
+    43.5bb effective stack. Pure pot-ratio matching computes a 16.5 solver bet
+    and snaps to the 1/2-pot bucket (R12.4) — wrong. The all-in guard recognises
+    the bet is within 15% of the stack and keeps RAI. Same guard already proven
+    in gtow_action_resolver._resolve_one_raise; now shared in the matcher.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    available = [
+        {"action": {"code": "X", "betsize": 0, "betsize_by_pot": 0}},
+        {"action": {"code": "R6.2", "betsize": 6.2, "betsize_by_pot": 0.25}},
+        {"action": {"code": "R12.4", "betsize": 12.4, "betsize_by_pot": 0.5}},
+        {"action": {"code": "RAI", "betsize": 43.5, "betsize_by_pot": 1.754,
+                    "allin": True}},
+    ]
+    code = _find_action_by_pot_pct(available, bet_size=40.0, actual_pot=60.0)
+    assert_eq(code, "RAI", "near-shove must keep all-in, not snap to 1/2-pot")
+
+
+@test
+def test_find_action_by_pot_pct_normal_bet_unaffected_by_allin_guard():
+    """A genuine pot-fraction bet is unchanged by the all-in guard.
+
+    Hero bets 6.2bb (1/4 pot) into the same tree; nowhere near the 43.5 stack,
+    so the guard must not fire and pot-ratio matching still selects R6.2.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    available = [
+        {"action": {"code": "X", "betsize": 0, "betsize_by_pot": 0}},
+        {"action": {"code": "R6.2", "betsize": 6.2, "betsize_by_pot": 0.25}},
+        {"action": {"code": "R12.4", "betsize": 12.4, "betsize_by_pot": 0.5}},
+        {"action": {"code": "RAI", "betsize": 43.5, "betsize_by_pot": 1.754,
+                    "allin": True}},
+    ]
+    code = _find_action_by_pot_pct(available, bet_size=6.2, actual_pot=24.8)
+    assert_eq(code, "R6.2", "quarter-pot bet must not be hijacked by all-in guard")
+
+
 # ── Visual All-In badge attribution (PR: fix/allin-visual-attribution) ──
 #
 # The red "All-In" sticker carries no name/position/size, so sequence rules
@@ -8464,6 +8508,62 @@ def test_resolve_h3480_multiway_coldcall_and_pot_ratio():
     assert_eq(result["depth"], 60.125)
     assert_eq(result["hero_pos"], "LJ")
     assert_eq(result["villain_pos"], "SB")
+
+
+@test
+def test_build_last_node_url_h3490_no_double_pad():
+    """build_last_node_url: H3490 turn fold deep-links to the verified node.
+
+    Two bugs sat between the analysis and the GTOW button URL:
+
+    1. Double-pad: analyze_hand_full normalizes the 6-max preflop to the 8-max
+       MTT tree in ctx["hand"] (F-F-R2-... → F-F-F-F-R2-...) but leaves
+       players_at_table=6. The resolver pads to the tree itself from
+       players_at_table, so it padded the already-padded line AGAIN
+       (F-F-F-F-F-F-R2-..., 11 tokens), shifting every actor to the wrong seat.
+       Fixed by carrying the un-padded line through ctx["deeplink_raw_preflop"].
+
+    2. Undersized-3bet → Call: BB's 5bb 3-bet sits between Call (2.1) and the
+       solver's only 3-bet size (8.2), so absolute matching mis-snapped it to
+       Call, putting the line off-tree (...C-C → empty actions). Fixed by
+       restricting raise resolution to raise/all-in candidates.
+
+    Verified GTOW node: preflop F-F-F-F-R2.1-F-F-R8.2-C, flop R8.95-C, turn RAI,
+    board Kc5d3h2c, depth 30.125, history_spot 12.
+    """
+    from analyze_hand import analyze_hand_full
+    from gtow_solution_url import build_last_node_url
+
+    parsed = {
+        "gametype": "MTTGeneral", "hero_hand": "Ac3c", "effective_bb": 29,
+        "hero_position": "CO", "players_at_table": 6,
+        "player_stacks": [14.9, 30.6, 42.6, 14.5, 39.5, 29.1],
+        "preflop_actions": "F-F-R2-F-F-R5-C",  # raw 6-max: CO open, BB 3bet, CO call
+        "streets": [
+            {"board": "5dKc3h", "actions": [
+                {"position": "BB", "action": "R5.8", "size": 5.8},
+                {"position": "CO", "action": "C"}]},
+            {"card": "2c", "actions": [
+                {"position": "BB", "action": "R18.3", "size": 18.3},
+                {"position": "CO", "action": "F"}]},
+        ],
+    }
+
+    ctx = analyze_hand_full(parsed)
+    # analyze padded to the 8-max tree → must preserve the raw line for the resolver
+    assert_eq(ctx.get("deeplink_raw_preflop"), "F-F-R2-F-F-R5-C")
+    assert_eq(ctx.get("deeplink_raw_players"), 6)
+
+    url = build_last_node_url(ctx)
+    assert_true(url is not None, "H3490 turn node must build a URL")
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["preflop_actions"], ["F-F-F-F-R2.1-F-F-R8.2-C"],
+              "preflop padded once, BB 3bet kept as a raise")
+    assert_eq(qs["flop_actions"], ["R8.95-C"], "flop bet snaps by pot ratio")
+    assert_eq(qs["turn_actions"], ["RAI"], "turn shove is all-in")
+    assert_eq(qs["board"], ["Kc5d3h2c"], "canonical board through the turn")
+    assert_eq(qs["depth"], ["30.125"])
+    assert_eq(qs["history_spot"], ["12"])
 
 
 @test

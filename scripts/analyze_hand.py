@@ -471,7 +471,23 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     "R size=40" meaning 40% pot): if bet_size/actual_pot exceeds 2.0
     the value is almost certainly not raw bb, so defer to
     find_closest_action_postflop which has percentage-detection logic.
+
+    All-in protection: a near-shove must snap to the all-in node, not to a
+    pot-fraction bucket. ``find_closest_action_postflop`` keeps the all-in only
+    when the bet is genuinely close to the stack (e.g. a 40bb shove into a 43.5bb
+    stack); otherwise it returns a real raise and pot-ratio matching proceeds.
+    This guard is shared by the deep-link resolver (gtow_action_resolver) so the
+    two pipelines snap shoves identically (H3480).
     """
+    postflop_code = find_closest_action_postflop(available_actions, bet_size)
+    allin_codes = {
+        a["action"]["code"]
+        for a in available_actions
+        if a.get("action", {}).get("allin")
+    }
+    if postflop_code in allin_codes:
+        return postflop_code
+
     target_pct = bet_size / actual_pot
 
     # Guard: bet_size that looks like a percentage rather than raw bb.
@@ -946,12 +962,20 @@ def _run_analysis(hand: dict) -> dict:
         target_players = num_players
 
     hero_preflop_idx_override = None
+    # Un-padded line kept for the GTOW deep-link resolver, which pads to the
+    # 8-max tree itself from players_at_table. Feeding it the padded preflop +
+    # the physical players_at_table makes it pad a SECOND time and misplace every
+    # actor (H3490). None when no padding happened (the line is already raw).
+    deeplink_raw_preflop = None
+    deeplink_raw_players = None
     if target_players > num_players:
         pad_count = target_players - num_players
         original_pos_order = _get_position_order(num_players)
         if hero_pos in original_pos_order:
             hero_preflop_idx_override = pad_count + original_pos_order.index(hero_pos)
         padding = "-".join(["F"] * pad_count)
+        deeplink_raw_preflop = hand["preflop_actions"]
+        deeplink_raw_players = num_players
         hand = dict(hand)  # shallow copy to avoid mutating original
         hand["preflop_actions"] = padding + "-" + hand["preflop_actions"]
         if hand.get("player_stacks"):
@@ -2481,6 +2505,10 @@ def _run_analysis(hand: dict) -> dict:
         },
         "hero_spots": hero_spots,
         "solutions": solutions,
+        # Un-padded preflop + physical table size for the GTOW deep-link
+        # resolver (None unless analyze padded to the 8-max tree). See H3490.
+        "deeplink_raw_preflop": deeplink_raw_preflop,
+        "deeplink_raw_players": deeplink_raw_players,
     }
 
 
