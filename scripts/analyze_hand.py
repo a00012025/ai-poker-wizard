@@ -22,6 +22,7 @@ Output: Natural language analysis for each street.
 """
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -43,6 +44,18 @@ from gto_formatter import (
 )
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+
+# ── Multiway SPR-depth tuning (real-structure simplification) ──
+# When a multiway pot collapses to a HU node, the dropped cold-callers' dead
+# money makes the solver's pot smaller than reality, so its flop SPR runs too
+# deep. We compress the effective stack by the pot ratio to match SPR, but:
+#   - never below FLOOR bb of adjusted depth (shallower → preflop turns
+#     jam/fold, distorting the range that reaches the flop more than the SPR
+#     error it would fix), and
+#   - never more than MAX_REDUCTION of the real stack (ratio clamp).
+# Both are env-overridable for tuning without a code change.
+MULTIWAY_SPR_DEPTH_FLOOR = float(os.getenv("MULTIWAY_SPR_DEPTH_FLOOR", "20"))
+MULTIWAY_SPR_MAX_REDUCTION = float(os.getenv("MULTIWAY_SPR_MAX_REDUCTION", "0.75"))
 
 # Position orders by table size (GTO Wizard convention)
 POSITION_ORDERS = {
@@ -498,23 +511,6 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     if target_pct > 2.0:
         return find_closest_action_postflop(available_actions, bet_size)
 
-    # Exact-match shortcut: if target equals one of the available betsizes
-    # closely, use it directly. Pot-pct conversion is only needed when the
-    # solver's pot context drifts from actual_pot (e.g. preflop R2→R2.2
-    # normalization). When hero's bb amount lands on an available bucket
-    # exactly, that's the answer regardless of pot accounting — and it
-    # avoids midpoint ties caused by missing antes (regression H2797:
-    # actual_pot=2.0 missing ante → target_pct=0.5 → tie between R1/R2,
-    # float tips to R2 even though hero bet exactly the R1 betsize).
-    for entry in available_actions:
-        action = entry["action"]
-        code = action["code"]
-        if code in ("X", "F"):
-            continue
-        size = float(action.get("betsize") or 0)
-        if size > 0 and abs(size - bet_size) / max(size, bet_size) < 0.05:
-            return code
-
     # Compute solver pot from any available raise action's betsize_by_pot
     solver_pot = None
     for entry in available_actions:
@@ -523,6 +519,32 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
         if pct and float(pct) > 0:
             solver_pot = float(action["betsize"]) / float(pct)
             break
+
+    # Exact-match shortcut: if target equals one of the available betsizes
+    # closely, use it directly. Pot-pct conversion is only needed when the
+    # solver's pot context drifts from actual_pot (e.g. preflop R2→R2.2
+    # normalization). When hero's bb amount lands on an available bucket
+    # exactly, that's the answer regardless of pot accounting — and it
+    # avoids midpoint ties caused by missing antes (regression H2797:
+    # actual_pot=2.0 missing ante → target_pct=0.5 → tie between R1/R2,
+    # float tips to R2 even though hero bet exactly the R1 betsize).
+    #
+    # BUT only when the solver's pot matches the real pot. In a multiway
+    # dead-money pot the solver models a much SMALLER pot than reality, so a raw
+    # bb that coincidentally equals a bucket's ABSOLUTE size is not that bucket's
+    # pot FRACTION (a 2.7bb bet that is 1/3 of the real 8bb pot must not snap to
+    # the solver's 2.75bb half-pot bucket). Skip the shortcut once the real pot
+    # exceeds the solver pot by >15% (dead money present) and let pot ratio decide
+    # — H2797 is unaffected there actual_pot ≤ solver_pot.
+    if not solver_pot or actual_pot <= solver_pot * 1.15:
+        for entry in available_actions:
+            action = entry["action"]
+            code = action["code"]
+            if code in ("X", "F"):
+                continue
+            size = float(action.get("betsize") or 0)
+            if size > 0 and abs(size - bet_size) / max(size, bet_size) < 0.05:
+                return code
 
     if solver_pot:
         solver_bet = target_pct * solver_pot
@@ -829,15 +851,44 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     # deep-link so analysis == deep-link == reality.
     real = _collapse_multiway_to_hu(preflop, hero_pos, villain_pos)
     if _reaches_flop(real) <= {hero_pos, villain_pos}:
+        # SPR-matched depth. The collapsed HU line drops the cold-callers' dead
+        # money, so the solver models a SMALLER pot than reality and its flop SPR
+        # would run too deep. Gently compress the effective stack by the pot ratio
+        # (solver_pot / real_pot) so SPR_solver ≈ SPR_real. This is far milder
+        # than the old `effective_bb - dead_money` hack, which over-reduced and
+        # tipped the preflop node into all-ins — distorting the very range that
+        # reaches the flop. Clamp the reduction to 25% to keep preflop off that
+        # all-in shelf even when several cold-callers inflate the pot. Bet sizing
+        # is still pot-ratio'd against the REAL pot in the action loop.
+        is_cash = (gametype or "").startswith("Cash")
+        ante = 0.0 if is_cash else 0.125
+        pot_players = int(hand.get("players_at_table") or 8) if is_cash else 8
+        eff = hand["effective_bb"]
+        real_pot = _compute_preflop_pot(preflop, eff, num_players=pot_players,
+                                        ante_per_player=ante)
+        hu_pot = _compute_preflop_pot(real, eff, num_players=pot_players,
+                                      ante_per_player=ante)
+        ratio = (max(hu_pot / real_pot, MULTIWAY_SPR_MAX_REDUCTION)
+                 if real_pot > 0 else 1.0)
+        spr_eff = eff * ratio
+        # Floor: stop compressing once it would drop into all-in-preflop
+        # territory — keep the real depth there (item-2 behaviour) rather than
+        # corrupt the preflop range. Skip compression entirely if the real stack
+        # is already at/below the floor.
+        if spr_eff < MULTIWAY_SPR_DEPTH_FLOOR:
+            spr_eff = eff
+        spr_depth = (nearest_cash_depth(spr_eff) if is_cash
+                     else nearest_depth(spr_eff))
         note = (
             f"⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌"
             f"（翻後單挑 {hero_pos} vs {villain_pos}）"
         )
-        # Real HU effective depth (no dead-money subtraction); the action loop
-        # pot-ratio-snaps postflop bets against the REAL pot (computed from the
-        # un-collapsed preflop incl. dead money), so dead money still shapes bet
-        # sizing without distorting the solver's stack depth.
-        return real, depth, note, {hero_pos, villain_pos}
+        if spr_depth != depth:
+            note += (
+                f"\n有效籌碼微調: {eff:.0f}bb → {spr_eff:.0f}bb"
+                f"（維持多人底池 SPR，死錢 ~{real_pot - hu_pot:.0f}bb）"
+            )
+        return real, spr_depth, note, {hero_pos, villain_pos}
 
     # Still multiway to the flop — a non-hero, non-villain raiser also reaches the
     # flop, so no faithful HU node exists. Fall back to recasting hero/villain as

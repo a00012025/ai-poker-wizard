@@ -2880,6 +2880,36 @@ def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
     assert_eq(_find_action_by_pot_pct(available, 1.3, 2.0), "R2")
 
 
+@test
+def test_find_action_by_pot_pct_dead_money_pot_ignores_exact_betsize():
+    """In a multiway dead-money pot the exact-betsize shortcut must NOT fire.
+
+    The collapsed HU node models a 5.5bb pot, but the REAL multiway pot is 8bb
+    (cold-callers' dead money). Hero bets 2.7bb = 1/3 of the real pot, which by
+    pot ratio is the 25% bucket (R1.4). The raw 2.7 happens to sit within 5% of
+    the solver's 50% bucket (2.75), so the absolute exact-match shortcut would
+    wrongly pick R2.75. The shortcut is only trustworthy when the solver pot
+    matches the real pot, so it is skipped once the real pot exceeds the solver
+    pot by >15% — pot ratio then drives the bucket.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+
+    avail = [
+        {"action": {"code": "X",     "betsize": 0,     "betsize_by_pot": 0}},
+        {"action": {"code": "R1.4",  "betsize": 1.375, "betsize_by_pot": 0.25}},
+        {"action": {"code": "R2.75", "betsize": 2.75,  "betsize_by_pot": 0.50}},
+        {"action": {"code": "R4.1",  "betsize": 4.125, "betsize_by_pot": 0.75}},
+        {"action": {"code": "RAI",   "betsize": 28.0,  "betsize_by_pot": 5.09,
+                    "allin": True}},
+    ]
+    # Dead-money pot (real 8 >> solver 5.5): pot ratio → 25% bucket.
+    assert_eq(_find_action_by_pot_pct(avail, 2.7, 8.0), "R1.4",
+              "1/3-of-real-pot bet must snap by pot ratio, not absolute size")
+    # No dead money (real ≈ solver pot): exact-betsize shortcut still applies.
+    assert_eq(_find_action_by_pot_pct(avail, 2.7, 5.5), "R2.75",
+              "without dead money, a bet equal to a bucket size keeps that bucket")
+
+
 # ── Hand Eval Tests ──
 
 @test
@@ -5034,6 +5064,48 @@ def test_multiway_simplifies_after_flop_fold():
     assert_true(positions is not None, "should have active positions")
     assert_in("LJ", positions, "LJ should be in active positions")
     assert_in("BB", positions, "BB should be in active positions")
+
+
+@test
+def test_simplify_multiway_spr_depth_floor():
+    """Real-structure simplification compresses the effective stack to match the
+    multiway SPR, but floors the compression so a shallow stack isn't pushed into
+    preflop jam/fold (which would distort the range reaching the flop).
+
+    LJ opens, HJ calls, CO cold-calls (3-way); CO folds the flop → HU LJ vs HJ.
+    CO's dead call shrinks the solver pot, so a deep stack is compressed below its
+    real depth; a shallow stack stays at its real depth (floored).
+    """
+    from analyze_hand import _simplify_multiway, MULTIWAY_SPR_DEPTH_FLOOR
+    from gto_api import nearest_depth
+
+    def hand(eff):
+        return {
+            "preflop_actions": "F-F-R2-C-C-F-F-F",  # LJ open, HJ call, CO cold-call
+            "effective_bb": eff,
+            "players_at_table": 8,
+            "streets": [
+                {"board": "Js7d2c", "actions": [
+                    {"position": "LJ", "action": "R2", "size": 2.0},
+                    {"position": "HJ", "action": "C"},
+                    {"position": "CO", "action": "F"}]},
+            ],
+        }
+
+    # Deep: CO's dead money drops the pot → SPR-compressed below the real depth.
+    pf, d_deep, note, pos = _simplify_multiway(
+        hand(40), "LJ", "MTTGeneral", nearest_depth(40))
+    assert_eq(pos, {"LJ", "HJ"}, "HU = hero + villain")
+    assert_eq(pf, "F-F-R2-C-F-F-F-F", "CO cold-caller folded; real structure kept")
+    assert_true(d_deep < nearest_depth(40),
+                f"deep stack must be SPR-compressed (got {d_deep})")
+    assert_true(d_deep >= MULTIWAY_SPR_DEPTH_FLOOR, "but not below the floor")
+
+    # Shallow: compression would breach the floor → keep the real depth.
+    _, d_shallow, _, _ = _simplify_multiway(
+        hand(12), "LJ", "MTTGeneral", nearest_depth(12))
+    assert_eq(d_shallow, nearest_depth(12),
+              "shallow stack keeps real depth (floored, no preflop-jam distortion)")
 
 
 @test
