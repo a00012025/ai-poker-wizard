@@ -1,20 +1,21 @@
 ♠ HJ ATs | 41bb MTT
-⚠ 多人底池，簡化為 HJ open vs SB call 單挑分析
+⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌（翻後單挑 HJ vs SB）
+有效籌碼微調: 41bb → 35bb（維持多人底池 SPR，死錢 ~1bb）
 
 ─── Preflop ───
 GTO: RAISE 2.3（37% pot） 100%
 
 ─── Flop: Kc9d3d ───
 🎯 Ace high + 後門花聽牌
-GTO: Check 47% / Bet 3.65（55% pot） 42% / Bet 2.2（33% pot） 10%
-→ Hero bet 33% pot ✅ (GTO建議 check)
+GTO: Bet 3.5（55% pot） 48% / Check 40% / Bet 2.1（33% pot） 10%
+→ Hero bet 33% pot ✅ (GTO建議 bet 55% pot)
 
 ─── Turn: Js ───
 🎯 Ace high + 卡順聽牌
-GTO: Bet 9.15（83% pot） 84% / Bet 6.05（55% pot） 13%
-→ Hero check ❌ (GTO建議 bet 83% pot)
+GTO: Bet 8.8（83% pot） 59% / Bet 5.85（55% pot） 41%
+→ Hero check ✅ (GTO建議 bet 83% pot)
 
 ─── River: 5h ───
 🎯 Ace high
-GTO: Bet 7（64% pot） 96%
-→ Hero bet 50% pot ❌ (GTO建議 bet 64% pot)
+GTO: Bet 6（57% pot） 64% / Bet 8.5（80% pot） 35%
+→ Hero bet 50% pot ✅
