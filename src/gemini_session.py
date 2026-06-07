@@ -942,6 +942,58 @@ class GeminiSessionManager:
         from gto_api import clear_user_token
         clear_user_token()
 
+    async def _ensure_hand_context(self, chat_id: int,
+                                   user_id: int | None = None,
+                                   refresh_token: str | None = None) -> bool:
+        """Rehydrate the in-memory follow-up context from the DB if missing.
+
+        ``self.hand_contexts`` lives only in process memory, so a bot
+        restart/deploy wipes every chat's "last analyzed hand".  A follow-up
+        that arrives after such a restart then has no hand to reference and the
+        coach replies "I need to know which hand" (H3515).
+
+        When no context is cached for the chat, look up the most recent
+        analysis snapshot, re-run ``analyze_hand_full`` to rebuild the full
+        context (street states, hero spots, cached solutions) and cache it.
+        Returns True if a context is available afterwards.
+
+        Best-effort: needs the DB + the user's GTO token; any failure leaves
+        the context empty (caller falls back to the existing no-context path).
+        """
+        if self.hand_contexts.get(chat_id) is not None:
+            return True
+        if not self.db or not refresh_token:
+            return False
+        try:
+            last = await self.db.get_last_hand(chat_id)
+        except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] get_last_hand failed: {e}")
+            return False
+        if not last:
+            return False
+        hand_json = last["hand"]
+        hand_id = last.get("hand_id")
+        try:
+            self._setup_user_token(user_id, refresh_token)
+            try:
+                from analyze_hand import analyze_hand_full
+                context = await asyncio.to_thread(analyze_hand_full, hand_json)
+            finally:
+                self._clear_user_token()
+        except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] rehydrate analyze_hand_full failed "
+                f"({hand_id}): {e}")
+            return False
+        self.hand_contexts[chat_id] = context
+        if hand_id:
+            self.last_hand_ids[chat_id] = hand_id
+        self._logger.info(
+            f"[chat={chat_id}] Rehydrated hand context from DB "
+            f"({hand_id}) after missing in-memory state")
+        return True
+
     def _try_coach_facts(self, chat_id: int, user_text: str,
                          user_id: int | None = None,
                          refresh_token: str | None = None) -> str | None:
@@ -1837,6 +1889,16 @@ class GeminiSessionManager:
                     await self._save_usage(chat_id, "hand_analysis", self.model,
                                            usage_acc, int(elapsed * 1000))
                     return result
+
+            # Rehydrate the last analyzed hand from the DB when the in-memory
+            # context was lost (bot restart/deploy) and this message looks like
+            # a follow-up rather than a new hand.  Without this, follow-ups
+            # after a deploy reply "I need to know which hand" (H3515).  Doing
+            # it before parse also restores the _parse_hand guard so the
+            # follow-up isn't misparsed into a fake hand.
+            if (chat_id not in self.hand_contexts
+                    and not self._text_looks_like_hand(user_text)):
+                await self._ensure_hand_context(chat_id, user_id, refresh_token)
 
             # Step 1: Parse hand from user message (Flash — fast)
             await _status("解析手牌中...")

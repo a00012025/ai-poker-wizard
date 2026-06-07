@@ -284,6 +284,34 @@ class Database:
                 return hand
         return None
 
+    async def get_last_hand(self, chat_id: int) -> dict | None:
+        """Return the most recently analyzed hand for a chat.
+
+        Used to rehydrate the in-memory follow-up context after a bot
+        restart/deploy (which wipes ``GeminiSessionManager.hand_contexts``)
+        so follow-up questions about "the last hand" still resolve.
+
+        Returns ``{"hand": <parsed dict>, "hand_id": <str>}`` (expected_json
+        preferred over parsed_json so bug-fix corrections are honored), or
+        ``None`` if the chat has no analysis snapshots yet.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT hand_id, parsed_json, expected_json
+                FROM analysis_snapshots
+                WHERE chat_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                chat_id,
+            )
+        if not row:
+            return None
+        raw = row["expected_json"] or row["parsed_json"]
+        hand = raw if isinstance(raw, dict) else json.loads(raw)
+        return {"hand": hand, "hand_id": row["hand_id"]}
+
     async def save_snapshot(self, hand_id: str, chat_id: int,
                             source_type: str, user_input: str | None,
                             image_data: bytes | None,

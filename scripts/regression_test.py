@@ -17,6 +17,7 @@ Requires: valid GTO Wizard token (.tokens.json) and network access.
 Does NOT require GEMINI_API_KEY (tests bypass LLM layer).
 """
 import json
+import logging
 import os
 import sys
 import time
@@ -11631,6 +11632,92 @@ def test_format_ev_magnitude_splits_preflop_and_postflop():
     post = format_ev_magnitude({"ev_loss": 0.30, "pot_frac": 0.004})
     assert_in("% pot", post, "postflop magnitude includes pot fraction")
     assert_in("0.30bb", post, "postflop magnitude includes the bb figure")
+
+
+@test
+def test_ensure_hand_context_rehydrates_from_db_after_restart():
+    """Follow-up after a bot restart rebuilds the lost in-memory hand context.
+
+    Regression for H3515: ``hand_contexts`` lives only in process memory, so a
+    deploy/restart wipes the "last analyzed hand".  A follow-up like
+    「那我 turn 下注範圍應該長怎樣」 then hit query_gto with no context and the
+    coach replied "I need to know which hand".  _ensure_hand_context must pull
+    the most recent snapshot from the DB and re-run analyze_hand_full to
+    restore the context (and last_hand_ids) so the follow-up resolves.
+    """
+    import asyncio as _asyncio
+    import analyze_hand
+    from gemini_session import GeminiSessionManager
+
+    class _FakeDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def get_last_hand(self, chat_id):
+            self.calls += 1
+            return {"hand": {"hero_position": "BB", "hero_hand": "T9s",
+                             "preflop_actions": "F-F-F-F-R2-F-F-C"},
+                    "hand_id": "H3515"}
+
+    sentinel_ctx = {"hero_position": "BB", "hero_hand": "T9s",
+                    "solutions": [{"ok": True}]}
+    orig = analyze_hand.analyze_hand_full
+    analyze_hand.analyze_hand_full = lambda hand: sentinel_ctx
+    try:
+        s = GeminiSessionManager.__new__(GeminiSessionManager)
+        s.hand_contexts = {}
+        s.last_hand_ids = {}
+        s.db = _FakeDB()
+        s._setup_user_token = lambda *a, **k: None
+        s._clear_user_token = lambda *a, **k: None
+        s._logger = logging.getLogger("regression-rehydrate")
+
+        ok = _asyncio.run(s._ensure_hand_context(
+            42, user_id=1, refresh_token="tok"))
+
+        assert_true(ok, "rehydrate reports success")
+        assert_true(s.hand_contexts.get(42) is sentinel_ctx,
+                    "context rebuilt from DB snapshot")
+        assert_eq(s.last_hand_ids.get(42), "H3515",
+                  "last_hand_ids restored for tool-call tagging")
+        assert_eq(s.db.calls, 1, "DB queried exactly once")
+
+        # Idempotent: a second call with context present must not re-query.
+        ok2 = _asyncio.run(s._ensure_hand_context(
+            42, user_id=1, refresh_token="tok"))
+        assert_true(ok2, "second call still reports a context")
+        assert_eq(s.db.calls, 1, "no redundant DB query when context cached")
+    finally:
+        analyze_hand.analyze_hand_full = orig
+
+
+@test
+def test_ensure_hand_context_noop_without_token_or_db():
+    """Rehydrate is best-effort: no token or no DB → leave context empty."""
+    import asyncio as _asyncio
+    from gemini_session import GeminiSessionManager
+
+    class _FakeDB:
+        async def get_last_hand(self, chat_id):
+            raise AssertionError("get_last_hand must not run without a token")
+
+    s = GeminiSessionManager.__new__(GeminiSessionManager)
+    s.hand_contexts = {}
+    s.last_hand_ids = {}
+    s.db = _FakeDB()
+    s._logger = logging.getLogger("regression-rehydrate-noop")
+
+    # No refresh_token → cannot set up the solver, so don't even query.
+    assert_true(not _asyncio.run(s._ensure_hand_context(7, user_id=1,
+                                                        refresh_token=None)),
+                "no token → returns False")
+    assert_true(7 not in s.hand_contexts, "context stays empty without token")
+
+    # No DB at all → also a no-op.
+    s.db = None
+    assert_true(not _asyncio.run(s._ensure_hand_context(7, user_id=1,
+                                                        refresh_token="tok")),
+                "no DB → returns False")
 
 
 if __name__ == "__main__":
