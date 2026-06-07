@@ -1257,7 +1257,7 @@ def test_compress_range_full_call_range():
 
 @test
 def test_compress_range_highfreq_merge_pairs():
-    """Range compression: ≥80% hands merge into the run (JJ@99% → 22+~), not split out."""
+    """Range compression: ≥90% hands merge into the run (JJ@99% → 22+~), not split out."""
     from gto_formatter import _compress_range
     # All pairs pure except JJ at 99% — should still collapse to 22+ (with ~ marker)
     hands = []
@@ -1272,12 +1272,12 @@ def test_compress_range_highfreq_merge_pairs():
 
 @test
 def test_compress_range_highfreq_below_threshold_stays_mixed():
-    """Range compression: hands below 80% stay broken out with inline %, not merged."""
+    """Range compression: hands below 90% stay broken out with inline %, not merged."""
     from gto_formatter import _compress_range
     hands = [(f"{r}{r}", 1.0, 6) for r in "23456789TQKA"]  # all pure except JJ
-    hands.append(("JJ", 0.70, 4.2))  # 70% < 80% → stays mixed
+    hands.append(("JJ", 0.85, 5.1))  # 85% < 90% → stays mixed
     result = _compress_range(hands)
-    assert_in("JJ(70%)", result)
+    assert_in("JJ(85%)", result)
     assert_not_in("22+", result)  # run is broken by missing JJ from pure set
 
 
@@ -1293,16 +1293,16 @@ def test_compress_range_pure_no_marker():
 
 @test
 def test_compress_range_highfreq_suited_marker():
-    """Range compression: a ≥80% suited hand merges as pure but its token gets ~."""
+    """Range compression: a ≥90% suited hand merges as pure but its token gets ~."""
     from gto_formatter import _compress_range
-    # A9s/A8s/A4s/A2s pure, A7s at 85% → merges (no longer "(85%)") but marked
+    # A9s/A8s/A4s/A2s pure, A7s at 92% → merges (no longer "(92%)") but marked
     hands = [
-        ("A9s", 1.0, 4), ("A8s", 1.0, 4), ("A7s", 0.85, 3.4),
+        ("A9s", 1.0, 4), ("A8s", 1.0, 4), ("A7s", 0.92, 3.68),
         ("A4s", 1.0, 4), ("A2s", 1.0, 4),
     ]
     result = _compress_range(hands)
     assert_in("A7s~", result)
-    assert_not_in("A7s(85%)", result)
+    assert_not_in("A7s(92%)", result)
 
 
 # ── GTO API Tests ──

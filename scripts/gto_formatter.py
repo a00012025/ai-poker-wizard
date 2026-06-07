@@ -387,7 +387,7 @@ def format_range_overview(spot_solution: dict, position: str) -> str:
 # trailing "~" approximate marker on their token so users know the simplified
 # group still contains some high-frequency mixed hands.
 _PURE_FREQ = 0.995
-_MERGE_FREQ = 0.80
+_MERGE_FREQ = 0.90
 
 
 def _compress_range(
@@ -714,7 +714,7 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
             lines.append(f"  {compressed}")
 
     if any("~" in line for line in lines):
-        lines.append("\n(~ = 該組已併入 >80% 高頻手牌，非 100% 純頻)")
+        lines.append("\n(~ = 該組已併入 >90% 高頻手牌，非 100% 純頻)")
 
     return "\n".join(lines)
 
