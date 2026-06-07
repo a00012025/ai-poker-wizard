@@ -12029,6 +12029,43 @@ def test_fix_folded_players_still_drops_passive_ghost():
     assert_true("BB" in poss and "UTG+1" in poss, "real actions preserved")
 
 
+@test
+def test_flag_possible_ft_purple_asks_not_assumes():
+    """Purple felt flags possible_ft (ask the user); it must not auto-set ICM/FT.
+
+    Regression for H3518: an 8-handed purple table was auto-judged icm/FT.
+    """
+    from ocr.n8_parser import _flag_possible_ft
+
+    h = {"hero_position": "BTN"}
+    _flag_possible_ft(h, "purple")
+    assert_true(h.get("possible_ft") is True, "purple → possible_ft hint")
+    assert_true("tournament_type" not in h, "purple must NOT auto-set ICM")
+    assert_true("phase" not in h, "purple must NOT auto-set FT phase")
+
+    # Green/dark/unknown felt → no FT hint at all.
+    for color in ("green", "dark", "unknown", None):
+        g = {"hero_position": "BTN"}
+        _flag_possible_ft(g, color)
+        assert_true("possible_ft" not in g, f"{color} felt → no FT hint")
+
+    # A stronger signal already resolved ICM (user said "FT") → don't override.
+    icm = {"hero_position": "BTN", "tournament_type": "icm", "phase": "FT"}
+    _flag_possible_ft(icm, "purple")
+    assert_true("possible_ft" not in icm, "explicit ICM not downgraded to a hint")
+
+
+@test
+def test_image_parse_prompt_purple_does_not_auto_ft():
+    """The image-parse prompt must ask on purple, not auto-commit to ICM/FT."""
+    from gemini_session import IMAGE_PARSE_PROMPT
+
+    assert_in("possible_ft", IMAGE_PARSE_PROMPT,
+              "prompt still uses the possible_ft ask path")
+    assert_not_in('設置 tournament_type: "icm", phase: "FT"', IMAGE_PARSE_PROMPT,
+                  "prompt no longer auto-sets ICM/FT from purple felt")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

@@ -192,13 +192,13 @@ IMAGE_PARSE_PROMPT = """\
 4. 桌面中央是公共牌
 
 決賽桌（Final Table）偵測：
-- Natural8 / N8 的決賽桌截圖有紫色桌面主題（一般牌桌是綠色/深色）
-  → 如果看到紫色桌面，設置 tournament_type: "icm", phase: "FT"
-- 如果用戶留言提到 FT、決賽桌、final table、bubble、ICM → 設置 tournament_type: "icm" 並對應 phase
+- Natural8 / N8 的決賽桌截圖常有紫色桌面主題，但紫色桌面「不代表」一定是決賽桌
+  → 看到紫色桌面時，不要自行判斷為 ICM/FT；改設 "possible_ft": true，交由系統詢問用戶確認
+- 只有當用戶留言「明確」提到 FT、決賽桌、final table、bubble、ICM 時 → 才設置 tournament_type: "icm" 並對應 phase
   phase 對應：final table/FT → "FT", bubble → "BUBBLE"
-- 如果桌上只有 ≤4 人且沒有明確 FT 信號（非紫色桌面、用戶沒提到）→ 設 "possible_ft": true
+- 如果桌上只有 ≤4 人且用戶沒提到 → 也設 "possible_ft": true
   （系統會提醒用戶可以切換到決賽桌模式）
-  注意：5-6 人桌在 MTT 中很常見（6-max 桌型），不要因為人少就判斷為 FT
+  注意：5-6 人桌在 MTT 中很常見（6-max 桌型），不要因為人少或桌面顏色就判斷為 FT
 - 當偵測到 ICM/FT 時，必須提取所有玩家的籌碼量到 player_stacks
 
 提取規則：
