@@ -11396,6 +11396,92 @@ def test_coach_facts_live_smoke():
     assert_true(v.ok, f"live answer grounded (violations={v.violations})")
 
 
+@test
+def test_classify_ev_impact_preflop_uses_absolute_bb():
+    """Preflop EV impact is judged in absolute bb (≤0.05bb = negligible)."""
+    from gto_formatter import classify_ev_impact
+
+    assert_true(classify_ev_impact(0.05, is_preflop=True)["negligible"],
+                "preflop 0.05bb sits on the negligible boundary")
+    assert_true(classify_ev_impact(0.02, is_preflop=True)["negligible"],
+                "preflop 0.02bb is negligible (frequency issue)")
+    assert_true(not classify_ev_impact(0.20, is_preflop=True)["negligible"],
+                "preflop 0.20bb is not negligible")
+
+
+@test
+def test_classify_ev_impact_postflop_is_pot_relative():
+    """Postflop the same bb loss is graded against the pot, not in absolute bb."""
+    from gto_formatter import classify_ev_impact
+
+    # 0.30bb is noise in an 80bb pot (0.375% ≤ 0.5%) ...
+    big = classify_ev_impact(0.30, is_preflop=False, pot_bb=80.0)
+    assert_true(big["negligible"], "0.30bb in an 80bb pot is negligible")
+    assert_eq(round(big["pot_frac"] * 100, 3), 0.375, "pot fraction computed")
+
+    # ... but the same 0.30bb is huge in a 4bb pot (7.5% > 0.5%).
+    small = classify_ev_impact(0.30, is_preflop=False, pot_bb=4.0)
+    assert_true(not small["negligible"], "0.30bb in a 4bb pot is NOT negligible")
+
+    # No pot info → fall back to the absolute bb threshold.
+    fb = classify_ev_impact(0.30, is_preflop=False, pot_bb=None)
+    assert_true(not fb["negligible"], "no-pot fallback uses the bb threshold")
+
+
+@test
+def test_ev_loss_detail_preflop_negligible_high_freq_call():
+    """H3510-style: SB 55 Call 97% vs all-in ~0.02bb apart → negligible mix.
+
+    The deterministic layer must report this as a near-zero loss so the coach
+    frames it as a frequency/mix preference, not a "serious mistake".
+    """
+    from gto_formatter import ev_loss_detail
+    from hh_deviation_check import HAND_TO_169
+
+    idx = HAND_TO_169["55"]
+    call_ev = [0.0] * 169
+    jam_ev = [0.0] * 169
+    call_strat = [0.0] * 169
+    jam_strat = [0.0] * 169
+    call_ev[idx] = 10.00
+    jam_ev[idx] = 9.98          # all-in is 0.02bb worse than calling
+    call_strat[idx] = 0.97
+    jam_strat[idx] = 0.03
+    rng = [0.0] * 169
+    rng[idx] = 1.0
+
+    sol = {
+        "game": {"pot": 3.5},
+        "players_info": [{"player": {"position": "SB"}, "range": rng}],
+        "action_solutions": [
+            {"action": {"code": "C"}, "evs": call_ev, "strategy": call_strat},
+            {"action": {"code": "RAI", "allin": True},
+             "evs": jam_ev, "strategy": jam_strat},
+        ],
+    }
+
+    d = ev_loss_detail(sol, taken_code="RAI", hero_hand="55",
+                       hero_pos="SB", is_preflop=True)
+    assert_true(d is not None, "ev_loss_detail returns data")
+    assert_eq(round(d["ev_loss"], 2), 0.02, "ev_loss is ~0.02bb")
+    assert_eq(d["best_code"], "C", "best action is Call")
+    assert_true(d["negligible"], "0.02bb preflop is negligible → frequency issue")
+    assert_true(d["pot_frac"] is None, "preflop carries no pot fraction")
+
+
+@test
+def test_format_ev_magnitude_splits_preflop_and_postflop():
+    """Magnitude string is bare bb preflop, bb + %pot postflop."""
+    from gto_formatter import format_ev_magnitude
+
+    pf = format_ev_magnitude({"ev_loss": 0.02, "pot_frac": None})
+    assert_eq(pf, "0.02bb", "preflop magnitude is bare bb")
+
+    post = format_ev_magnitude({"ev_loss": 0.30, "pot_frac": 0.004})
+    assert_in("% pot", post, "postflop magnitude includes pot fraction")
+    assert_in("0.30bb", post, "postflop magnitude includes the bb figure")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

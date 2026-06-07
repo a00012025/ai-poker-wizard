@@ -19,6 +19,8 @@ Preflop actions 校正: F-F-F-R2-F-F-F-R9-C → F-F-F-R2.3-F-F-F-R10.3-C
   策略:
     Call: 90.4%（5.4 combos） EV 1.79bb
     RAISE 10.3（131% pot）: 9.6%（0.6 combos） EV 1.79bb
+  → 實際行動: BB R10.3（solver code: R10.3）
+
 
 ==================================================
 【Flop: 9hAcTh】

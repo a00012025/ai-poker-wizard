@@ -38,6 +38,8 @@ from gto_api import (
 from gto_formatter import (
     format_full_spot,
     format_ev_comparison,
+    ev_loss_detail,
+    format_ev_magnitude,
     normalize_hand_name,
     combo_index_for_hand,
     _combo_idx_in_player_range,
@@ -2321,6 +2323,30 @@ def _run_analysis(hand: dict) -> dict:
                 f"（solver code: {actual_solver_code}）"
             )
 
+        # Hero re-raises or shoves OVER an open as the last aggressor: there is
+        # a raise before hero, hero re-raises/jams, and no one re-raises behind
+        # (so hero has no later preflop decision node). hero_spots[0] is then
+        # hero's ONLY graded preflop decision, but its taken_code was never set,
+        # so compact output showed just the GTO line with no Hero verdict —
+        # leaving the coach to guess severity from frequency alone and
+        # over-dramatise a near-indifferent jam (H3510). Grade it explicitly.
+        raise_before_hero = any(
+            p.startswith(("R", "AI")) for p in pf_parts[:hero_idx]
+        )
+        if (
+            "taken_code" not in hero_spots[0]
+            and not hero_continuation_seen
+            and not all_fold_before_hero
+            and raise_before_hero
+            and actual_first.startswith(("R", "AI"))
+            and actual_solver_code in action_codes
+        ):
+            hero_spots[0]["taken_code"] = actual_solver_code
+            hero_spots[0]["action_desc"] = (
+                f"  → 實際行動: {hero_pos} {actual_first}"
+                f"（solver code: {actual_solver_code}）"
+            )
+
     t_phase2 = time.time()
 
     # ── Phase 3: Format results ──
@@ -2497,6 +2523,7 @@ def _run_analysis(hand: dict) -> dict:
                         if eval_result["full_label"]:
                             compact.append(f"🎯 {eval_result['full_label']}")
 
+        zero_reach = False
         if display_sol:
             # When no hero hand, use sentinel to force range-level frequencies
             # For postflop, pass combo_idx for combo-specific frequencies
@@ -2508,6 +2535,7 @@ def _run_analysis(hand: dict) -> dict:
                 compact.append(spot_compact)
             elif not no_hero_hand:
                 compact.append("GTO: 此手牌 0% 到達此節點")
+                zero_reach = True
 
             # Hero result line — skip when no hero hand
             taken_code = spot.get("taken_code")
@@ -2609,37 +2637,86 @@ def _run_analysis(hand: dict) -> dict:
                         gto_top_label = _action_label_short(
                             top_code, display_sol, spot["street"])
 
-                # Check EV loss
-                is_pf = spot["street"] == "preflop"
-                ev_note = format_ev_comparison(
-                    display_sol, taken_code, hero_hand, spot_hero_pos,
-                    is_preflop=is_pf, combo_idx=None if is_pf else hero_combo_idx,
-                )
-                sizing_hint = f" (GTO建議 {gto_top_label})" if gto_top_label else ""
-                # Determine ✅ vs ❌:
-                #   ❌ if EV loss ≥ 0.5bb, OR
-                #   ❌ if GTO top action ≥ 80% and hero took a different action
-                is_bad = False
-                ev_loss = 0.0
-                if ev_note and not facing_allin_call:
-                    m = re.search(r"EV 損失 ([\d.]+)bb", ev_note)
-                    ev_loss = float(m.group(1)) if m else 0
-                    if ev_loss >= 0.5:
-                        is_bad = True
-                if (
-                    gto_top_label
-                    and gto_top_freq >= 0.80
-                    and not (is_pf and ev_loss < 0.5)
-                ):
-                    is_bad = True
-                if is_pf and not is_bad and ev_loss < 0.5:
-                    sizing_hint = ""
-
-                if is_bad:
-                    ev_part = f" EV損失 -{ev_loss:.1f}bb" if ev_loss >= 0.5 else ""
-                    compact.append(f"→ Hero {hero_action_short} ❌{ev_part}{sizing_hint}")
+                if zero_reach:
+                    # Off-tree: this combo never reaches this node (an earlier
+                    # street already left the solver line), so there is no GTO
+                    # baseline to grade against. Mark neutral ⚪ — neither
+                    # correct play nor a mistake at this node. The coach is told
+                    # to point the user back to the earlier decision.
+                    compact.append(
+                        f"→ Hero {hero_action_short} ⚪"
+                        f"（off-tree:此線無 solver 對照,非對錯判定）"
+                    )
                 else:
-                    compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
+                    # Structured EV loss vs the solver's best action. Magnitude
+                    # is judged per-street: preflop in absolute bb, postflop
+                    # relative to the pot (classify_ev_impact). A negligible loss
+                    # means hero merely picked a different branch of a mix — a
+                    # frequency preference, not an error.
+                    is_pf = spot["street"] == "preflop"
+                    ev_detail = (
+                        None if facing_allin_call
+                        else ev_loss_detail(
+                            display_sol, taken_code, hero_hand, spot_hero_pos,
+                            is_preflop=is_pf,
+                            combo_idx=None if is_pf else hero_combo_idx,
+                        )
+                    )
+                    ev_loss = ev_detail["ev_loss"] if ev_detail else 0.0
+                    ev_negligible = ev_detail["negligible"] if ev_detail else True
+                    sizing_hint = (
+                        f" (GTO建議 {gto_top_label})" if gto_top_label else ""
+                    )
+                    # Determine ✅ vs ❌ (thresholds unchanged):
+                    #   ❌ if EV loss ≥ 0.5bb, OR
+                    #   ❌ if GTO top action ≥ 80% and hero deviated (preflop
+                    #      keeps ✅ unless EV loss ≥ 0.5bb).
+                    is_bad = False
+                    if ev_detail and ev_loss >= 0.5:
+                        is_bad = True
+                    if (
+                        gto_top_label
+                        and gto_top_freq >= 0.80
+                        and not (is_pf and ev_loss < 0.5)
+                    ):
+                        is_bad = True
+                    if is_pf and not is_bad and ev_loss < 0.5:
+                        sizing_hint = ""
+
+                    if is_bad:
+                        # Preflop keeps the bare bb figure; postflop appends the
+                        # pot-relative magnitude so the coach can gauge severity
+                        # against the pot, not in absolute bb.
+                        ev_part = ""
+                        if ev_loss >= 0.5:
+                            pot_part = (
+                                f"（{ev_detail['pot_frac'] * 100:.1f}% pot）"
+                                if ev_detail
+                                and ev_detail.get("pot_frac") is not None
+                                else ""
+                            )
+                            ev_part = f" EV損失 -{ev_loss:.1f}bb{pot_part}"
+                        compact.append(
+                            f"→ Hero {hero_action_short} ❌{ev_part}{sizing_hint}"
+                        )
+                    elif (
+                        gto_top_label
+                        and ev_detail
+                        and ev_negligible
+                        and gto_top_freq >= 0.80
+                    ):
+                        # Stark frequency gap (GTO almost always does X) but ~zero
+                        # EV: hero just took the low-frequency branch of a
+                        # near-indifferent mix. Spell it out so the coach does not
+                        # mistake a frequency choice for a blunder (H3510).
+                        compact.append(
+                            f"→ Hero {hero_action_short} ✅"
+                            f"（GTO 多為 {gto_top_label} {gto_top_freq * 100:.0f}%,"
+                            f"但 EV 僅差 {format_ev_magnitude(ev_detail)},"
+                            f"屬頻率/mix 偏好,非錯誤）"
+                        )
+                    else:
+                        compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
         else:
             compact.append("（無 solver 數據）")
 
