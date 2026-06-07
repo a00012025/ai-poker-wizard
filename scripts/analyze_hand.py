@@ -56,6 +56,11 @@ POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 # Both are env-overridable for tuning without a code change.
 MULTIWAY_SPR_DEPTH_FLOOR = float(os.getenv("MULTIWAY_SPR_DEPTH_FLOOR", "20"))
 MULTIWAY_SPR_MAX_REDUCTION = float(os.getenv("MULTIWAY_SPR_MAX_REDUCTION", "0.75"))
+# Marker embedded in the multiway note when the *real betting structure* HU
+# branch is used (hero keeps its true role). Distinguishes it from the recast
+# fallback (hero recast as opener). The preflop real-node override only applies
+# to the real-structure branch, where preflop and postflop stay consistent.
+MULTIWAY_REAL_STRUCTURE_MARKER = "保留真實下注結構"
 
 # Position orders by table size (GTO Wizard convention)
 POSITION_ORDERS = {
@@ -657,6 +662,84 @@ def _reaches_flop(preflop: str) -> set[str]:
     return {p for p, t in last.items() if t not in ("F", "")}
 
 
+def _reconcile_preflop_with_streets(
+    preflop: str, streets: list, hero_pos: str, pos_order: list[str],
+) -> tuple[str, bool]:
+    """Repair a preflop line that folds the hero even though hero plays postflop.
+
+    Text parses (and occasionally OCR) sometimes mis-seat preflop callers —
+    packing them next to the raiser — and fold the hero. H3511:
+    ``lj raise, co call, hero btn call, bb call`` parsed to ``F-F-R2-C-C-F-F-C``
+    (HJ & CO call, **BTN folded**) instead of ``F-F-R2-F-C-C-F-C``. The multiway
+    collapse then folded hero pre-flop, leaving no post-flop node, so every street
+    printed "（無 solver 數據）".
+
+    The repair is deliberately narrow — it only fires when the **hero** is folded
+    pre-flop yet appears in the flop (an unambiguous contradiction; a player who
+    saw the flop cannot have folded pre-flop). It leaves non-hero label
+    mismatches alone so faithfully-parsed hands (and accepted snapshots) are never
+    rewritten. When it fires, the first post-flop street's participants define who
+    saw the flop: every flop participant calls (or keeps its single raise) and
+    everyone else folds — but a pre-flop caller absent from the flop is only
+    dropped when the flop is a pure check-around (so the participant list is known
+    to be complete; a flop with a bet may omit players who folded to it). Returns
+    ``(preflop, changed)``. 3-bet+/continuation lines are left untouched.
+    """
+    tokens = [t for t in (preflop or "").split("-") if t]
+    n = len(pos_order)
+    # Only the first N positional tokens are seats; anything beyond is a 3-bet
+    # continuation action whose reconstruction we don't attempt.
+    if len(tokens) != n or n == 0 or not streets:
+        return preflop, False
+    if hero_pos not in pos_order:
+        return preflop, False
+    hero_idx = pos_order.index(hero_pos)
+
+    # Earliest street that actually has actions = the flop (or first played
+    # street). Its participants saw the flop = did NOT fold pre-flop.
+    flop_acts: list = []
+    for street in streets:
+        if street.get("actions"):
+            flop_acts = street["actions"]
+            break
+    flop_positions = {a["position"] for a in flop_acts if a.get("position") in pos_order}
+
+    # Narrow trigger: only repair when the hero is the contradiction — folded
+    # pre-flop yet present on the flop.
+    if hero_pos not in flop_positions or tokens[hero_idx] not in ("F", ""):
+        return preflop, False
+
+    raise_idxs = [
+        i for i, t in enumerate(tokens)
+        if t.startswith("R") or t.startswith("AI") or t == "AI"
+    ]
+    if len(raise_idxs) > 1:
+        return preflop, False  # 3-bet+ pot — too complex to safely rebuild
+    raiser_idx = raise_idxs[0] if raise_idxs else None
+
+    expected = {pos_order.index(p) for p in flop_positions}
+    if raiser_idx is not None:
+        expected.add(raiser_idx)
+    current = {i for i, t in enumerate(tokens) if t not in ("F", "")}
+
+    check_around = bool(flop_acts) and all(
+        (a.get("action") or "") == "X" for a in flop_acts
+    )
+    # ADD is always safe (a flop participant didn't fold pre-flop). DROP a
+    # pre-flop caller absent from the flop only when the flop is a complete
+    # check-around; otherwise keep them (a stray cold-caller gets collapsed to a
+    # fold downstream anyway).
+    keep = expected | (set() if check_around else (current - expected))
+
+    rebuilt = [
+        tokens[raiser_idx] if i == raiser_idx
+        else ("C" if i in keep else "F")
+        for i in range(n)
+    ]
+    new = "-".join(rebuilt)
+    return (new, True) if new != preflop else (preflop, False)
+
+
 def _recast_hero_as_opener(
     hand: dict, hero_pos: str, villain_pos: str,
     gametype: str, depth: float, parts: list[str], non_fold: list[int],
@@ -896,7 +979,7 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
         spr_depth = (nearest_cash_depth(spr_eff) if is_cash
                      else nearest_depth(spr_eff))
         note = (
-            f"⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌"
+            f"⚠ 多人底池：{MULTIWAY_REAL_STRUCTURE_MARKER}，棄牌的 cold caller 簡化為單一棄牌"
             f"（翻後單挑 {hero_pos} vs {villain_pos}）"
         )
         if spr_depth != depth:
@@ -1107,6 +1190,20 @@ def _run_analysis(hand: dict) -> dict:
     if is_cash:
         gametype = CASH_GAMETYPES.get(num_players, "Cash6mGeneral_6mNL100R2")
         depth = nearest_cash_depth(hand["effective_bb"])
+
+    # Reconcile mis-seated preflop callers against the flop participants BEFORE
+    # padding — while the preflop line, the hero position name, and the street
+    # position names are all in the table's own (un-padded) seating. Padding to
+    # the 8-max tree shifts seats (a 7-max UTG becomes 8-max UTG+1), so running
+    # this after padding would mis-map names to seats (H2581). Fixes parses that
+    # fold the hero pre-flop in a single-raised multiway pot (H3511) — otherwise
+    # the HU collapse drops hero and every postflop street shows "（無 solver 數據）".
+    _reconciled_pf, _pf_changed = _reconcile_preflop_with_streets(
+        hand["preflop_actions"], streets, hero_pos, _get_position_order(num_players),
+    )
+    if _pf_changed:
+        hand = dict(hand)
+        hand["preflop_actions"] = _reconciled_pf
 
     # Pad preflop actions and stacks to match target table size.
     # - MTTGeneral (chip EV): always pad to 8 positions
@@ -1330,6 +1427,33 @@ def _run_analysis(hand: dict) -> dict:
                 except Exception:
                     pass  # fall back to original preflop_before
                 preflop_depth = hero_depth
+
+    # Multiway (real-structure branch only): query the REAL pre-flop node
+    # (cold-callers preserved) for hero's range, not the HU-collapsed line.
+    # Post-flop is approximated heads-up, but pre-flop the solver models multiway
+    # natively, so hero's decision should reflect the actual money in front of it.
+    # H3511: BTN facing LJ-open + CO-call (F-F-R2.3-F-C) 3-bets bigger / flats a
+    # different range than facing the open alone (F-F-R2.3-F-F). The collapsed
+    # line is kept as a guaranteed-solvable fallback for the rare multiway pre-flop
+    # node the solver lacks. Skipped for the recast fallback (hero recast as
+    # opener) — there the real node would contradict the recast post-flop line.
+    preflop_hu_fallback = None
+    if multiway_note and MULTIWAY_REAL_STRUCTURE_MARKER in multiway_note:
+        try:
+            real_norm = _normalize_preflop_actions(
+                hand["preflop_actions"], gametype, preflop_depth, stacks=icm_stacks)
+            real_before = _preflop_before_index(real_norm, hero_preflop_idx)
+            collapsed_norm = _normalize_preflop_actions(
+                raw_preflop, gametype, preflop_depth, stacks=icm_stacks)
+            collapsed_before = _preflop_before_index(collapsed_norm, hero_preflop_idx)
+        except Exception:
+            real_before = collapsed_before = None
+        if real_before and collapsed_before and real_before != collapsed_before:
+            preflop_before = real_before
+            preflop_hu_fallback = dict(
+                gametype=gametype, depth=preflop_depth, stacks=icm_stacks,
+                preflop_actions=collapsed_before)
+
     hero_spots.append({
         "street": "preflop",
         "header": "【Preflop】",
@@ -1337,6 +1461,7 @@ def _run_analysis(hand: dict) -> dict:
                        preflop_actions=preflop_before),
         "solver_hero_pos": solver_hero_pos,
         "action_desc": None,
+        "hu_fallback_params": preflop_hu_fallback,
     })
 
     # Check if hero acts again preflop (e.g. opens then faces a 3-bet, or
@@ -1932,6 +2057,11 @@ def _run_analysis(hand: dict) -> dict:
         if sol is None and spot.get("hu_fallback_params"):
             solutions[i] = _fetch_with_token(spot["hu_fallback_params"])
             if solutions[i]:
+                # The preflop initial spot prefers the real multiway node; when it
+                # falls back to the collapsed HU line, show that line so the
+                # displayed preflop_actions matches the solution actually used.
+                if spot["street"] == "preflop" and spot.get("action_desc") is None:
+                    hero_spots[i]["params"] = spot["hu_fallback_params"]
                 # Add multiway approximation note
                 if not multiway_note:
                     multiway_note = "⚠ 多人底池，cold caller 已簡化為 heads-up 分析"
