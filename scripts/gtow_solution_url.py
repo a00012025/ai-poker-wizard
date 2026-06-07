@@ -174,6 +174,22 @@ def enumerate_hero_decisions(context: dict) -> list[tuple[str, int]]:
     return decisions
 
 
+def _deeplink_hand(context: dict) -> dict:
+    """Hand dict prepared for the resolver (un-padded preflop + physical seats).
+
+    analyze_hand_full normalizes the preflop to the 8-max MTT tree in ctx hand
+    but leaves players_at_table at the physical count. The resolver pads to the
+    tree itself, so hand it the un-padded line + physical table size instead,
+    or it pads a SECOND time and misplaces every actor (H3490).
+    """
+    hand = context.get("hand") or {}
+    raw_preflop = context.get("deeplink_raw_preflop")
+    if raw_preflop is not None:
+        hand = {**hand, "preflop_actions": raw_preflop,
+                "players_at_table": context.get("deeplink_raw_players")}
+    return hand
+
+
 def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
     """Build a /solutions URL for hero's last decision node in the hand.
 
@@ -189,15 +205,7 @@ def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
         from gtow_action_resolver import resolve_actions_for_deviation
         resolver = resolve_actions_for_deviation
 
-    hand = context.get("hand") or {}
-    # analyze_hand_full normalizes the preflop to the 8-max MTT tree in ctx hand
-    # but leaves players_at_table at the physical count. The resolver pads to the
-    # tree itself, so hand it the un-padded line + physical table size instead,
-    # or it pads a SECOND time and misplaces every actor (H3490).
-    raw_preflop = context.get("deeplink_raw_preflop")
-    if raw_preflop is not None:
-        hand = {**hand, "preflop_actions": raw_preflop,
-                "players_at_table": context.get("deeplink_raw_players")}
+    hand = _deeplink_hand(context)
     decisions = enumerate_hero_decisions(context)
     if not decisions:
         return None
@@ -211,4 +219,37 @@ def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
             _log.debug("solution URL build failed at %s[%d]: %s",
                        street, action_index, e)
             continue
+    return None
+
+
+def build_node_url_for_street(context: dict, street: str,
+                              *, _resolver=None) -> str | None:
+    """Build a /solutions URL for hero's FIRST decision on `street`.
+
+    A follow-up answer about an earlier street ("what's my turn betting
+    range?") is grounded on hero's decision node for that street — which is
+    NOT the played-line last node. Using build_last_node_url for that reply
+    deep-links the user to the river while the coach quoted the turn, so the
+    frequencies disagree (turn check 89% vs river check 23%, H3515). This
+    builds the link to the exact node the answer describes so both sides match.
+
+    Returns None (caller falls back to last-node) if the street has no hero
+    decision or the node won't build.
+    """
+    resolver = _resolver
+    if resolver is None:
+        from gtow_action_resolver import resolve_actions_for_deviation
+        resolver = resolve_actions_for_deviation
+
+    hand = _deeplink_hand(context)
+    for s, action_index in enumerate_hero_decisions(context):
+        if s != street:
+            continue
+        try:
+            resolved = resolver(hand, s, action_index)
+            board = canonical_board_through_street(hand, s)
+            return build_solution_url(resolved, board)
+        except Exception as e:  # noqa: BLE001 — convenience link, never fatal
+            _log.debug("node URL build failed at %s[%d]: %s", s, action_index, e)
+            return None
     return None

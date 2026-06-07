@@ -68,6 +68,18 @@ def _attach_chart(facts: "Facts", sol: dict | None, position: str | None) -> Non
         facts.meta["chart"] = {"position": position, "solution": sol}
 
 
+def _attach_node(facts: "Facts", street: str | None) -> None:
+    """Record the street whose hero-decision node this answer is grounded on.
+
+    Lets the caller deep-link the GTO Wizard button to that exact node so the
+    link's frequencies match the prose. Only for hero-own-decision intents —
+    villain-range / node-url answers read a different node and stay on the
+    played-line link.
+    """
+    if street:
+        facts.meta["node_street"] = street
+
+
 @dataclass
 class QuestionType:
     id: str
@@ -517,6 +529,8 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
     facts.meta = {"hero_hand": hero_hand, "board": board,
                   "hands": [n for n, _ in resolved]}
     _attach_chart(facts, sol, actor)
+    if spot and actor == hero:
+        _attach_node(facts, spot.get("street"))
     return facts
 
 
@@ -551,6 +565,8 @@ def fetch_hand_strength(ctx: Ctx) -> Facts | None:
     facts.numbers |= {eq, pct}
     facts.meta = {"hero_hand": hero_hand, "board": board, "eq": eq, "percentile": pct,
                   "bucket": bucket_name}
+    if spot:
+        _attach_node(facts, spot.get("street"))
     return facts
 
 
@@ -696,7 +712,10 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
 
 def fetch_sizing(ctx: Ctx) -> Facts | None:
     spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
-    return _fetch_sizing_from(sol, ctx.hand_context)
+    facts = _fetch_sizing_from(sol, ctx.hand_context)
+    if facts and spot:
+        _attach_node(facts, spot.get("street"))
+    return facts
 
 
 def fetch_range_shift(ctx: Ctx) -> Facts | None:
@@ -723,6 +742,7 @@ def fetch_range_shift(ctx: Ctx) -> Facts | None:
     facts.allowed_claims |= canonical_forms(hero_hand or "")
     facts.numbers |= {e0[0], e0[1], e1[0], e1[1]}
     facts.meta = {"board": b1, "from": e0, "to": e1}
+    _attach_node(facts, sp1.get("street"))
     return facts
 
 
@@ -769,7 +789,10 @@ def fetch_hypothetical(ctx: Ctx) -> Facts | None:
         return None
     m = _RE_POT_RATIO.search(ctx.question or "")
     if m:
-        return _fetch_hypothetical_size_from(sol, ctx.hand_context, int(m.group(1)) / 100.0)
+        f = _fetch_hypothetical_size_from(sol, ctx.hand_context, int(m.group(1)) / 100.0)
+        if f and spot:
+            _attach_node(f, spot.get("street"))
+        return f
     rs = fetch_range_shift(ctx)
     if rs:
         rs.intent = "hypothetical"
