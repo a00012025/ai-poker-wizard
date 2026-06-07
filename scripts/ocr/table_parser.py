@@ -16,6 +16,12 @@ from .button_detector import detect_button
 # so we only fire on genuinely uncertain reads — confident classifications
 # (the vast majority) take the single-pass path unchanged.
 ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
+# Below this hero card_conf the bright-blob localization is treated as failed
+# (WIN-sticker fragment / window-clipped sliver / merged flag-badge), and the
+# whiteness localizer is retried. Matches the MIN_CARD_CONF Gemini-fallback
+# gate: anything under it already pays a network round-trip, so a cheap local
+# retry is strictly worth attempting.
+HERO_RELOCATE_CONF = float(os.getenv("OCR_HERO_RELOCATE_CONF", "0.70"))
 
 
 def _detect_table_color(table_region: np.ndarray) -> str:
@@ -331,11 +337,43 @@ def _find_individual_card_contours(center: np.ndarray) -> list[tuple]:
     return []
 
 
-def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
-    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
+def _split_hero_blob(region: np.ndarray, blob: tuple) -> list[np.ndarray]:
+    """Split a located card-pair blob into [left_card, right_card] at 48%.
 
-    Pure localization — no rank/suit detection. Same blob logic currently
-    used inside _find_hero_cards.
+    Left card is slightly narrower due to N8's overlap rendering; the ±3px
+    overlap keeps each crop's own rank corner intact after the split.
+    """
+    x, y, cw, ch_ = blob[:4]
+    split = int(cw * 0.48)
+    card1 = region[y:y + ch_, x:x + split + 3]
+    card2 = region[y:y + ch_, x + split - 3:x + cw]
+    return [card1, card2]
+
+
+def _hero_pair_healthy(crops: list[np.ndarray]) -> bool:
+    """Whether a located pair has plausible card-pair geometry.
+
+    Degenerate blobs (a ~40px-tall sliver left by a WIN sticker / clipped
+    by the window bottom, or a >2.5 aspect blob with an adjacent flag/badge
+    merged in) produce junk crops that CardCNN reads as ~0.13 noise → the
+    Gemini cards-only fallback. A healthy hero pair is ~120px tall with the
+    pair wider than one card but not absurdly wide.
+    """
+    if len(crops) != 2:
+        return False
+    bh = crops[0].shape[0]
+    bw = crops[0].shape[1] + crops[1].shape[1]
+    if bh < 75:
+        return False
+    return 0.85 < bw / max(bh, 1) < 2.5
+
+
+def _locate_hero_bright(table_region: np.ndarray) -> list[np.ndarray]:
+    """Original localizer: largest bright (grayscale) blob in a fixed window.
+
+    Works well on clean replays where the hero pair is the dominant bright
+    object. Fragile when bright COLORED UI (WIN sticker, chips, flags) sits
+    over/beside the cards — see _locate_hero_white for that case.
     """
     h, w = table_region.shape[:2]
     hero = table_region[int(h * 0.58):int(h * 0.98), int(w * 0.28):int(w * 0.68)]
@@ -386,13 +424,81 @@ def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
     if not best_blob:
         return []
 
-    x, y, cw, ch_, _ = best_blob
+    return _split_hero_blob(hero, best_blob)
 
-    # Split at 48% (left card slightly narrower due to overlap rendering)
-    split = int(cw * 0.48)
-    card1 = hero[y:y + ch_, x:x + split + 3]
-    card2 = hero[y:y + ch_, x + split - 3:x + cw]
-    return [card1, card2]
+
+def _locate_hero_white(
+    region: np.ndarray, divider_y: int | None = None
+) -> list[np.ndarray]:
+    """Whiteness-based localizer for cards crowded by bright COLORED UI.
+
+    The card body is high-value + low-saturation (white); WIN stickers,
+    chips, country flags and the dealer badge are bright but SATURATED.
+    Masking on whiteness isolates the card bodies and ignores the colored
+    overlays. A WIN sticker punches a hole in the lower half, so an
+    aggressive morphological close rebuilds the full card rectangle.
+
+    Two modes:
+    - `divider_y is None`: `region` is the table region; search its lower band
+      (to the table bottom) for cards the bright window's 0.98 cutoff clips.
+    - `divider_y` given: `region` is the FULL image; search a band straddling
+      the divider so a hero pair clipped by the table/panel split (lower half
+      in the panel) is captured whole.
+
+    Among valid card-pair blobs the BOTTOM-most is chosen — the board sits
+    higher than the hero, so this rejects board intrusion. Used only as a
+    confidence-gated retry, so clean replays keep their exact bright crops.
+    """
+    h, w = region.shape[:2]
+    if divider_y:
+        y0 = max(0, int(divider_y - 0.42 * divider_y))
+        y1 = min(h, int(divider_y + 0.10 * h))
+    else:
+        y0, y1 = int(h * 0.55), h
+    x0, x1 = int(w * 0.24), int(w * 0.72)
+    hero = region[y0:y1, x0:x1]
+    ah, aw = hero.shape[:2]
+    if ah < 30 or aw < 30:
+        return []
+
+    hsv = cv2.cvtColor(hero, cv2.COLOR_BGR2HSV)
+    white = cv2.inRange(hsv, np.array([0, 0, 165]), np.array([180, 70, 255]))
+    # Aggressive close bridges large WIN-sticker holes that split the card body.
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11))
+    closed = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kernel, iterations=3)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    best_blob = None
+    for c in contours:
+        x, y, cw, ch_ = cv2.boundingRect(c)
+        # Floor 60: short-stack / divider-clipped hero pairs render ~69px tall;
+        # WIN-sticker slivers are ~40px with a wrong aspect, so the aspect +
+        # width gates below (plus the confidence gate in _find_hero_cards)
+        # reject junk without dropping these legitimately-small pairs.
+        if ch_ < 60 or cw < 60:
+            continue
+        if not 0.85 < cw / ch_ < 2.5:
+            continue
+        # Prefer the BOTTOM-most pair (hero is below the board); break ties by area.
+        bottom = y + ch_
+        if best_blob is None or (bottom, cw * ch_) > (best_blob[5], best_blob[4]):
+            best_blob = (x, y, cw, ch_, cw * ch_, bottom)
+
+    if not best_blob:
+        return []
+
+    return _split_hero_blob(hero, best_blob[:4])
+
+
+def _locate_hero_cards(table_region: np.ndarray) -> list[np.ndarray]:
+    """Return [card1_crop, card2_crop] (BGR ndarrays), or [] if no blob found.
+
+    The default localizer is the bright-blob detector. The whiteness localizer
+    is a confidence-gated retry driven by CardCNN inside _find_hero_cards, not
+    here, so callers that only need a best-effort crop keep the original
+    behavior and clean replays produce identical crops.
+    """
+    return _locate_hero_bright(table_region)
 
 
 def _trim_above_card_edge(crop: np.ndarray) -> np.ndarray:
@@ -666,6 +772,8 @@ def _repair_suit_from_top2(rank: str, suit: str, suit_conf: float, top2: list) -
 
 def _find_hero_cards(
     table_region: np.ndarray,
+    full_image: np.ndarray | None = None,
+    divider_y: int | None = None,
 ) -> tuple[list[str], float, list[dict], bool]:
     """Find and identify hero's hole cards via CardCNN.
 
@@ -683,16 +791,50 @@ def _find_hero_cards(
     WIN pixels bleed red, flipping ♣→♥ on raw — the original purpose of
     the mask, see H2806). When the WIN mask is a no-op (no orange
     detected), masked == raw and this collapses to a single prediction.
+
+    Localization is confidence-gated: the bright-blob default, then a
+    whiteness retry (table-region), then a divider-spanning whiteness retry
+    on the full image — each adopted only if strictly more confident, so a
+    confident read is never disturbed (no regression by construction).
     """
     from .classifier.infer import CardClassifier
+
+    clf = CardClassifier()
+    bright = _locate_hero_bright(table_region)
+    result = _classify_hero_crops(bright, clf) if bright else ([], 0.0, [], False)
+
+    def _retry(crops):
+        nonlocal result
+        if result[1] >= HERO_RELOCATE_CONF or not crops:
+            return
+        cand = _classify_hero_crops(crops, clf)
+        if cand[1] > result[1]:
+            result = cand
+
+    # Stage 2: whiteness retry within the table region — recovers WIN-sticker /
+    # merged flag-badge crops where the bright blob fragments to ~0.13 noise.
+    _retry(_locate_hero_white(table_region))
+    # Stage 3: whiteness retry on a band straddling the divider — recovers hero
+    # pairs clipped by the table/panel split (their lower half is in the panel,
+    # and the board cards fill the table-only window). Needs the full image.
+    if full_image is not None and divider_y:
+        _retry(_locate_hero_white(full_image, divider_y=divider_y))
+    return result
+
+
+def _classify_hero_crops(
+    located: list[np.ndarray], clf
+) -> tuple[list[str], float, list[dict], bool]:
+    """Classify a located hero pair → (cards, conf, details, ensemble_used).
+
+    Shared by both localizer passes in _find_hero_cards. Trimming, WIN
+    masking, corner-OCR rank rescue, top-2 repairs and the ensemble floor all
+    run here; `located` is the raw pair from a localizer.
+    """
     from .classifier.ensemble import predict_with_ensemble
 
-    crops = _locate_hero_cards(table_region)
-    if not crops:
-        return [], 0.0, [], False
-    crops = [_trim_above_card_edge(c) for c in crops]
+    crops = [_trim_above_card_edge(c) for c in located]
     masked_crops = [_mask_win_overlay(c) for c in crops]
-    clf = CardClassifier()
     raw_details = clf.classify_batch_detailed_tta(crops)
     masked_details = clf.classify_batch_detailed_tta(masked_crops)
     details: list[dict] = []
@@ -862,11 +1004,18 @@ def _find_player_stacks(table_region: np.ndarray) -> list[float]:
     return stacks
 
 
-def parse_table(table_region: np.ndarray) -> dict:
+def parse_table(
+    table_region: np.ndarray,
+    full_image: np.ndarray | None = None,
+    divider_y: int | None = None,
+) -> dict:
     """Parse the table region of an N8 replay screenshot.
 
     Args:
         table_region: BGR image of the table area (above the divider)
+        full_image: the full screenshot — lets hero localization search a band
+            straddling the divider (hero cards are often clipped by it).
+        divider_y: y of the table/panel divider in full_image coordinates.
 
     Returns:
         {
@@ -898,7 +1047,7 @@ def parse_table(table_region: np.ndarray) -> dict:
         dealer_button_seat, dealer_button_conf = None, 0.0
     board_cards, board_card_details = _find_board_cards(table_region)
     hero_cards, hero_card_conf, hero_card_details, hero_ensemble_used = \
-        _find_hero_cards(table_region)
+        _find_hero_cards(table_region, full_image=full_image, divider_y=divider_y)
     all_stacks_named = _find_all_stacks(table_region)
     hero_stack = _find_hero_stack(table_region)
 

@@ -4381,6 +4381,123 @@ def test_multiway_simplification_remaps_dropped_opponent_bets():
 
 
 @test
+def test_hero_pair_healthy_rejects_degenerate_geometry():
+    """OCR: _hero_pair_healthy gates the whiteness-localizer retry.
+
+    The bright-blob localizer fails on WIN-sticker / window-clipped / merged
+    flag-badge cases by latching onto a ~40px-tall sliver or a >2.5-aspect
+    merged blob. Those degenerate crops collapse CardCNN to ~0.13 noise and
+    force the Gemini cards-only fallback (~43% of live screenshots). The
+    geometry check must accept a square-ish ~120px pair and reject the
+    degenerate shapes so the retry path can fire.
+    """
+    import numpy as np
+    from ocr import table_parser
+    healthy = [np.zeros((120, 58, 3), np.uint8), np.zeros((120, 58, 3), np.uint8)]
+    sliver = [np.zeros((41, 34, 3), np.uint8), np.zeros((41, 33, 3), np.uint8)]
+    too_wide = [np.zeros((85, 140, 3), np.uint8), np.zeros((85, 80, 3), np.uint8)]
+    assert_true(table_parser._hero_pair_healthy(healthy),
+                "~120px square-ish pair must be healthy")
+    assert_true(not table_parser._hero_pair_healthy(sliver),
+                "41px sliver (WIN-sticker fragment / window clip) must be rejected")
+    assert_true(not table_parser._hero_pair_healthy(too_wide),
+                "merged flag/badge wide blob (ar>2.5) must be rejected")
+    assert_true(not table_parser._hero_pair_healthy([]), "empty pair not healthy")
+
+
+@test
+def test_find_hero_cards_confidence_gated_three_stage():
+    """OCR: _find_hero_cards is a confidence-gated 3-stage localizer — bright,
+    then whiteness on the table region, then whiteness on a divider-spanning
+    band of the full image — each adopted only if strictly more confident.
+
+    This cuts the cards-only Gemini fallback rate (raw-CNN TM corpus 4.8% →
+    0.3%, 83 hands fixed / 0 regressed) without disturbing confident reads:
+    every retry is gated on `< HERO_RELOCATE_CONF` and `cand[1] > result[1]`,
+    so already-correct high-confidence hands are untouched. Stage 3 needs the
+    full image + divider_y because hero pairs are often clipped by the divider.
+    """
+    import inspect
+    from ocr import table_parser
+    src = inspect.getsource(table_parser._find_hero_cards)
+    assert_in("_locate_hero_bright", src, "default pass is the bright localizer")
+    assert_in("HERO_RELOCATE_CONF", src, "retries must be confidence-gated")
+    assert_in("_locate_hero_white(table_region)", src,
+              "stage 2 retries whiteness on the table region")
+    assert_in("divider_y=divider_y", src,
+              "stage 3 retries whiteness on a divider-spanning full-image band")
+    assert_in("cand[1] > result[1]", src,
+              "a retry is adopted only if strictly more confident")
+
+
+@test
+def test_locate_hero_white_recovers_win_sticker_pair():
+    """OCR: _locate_hero_white isolates the white card bodies past a saturated
+    WIN sticker that fragments the bright-blob localizer.
+
+    Synthetic table: two white cards low-center with an orange sticker over
+    their lower half (the live failure mode, e.g. H3436/H3454). The card body
+    is high-value/low-saturation; the sticker is saturated, so whiteness
+    masking + an aggressive close rebuilds the full pair rectangle.
+    """
+    import numpy as np
+    from ocr import table_parser
+    table = np.full((400, 300, 3), 45, np.uint8)  # dark felt
+    # pair low-center, inside the [0.55:1.0, 0.24:0.72] whiteness window
+    table[248:356, 100:148] = (255, 255, 255)      # left card (white)
+    table[248:356, 152:200] = (255, 255, 255)      # right card (white)
+    table[330:356, 100:200] = (0, 140, 255)        # orange WIN sticker (BGR)
+    crops = table_parser._locate_hero_white(table)
+    assert_eq(len(crops), 2, "must locate a two-card pair past the sticker")
+    assert_true(table_parser._hero_pair_healthy(crops),
+                "recovered pair must have healthy geometry")
+
+
+@test
+def test_locate_hero_white_divider_mode_picks_bottom_clipped_pair():
+    """OCR: in divider mode _locate_hero_white searches a band straddling the
+    divider and picks the BOTTOM-most pair — recovering hero cards clipped by
+    the table/panel split while rejecting the board cards that sit higher.
+
+    Dominant residual cause (TM5863068198/TM5866746802): hero pair clipped by
+    the divider (lower half in the panel) renders ~69px tall; the table-only
+    search saw only the board. Regression for the floor (these real pairs are
+    ~69px, just under the old 70px floor) and for bottom-most selection.
+    """
+    import numpy as np
+    from ocr import table_parser
+    H, W, divider_y = 500, 300, 330
+    img = np.full((H, W, 3), 45, np.uint8)
+    # decoy "board" pair-shaped blob higher up (wider), inside the band:
+    img[200:266, 75:205] = (255, 255, 255)              # w130 h66, bottom=266
+    # hero pair lower, small (~68px) and straddling the divider:
+    img[300:368, 105:150] = (255, 255, 255)             # left card
+    img[300:368, 155:195] = (255, 255, 255)             # right card  -> w90 h68
+    crops = table_parser._locate_hero_white(img, divider_y=divider_y)
+    assert_eq(len(crops), 2, "divider mode must locate the clipped pair")
+    assert_true(table_parser._hero_pair_healthy(crops),
+                "~68px clipped pair must pass (floor 60, not 70)")
+    total_w = crops[0].shape[1] + crops[1].shape[1]
+    assert_true(total_w < 115,
+                f"must pick the bottom hero pair (~96px) not the wider board "
+                f"decoy (~136px); got width {total_w}")
+
+
+@test
+def test_parse_table_plumbs_full_image_for_hero_localization():
+    """OCR: parse_table forwards the full image + divider_y to hero
+    localization so stage-3 (divider-spanning) can fire; n8_parser supplies
+    them. Without this plumbing the clipped-hero recovery is dead code."""
+    import inspect
+    from ocr import table_parser, n8_parser
+    pt = inspect.getsource(table_parser.parse_table)
+    assert_in("full_image=full_image", pt, "parse_table must pass full_image on")
+    assert_in("divider_y=divider_y", pt, "parse_table must pass divider_y on")
+    caller = inspect.getsource(n8_parser.parse_n8_screenshot)
+    assert_in("full_image=image", caller, "n8_parser must supply the full image")
+
+
+@test
 def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     """OCR: _find_hero_cards classifies both raw and masked crops, taking
     rank from the raw prediction (rank corner sits at the top — masking
@@ -4394,11 +4511,13 @@ def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
     """
     import inspect
     from ocr import table_parser
-    src = inspect.getsource(table_parser._find_hero_cards)
+    # The raw+masked classification body lives in _classify_hero_crops, shared
+    # by both localizer passes in _find_hero_cards (bright + whiteness retry).
+    src = inspect.getsource(table_parser._classify_hero_crops)
     assert_in("classify_batch_detailed_tta(crops)", src,
-              "_find_hero_cards should classify the raw crops too")
+              "_classify_hero_crops should classify the raw crops too")
     assert_in("classify_batch_detailed_tta(masked_crops)", src,
-              "_find_hero_cards should classify the masked crops too")
+              "_classify_hero_crops should classify the masked crops too")
     # Sanity: rank starts from raw, can be repaired by raw top-2/corner OCR,
     # and suit comes from the masked crop.
     assert_in('raw["rank"]', src)

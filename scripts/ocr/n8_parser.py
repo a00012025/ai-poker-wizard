@@ -332,8 +332,13 @@ def parse_n8_screenshot(image_bytes: bytes) -> dict:
             "diagnostics": _build_diagnostics({}, []),
         }
 
-    # Step 2: parse table
-    table_result = parse_table(regions["table"])
+    # Step 2: parse table (pass full image + divider so hero localization can
+    # search a band straddling the divider — hero cards are often clipped by it)
+    table_result = parse_table(
+        regions["table"],
+        full_image=image,
+        divider_y=regions.get("divider_y"),
+    )
 
     # Step 3: parse panel
     panel_result = parse_panel(regions["panel"])
