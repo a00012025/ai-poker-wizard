@@ -1,8 +1,18 @@
 # Coach Follow-up Grounding (P0) — Design Spec
 
 **Date:** 2026-06-07
-**Branch:** `feat/coach-followup-grounding`
-**Status:** Approved design, pending implementation plan
+**Branch:** `feat/coach-followup-grounding` (design) → `feat/coach-followup-grounding-impl` (implementation)
+**Status:** P0 + P1 implemented (`scripts/coach_facts.py`)
+
+> **Implemented (2026-06-07):** `scripts/coach_facts.py` ships the deterministic
+> classify → fetch → narrate → verify pipeline. Live registry types:
+> **P0** `why_action` (B), `fold_equity` (C), `villain_range` (D), `hand_strength` (E);
+> **P1** `range_shift` (F), `hypothetical` (G, with off-tree size rejection), `sizing` (H),
+> `node_url` (I), plus the numeric-claim audit in the hard verifier. `other`/`range_lookup`
+> intents fall back to the existing tool-calling path (no regression). Implementation plan:
+> `docs/superpowers/plans/2026-06-07-coach-followup-grounding.md`.
+> One design refinement: `allowed_claims` is stored on `Facts` (built inside each `fetch`)
+> rather than as a separate `QuestionType.allowed_claims` callable — same guarantee, simpler.
 
 ## Problem
 
