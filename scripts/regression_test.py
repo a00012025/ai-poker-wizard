@@ -11505,12 +11505,12 @@ def test_session_routes_coach_facts():
     import coach_facts as cf
     called = {}
 
-    def fake_answer(ctx):
+    def fake_answer_ex(ctx):
         called["q"] = ctx.question
-        return "GROUNDED_ANSWER"
+        return "GROUNDED_ANSWER", None
 
-    orig = cf.answer_followup
-    cf.answer_followup = fake_answer
+    orig = cf.answer_followup_ex
+    cf.answer_followup_ex = fake_answer_ex
     try:
         from gemini_session import GeminiSessionManager
         mgr = GeminiSessionManager()
@@ -11520,7 +11520,7 @@ def test_session_routes_coach_facts():
         assert_eq(out, "GROUNDED_ANSWER")
         assert_in("下注", called["q"])
     finally:
-        cf.answer_followup = orig
+        cf.answer_followup_ex = orig
 
 
 @test
@@ -11718,6 +11718,128 @@ def test_ensure_hand_context_noop_without_token_or_db():
     assert_true(not _asyncio.run(s._ensure_hand_context(7, user_id=1,
                                                         refresh_token="tok")),
                 "no DB → returns False")
+
+
+@test
+def test_attach_chart_only_when_solution_and_position():
+    """coach_facts._attach_chart records (solution, position) for grid render."""
+    import coach_facts as cf
+    f = cf.Facts(intent="why_action", title="t")
+    cf._attach_chart(f, None, "CO")
+    assert_true("chart" not in f.meta, "no chart without a solution")
+    cf._attach_chart(f, {"game": {}}, None)
+    assert_true("chart" not in f.meta, "no chart without a position")
+    sol = {"game": {}}
+    cf._attach_chart(f, sol, "CO")
+    assert_eq(f.meta["chart"]["position"], "CO", "position recorded")
+    assert_true(f.meta["chart"]["solution"] is sol, "solution recorded")
+
+
+@test
+def test_coach_facts_fetchers_attach_chart_meta():
+    """Range/strategy fetchers carry chart meta so the caller can draw the grid.
+
+    Regression for the H3515 follow-up: a range question answered by the
+    deterministic coach_facts path produced prose but no 13x13 range chart,
+    because that path bypasses the tool loop that queues the image.
+    """
+    cf, hctx, hero, villain = _load_coach_ctx()
+    actor = hero["game"]["active_position"]
+
+    sizing = cf._fetch_sizing_from(hero, hctx)
+    assert_true(sizing and sizing.meta.get("chart"), "sizing carries chart meta")
+    assert_eq(sizing.meta["chart"]["position"], actor,
+              "sizing charts the acting position")
+    assert_true(sizing.meta["chart"]["solution"] is hero,
+                "sizing chart points at the node solution")
+
+    vr = cf._fetch_villain_range_from(hero, hctx)
+    assert_true(vr and vr.meta.get("chart"), "villain_range carries chart meta")
+    assert_true(vr.meta["chart"]["position"], "villain_range charts a position")
+
+    fe = cf._fetch_fold_equity_from(villain, hctx)
+    assert_true(fe and fe.meta.get("chart"), "fold_equity carries chart meta")
+
+
+@test
+def test_answer_followup_ex_returns_facts_with_chart():
+    """answer_followup_ex returns (text, facts); answer_followup stays text-only."""
+    import coach_facts as cf
+    cf._set_intent_classifier(lambda q, c: "sizing")
+    orig_narrate = cf._narrate
+    cf._narrate = lambda facts, question, extra_vocab="": "教練回答（已驗證）"
+    try:
+        _, hctx, hero, _ = _load_coach_ctx()
+        # Drive the registry's sizing fetch off the real hero node.
+        cf.REGISTRY  # noqa: B018  (ensure module loaded)
+        text, facts = cf.answer_followup_ex(
+            cf.Ctx(question="我這條線下注尺寸要多大", hand_context=hctx))
+        # hctx may not resolve a postflop sizing node; only assert the contract
+        # when a grounded answer was produced.
+        if text is not None:
+            assert_true(facts is not None, "ex returns the facts alongside text")
+            assert_eq(cf.answer_followup(
+                cf.Ctx(question="我這條線下注尺寸要多大", hand_context=hctx)), text,
+                "answer_followup delegates and returns the same text")
+    finally:
+        cf._narrate = orig_narrate
+        cf._set_intent_classifier(None)
+
+
+@test
+def test_session_queues_grounded_range_chart():
+    """_try_coach_facts queues a range grid when the grounded facts are chartable."""
+    import coach_facts as cf
+    _, hctx, hero, _ = _load_coach_ctx()
+    actor = hero["game"]["active_position"]
+
+    facts = cf.Facts(intent="sizing", title="t", lines=["x"],
+                     meta={"chart": {"solution": hero, "position": actor}})
+
+    def fake_ex(ctx):
+        return "GROUNDED", facts
+
+    orig = cf.answer_followup_ex
+    cf.answer_followup_ex = fake_ex
+    try:
+        from gemini_session import GeminiSessionManager
+        mgr = GeminiSessionManager()
+        mgr.hand_contexts[5] = {"hero_position": actor, "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}
+        out = mgr._try_coach_facts(5, "下注尺寸要多大")
+        assert_eq(out, "GROUNDED", "grounded answer returned")
+        pending = mgr.pending_images.get(5) or []
+        assert_eq(len(pending), 1, "one range chart queued")
+        img_bytes, caption = pending[0]
+        assert_true(isinstance(img_bytes, (bytes, bytearray)) and len(img_bytes) > 100,
+                    "queued a real PNG")
+        assert_in("📊", caption, "chart caption present")
+        assert_in(actor, caption, "caption names the charted position")
+    finally:
+        cf.answer_followup_ex = orig
+
+
+@test
+def test_session_no_chart_when_facts_not_chartable():
+    """No chart queued when the grounded facts carry no chart meta."""
+    import coach_facts as cf
+
+    def fake_ex(ctx):
+        return "ANSWER", cf.Facts(intent="hand_strength", title="t", lines=["x"])
+
+    orig = cf.answer_followup_ex
+    cf.answer_followup_ex = fake_ex
+    try:
+        from gemini_session import GeminiSessionManager
+        mgr = GeminiSessionManager()
+        mgr.hand_contexts[6] = {"hero_position": "CO", "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}
+        out = mgr._try_coach_facts(6, "我這手牌算強嗎")
+        assert_eq(out, "ANSWER")
+        assert_true(not mgr.pending_images.get(6),
+                    "hand_strength is not chartable → no image queued")
+    finally:
+        cf.answer_followup_ex = orig
 
 
 if __name__ == "__main__":

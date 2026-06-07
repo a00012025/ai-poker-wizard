@@ -56,6 +56,18 @@ class Facts:
         return f"{head}\n{body}{tail}"
 
 
+def _attach_chart(facts: "Facts", sol: dict | None, position: str | None) -> None:
+    """Stash the (solution, position) needed to render a 13x13 range grid.
+
+    Range/strategy follow-ups answered by this deterministic path bypass the
+    tool loop that normally queues the chart, so the caller never had an image
+    to send. Recording it here lets the session manager draw the acting
+    position's strategy grid alongside the grounded prose.
+    """
+    if sol is not None and position:
+        facts.meta["chart"] = {"position": position, "solution": sol}
+
+
 @dataclass
 class QuestionType:
     id: str
@@ -504,6 +516,7 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
         _why_hand_lines(name, hf, facts)
     facts.meta = {"hero_hand": hero_hand, "board": board,
                   "hands": [n for n, _ in resolved]}
+    _attach_chart(facts, sol, actor)
     return facts
 
 
@@ -590,6 +603,7 @@ def _fetch_fold_equity_from(vsol: dict, hand_context: dict) -> Facts | None:
         facts.lines.append(f"  你的 {hero_hand} 對上對手續打範圍 equity {eqp[0]}%")
         facts.numbers.add(eqp[0])
     facts.meta = {"villain": villain, "board": board, "table": table}
+    _attach_chart(facts, vsol, villain)
     return facts
 
 
@@ -636,6 +650,7 @@ def _fetch_villain_range_from(hsol: dict, hand_context: dict) -> Facts | None:
             f"  你的 {hero_hand} 對上此範圍 equity {eqp[0]}%、percentile {eqp[1]}%")
         facts.numbers |= {eqp[0], eqp[1]}
     facts.meta = {"villain": villain, "board": board, "rows": rows}
+    _attach_chart(facts, hsol, villain)
     return facts
 
 
@@ -675,6 +690,7 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
         if bypot:
             facts.numbers.add(_pct(bypot))  # the size % is a legit number too
     facts.meta = {"board": board, "rows": rows}
+    _attach_chart(facts, hsol, actor)
     return facts
 
 
@@ -743,6 +759,7 @@ def _fetch_hypothetical_size_from(hsol: dict, hand_context: dict,
     f.allowed_claims |= canonical_forms(hero_hand or "")
     f.numbers |= {_pct(fr), _pct(target_pot_ratio), _pct(bp)}
     f.meta = {"board": board, "code": code}
+    _attach_chart(f, hsol, _acting_position(hsol))
     return f
 
 
@@ -811,6 +828,7 @@ def fetch_node_url(ctx: Ctx) -> Facts | None:
         facts.lines.append(line)
         facts.numbers |= {_pct(v) for v in actions.values()}
     facts.meta = {"board": board}
+    _attach_chart(facts, sol, actor)
     return facts
 
 
@@ -979,37 +997,48 @@ def _finalize(text: str) -> str:
 
 
 # ── public entry ────────────────────────────────────────────────────────────
-def answer_followup(ctx: Ctx) -> str | None:
-    """Public entry. Returns a grounded answer, or None for 'other' (caller falls back)."""
+def answer_followup_ex(ctx: Ctx) -> tuple[str | None, "Facts | None"]:
+    """Like answer_followup, but also returns the Facts behind the answer.
+
+    The Facts carries ``meta["chart"]`` (solution + acting position) for
+    range/strategy intents so the caller can render a 13x13 range grid. Returns
+    ``(None, None)`` for 'other'/'range_lookup' and any failure (caller falls
+    back to the tool path, which queues its own chart).
+    """
     intent = classify_intent(ctx.question, ctx.hand_context)
     if intent in ("other", "range_lookup"):
-        return None
+        return None, None
     qt = _BY_INTENT.get(intent)
     if not qt:
-        return None
+        return None, None
     try:
         facts = qt.fetch(ctx)
     except Exception as e:
         logger.warning(f"coach_facts: fetch({intent}) failed: {e}")
-        return None
+        return None, None
     if not facts or not facts.lines:
-        return None
+        return None, None
     board = facts.meta.get("board", "") or _question_board(ctx)
     try:
         draft = _narrate(facts, ctx.question)
     except Exception as e:
         logger.warning(f"coach_facts: narrate failed: {e}")
-        return render_template(facts)
+        return render_template(facts), facts
     v = verify_claims(draft, facts, board, audit_numbers=True)
     if v.ok:
-        return _finalize(draft)
+        return _finalize(draft), facts
     vocab = "、".join(sorted(facts.allowed_claims))
     try:
         draft2 = _narrate(facts, ctx.question, extra_vocab=vocab)
         if verify_claims(draft2, facts, board, audit_numbers=True).ok:
-            return _finalize(draft2)
+            return _finalize(draft2), facts
     except Exception:
         pass
     logger.info(f"coach_facts: verifier fallback to template (intent={intent}, "
                 f"violations={v.violations})")
-    return render_template(facts)
+    return render_template(facts), facts
+
+
+def answer_followup(ctx: Ctx) -> str | None:
+    """Public entry. Returns a grounded answer, or None for 'other' (caller falls back)."""
+    return answer_followup_ex(ctx)[0]

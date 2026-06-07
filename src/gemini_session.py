@@ -1018,7 +1018,7 @@ class GeminiSessionManager:
         try:
             self._setup_user_token(user_id, refresh_token)
             try:
-                answer = coach_facts.answer_followup(coach_facts.Ctx(
+                answer, facts = coach_facts.answer_followup_ex(coach_facts.Ctx(
                     question=user_text, hand_context=ctx,
                     user_id=user_id, refresh_token=refresh_token,
                 ))
@@ -1030,7 +1030,45 @@ class GeminiSessionManager:
         if answer:
             self._logger.info(
                 f"[chat={chat_id}] coach_facts grounded answer ({len(answer)} chars)")
+            # Range/strategy intents describe a node's distribution; draw the
+            # 13x13 grid so range answers come with a chart like the tool path.
+            self._queue_grounded_range_chart(chat_id, facts)
         return answer
+
+    def _queue_grounded_range_chart(self, chat_id: int, facts) -> None:
+        """Queue a range grid for a grounded coach_facts answer, if chartable.
+
+        The deterministic coach_facts path bypasses _execute_query_gto (the
+        only other place that queues range charts), so range/strategy
+        follow-ups answered here had no image.  When the Facts carries a
+        ``meta["chart"]`` (solution + acting position), render the grid and
+        push it onto ``pending_images`` for the bot to flush after the reply.
+        Non-critical: any failure just means no chart.
+        """
+        chart = getattr(facts, "meta", {}).get("chart") if facts else None
+        if not chart:
+            return
+        sol = chart.get("solution")
+        position = chart.get("position")
+        if not sol or not position:
+            return
+        try:
+            from range_image import generate_range_grid
+            game = sol.get("game", {})
+            st = game.get("current_street", {}).get("type", "").capitalize()
+            board = game.get("board", "")
+            title = f"{position} {st}".strip()
+            if board:
+                title += f" | {board}"
+            img = generate_range_grid(sol, position, title=title)
+            if chat_id not in self.pending_images:
+                self.pending_images[chat_id] = []
+            self.pending_images[chat_id].append((img, f"📊 {title}"))
+            self._logger.info(
+                f"[chat={chat_id}] queued grounded range chart ({title})")
+        except Exception as e:
+            self._logger.warning(
+                f"[chat={chat_id}] grounded range chart failed: {e}")
 
     async def _save_snapshot(self, hand_id: str, chat_id: int,
                               source_type: str, user_input: str | None,
