@@ -203,6 +203,20 @@ def _acting_position(sol: dict) -> str | None:
     return (sol.get("game") or {}).get("active_position")
 
 
+def _hero_hand(hand_context: dict) -> str | None:
+    """Hero's hand, preferring the SPECIFIC combo over the normalized class.
+
+    analyze_hand stores ctx['hero_hand'] normalized (e.g. 'AKs'), but the raw
+    parsed hand keeps the exact combo ('AdKd'). On suit-specific boards (flushes)
+    the class average is badly wrong — the nut-flush combo must be evaluated, not
+    the AKs average — so use the specific combo whenever it's available.
+    """
+    raw = (hand_context.get("hand") or {}).get("hero_hand")
+    if raw and _RE_COMBO.fullmatch(raw):
+        return raw
+    return hand_context.get("hero_hand")
+
+
 def _category_action_table(sol: dict, top_n: int = 4) -> list[tuple[str, float, dict]]:
     """Acting player's hand categories with per-action freq splits, by frequency."""
     pos = _acting_position(sol)
@@ -273,7 +287,13 @@ def _rep_classes_for_category(sol: dict, category_name: str,
 
 
 def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
-    """Hero combo's eq / eqr / percentile / per-action freq at this node."""
+    """Hero combo's eq / eqr / percentile / per-action freq at this node.
+
+    Sets ``low_weight`` when the combo has ~0 weight in this node's range: that
+    means the hero reached this node via a line the solver almost never takes
+    with this hand, so the per-combo equity/percentile are degenerate sentinels
+    (eq=0, percentile=-1) and must NOT be reported as the hand's real strength.
+    """
     pi = _players(sol).get(hero_pos)
     if not pi:
         return None
@@ -281,11 +301,22 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
     cls = gf.normalize_hand_name(hero_hand) if hero_hand else None
     out: dict = {"class": cls}
     if idx is not None:
+        rng = pi.get("range") or []
+        out["weight"] = rng[idx] if idx < len(rng) else None
         for k_src, k_dst in (("hand_eqs", "eq"), ("hand_eqrs", "eqr"),
                              ("eq_percentile", "percentile")):
             arr = pi.get(k_src) or []
             if idx < len(arr):
                 out[k_dst] = arr[idx]
+    # Degenerate when the combo is essentially not in range here.
+    w = out.get("weight")
+    pctile = out.get("percentile")
+    out["low_weight"] = (
+        (w is not None and w < 0.005)
+        or (pctile is not None and pctile < 0)
+    )
+    if out.get("low_weight") and (pctile is not None and pctile < 0):
+        out["percentile"] = None  # drop the -1 sentinel
     shc = (pi.get("simple_hand_counters") or {}).get(cls or "")
     if shc:
         out["actions"] = {k: v for k, v in (shc.get("actions_total_frequencies") or {}).items()
@@ -296,9 +327,14 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
 
 
 def _hero_eq_vs_range(sol: dict, hero_pos: str, hero_hand: str) -> tuple[int, int] | None:
-    """(equity%, percentile%) for hero's combo vs the opponent range at this node."""
+    """(equity%, percentile%) for hero's combo vs the opponent range at this node.
+
+    Returns None when the combo barely reaches this node (off-strategy line):
+    the solver's per-combo equity is a degenerate sentinel there, so callers
+    degrade gracefully rather than claim a misleading '0% / no chance'.
+    """
     f = _hero_combo_facts(sol, hero_pos, hero_hand)
-    if not f or f.get("eq") is None:
+    if not f or f.get("eq") is None or f.get("low_weight"):
         return None
     return _pct(f["eq"]), _pct(f.get("percentile") or 0.0)
 
@@ -418,11 +454,16 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
 def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
     facts.allowed_claims |= canonical_forms(name)
     head = f"  {name}："
-    if hf.get("eq") is not None:
+    # Skip the per-combo equity when the hand barely reaches this node
+    # (off-strategy line) — the sentinel eq would be a misleading '0%'.
+    if hf.get("eq") is not None and not hf.get("low_weight"):
         head += f"equity {_pct(hf['eq'])}%"
         facts.numbers.add(_pct(hf["eq"]))
         if hf.get("percentile") is not None:
             head += f"、percentile {_pct(hf['percentile'])}%"
+    elif hf.get("low_weight"):
+        head += "在 GTO 中此線極少出現（頻率近 0），數據參考性低"
+        facts.note = "你的實際打法偏離 solver 主線，此節點數據僅供參考"
     facts.lines.append(head)
     if hf.get("actions"):
         facts.lines.append(f"      solver 動作：{_fmt_actions(hf['actions'])}")
@@ -438,7 +479,7 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
     if not sol:
         return None
     hero = ctx.hand_context.get("hero_position")
-    hero_hand = ctx.hand_context.get("hero_hand")
+    hero_hand = _hero_hand(ctx.hand_context)
     actor = _acting_position(sol)
     board = (sol.get("game") or {}).get("board") or ""
     # The question may name one or more specific hands (e.g. "為什麼 A3 check 但
@@ -471,7 +512,7 @@ def fetch_hand_strength(ctx: Ctx) -> Facts | None:
     if not sol:
         return None
     hero = ctx.hand_context.get("hero_position")
-    hero_hand = ctx.hand_context.get("hero_hand")
+    hero_hand = _hero_hand(ctx.hand_context)
     board = (sol.get("game") or {}).get("board") or ""
     eqp = _hero_eq_vs_range(sol, hero, hero_hand)
     if not eqp:
@@ -527,7 +568,7 @@ def _fetch_fold_equity_from(vsol: dict, hand_context: dict) -> Facts | None:
     board = (vsol.get("game") or {}).get("board") or ""
     villain = _acting_position(vsol)
     hero = hand_context.get("hero_position")
-    hero_hand = hand_context.get("hero_hand")
+    hero_hand = _hero_hand(hand_context)
     table = _category_action_table(vsol, top_n=5)
     if not table:
         return None
@@ -557,7 +598,7 @@ def _fetch_villain_range_from(hsol: dict, hand_context: dict) -> Facts | None:
     if not hsol:
         return None
     hero = hand_context.get("hero_position")
-    hero_hand = hand_context.get("hero_hand")
+    hero_hand = _hero_hand(hand_context)
     board = (hsol.get("game") or {}).get("board") or ""
     acting = _acting_position(hsol)
     villain = next((p for p in _players(hsol) if p != acting and p != hero), None)
@@ -613,7 +654,7 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
         return None
     board = (hsol.get("game") or {}).get("board") or ""
     actor = _acting_position(hsol)
-    hero_hand = hand_context.get("hero_hand")
+    hero_hand = _hero_hand(hand_context)
     rows = []
     for asol in hsol.get("action_solutions") or []:
         act = asol["action"]
@@ -631,6 +672,8 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
         sz = f"{_pct(bypot)}% 底池" if bypot else f"{code[1:]}bb"
         facts.lines.append(f"  {sz}：頻率 {_pct(fr)}%")
         facts.numbers.add(_pct(fr))
+        if bypot:
+            facts.numbers.add(_pct(bypot))  # the size % is a legit number too
     facts.meta = {"board": board, "rows": rows}
     return facts
 
@@ -648,7 +691,7 @@ def fetch_range_shift(ctx: Ctx) -> Facts | None:
     if len(pairs) < 2:
         return None
     hero = hc.get("hero_position")
-    hero_hand = hc.get("hero_hand")
+    hero_hand = _hero_hand(hc)
     (sp0, s0), (sp1, s1) = pairs[-2], pairs[-1]
     e0 = _hero_eq_vs_range(s0, hero, hero_hand)
     e1 = _hero_eq_vs_range(s1, hero, hero_hand)
@@ -675,7 +718,7 @@ def _fetch_hypothetical_size_from(hsol: dict, hand_context: dict,
     if not hsol:
         return None
     board = (hsol.get("game") or {}).get("board") or ""
-    hero_hand = hand_context.get("hero_hand")
+    hero_hand = _hero_hand(hand_context)
     best = None
     for asol in hsol.get("action_solutions") or []:
         bp = _to_float(asol["action"].get("betsize_by_pot"))
@@ -693,11 +736,12 @@ def _fetch_hypothetical_size_from(hsol: dict, hand_context: dict,
     asol = best[1]
     code = asol["action"]["code"]
     fr = asol.get("total_frequency") or 0.0
+    bp = _to_float(asol["action"].get("betsize_by_pot"))
     f = Facts(intent="hypothetical",
               title=f"最接近 {_pct(target_pot_ratio)}% 底池的 solver 尺寸（{board}）：",
-              lines=[f"  {code}：整體頻率 {_pct(fr)}%"])
+              lines=[f"  {code}（約 {_pct(bp)}% 底池）：整體頻率 {_pct(fr)}%"])
     f.allowed_claims |= canonical_forms(hero_hand or "")
-    f.numbers.add(_pct(fr))
+    f.numbers |= {_pct(fr), _pct(target_pot_ratio), _pct(bp)}
     f.meta = {"board": board, "code": code}
     return f
 
@@ -716,7 +760,7 @@ def fetch_hypothetical(ctx: Ctx) -> Facts | None:
     f = Facts(intent="hypothetical", title="假設情境：",
               lines=["  此假設情境超出目前 solver 樹涵蓋範圍，無法提供可靠數據。"],
               note="超出 solver 樹")
-    f.allowed_claims |= canonical_forms(ctx.hand_context.get("hero_hand") or "")
+    f.allowed_claims |= canonical_forms(_hero_hand(ctx.hand_context) or "")
     return f
 
 
@@ -852,16 +896,21 @@ _INTENT_PROMPT = (
     "villain_range: 問對手下注/加注/全下的範圍有哪些牌\n"
     "hand_strength: 問我這手牌的牌力/強弱/equity\n"
     "range_shift: 問某張牌（轉牌/河牌）出現後範圍或牌力如何變化\n"
-    "sizing: 問為什麼用這個下注尺寸、該用多大\n"
-    "hypothetical: 問『如果…會怎樣』的假設情境\n"
+    "sizing: 問下注尺寸相關——為什麼用這個 size／為什麼 overbet／該下多大／為什麼下大下小\n"
+    "hypothetical: 問『如果…會怎樣』的假設情境（換一張牌、換一個尺寸、換一條線）\n"
     "node_url: 訊息含 GTO Wizard 連結，要求解釋該節點\n"
     "range_lookup: 『單純列舉』某位置某街要用哪些牌（哪些牌/範圍有哪些），句中沒有『為什麼』\n"
-    "other: 以上皆非\n"
-    "\n判斷優先序：句中出現『為什麼/為何/why』且在問動作/策略 → 一律 why_action（勝過 range_lookup）。\n"
-    "範例：『為什麼 A3 高頻 check，Q9 高頻 bet』→ why_action；"
-    "『為什麼 KTo 也要下注』→ why_action；"
-    "『我在 BTN 跟注的範圍有哪些』→ range_lookup；"
-    "『除了 JJ 還有哪些牌價值下注』→ range_lookup。\n"
+    "other: 以上皆非。包含：結果論/情緒（『我打對了嗎』『哪裡打錯』『是不是 cooler』『衰不衰』）、"
+    "問虧了多少 EV、問剝削調整（『對手是 calling station/fish 怎麼調整』）、問下注頻率（多久 bluff 一次）、"
+    "純理論或定義（GTO 是什麼、blocker、MDF）、學習/心態/資金管理建議\n"
+    "\n判斷優先序（由上往下）：\n"
+    "1) 問尺寸/overbet → sizing（即使有『為什麼』，只要核心在問 size 就選 sizing，不要選 why_action）。\n"
+    "2) 句中有『為什麼/為何/why』且在問某手牌的動作/策略 → why_action（勝過 range_lookup）。\n"
+    "3) 結果論/情緒/剝削/EV數字/頻率/理論/學習 → other（不要硬塞到 hand_strength 或 hypothetical）。\n"
+    "範例：『為什麼 A3 check，Q9 bet』→ why_action；『為什麼 river 要 overbet』→ sizing；"
+    "『我這手打對了嗎』→ other；『虧了多少 EV』→ other；"
+    "『對手是 calling station 怎麼調整』→ other；『多久 bluff 一次』→ other；"
+    "『我在 BTN 跟注的範圍有哪些』→ range_lookup。\n"
 )
 
 

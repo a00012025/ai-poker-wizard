@@ -11121,6 +11121,57 @@ def test_coach_facts_why_named_hand():
 
 
 @test
+def test_coach_facts_hero_specific_combo():
+    """coach_facts: hero's SPECIFIC combo (AdKd) beats the normalized class (AKs).
+
+    On suit-specific boards the class average is wrong; we must evaluate the combo.
+    """
+    import coach_facts as cf
+    hc = {"hero_hand": "AKs", "hand": {"hero_hand": "AdKd"}}
+    assert_eq(cf._hero_hand(hc), "AdKd", "prefer specific combo from raw hand")
+    hc2 = {"hero_hand": "AKs", "hand": {"hero_hand": "AKs"}}
+    assert_eq(cf._hero_hand(hc2), "AKs", "fall back to class when no combo")
+    hc3 = {"hero_hand": "QQ"}
+    assert_eq(cf._hero_hand(hc3), "QQ", "no raw hand -> ctx value")
+
+
+@test
+def test_coach_facts_low_weight_node_sentinel():
+    """coach_facts: a combo barely in range (off-strategy line) is not reported
+    as '0% equity' — _hero_eq_vs_range returns None and the combo is low_weight."""
+    import coach_facts as cf
+    import gto_formatter as gf
+    idx = gf.combo_index_for_hand("AdKd")
+    rng = [0.0] * 1326
+    eqs = [0.0] * 1326
+    pctl = [0.0] * 1326
+    rng[idx] = 0.0          # essentially not in range here
+    eqs[idx] = 0.0
+    pctl[idx] = -1.0        # solver "not in range" sentinel
+    sol = {"game": {"active_position": "CO", "board": "Qd8d3cTh2d"},
+           "players_info": [{"player": {"position": "CO"}, "range": rng,
+                             "hand_eqs": eqs, "eq_percentile": pctl,
+                             "simple_hand_counters": {}}]}
+    hf = cf._hero_combo_facts(sol, "CO", "AdKd")
+    assert_true(hf.get("low_weight"), "near-zero weight + neg percentile -> low_weight")
+    assert_true(cf._hero_eq_vs_range(sol, "CO", "AdKd") is None,
+                "degenerate node -> no misleading equity")
+
+
+@test
+def test_coach_facts_sizing_allows_size_numbers():
+    """coach_facts: numeric audit must not flag legit pot-size %s in a sizing card."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf._fetch_sizing_from(hero, hctx)
+    assert_true(facts is not None, "sizing facts")
+    # every percentage printed in the card is registered as a fact number
+    import re as _re
+    for ln in facts.lines:
+        for m in _re.finditer(r"(\d{1,3})\s*%", ln):
+            assert_in(int(m.group(1)), facts.numbers, f"{m.group(1)}% must be a fact number")
+
+
+@test
 def test_coach_facts_fetch_hand_strength():
     """coach_facts: fetch_hand_strength reports equity + percentile."""
     cf, hctx, hero, villain = _load_coach_ctx()
