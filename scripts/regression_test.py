@@ -7651,6 +7651,111 @@ def test_build_last_node_none_when_no_decisions():
     assert_true(build_last_node_url({"hand": {}, "hero_spots": [], "solutions": []}) is None)
 
 
+def _split_flow_session(fake_ctx, fake_hand):
+    """Build a GeminiSessionManager wired for send_message split-flow tests.
+
+    Bypasses __init__ (which needs a live genai client / API key) and stubs
+    every I/O method send_message touches, so the test stays hermetic and
+    only exercises the split-response gate.
+    """
+    import logging as _logging
+    import gemini_session as _gs
+
+    sess = _gs.GeminiSessionManager.__new__(_gs.GeminiSessionManager)
+    sess._logger = _logging.getLogger("test_split_flow")
+    sess.hand_contexts = {}
+    sess.histories = {}
+    sess.last_hand_ids = {}
+    sess.pending_images = {}
+    sess.db = None
+    sess.model = "test-model"
+    sess.parse_model = "test-parse"
+
+    async def _fake_parse(chat_id, user_text, usage_acc=None):
+        return fake_hand
+
+    async def _fake_coach(*a, **k):
+        return "COACHING REPLY"
+
+    async def _noop(*a, **k):
+        return None
+
+    sess._parse_hand = _fake_parse
+    sess._chat_with_tools = _fake_coach
+    sess._save_usage = _noop
+    sess._save_snapshot = _noop
+    sess._extract_deviations = _noop
+    sess._update_snapshot_coaching = _noop
+    sess._setup_user_token = lambda *a, **k: None
+    sess._clear_user_token = lambda *a, **k: None
+    return sess
+
+
+def _run_split_flow(fake_ctx, fake_hand, user_text):
+    """Drive send_message with a recording send_gto_callback; return (sent, result)."""
+    import asyncio
+    import analyze_hand as _ah
+
+    sess = _split_flow_session(fake_ctx, fake_hand)
+    orig = _ah.analyze_hand_full
+    _ah.analyze_hand_full = lambda hj: fake_ctx
+    sent = []
+
+    async def _cb(text):
+        sent.append(text)
+
+    async def _drive():
+        return await sess.send_message(
+            999, user_text, refresh_token="x", send_gto_callback=_cb)
+
+    try:
+        result = asyncio.run(_drive())
+    finally:
+        _ah.analyze_hand_full = orig
+    return sent, result
+
+
+@test
+def test_text_split_flow_fires_gto_card_for_concrete_hand():
+    """send_message pushes the structured per-street GTO card via
+    send_gto_callback before the coaching reply when there's a concrete hero
+    hand — the perceived-speed split that mirrors the image pipeline."""
+    fake_hand = {
+        "hero_position": "HJ", "hero_hand": "Ah7h",
+        "preflop_actions": "R2-C-C", "effective_bb": 25,
+        "streets": [{"board": "TdJhQc",
+                     "actions": [{"position": "HJ", "action": "X"}]}],
+    }
+    fake_ctx = {
+        "text": "FULL GTO TEXT FOR COACH",
+        "text_compact": "♠ HJ A7s | 25bb MTT\n─── Preflop ───\nGTO: RAISE 100%",
+        "no_hero_hand": False, "hand": fake_hand,
+    }
+    sent, result = _run_split_flow(fake_ctx, fake_hand, "Eff 25bb hj Ah7h ...")
+    assert_eq(len(sent), 1, "GTO summary card should fire exactly once")
+    assert_in("─── Preflop ───", sent[0], "card carries text_compact content")
+    assert_in("COACHING REPLY", result, "coaching reply still returned after card")
+
+
+@test
+def test_text_split_flow_skips_gto_card_for_range_only_query():
+    """send_message must NOT push the GTO card for a range-only query
+    (no_hero_hand) — there's no per-hand verdict to show, so the split would
+    only add a noisy extra message."""
+    fake_hand = {
+        "hero_position": "HJ", "hero_hand": "", "no_hero_hand": True,
+        "preflop_actions": "R2", "effective_bb": 25,
+        "streets": [{"board": "TdJhQc",
+                     "actions": [{"position": "HJ", "action": "X"}]}],
+    }
+    fake_ctx = {
+        "text": "RANGE TEXT", "text_compact": "RANGE CARD",
+        "no_hero_hand": True, "hand": fake_hand,
+    }
+    sent, _ = _run_split_flow(fake_ctx, fake_hand, "HJ 開牌範圍是什麼")
+    assert_eq(len(sent), 0, "no GTO card should fire for a range-only query")
+
+
 # ── Runner ──
 
 def run_tests():

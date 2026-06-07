@@ -377,24 +377,44 @@ class PokerWizardBot:
         # Look up user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
 
+        # Split response: send the structured per-street GTO summary card the
+        # moment analysis finishes, before the slow coaching reply.  Matches the
+        # image flow so text hands with a concrete hero hand feel responsive.
+        gto_sent = False
+
+        async def send_gto_summary(text: str):
+            nonlocal gto_sent
+            await status_msg.delete()
+            # "Open in GTO Wizard" deep-link rides on the 📋 summary card.
+            gto_markup = self._build_gto_link_markup(chat_id)
+            await _send_reply(update.message, text, self.log, label,
+                              reply_markup=gto_markup)
+            gto_sent = True
+
         t0 = time.time()
         try:
             async with _TypingLoop(update.message.chat):
                 response = await self.session_manager.send_message(
                     chat_id, user_text, on_status=_on_status,
                     user_id=user_id, refresh_token=refresh_token,
+                    send_gto_callback=send_gto_summary,
                 )
             elapsed = time.time() - t0
             self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
 
-            await status_msg.delete()
+            if not gto_sent:
+                await status_msg.delete()
 
             if not response or not response.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
-                await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
+                if not gto_sent:
+                    await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
                 return
+            # When the summary card already carries the GTO Wizard link, the
+            # coaching reply only needs follow-up buttons; otherwise fall back
+            # to putting the link on the coaching reply.
             response, markup = self._finalize_followups(
-                chat_id, response, include_gto_link=True)
+                chat_id, response, include_gto_link=not gto_sent)
             await _send_reply(update.message, response, self.log, label,
                               reply_markup=markup)
 
@@ -405,13 +425,20 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
             from gto_token import TokenExpiredError
+            # Once the summary card went out the status message is gone, so a
+            # failed coaching call must surface the error as a fresh reply.
+            async def _show_err(text: str):
+                if gto_sent:
+                    await update.message.reply_text(text)
+                else:
+                    await status_msg.edit_text(text)
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during message handling")
-                await status_msg.edit_text(
+                await _show_err(
                     "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                 )
                 return
-            await status_msg.edit_text(f"❌ {str(e)}")
+            await _show_err(f"❌ {str(e)}")
 
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""
