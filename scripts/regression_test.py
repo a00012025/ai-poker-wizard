@@ -2032,6 +2032,106 @@ def test_preflop_only_multiway_allin():
     assert_true(len(text) > 10, "Should produce analysis text")
 
 
+# ── Multiway preflop reconciliation + real-node preflop (H3511) ──
+
+# H3511: "lj raise, co call, hero btn call, bb call" parsed to F-F-R2-C-C-F-F-C
+# — the LLM packed callers next to the raiser (HJ & CO call) and FOLDED hero BTN,
+# despite BTN checking the flop. The multiway collapse then folded hero pre-flop,
+# leaving no post-flop node, so every street printed "（無 solver 數據）".
+
+_H3511_STREETS = [
+    {"board": "9sJcQh", "actions": [
+        {"position": "BB", "action": "X"}, {"position": "LJ", "action": "X"},
+        {"position": "CO", "action": "X"}, {"position": "BTN", "action": "X"}]},
+    {"card": "Th", "actions": [
+        {"position": "LJ", "action": "R", "size": 2.6},
+        {"position": "CO", "action": "F"}, {"position": "BTN", "action": "C"},
+        {"position": "BB", "action": "F"}]},
+    {"card": "Ac", "actions": [
+        {"position": "LJ", "action": "X"}, {"position": "BTN", "action": "X"}]},
+]
+
+
+@test
+def test_reconcile_rebuilds_when_hero_folded_on_checkaround_flop():
+    """H3511: hero folded pre-flop but checks the flop → rebuild from flop seats.
+
+    The flop is a pure check-around (BB/LJ/CO/BTN all check), so its participant
+    list is complete: re-seat the callers (drop the phantom HJ, restore BTN) and
+    keep the single raise.
+    """
+    from analyze_hand import _reconcile_preflop_with_streets, POSITION_ORDER
+    new, changed = _reconcile_preflop_with_streets(
+        "F-F-R2-C-C-F-F-C", _H3511_STREETS, "BTN", POSITION_ORDER)
+    assert_true(changed, "should reconcile a hero-folded multiway line")
+    assert_eq(new, "F-F-R2-F-C-C-F-C", "callers re-seated to CO/BTN/BB, HJ dropped")
+
+
+@test
+def test_reconcile_noop_when_hero_not_folded():
+    """A faithfully-parsed multiway line (hero is a caller) is left untouched."""
+    from analyze_hand import _reconcile_preflop_with_streets, POSITION_ORDER
+    new, changed = _reconcile_preflop_with_streets(
+        "F-F-R2-F-C-C-F-C", _H3511_STREETS, "BTN", POSITION_ORDER)
+    assert_true(not changed, "consistent line must not be rewritten")
+    assert_eq(new, "F-F-R2-F-C-C-F-C")
+
+
+@test
+def test_reconcile_does_not_drop_caller_on_bet_flop():
+    """Hero folded + flop has a bet → ADD hero, but do NOT drop the other caller.
+
+    A non-check-around flop may omit players who folded to the bet, so a pre-flop
+    caller absent from the flop actions is kept (it collapses to a fold later)
+    rather than wrongly dropped. Hero (UTG+1) is restored as a caller.
+    """
+    from analyze_hand import _reconcile_preflop_with_streets, POSITION_ORDER
+    streets = [
+        {"board": "6s7h6h", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "UTG+1", "action": "R", "size": 2.5},
+            {"position": "BB", "action": "R", "size": 8.7}]},
+    ]
+    # UTG+1 (idx1) folded pre-flop but bets the flop; BTN (idx5) called pre-flop
+    # but never appears on this bet flop — must be kept, not dropped.
+    new, changed = _reconcile_preflop_with_streets(
+        "F-F-F-F-F-C-F-C", streets, "UTG+1", POSITION_ORDER)
+    assert_true(changed, "hero folded pre-flop yet plays the flop → must repair")
+    parts = new.split("-")
+    assert_true(parts[1] != "F", "hero UTG+1 must be restored as a non-folder")
+    assert_eq(parts[5], "C", "the off-flop caller (BTN) is kept, not dropped")
+
+
+@test
+def test_h3511_multiway_postflop_has_solver_data_and_overcall_preflop():
+    """End-to-end H3511: buggy parse → full post-flop solver data + overcall node.
+
+    After reconciliation the pot is BTN-vs-LJ heads-up post-flop (so every street
+    has solver data, not "（無 solver 數據）"), while the pre-flop BTN node reflects
+    the REAL multiway decision — facing LJ's open AND CO's call (the real-structure
+    branch), not the open alone.
+    """
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral", "players_at_table": 8, "effective_bb": 60,
+        "hero_position": "BTN", "hero_hand": "6h7h",
+        "preflop_actions": "F-F-R2-C-C-F-F-C",  # the buggy LLM parse
+        "streets": _H3511_STREETS,
+    })
+    text = result["text"]
+    assert_not_in("（無 solver 數據）", text,
+                  "post-flop must have solver data after HU simplification")
+    assert_in("保留真實下注結構", text, "must use the real-structure HU branch")
+    # Real-structure preflop spot: BTN faces LJ open + CO call. The collapsed
+    # open-only node would leave the BTN spot facing a single raiser; the real
+    # node includes the overcaller's dead money, so the pre-flop pot exceeds the
+    # open-only 4.8bb (≈2.5 open + blinds). Assert the overcall node is in use.
+    assert_in("【Preflop】", text)
+    # Hero spot present on every street (preflop + flop + turn + river headers).
+    for header in ("【Flop:", "【Turn:", "【River:"):
+        assert_in(header, text, f"{header} section must render")
+
+
 # ── HH Parser Tests ──
 
 _SAMPLE_HH_PREFLOP = """\
