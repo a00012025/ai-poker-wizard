@@ -294,6 +294,57 @@ def test_build_streets_tags_sized_allin():
 
 
 @test
+def test_effective_bb_opp_shove_called_uses_investment_not_misread_stack():
+    """Opp shoves all-in, hero calls in full → eff_bb = opp's investment.
+
+    H3514: BB (Gao zU) shoved 5.8bb on the river and hero (BTN) called. The
+    BB's tiny remaining stack (~0) was OCR-misread as the 18.9bb pot chips,
+    so the name/heuristic branch produced effective_bb ≈ 27-29bb. When the
+    last action is hero's call covering an explicit opponent all-in, the
+    opponent is committed (display ≈ 0) so their starting stack must come
+    from their total investment (opp_perm), giving the real ~8.8bb effective.
+    """
+    from ocr.n8_parser import _compute_effective_bb
+
+    columns = [
+        {"name": "Blinds (Ante)", "pot": None, "entries": [
+            {"type": "opp", "action": "sb", "size": 0.5, "player_name": "LetmeinAA"},
+            {"type": "opp", "action": "bb", "size": 1.0, "player_name": "Gao zU"},
+        ]},
+        {"name": "Pre-Flop", "pot": 2.3, "entries": [
+            {"type": "opp", "action": "fold", "player_name": "BboySheep"},
+            {"type": "opp", "action": "fold", "player_name": "alpaca"},
+            {"type": "opp", "action": "fold", "player_name": "Luv2crush"},
+            {"type": "opp", "action": "fold", "player_name": "JYNY"},
+            {"type": "hero", "action": "raise", "size": 2.0, "player_name": "cbd191320"},
+            {"type": "opp", "action": "fold", "player_name": "LetmeinAA"},
+            {"type": "opp", "action": "call", "size": 1.0, "player_name": "Gao zU"},
+        ]},
+        {"name": "Flop", "pot": 5.3, "entries": [
+            {"type": "opp", "action": "check", "player_name": "Gao zU"},
+            {"type": "hero", "action": "check", "player_name": "cbd191320"},
+        ]},
+        {"name": "Turn", "pot": 5.3, "entries": [
+            {"type": "opp", "action": "bet", "size": 1.0, "player_name": "Gao zU"},
+            {"type": "hero", "action": "call", "size": 1.0, "player_name": "cbd191320"},
+        ]},
+        {"name": "River", "pot": 7.3, "entries": [
+            {"type": "opp", "action": "all-in", "size": 5.8, "player_name": "Gao zU"},
+            {"type": "hero", "action": "call", "size": 5.8, "player_name": "cbd191320"},
+        ]},
+    ]
+    named_stacks = [
+        {"name": "Gao zU", "stack": 18.9},   # MISREAD: pot chips, really ~0
+        {"name": "cbd191320", "stack": 25.9},
+    ]
+    eff, hero_start = _compute_effective_bb(
+        columns, 25.9, "BTN",
+        [20.2, 15.4, 18.9, 18.8, 19.1, 55.4, 25.9], named_stacks)
+    assert_eq(hero_start, 34.7, "hero starting stack = display 25.9 + invested 8.8")
+    assert_eq(eff, 8.8, "eff_bb = BB's full investment (all-in), not misread stack")
+
+
+@test
 def test_collapse_allin_into_call_merges_shove_frequency():
     """A call facing a shove matches the GTO commit, not a phantom raise.
 
