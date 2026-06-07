@@ -86,10 +86,19 @@ def _class_to_combo_indices() -> dict[str, list[int]]:
     return _CLASS_GROUPS_CACHE
 
 
-# class token: two ranks + optional s/o  (AKs, AJo, 66, KT)
-_RE_CLASS = re.compile(r"\b([2-9TJQKA])([2-9TJQKA])([so])?\b")
-# specific combo: two full cards  (AhKh, 9d8d)
-_RE_COMBO = re.compile(r"\b([2-9TJQKA][cdhs])([2-9TJQKA][cdhs])\b")
+# class token: two ranks + optional s/o  (AKs, AJo, 66, KT). Case-insensitive so
+# lowercase user hands ('jj', 'ato', 'a9o') are caught too.
+_RE_CLASS = re.compile(r"\b([2-9TJQKA])([2-9TJQKA])([so])?\b", re.IGNORECASE)
+# specific combo: two full cards  (AhKh, 9d8d, ah7h)
+_RE_COMBO = re.compile(r"\b([2-9TJQKA][cdhs])([2-9TJQKA][cdhs])\b", re.IGNORECASE)
+
+
+def _norm_class(r1: str, r2: str, suffix: str) -> str:
+    return r1.upper() + r2.upper() + suffix.lower()
+
+
+def _norm_combo(c1: str, c2: str) -> str:
+    return c1[0].upper() + c1[1].lower() + c2[0].upper() + c2[1].lower()
 
 
 def _num_adjacent(text: str, start: int, end: int) -> bool:
@@ -115,7 +124,7 @@ def extract_combo_tokens(text: str) -> set[str]:
     # doesn't re-extract the embedded ranks (e.g. 'AhKh' must not yield 'AK').
     consumed: list[tuple[int, int]] = []
     for m in _RE_COMBO.finditer(text):
-        out.add(m.group(1) + m.group(2))
+        out.add(_norm_combo(m.group(1), m.group(2)))
         consumed.append((m.start(), m.end()))
 
     def _inside(pos: int) -> bool:
@@ -126,7 +135,14 @@ def extract_combo_tokens(text: str) -> set[str]:
             continue
         if _num_adjacent(text, m.start(), m.end()):
             continue
-        tok = m.group(0)
+        r1, r2, suffix = m.group(1), m.group(2), m.group(3) or ""
+        raw = m.group(0)
+        # Lowercase two-DIFFERENT-rank tokens with no s/o suffix are almost
+        # always English filler ('at the turn', 'as'), not a hand — skip them.
+        # Pairs ('jj'), suffixed ('ato'), and any uppercase form are real.
+        if raw.islower() and r1.lower() != r2.lower() and not suffix:
+            continue
+        tok = _norm_class(r1, r2, suffix)
         if tok in _TOKEN_STOPWORDS or tok in _POSITIONS:
             continue
         out.add(tok)
@@ -144,14 +160,16 @@ def canonical_forms(token: str) -> set[str]:
         return forms
     cm = _RE_COMBO.fullmatch(t)
     if cm:
-        c1, c2 = cm.group(1), cm.group(2)
+        c1, c2 = cm.group(1).upper()[0] + cm.group(1)[1].lower(), \
+                 cm.group(2).upper()[0] + cm.group(2)[1].lower()
         forms.add(c1 + c2)
         forms.add(c2 + c1)
         forms.add(gf._combo_to_hand_name(c1, c2))
         return forms
     clm = _RE_CLASS.fullmatch(t)
     if clm:
-        r1, r2, suit = clm.group(1), clm.group(2), clm.group(3) or ""
+        r1, r2 = clm.group(1).upper(), clm.group(2).upper()
+        suit = (clm.group(3) or "").lower()
         if _RANK_ORDER.index(r1) > _RANK_ORDER.index(r2):
             r1, r2 = r2, r1
         forms.add(r1 + r2 + suit)
@@ -296,8 +314,13 @@ def _street_from_question(q: str) -> str | None:
     return None
 
 
-def _hero_spot_and_sol(ctx: Ctx, street: str | None):
-    """Pick (hero_spot, solution) for the requested street, else last postflop spot."""
+def _hero_spot_and_sol(ctx: Ctx, street: str | None, prefer: str = "last"):
+    """Pick (hero_spot, solution) for the requested street.
+
+    When no street is named, ``prefer`` decides the default postflop spot:
+    'first' (the flop c-bet decision — right for "why does this hand bet")
+    or 'last' (the most recent street — right for "how strong am I now").
+    """
     hc = ctx.hand_context
     spots = hc.get("hero_spots") or []
     sols = hc.get("solutions") or []
@@ -309,6 +332,8 @@ def _hero_spot_and_sol(ctx: Ctx, street: str | None):
             if sp.get("street") == street:
                 return sp, s
     post = [(sp, s) for sp, s in pairs if sp.get("street") in ("flop", "turn", "river")]
+    if post and prefer == "first":
+        return post[0]
     return (post[-1] if post else pairs[-1])
 
 
@@ -349,40 +374,95 @@ def _fmt_actions(actions: dict) -> str:
     return " | ".join(parts)
 
 
+def _named_hands_from_question(ctx: Ctx, limit: int = 3) -> list[str]:
+    """Specific hands named in the question, in order of appearance.
+
+    e.g. '為什麼 A3 高頻 check, Q9 高頻 bet' -> ['A3', 'Q9'].
+    """
+    q = ctx.question or ""
+    ql = q.lower()
+    toks = extract_combo_tokens(q)
+    return sorted(toks, key=lambda t: (ql.find(t.lower()) + 1) or 10**9)[:limit]
+
+
+def _target_hand_from_question(ctx: Ctx) -> str | None:
+    hands = _named_hands_from_question(ctx, limit=1)
+    return hands[0] if hands else None
+
+
+def _resolve_class_in_range(sol: dict, actor: str, token: str):
+    """Resolve a question token to a hand the acting player actually holds.
+
+    Tries the token as-is, then (for a bare two-rank class) suited & offsuit,
+    picking the variant with the most in-range presence. Returns (name, hf) or
+    (None, None) so we never fabricate a hand that isn't in the range.
+    """
+    pi = _players(sol).get(actor) or {}
+    shc = pi.get("simple_hand_counters") or {}
+    cands = [token]
+    clm = _RE_CLASS.fullmatch(token or "")
+    if clm and clm.group(1).upper() != clm.group(2).upper() and not clm.group(3):
+        base = clm.group(1).upper() + clm.group(2).upper()
+        cands += [base + "s", base + "o"]
+    best = None
+    for c in cands:
+        hf = _hero_combo_facts(sol, actor, c)
+        if hf and (hf.get("eq") is not None or hf.get("actions")):
+            name = hf.get("class") or c
+            f = (shc.get(name, {}) or {}).get("total_frequency", 0.0) or 0.0
+            if best is None or f > best[2]:
+                best = (name, hf, f)
+    return (best[0], best[1]) if best else (None, None)
+
+
+def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
+    facts.allowed_claims |= canonical_forms(name)
+    head = f"  {name}："
+    if hf.get("eq") is not None:
+        head += f"equity {_pct(hf['eq'])}%"
+        facts.numbers.add(_pct(hf["eq"]))
+        if hf.get("percentile") is not None:
+            head += f"、percentile {_pct(hf['percentile'])}%"
+    facts.lines.append(head)
+    if hf.get("actions"):
+        facts.lines.append(f"      solver 動作：{_fmt_actions(hf['actions'])}")
+        facts.numbers |= {_pct(v) for v in hf["actions"].values()}
+
+
 # ── P0 fetchers ─────────────────────────────────────────────────────────────
 def fetch_why_action(ctx: Ctx) -> Facts | None:
-    spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
+    # "why does this hand bet" is almost always the flop c-bet decision when no
+    # street is named; prefer the first postflop spot over the river runout.
+    spot, sol = _hero_spot_and_sol(
+        ctx, _street_from_question(ctx.question), prefer="first")
     if not sol:
         return None
     hero = ctx.hand_context.get("hero_position")
     hero_hand = ctx.hand_context.get("hero_hand")
+    actor = _acting_position(sol)
     board = (sol.get("game") or {}).get("board") or ""
-    hf = _hero_combo_facts(sol, hero, hero_hand)
-    if not hf:
+    # The question may name one or more specific hands (e.g. "為什麼 A3 check 但
+    # Q9 bet"); answer about each, read from the acting player's range. Falls
+    # back to hero's own hand when none are named / resolvable.
+    named = _named_hands_from_question(ctx)
+    resolved: list[tuple[str, dict]] = []
+    for tok in named:
+        name, hf = _resolve_class_in_range(sol, actor, tok)
+        if name and not any(n == name for n, _ in resolved):
+            resolved.append((name, hf))
+    if not resolved and hero_hand:
+        name, hf = _resolve_class_in_range(sol, actor, hero_hand)
+        if name:
+            resolved.append((name, hf))
+    if not resolved:
         return None
-    cls = hf.get("class") or hero_hand
     facts = Facts(intent="why_action",
-                  title=f"{hero} {hero_hand} 在 {board} 的決策數據：")
-    facts.allowed_claims |= canonical_forms(hero_hand or cls)
-    if hf.get("eq") is not None:
-        line = f"  本手 equity {_pct(hf['eq'])}%"
-        if hf.get("percentile") is not None:
-            line += f"、強度 percentile {_pct(hf['percentile'])}%"
-        facts.lines.append(line)
-        facts.numbers.add(_pct(hf["eq"]))
-    if hf.get("actions"):
-        facts.lines.append(f"  solver 動作頻率：{_fmt_actions(hf['actions'])}")
-        facts.numbers |= {_pct(v) for v in hf["actions"].values()}
-    idx = gf.combo_index_for_hand(hero_hand) if hero_hand else None
-    if idx is not None:
-        for asol in sol.get("action_solutions") or []:
-            evs = asol.get("evs") or []
-            strat = asol.get("strategy") or []
-            if len(evs) == 1326 and len(strat) == 1326 and strat[idx] > 0.01:
-                code = asol["action"]["code"]
-                facts.lines.append(
-                    f"  若 {code}: EV {evs[idx]:.2f}bb，頻率 {_pct(strat[idx])}%")
-    facts.meta = {"hero_hand": hero_hand, "board": board, "facts": hf}
+                  title=f"{actor} 在 {board} 的 solver 決策數據：")
+    facts.allowed_claims |= canonical_forms(hero_hand or "")
+    for name, hf in resolved:
+        _why_hand_lines(name, hf, facts)
+    facts.meta = {"hero_hand": hero_hand, "board": board,
+                  "hands": [n for n, _ in resolved]}
     return facts
 
 
@@ -766,7 +846,8 @@ def _set_intent_classifier(fn):
 _INTENT_PROMPT = (
     "你是撲克教練問題分類器。讀使用者的 follow-up 問題，輸出『一個』分類標籤，"
     "只能是下列其中之一（只輸出標籤本身，不要解釋）：\n"
-    "why_action: 問某手牌為什麼採取某動作（下注/過牌/跟注/棄牌）\n"
+    "why_action: 問某手牌/某類牌『為什麼』採取某動作，或為什麼某些牌下注而某些牌過牌"
+    "（即使句子裡有『範圍』『策略』，只要核心是『為什麼』就選這個）\n"
     "fold_equity: 問我方下注能讓對手棄掉/跟注哪些牌、棄牌率\n"
     "villain_range: 問對手下注/加注/全下的範圍有哪些牌\n"
     "hand_strength: 問我這手牌的牌力/強弱/equity\n"
@@ -774,8 +855,13 @@ _INTENT_PROMPT = (
     "sizing: 問為什麼用這個下注尺寸、該用多大\n"
     "hypothetical: 問『如果…會怎樣』的假設情境\n"
     "node_url: 訊息含 GTO Wizard 連結，要求解釋該節點\n"
-    "range_lookup: 單純查詢某位置某街的開牌/範圍頻率\n"
+    "range_lookup: 『單純列舉』某位置某街要用哪些牌（哪些牌/範圍有哪些），句中沒有『為什麼』\n"
     "other: 以上皆非\n"
+    "\n判斷優先序：句中出現『為什麼/為何/why』且在問動作/策略 → 一律 why_action（勝過 range_lookup）。\n"
+    "範例：『為什麼 A3 高頻 check，Q9 高頻 bet』→ why_action；"
+    "『為什麼 KTo 也要下注』→ why_action；"
+    "『我在 BTN 跟注的範圍有哪些』→ range_lookup；"
+    "『除了 JJ 還有哪些牌價值下注』→ range_lookup。\n"
 )
 
 

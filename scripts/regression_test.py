@@ -11035,6 +11035,14 @@ def test_coach_facts_extract_tokens():
     pct = cf.extract_combo_tokens("棄牌 88% | 跟注 22%，下注2.75 底池")
     assert_true("88" not in pct and "22" not in pct and "75" not in pct,
                 f"numbers leaked as combos: {pct}")
+    # lowercase user hands are caught and normalized; English filler is not
+    low = cf.extract_combo_tokens("但為什麼 jj call 66，hero fold ato a9o")
+    assert_in("JJ", low)
+    assert_in("66", low)
+    assert_in("ATo", low)
+    assert_in("A9o", low)
+    assert_true("AT" not in cf.extract_combo_tokens("check at the turn"),
+                "lowercase English 'at' not a hand")
 
 
 @test
@@ -11078,6 +11086,38 @@ def test_coach_facts_fetch_why_action():
     assert_eq(facts.intent, "why_action")
     assert_in(hctx["hero_hand"], facts.allowed_claims)
     assert_true(any("%" in ln for ln in facts.lines), "card has numbers")
+
+
+@test
+def test_coach_facts_target_hand():
+    """coach_facts: a named hand in the question overrides hero's hand."""
+    import coach_facts as cf
+    assert_eq(cf._target_hand_from_question(cf.Ctx("為什麼 KTo 也要下注", {})), "KTo")
+    # earliest token wins, lowercase normalized to uppercase
+    assert_eq(cf._target_hand_from_question(cf.Ctx("但為什麼 jj call 66 all in", {})), "JJ")
+    assert_true(cf._target_hand_from_question(cf.Ctx("我這手牌算強嗎", {})) is None)
+
+
+@test
+def test_coach_facts_prefer_first_street():
+    """coach_facts: why-action defaults to the first postflop street, not the river."""
+    import coach_facts as cf
+    ctx = cf.Ctx(question="x", hand_context={
+        "hero_spots": [{"street": "flop"}, {"street": "turn"}],
+        "solutions": [{"game": {"board": "FLOP"}}, {"game": {"board": "TURN"}}]})
+    assert_eq(cf._hero_spot_and_sol(ctx, None, prefer="first")[1]["game"]["board"], "FLOP")
+    assert_eq(cf._hero_spot_and_sol(ctx, None, prefer="last")[1]["game"]["board"], "TURN")
+
+
+@test
+def test_coach_facts_why_named_hand():
+    """coach_facts: fetch_why_action answers about a named hand from the acting range."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf.fetch_why_action(cf.Ctx(question="為什麼 55 也要下注？", hand_context=hctx))
+    assert_true(facts is not None, "named-hand why returns facts")
+    assert_in("55", facts.meta.get("hands", []))
+    assert_in("55", facts.allowed_claims)
+    assert_true(any("solver 動作" in ln for ln in facts.lines), "shows action frequencies")
 
 
 @test
