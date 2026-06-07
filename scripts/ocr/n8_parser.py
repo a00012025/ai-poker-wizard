@@ -1189,6 +1189,24 @@ def _compute_effective_bb(
             if opp_total < hero_total - 0.5:
                 opp_went_allin = True
 
+        elif last_action == "call" and last_is_hero and opp_total >= hero_total - 0.5:
+            # Case 3: opp shoved (explicit All-In bet/raise) and hero CALLED
+            # in full. Opp's displayed remaining stack is ~0, so their starting
+            # stack must come from their total investment (opp_perm), not the
+            # table stack — which the name/heuristic branch would otherwise
+            # read (and N8 frequently misreads it as the pot chips, inflating
+            # effective_bb wildly). H3514: hero called BB's 5.8bb river shove;
+            # Gao zU's stack was misread as the 18.9bb pot, giving eff 29bb
+            # instead of ~9bb. opp_allin_display stays None ⇒ opp_starting =
+            # opp_perm.
+            opp_has_allin = any(
+                (e.get("action") or "").lower() == "all-in"
+                and e.get("type") != "hero"
+                for e in entries
+            )
+            if opp_has_allin:
+                opp_went_allin = True
+
         elif last_action == "fold" and last_is_hero and opp_total > hero_total:
             # Case 2: opp raised/bet and hero folded.
             # Check if opp went all-in by looking for a non-hero stack
