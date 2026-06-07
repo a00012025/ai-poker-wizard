@@ -815,26 +815,42 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
             for act in street.get("actions", []):
                 active.add(act["position"])
 
-        # Walk streets in order to find when it becomes HU
+        # Walk action-by-action to find the earliest point the pot becomes
+        # heads-up *with hero still in it*. Folds must be evaluated one at a
+        # time, NOT batched per street: when BTN bets the turn and BB folds
+        # BEFORE hero folds, the pot is momentarily HJ-vs-BTN with hero still
+        # in — that is the real HU node hero faced and folded at. Batching the
+        # whole turn's folds (BB and hero together) collapsed it straight to
+        # {BTN}, dropped hero, and skipped simplification entirely (H3506).
         villain_pos = None
         for street in streets:
-            for act in street.get("actions", []):
-                if act["action"] == "F":
-                    folded.add(act["position"])
-
+            # Already heads-up coming into this street — either only two seats
+            # ever act postflop (a cold-caller folded pre-flop and never appears
+            # in the streets, e.g. H2915), or a prior street's folds already left
+            # {hero, villain}. Settle the villain before walking this street.
             remaining = [p for p in active if p not in folded]
             if len(remaining) == 2 and hero_pos in remaining:
                 villain_pos = next(p for p in remaining if p != hero_pos)
                 break
-            elif len(remaining) == 1 and hero_pos in remaining:
-                # Only hero remains — everyone else folded.
-                # Find the last non-hero opponent who was active (even if they folded)
-                for act in reversed(street.get("actions", [])):
-                    if act["position"] != hero_pos and act["action"] not in ("X",):
-                        villain_pos = act["position"]
-                        break
-                if villain_pos:
+            for act in street.get("actions", []):
+                if act["action"] != "F":
+                    continue
+                folded.add(act["position"])
+                remaining = [p for p in active if p not in folded]
+                if len(remaining) == 2 and hero_pos in remaining:
+                    villain_pos = next(p for p in remaining if p != hero_pos)
                     break
+                if len(remaining) == 1 and hero_pos in remaining:
+                    # Only hero remains — everyone else folded. Pick the last
+                    # non-hero opponent who put money/action in this street.
+                    for prev in reversed(street.get("actions", [])):
+                        if prev["position"] != hero_pos and prev["action"] != "X":
+                            villain_pos = prev["position"]
+                            break
+                    if villain_pos:
+                        break
+            if villain_pos:
+                break
 
         if not villain_pos:
             # Still multiway at end of all streets, or no villain found

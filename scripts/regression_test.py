@@ -5186,6 +5186,46 @@ def test_multiway_simplifies_after_flop_fold():
 
 
 @test
+def test_multiway_simplifies_when_hero_folds_same_street_as_hu():
+    """H3506: 3-way pot, checked-down flop; on the turn BTN bets, BB folds,
+    THEN hero folds — both folds in the same street.
+
+    The HU node hero actually faced (HJ vs BTN) exists for the instant between
+    BB's fold and hero's fold. The street walk must evaluate folds action-by-
+    action: batching the whole turn's folds collapsed the pot straight to {BTN},
+    dropped hero, and skipped simplification, leaving flop+turn with no solver
+    data ("（無 solver 數據）"). Action-by-action catches HJ-vs-BTN at BB's fold.
+    """
+    from analyze_hand import _simplify_multiway
+    from gto_api import nearest_depth
+    hand = {
+        "preflop_actions": "F-F-F-R2-F-C-F-C",  # HJ open, BTN call, BB call
+        "effective_bb": 25,
+        "players_at_table": 8,
+        "streets": [
+            {"board": "TdJhQc", "street": "flop", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "X"},
+                {"position": "BTN", "action": "X"}]},
+            {"card": "7c", "street": "turn", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "X"},
+                {"position": "BTN", "action": "R", "size": 2.5},
+                {"position": "BB", "action": "F"},
+                {"position": "HJ", "action": "F"}]},
+        ],
+    }
+    simplified, adj_depth, note, positions = _simplify_multiway(
+        hand, "HJ", "MTTGeneral", nearest_depth(25)
+    )
+    assert_true(note != "", "should produce a simplification note (not skip)")
+    assert_eq(positions, {"HJ", "BTN"},
+              "HU villain must be BTN (the player still in when hero folded)")
+    assert_eq(simplified, "F-F-F-R2-F-C-F-F",
+              "BB cold-caller folded, hero open + BTN call kept")
+
+
+@test
 def test_simplify_multiway_spr_depth_floor():
     """Real-structure simplification compresses the effective stack to match the
     multiway SPR, but floors the compression so a shallow stack isn't pushed into
