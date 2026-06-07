@@ -11932,6 +11932,103 @@ def test_session_sets_followup_node_street_from_facts():
         cf.answer_followup_ex = orig
 
 
+@test
+def test_build_streets_sole_villain_overrides_position_mislabel():
+    """Heads-up: the lone live opponent owns every opponent action (H3517).
+
+    N8 tagged a BB 3-bettor's flop bet + turn shove as LJ (a preflop-folded
+    seat). _build_streets must attribute them to the only non-hero active
+    player (BB), not the noisy per-row label — otherwise _fix_folded_players
+    strips them and the turn loses its solver node.
+    """
+    from ocr.n8_parser import _build_streets
+    street_cols = [
+        {"name": "Flop", "entries": [
+            {"type": "opponent", "position": "LJ", "player_name": "jch_",
+             "action": "Bet", "size": 4.5},
+            {"type": "hero", "action": "Call", "size": 4.5}]},
+        {"name": "Turn", "entries": [
+            {"type": "opponent", "position": "LJ", "player_name": "jch_",
+             "action": "All-In", "size": 14.3},
+            {"type": "hero", "action": "Call", "size": 14.3}]},
+    ]
+    pos_order = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    streets = _build_streets(street_cols, ["Ts", "Th", "9h", "4d"], pos_order,
+                             hero_position="UTG+1",
+                             active_positions=["UTG+1", "BB"])
+    flop = streets[0]["actions"]
+    assert_eq(flop[0]["position"], "BB", "lone villain attributed to BB not LJ")
+    assert_eq(flop[0]["action"], "R4.5")
+    assert_eq(flop[1]["position"], "UTG+1")
+    turn = streets[1]["actions"]
+    assert_eq(turn[0]["position"], "BB", "turn shove also attributed to BB")
+    assert_true(turn[0].get("allin"), "all-in flag preserved")
+
+
+@test
+def test_build_streets_keeps_multiway_inference():
+    """3-way: no sole villain → keep the existing per-row position inference."""
+    from ocr.n8_parser import _build_streets
+    street_cols = [
+        {"name": "Flop", "entries": [
+            {"type": "opponent", "position": "SB", "player_name": "a", "action": "Check"},
+            {"type": "opponent", "position": "BTN", "player_name": "b", "action": "Bet", "size": 2.0},
+            {"type": "hero", "action": "Call", "size": 2.0}]},
+    ]
+    pos_order = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    streets = _build_streets(street_cols, ["Ts", "Th", "9h"], pos_order,
+                             hero_position="CO",
+                             active_positions=["CO", "SB", "BTN"])
+    poss = [a["position"] for a in streets[0]["actions"]]
+    # Two distinct opponents preserved — the sole-villain override must NOT fire.
+    assert_true("SB" in poss and "BTN" in poss, "multiway positions preserved")
+    assert_eq(poss[2], "CO", "hero action keeps hero position")
+
+
+@test
+def test_fix_folded_players_keeps_mislabeled_aggressor_not_orphan_call():
+    """_fix_folded_players must not strip a 'folded' player's bet a call needs.
+
+    Defense-in-depth for H3517: an aggressive postflop action attributed to a
+    preflop-folded seat, with a later same-street Call/Raise depending on it,
+    is a position mislabel — keep it instead of orphaning the call.
+    """
+    from gemini_session import GeminiSessionManager
+    hand = {
+        "players_at_table": 8,
+        "preflop_actions": "F-R2.2-F-F-F-F-F-R6.5-C",  # LJ folded preflop
+        "streets": [
+            {"board": "TsTh9h", "actions": [
+                {"position": "LJ", "action": "R4.5", "size": 4.5},   # mislabeled villain bet
+                {"position": "UTG+1", "action": "C", "size": 4.5}]},
+        ],
+    }
+    GeminiSessionManager._fix_folded_players(hand)
+    acts = hand["streets"][0]["actions"]
+    assert_eq(len(acts), 2, "load-bearing bet kept; call not orphaned")
+    assert_eq(acts[0]["action"], "R4.5")
+
+
+@test
+def test_fix_folded_players_still_drops_passive_ghost():
+    """Genuine ghost actions by a folded player are still removed."""
+    from gemini_session import GeminiSessionManager
+    hand = {
+        "players_at_table": 8,
+        "preflop_actions": "F-R2.2-F-F-F-F-F-R6.5-C",  # LJ folded
+        "streets": [
+            {"board": "TsTh9h", "actions": [
+                {"position": "LJ", "action": "X"},                 # ghost check by folded LJ
+                {"position": "BB", "action": "R3", "size": 3.0},
+                {"position": "UTG+1", "action": "C", "size": 3.0}]},
+        ],
+    }
+    GeminiSessionManager._fix_folded_players(hand)
+    poss = [a["position"] for a in hand["streets"][0]["actions"]]
+    assert_true("LJ" not in poss, "passive ghost by folded player still dropped")
+    assert_true("BB" in poss and "UTG+1" in poss, "real actions preserved")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

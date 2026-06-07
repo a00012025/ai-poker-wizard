@@ -2850,10 +2850,29 @@ class GeminiSessionManager:
             if not isinstance(actions, list):
                 continue
             cleaned = []
-            for a in actions:
+            for idx, a in enumerate(actions):
                 pos = a.get("position", "")
                 if pos in folded:
-                    continue  # skip — this player already folded
+                    # A "folded" player with an aggressive postflop action that a
+                    # later same-street Call/Raise depends on is a position
+                    # MISLABEL, not a ghost action — dropping it orphans the call
+                    # (Call with nothing to call) and kills the solver node
+                    # (H3517: a BB 3-bettor's bet tagged LJ, then stripped here).
+                    # Keep it; the label is the bug, the action is real.
+                    code = (a.get("action", "") or "").upper()
+                    is_aggressive = (
+                        a.get("allin")
+                        or code.startswith("R")
+                        or code in ("B", "AI", "ALLIN")
+                    )
+                    later_depends = any(
+                        (b.get("action", "") or "").upper().startswith(("C", "R"))
+                        or (b.get("action", "") or "").upper() in ("AI", "ALLIN")
+                        for b in actions[idx + 1:]
+                        if b.get("position", "") not in folded
+                    )
+                    if not (is_aggressive and later_depends):
+                        continue  # genuine folded-player ghost action — skip
                 cleaned.append(a)
                 if a.get("action", "").upper() == "F":
                     folded.add(pos)
