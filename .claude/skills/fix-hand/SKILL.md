@@ -27,6 +27,7 @@ digraph fix_hand {
   rankdir=TB;
   node [shape=box];
 
+  worktree [label="0. Open worktree + branch\nfix/{hand-or-bug}"];
   fetch [label="1. Fetch snapshot from DB\n(parsed_json, image_data, gto_text)"];
   classify [label="2. Classify error type\n(OCR / action matching / solver / format)"];
   set_expected [label="3. Set expected corrections\nsnapshot_test.py --set-expected"];
@@ -34,11 +35,30 @@ digraph fix_hand {
   fix [label="5. Fix the code"];
   add_test [label="6. Add regression test\n(snapshot --add + unit test if applicable)"];
   verify [label="7. Run ALL tests\nregression_test.py + snapshot_test.py"];
-  done [label="8. Report results"];
+  pr [label="8. Commit + push + open PR"];
+  done [label="9. Report results"];
 
-  fetch -> classify -> set_expected -> diagnose -> fix -> add_test -> verify -> done;
+  worktree -> fetch -> classify -> set_expected -> diagnose -> fix -> add_test -> verify -> pr -> done;
 }
 ```
+
+## Step 0: Open Worktree (REQUIRED)
+
+**Default dev strategy is worktree — never fix hands directly in the main repo.**
+Open an isolated worktree + branch before touching any code:
+
+```bash
+cd ~/ai-poker-wizard
+git fetch origin main -q
+SLUG="HXXXX"   # or a short bug slug
+git worktree add ~/ai-poker-wizard-fix-$SLUG -b fix/$SLUG origin/main
+cd ~/ai-poker-wizard-fix-$SLUG
+ln -sf ~/ai-poker-wizard/.env .env
+ln -sf ~/ai-poker-wizard/.tokens.json .tokens.json
+ln -sf ~/ai-poker-wizard/.gto_cache .gto_cache   # avoid Layer-2 EV drift
+```
+
+Do ALL diagnose / fix / test work inside this worktree. See AGENTS.md → "Git Worktree 開發流程".
 
 ## Step 1: Fetch Snapshot
 
@@ -216,6 +236,19 @@ python scripts/snapshot_test.py
 
 Both must pass before reporting done.
 
+## Step 8: Commit + Push + Open PR (REQUIRED)
+
+The fix is not finished until it's a PR. From inside the worktree:
+
+```bash
+git add -A
+git commit -m "fix(...): <what> (HXXXX)"
+git push -u origin fix/$SLUG
+gh pr create --title "fix(...): <what> (HXXXX)" --body "..."
+```
+
+After the PR merges, clean up: `cd ~/ai-poker-wizard && git worktree remove ~/ai-poker-wizard-fix-$SLUG`.
+
 ## Log & Data Sources (cheat sheet)
 
 - **`tool_calls` DB table** — every LLM tool invocation with `request_id`,
@@ -232,6 +265,8 @@ Both must pass before reporting done.
 
 ## Important Rules
 
+- **Always open a worktree first** (Step 0) — never fix hands directly in the main repo; default dev strategy is worktree
+- **Always end with a PR** (Step 8) — 改完都要發 PR，不要只留在本機
 - **Always write Python to `scripts/_tmp.py`**, never `python -c`
 - **Use `from dotenv import load_dotenv; load_dotenv()`** — `source .env`
   is blocked by a PreToolUse hook

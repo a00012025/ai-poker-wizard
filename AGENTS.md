@@ -87,6 +87,11 @@ scripts/
 
 ## Git Worktree 開發流程
 
+**預設開發策略：所有 code/skill 改動都先開 worktree 實作，不直接在 main repo 改。**
+任何 feature、bugfix、refactor（包含 `fix-hand` skill 跑出來的 hand 修復）都應該：
+開新 worktree + branch → 在 worktree 中改 + 測 → push → 發 PR review → merge 後清理 worktree。
+只有純讀取 / 查詢 / debug（不寫檔）才留在 main repo。改完一定要發 PR。
+
 多個 feature 可以同時在不同 worktree 中平行開發，各自在獨立 branch 上改，完成後發 PR review。
 
 ### 開始新 feature
