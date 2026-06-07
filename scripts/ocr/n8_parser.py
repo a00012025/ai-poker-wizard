@@ -2125,6 +2125,16 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             if pos in active_positions:
                 postflop_order.append(pos)
 
+    # Heads-up pots: exactly one non-hero player reaches postflop.  N8's
+    # per-row position OCR/reconciliation can mislabel that lone villain
+    # (H3517: a BB 3-bettor's flop bet + turn shove tagged LJ), and
+    # _fix_folded_players then strips the mislabeled rows as "folded player"
+    # actions — leaving an orphan hero Call with nothing to call and no solver
+    # node on that street.  When only one opponent is live, every opponent
+    # action is theirs; trust that over the noisy per-row label.
+    _nonhero_active = [p for p in (active_positions or []) if p != hero_position]
+    sole_villain = _nonhero_active[0] if len(_nonhero_active) == 1 else None
+
     # Track who folds across streets
     folded_in_streets = set()
 
@@ -2178,6 +2188,10 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
             # Assign position
             if entry_type == "hero":
                 pos = hero_position
+            elif sole_villain is not None:
+                # Heads-up: the only live opponent owns every opponent action,
+                # regardless of a noisy per-row position label (H3517).
+                pos = sole_villain
             else:
                 # Use OCR-detected position if available
                 ocr_pos = entry.get("position")
