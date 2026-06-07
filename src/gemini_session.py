@@ -1712,13 +1712,18 @@ class GeminiSessionManager:
     async def send_message(self, chat_id: int, user_text: str,
                            on_status: Callable[[str], Any] | None = None,
                            user_id: int | None = None,
-                           refresh_token: str | None = None) -> str:
+                           refresh_token: str | None = None,
+                           send_gto_callback: Callable[[str], Any] | None = None) -> str:
         """Main entry: parse hand → GTO analysis → coaching, or chat with tools.
 
         Args:
             on_status: optional async/sync callback(status_msg) for progress updates
             user_id: Telegram user ID for per-user token lookup
             refresh_token: user's GTO Wizard refresh token (if any)
+            send_gto_callback: optional async/sync callback(text) to send the
+                structured per-street GTO summary card immediately, before the
+                slower coaching reply.  Mirrors the image pipeline's split
+                response so text hands with a concrete hero hand feel faster.
         """
         request_id_var.set(new_request_id())
         t0 = time.time()
@@ -1859,6 +1864,30 @@ class GeminiSessionManager:
                     await self._save_usage(chat_id, "hand_analysis", self.model,
                                            usage_acc, int((t_total - t0) * 1000))
                     return result
+
+                # Split response: send the structured per-street GTO summary
+                # card immediately, before the slow coaching call.  Only for a
+                # concrete hero hand (range-only questions have no per-hand
+                # verdict to show) — mirrors the image pipeline so text hands
+                # feel as responsive.  Non-fatal: a failed send just falls back
+                # to the single combined reply.
+                if send_gto_callback and not context.get("no_hero_hand"):
+                    gto_summary = context.get("text_compact", gto_data)
+                    if hand_id:
+                        gto_summary = f"📋 `{hand_id}`\n\n{gto_summary}"
+                    try:
+                        r = send_gto_callback(gto_summary)
+                        if asyncio.iscoroutine(r):
+                            await r
+                        self._logger.info(
+                            f"[chat={chat_id}] GTO summary sent at "
+                            f"{time.time() - t0:.1f}s"
+                        )
+                    except Exception:
+                        self._logger.warning(
+                            f"[chat={chat_id}] Failed to send GTO summary "
+                            f"(non-fatal)"
+                        )
 
                 # Step 4: Coaching from LLM (with tools for follow-up queries)
                 await _status("分析回覆中...")
@@ -2835,7 +2864,14 @@ class GeminiSessionManager:
             self.client.aio.models.generate_content(
                 model=self.parse_model,
                 contents=prompt,
-                config=types.GenerateContentConfig(temperature=0),
+                # Hand parsing is deterministic structured extraction — Gemini
+                # 2.5's default "thinking" adds ~7s with zero accuracy gain
+                # (benchmarked 8 hands: 32/32 with thinking on AND off, 9.8s
+                # vs 2.4s).  Disable it so text parse stays fast.
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
             ),
             timeout=60,
         )
