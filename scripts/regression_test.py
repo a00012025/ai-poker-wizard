@@ -1255,6 +1255,56 @@ def test_compress_range_full_call_range():
     assert_in("Q8o+", result)
 
 
+@test
+def test_compress_range_highfreq_merge_pairs():
+    """Range compression: ≥90% hands merge into the run (JJ@99% → 22+~), not split out."""
+    from gto_formatter import _compress_range
+    # All pairs pure except JJ at 99% — should still collapse to 22+ (with ~ marker)
+    hands = []
+    for r in "23456789TJQKA":
+        freq = 0.99 if r == "J" else 1.0
+        hands.append((f"{r}{r}", freq, 6 * freq))
+    result = _compress_range(hands)
+    assert_in("22+~", result)
+    assert_not_in("JJ(99%)", result)
+    assert_not_in("JJ", result.replace("22+~", ""))  # JJ must not appear separately
+
+
+@test
+def test_compress_range_highfreq_below_threshold_stays_mixed():
+    """Range compression: hands below 90% stay broken out with inline %, not merged."""
+    from gto_formatter import _compress_range
+    hands = [(f"{r}{r}", 1.0, 6) for r in "23456789TQKA"]  # all pure except JJ
+    hands.append(("JJ", 0.85, 5.1))  # 85% < 90% → stays mixed
+    result = _compress_range(hands)
+    assert_in("JJ(85%)", result)
+    assert_not_in("22+", result)  # run is broken by missing JJ from pure set
+
+
+@test
+def test_compress_range_pure_no_marker():
+    """Range compression: fully-pure run carries no ~ marker."""
+    from gto_formatter import _compress_range
+    hands = [(f"{r}{r}", 1.0, 6) for r in "23456789TJQKA"]
+    result = _compress_range(hands)
+    assert_in("22+", result)
+    assert_not_in("~", result)
+
+
+@test
+def test_compress_range_highfreq_suited_marker():
+    """Range compression: a ≥90% suited hand merges as pure but its token gets ~."""
+    from gto_formatter import _compress_range
+    # A9s/A8s/A4s/A2s pure, A7s at 92% → merges (no longer "(92%)") but marked
+    hands = [
+        ("A9s", 1.0, 4), ("A8s", 1.0, 4), ("A7s", 0.92, 3.68),
+        ("A4s", 1.0, 4), ("A2s", 1.0, 4),
+    ]
+    result = _compress_range(hands)
+    assert_in("A7s~", result)
+    assert_not_in("A7s(92%)", result)
+
+
 # ── GTO API Tests ──
 
 @test
