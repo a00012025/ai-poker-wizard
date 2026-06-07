@@ -10995,6 +10995,316 @@ def test_range_image_legend_check_bet_vs_call_raise():
     assert_true(show_fold, "preflop RFI node must show a Fold legend entry")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# coach_facts: grounded follow-up answers (P0 B/C/D/E + P1 F/G/H/I + verifier)
+# Fixtures are real spot-solution nodes captured offline (no network at test time).
+# ──────────────────────────────────────────────────────────────────────────
+
+def _load_coach_ctx():
+    import coach_facts as cf
+    base = Path(__file__).resolve().parent / "test_fixtures" / "coach_facts"
+    hctx = json.loads((base / "ctx.json").read_text())
+    hero = json.loads((base / "hero_node.json").read_text())
+    villain = json.loads((base / "villain_response_node.json").read_text())
+    return cf, hctx, hero, villain
+
+
+@test
+def test_coach_facts_class_groups():
+    """coach_facts: class->combo-index grouping covers all 1326 and 169 classes."""
+    import coach_facts as cf
+    groups = cf._class_to_combo_indices()
+    assert_eq(len(groups), 169, "169 classes")
+    assert_eq(sum(len(v) for v in groups.values()), 1326, "all combos grouped")
+    assert_eq(len(groups["AA"]), 6, "AA has 6 combos")
+    assert_eq(len(groups["AKs"]), 4, "AKs has 4 combos")
+    assert_eq(len(groups["AKo"]), 12, "AKo has 12 combos")
+
+
+@test
+def test_coach_facts_extract_tokens():
+    """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
+    import coach_facts as cf
+    toks = cf.extract_combo_tokens("對手 AJo 會棄牌，但 66 和 AhKh 跟注，頂對價值。")
+    assert_in("AJo", toks)
+    assert_in("66", toks)
+    assert_in("AhKh", toks)
+    none = cf.extract_combo_tokens("BB 在 BTN 的 EV 很高")
+    assert_true("BB" not in none and "EV" not in none, "positions/terms not combos")
+    # percentages and bet sizes must NOT be read as pairs
+    pct = cf.extract_combo_tokens("棄牌 88% | 跟注 22%，下注2.75 底池")
+    assert_true("88" not in pct and "22" not in pct and "75" not in pct,
+                f"numbers leaked as combos: {pct}")
+
+
+@test
+def test_coach_facts_canonical_forms():
+    """coach_facts: canonical_forms normalizes order + derives class from a combo."""
+    import coach_facts as cf
+    assert_in("KJs", cf.canonical_forms("KsJs"))
+    assert_in("KsJs", cf.canonical_forms("KsJs"))
+    assert_in("KT", cf.canonical_forms("TK"))  # rank order normalized
+
+
+@test
+def test_coach_facts_digest_helpers():
+    """coach_facts: acting_position + category_action_table from a real node."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    assert_eq(cf._acting_position(hero), hctx["hero_position"], "hero acts at hero node")
+    table = cf._category_action_table(hero, top_n=4)
+    assert_true(len(table) >= 1, "at least one category")
+    name, freq, actions = table[0]
+    assert_true(0.0 <= freq <= 1.0, "category freq is a fraction")
+    assert_true(abs(sum(actions.values()) - 1.0) < 0.05, "per-category actions sum ~1")
+
+
+@test
+def test_coach_facts_rep_classes():
+    """coach_facts: rep_classes_for_category returns in-range classes of that category."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    table = cf._category_action_table(hero, top_n=6)
+    reps = cf._rep_classes_for_category(hero, table[0][0], top_k=2)
+    assert_true(len(reps) >= 1, "at least one representative class")
+    cls, freq, actions = reps[0]
+    assert_in(cls, cf._class_to_combo_indices(), "rep is a real 169 class")
+
+
+@test
+def test_coach_facts_fetch_why_action():
+    """coach_facts: fetch_why_action builds grounded card with hero combo facts."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf.fetch_why_action(cf.Ctx(question="為什麼這手牌要下注？", hand_context=hctx))
+    assert_true(facts is not None, "B fetch returns facts")
+    assert_eq(facts.intent, "why_action")
+    assert_in(hctx["hero_hand"], facts.allowed_claims)
+    assert_true(any("%" in ln for ln in facts.lines), "card has numbers")
+
+
+@test
+def test_coach_facts_fetch_hand_strength():
+    """coach_facts: fetch_hand_strength reports equity + percentile."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf.fetch_hand_strength(cf.Ctx(question="我這手牌算強嗎？", hand_context=hctx))
+    assert_true(facts is not None, "E fetch returns facts")
+    assert_eq(facts.intent, "hand_strength")
+    assert_true(len(facts.numbers) >= 1, "numbers captured for audit")
+
+
+@test
+def test_coach_facts_fetch_fold_equity():
+    """coach_facts: fold-equity uses villain response node, all examples grounded."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf._fetch_fold_equity_from(villain, hctx)
+    assert_true(facts is not None, "C fetch returns facts")
+    assert_eq(facts.intent, "fold_equity")
+    assert_true(any("棄牌" in ln for ln in facts.lines), "shows fold split")
+    for ln in facts.lines:
+        for tok in cf.extract_combo_tokens(ln):
+            assert_in(tok, facts.allowed_claims, f"{tok} must be grounded")
+
+
+@test
+def test_coach_facts_fetch_villain_range():
+    """coach_facts: villain-range composes range composition + hero equity."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf._fetch_villain_range_from(hero, hctx)
+    assert_true(facts is not None, "D fetch returns facts")
+    assert_eq(facts.intent, "villain_range")
+    for ln in facts.lines:
+        for tok in cf.extract_combo_tokens(ln):
+            assert_in(tok, facts.allowed_claims, f"{tok} must be grounded")
+
+
+@test
+def test_coach_facts_verifier():
+    """coach_facts: verifier passes grounded prose, flags ungrounded combos."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="fold_equity", title="t",
+                     lines=["A高 棄牌 80%，例：AJo"],
+                     allowed_claims=cf.canonical_forms("AJo") | cf.canonical_forms("KsJh"))
+    board = "Ks9s2h"
+    assert_true(cf.verify_claims("對手 A高如 AJo 會棄牌，你的 KsJh 領先。", facts, board).ok,
+                "grounded prose passes")
+    bad = cf.verify_claims("對手 AQo 和 KTs 會棄牌。", facts, board)
+    assert_true(not bad.ok, "ungrounded AQo/KTs flagged")
+    assert_in("AQo", bad.violations)
+
+
+@test
+def test_coach_facts_verifier_board():
+    """coach_facts: verifier whitelists board cards + hero hand + board pairs."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="hand_strength", title="t", lines=["equity 37%"],
+                     allowed_claims=cf.canonical_forms("KsJh"))
+    assert_true(cf.verify_claims("KsJh 在 Ks9s2h 上是頂對。", facts, "Ks9s2h").ok,
+                "board cards + hero combo allowed")
+
+
+@test
+def test_coach_facts_registry():
+    """coach_facts: registry covers all P0/P1 intent labels."""
+    import coach_facts as cf
+    ids = {qt.id for qt in cf.REGISTRY}
+    for need in ("why_action", "fold_equity", "villain_range", "hand_strength",
+                 "range_shift", "sizing", "hypothetical", "node_url"):
+        assert_in(need, ids)
+
+
+@test
+def test_coach_facts_template():
+    """coach_facts: deterministic template is fully grounded."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="fold_equity", title="對手 BB 面對你的下注：",
+                     lines=["  A高 佔 29% — 棄牌 80% | 跟注 20%   例：AJo(棄牌 84%)"],
+                     allowed_claims=cf.canonical_forms("AJo"))
+    out = cf.render_template(facts)
+    assert_in("A高", out)
+    for tok in cf.extract_combo_tokens(out):
+        assert_in(tok, facts.allowed_claims)
+
+
+@test
+def test_coach_facts_other_fallback():
+    """coach_facts: answer_followup returns None for 'other' intent (caller falls back)."""
+    import coach_facts as cf
+    cf._set_intent_classifier(lambda q, c: "other")
+    try:
+        out = cf.answer_followup(cf.Ctx(question="天氣如何", hand_context={}))
+        assert_true(out is None, "other -> None so caller keeps existing path")
+    finally:
+        cf._set_intent_classifier(None)
+
+
+@test
+def test_coach_facts_golden_invented():
+    """coach_facts golden: invented combos flagged unless grounded (KTo-bet case)."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="fold_equity", title="對手 BB 面對下注：",
+                     lines=["  A高 佔 29% — 棄牌 80% | 跟注 20%   例：AJo(棄牌 84%)"],
+                     allowed_claims=cf.canonical_forms("AJo") | cf.canonical_forms("KdTc"),
+                     meta={"board": "9h8s2s"})
+    board = "9h8s2s"
+    invented = "BB 範圍裡有大量 AJo、AQo、ATo 會棄牌。"
+    v = cf.verify_claims(invented, facts, board)
+    assert_true(not v.ok, "ungrounded AQo/ATo flagged")
+    assert_in("AQo", v.violations)
+    assert_in("ATo", v.violations)
+    assert_true("AJo" not in v.violations, "grounded AJo allowed")
+    good = "對手 A高（例如 AJo）大多會棄牌，整體棄牌率約 80%。"
+    assert_true(cf.verify_claims(good, facts, board).ok, "category + grounded example passes")
+
+
+@test
+def test_coach_facts_golden_outs():
+    """coach_facts golden: A3-vs-Q9 invented draw combos flagged."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="hand_strength", title="t", lines=["equity 41%"],
+                     allowed_claims=cf.canonical_forms("Q9s"), meta={"board": "Kc7h2d"})
+    v = cf.verify_claims("對手 KJs、KTs、QJs、JTs 有 6 outs。", facts, "Kc7h2d")
+    assert_true(not v.ok and "KJs" in v.violations, "invented draws flagged")
+
+
+@test
+def test_coach_facts_sizing():
+    """coach_facts P1: fetch_sizing lists solver bet sizes + frequencies."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf._fetch_sizing_from(hero, hctx)
+    assert_true(facts is not None and facts.intent == "sizing")
+    assert_true(any("%" in ln for ln in facts.lines), "sizes have freqs")
+
+
+@test
+def test_coach_facts_range_shift():
+    """coach_facts P1: range_shift needs >=2 streets, degrades gracefully."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    out = cf.fetch_range_shift(cf.Ctx(question="轉牌之後牌力怎麼變", hand_context=hctx))
+    assert_true(out is None or out.intent == "range_shift",
+                "single-street fixture -> None or valid range_shift")
+
+
+@test
+def test_coach_facts_hypothetical():
+    """coach_facts P1: hypothetical maps requested size to on-tree, rejects off-tree."""
+    cf, hctx, hero, villain = _load_coach_ctx()
+    facts = cf._fetch_hypothetical_size_from(hero, hctx, target_pot_ratio=0.5)
+    assert_true(facts is not None and facts.intent == "hypothetical")
+    far = cf._fetch_hypothetical_size_from(hero, hctx, target_pot_ratio=9.9)
+    assert_true(far is None or far.note, "off-tree flagged")
+
+
+@test
+def test_coach_facts_node_url():
+    """coach_facts P1: node_url parses GTO Wizard link params."""
+    import coach_facts as cf
+    p = cf._parse_gtow_url(
+        "https://app.gtowizard.com/solutions?gametype=MTTGeneral&depth=40.125"
+        "&board=Ks9s2h&preflop_actions=F-F-R2-F-C-F&flop_actions=X-R1.4")
+    assert_eq(p["board"], "Ks9s2h")
+    assert_eq(p["flop_actions"], "X-R1.4")
+
+
+@test
+def test_coach_facts_numeric_audit():
+    """coach_facts P1: numeric audit flags grossly wrong percentages."""
+    import coach_facts as cf
+    facts = cf.Facts(intent="fold_equity", title="t", lines=["A高 棄牌 80%"],
+                     allowed_claims=cf.canonical_forms("KsJh"),
+                     numbers={80, 20}, meta={"board": "Ks9s2h"})
+    assert_true(cf.verify_claims("對手約 80% 會棄牌。", facts, "Ks9s2h",
+                                 audit_numbers=True).ok, "matching number passes")
+    bad = cf.verify_claims("對手約 35% 會棄牌。", facts, "Ks9s2h", audit_numbers=True)
+    assert_true(not bad.ok and 35 in bad.number_violations, "gross-mismatch flagged")
+
+
+@test
+def test_session_routes_coach_facts():
+    """gemini_session: follow-up routes through coach_facts when grounded."""
+    import coach_facts as cf
+    called = {}
+
+    def fake_answer(ctx):
+        called["q"] = ctx.question
+        return "GROUNDED_ANSWER"
+
+    orig = cf.answer_followup
+    cf.answer_followup = fake_answer
+    try:
+        from gemini_session import GeminiSessionManager
+        mgr = GeminiSessionManager()
+        mgr.hand_contexts[1] = {"hero_position": "CO", "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}
+        out = mgr._try_coach_facts(1, "為什麼這手牌下注？")
+        assert_eq(out, "GROUNDED_ANSWER")
+        assert_in("下注", called["q"])
+    finally:
+        cf.answer_followup = orig
+
+
+@test
+def test_session_coach_facts_no_ctx():
+    """gemini_session: _try_coach_facts returns None without cached hand."""
+    from gemini_session import GeminiSessionManager
+    mgr = GeminiSessionManager()
+    assert_true(mgr._try_coach_facts(999, "為什麼下注") is None)
+
+
+@test
+def test_coach_facts_live_smoke():
+    """coach_facts live: narrated answer is grounded (skips without GEMINI_API_KEY)."""
+    if not os.getenv("GEMINI_API_KEY"):
+        return
+    cf, hctx, hero, villain = _load_coach_ctx()
+    cf._set_intent_classifier(lambda q, c: "hand_strength")
+    try:
+        out = cf.answer_followup(cf.Ctx(question="我這手牌算強嗎？", hand_context=hctx))
+    finally:
+        cf._set_intent_classifier(None)
+    assert_true(out and len(out) > 5, "produced an answer")
+    facts = cf.fetch_hand_strength(cf.Ctx(question="x", hand_context=hctx))
+    v = cf.verify_claims(out, facts, facts.meta.get("board", ""))
+    assert_true(v.ok, f"live answer grounded (violations={v.violations})")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
