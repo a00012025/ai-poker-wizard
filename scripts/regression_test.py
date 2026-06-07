@@ -11842,6 +11842,96 @@ def test_session_no_chart_when_facts_not_chartable():
         cf.answer_followup_ex = orig
 
 
+@test
+def test_attach_node_records_street():
+    """coach_facts._attach_node records the grounded street, skips empties."""
+    import coach_facts as cf
+    f = cf.Facts(intent="why_action", title="t")
+    cf._attach_node(f, None)
+    assert_true("node_street" not in f.meta, "no street -> nothing recorded")
+    cf._attach_node(f, "turn")
+    assert_eq(f.meta["node_street"], "turn", "street recorded")
+
+
+@test
+def test_coach_facts_hero_intents_attach_node_street():
+    """Hero-decision intents tag the street so the link can match the prose.
+
+    Regression for H3515: 'turn betting range' answer (turn check 89%) carried
+    a played-line GTO Wizard link to the river node (check 23%). The answer now
+    records its node street so the caller deep-links to the matching node.
+    """
+    cf, hctx, _, _ = _load_coach_ctx()  # fixture: flop hero decision, CO
+    wa = cf.fetch_why_action(cf.Ctx(question="為什麼這手在 flop 下注", hand_context=hctx))
+    assert_true(wa and wa.meta.get("node_street") == "flop",
+                "why_action tags the flop node")
+    sz = cf.fetch_sizing(cf.Ctx(question="flop 下注尺寸多大", hand_context=hctx))
+    assert_true(sz and sz.meta.get("node_street") == "flop",
+                "sizing tags the flop node")
+
+
+@test
+def test_build_node_url_for_street_targets_the_named_street():
+    """build_node_url_for_street links to hero's decision on that street only.
+
+    H3515: a turn-range answer must deep-link to the turn decision node
+    (board flop+turn, no turn action) — not the played-line river node.
+    """
+    import gtow_solution_url as gs
+    context = {
+        "hand": {"streets": [{"board": "Ad3c7h", "actions": []},
+                             {"card": "Qc", "actions": []},
+                             {"card": "4d", "actions": []}],
+                 "preflop_actions": "F-R2-F-C-F", "players_at_table": 5},
+        "deeplink_raw_preflop": "F-R2-F-C-F",
+        "deeplink_raw_players": 5,
+        "hero_spots": [{"street": "flop"}, {"street": "turn"}, {"street": "river"}],
+        "solutions": [{"action_solutions": []}] * 3,
+    }
+
+    def stub(hand, street, ai):
+        return {"preflop_actions": "F-F-F-F-R2-F-C-F", "depth": 20.0,
+                "gametype": "MTTGeneral", "history_spot": 10,
+                "flop_actions": "X-X" if street in ("turn", "river") else "",
+                "turn_actions": "R3-C" if street == "river" else ""}
+
+    turn = gs.build_node_url_for_street(context, "turn", _resolver=stub)
+    assert_in("board=Ad7h3cQc", turn, "turn link carries flop+turn board")
+    assert_not_in("4d", turn, "turn link must not include the river card")
+    assert_not_in("turn_actions", turn, "turn decision has no turn action yet")
+
+    river = gs.build_node_url_for_street(context, "river", _resolver=stub)
+    assert_in("Ad7h3cQc4d", river, "river link carries the full board")
+    assert_in("turn_actions=R3-C", river, "river link carries the turn action")
+
+    assert_true(gs.build_node_url_for_street(context, "preflop", _resolver=stub) is None,
+                "no hero decision on a street -> None (caller falls back)")
+
+
+@test
+def test_session_sets_followup_node_street_from_facts():
+    """_try_coach_facts records facts.meta['node_street'] on the ctx for the link."""
+    import coach_facts as cf
+
+    def fake_ex(ctx):
+        return "ANS", cf.Facts(intent="why_action", title="t", lines=["x"],
+                               meta={"node_street": "turn"})
+
+    orig = cf.answer_followup_ex
+    cf.answer_followup_ex = fake_ex
+    try:
+        from gemini_session import GeminiSessionManager
+        mgr = GeminiSessionManager()
+        mgr.hand_contexts[8] = {"hero_position": "SB", "hero_hand": "Th9h",
+                                "solutions": [{"x": 1}], "hero_spots": []}
+        out = mgr._try_coach_facts(8, "我 turn 下注範圍應該長怎樣")
+        assert_eq(out, "ANS")
+        assert_eq(mgr.hand_contexts[8].get("_followup_node_street"), "turn",
+                  "node street recorded so the GTO link targets the turn node")
+    finally:
+        cf.answer_followup_ex = orig
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

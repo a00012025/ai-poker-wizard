@@ -740,12 +740,23 @@ class PokerWizardBot:
             return None
 
     def _build_gto_solution_url(self, ctx: dict) -> str | None:
-        """Deep-link to hero's last decision node in GTOW /solutions.
+        """Deep-link to the GTOW /solutions node behind the current reply.
+
+        When a follow-up answer was grounded on a specific street's hero
+        decision (``_followup_node_street``), link to that exact node so the
+        button's frequencies match the prose (turn 89% vs river 23%, H3515).
+        Otherwise fall back to hero's last decision node (the played line).
 
         Never raises — a failed build just means no button.
         """
         try:
-            from gtow_solution_url import build_last_node_url
+            from gtow_solution_url import (build_last_node_url,
+                                           build_node_url_for_street)
+            node_street = ctx.get("_followup_node_street")
+            if node_street:
+                url = build_node_url_for_street(ctx, node_street)
+                if url:
+                    return url
             return build_last_node_url(ctx)
         except Exception:
             self.log.debug("GTOW solution URL build failed", exc_info=True)

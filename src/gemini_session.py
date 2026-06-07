@@ -1033,6 +1033,12 @@ class GeminiSessionManager:
             # Range/strategy intents describe a node's distribution; draw the
             # 13x13 grid so range answers come with a chart like the tool path.
             self._queue_grounded_range_chart(chat_id, facts)
+            # Point the GTO Wizard button at the exact node this answer is
+            # grounded on (e.g. hero's turn decision) so the link's
+            # frequencies match the prose — not the played-line river node.
+            node_street = (getattr(facts, "meta", {}) or {}).get("node_street")
+            if node_street:
+                ctx["_followup_node_street"] = node_street
         return answer
 
     def _queue_grounded_range_chart(self, chat_id: int, facts) -> None:
@@ -3116,6 +3122,13 @@ class GeminiSessionManager:
         tool_config mode=ANY). Coaching/FT-switch callers pass False so the
         initial analysis isn't disturbed (its data is already computed).
         """
+        # Drop any per-answer GTO-Wizard node override from a previous reply so
+        # it can't leak onto this one; _try_coach_facts re-sets it when this
+        # answer is grounded on a specific node.
+        _ctx = self.hand_contexts.get(chat_id)
+        if _ctx is not None:
+            _ctx.pop("_followup_node_street", None)
+
         declarations = [
             QUERY_NEXT_ACTIONS_DECLARATION,
             QUERY_GTO_DECLARATION,
