@@ -930,6 +930,44 @@ class GeminiSessionManager:
         from gto_api import clear_user_token
         clear_user_token()
 
+    def _try_coach_facts(self, chat_id: int, user_text: str,
+                         user_id: int | None = None,
+                         refresh_token: str | None = None) -> str | None:
+        """Deterministic grounded answer for P0/P1 follow-up intents.
+
+        Routes the question through scripts/coach_facts (classify -> fetch the
+        right spot-solution node(s) -> grounded narrate -> hard verify). Returns
+        the answer string, or None to fall back to the tool-calling path
+        ('other'/unknown intents, no cached hand, or any failure).
+
+        Synchronous + blocking (Gemini classify/narrate + cached solver fetch);
+        the async caller runs it via asyncio.to_thread.
+        """
+        ctx = self.hand_contexts.get(chat_id)
+        if not ctx or not ctx.get("solutions"):
+            return None
+        try:
+            import coach_facts
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] coach_facts import failed: {e}")
+            return None
+        try:
+            self._setup_user_token(user_id, refresh_token)
+            try:
+                answer = coach_facts.answer_followup(coach_facts.Ctx(
+                    question=user_text, hand_context=ctx,
+                    user_id=user_id, refresh_token=refresh_token,
+                ))
+            finally:
+                self._clear_user_token()
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] coach_facts failed: {e}")
+            return None
+        if answer:
+            self._logger.info(
+                f"[chat={chat_id}] coach_facts grounded answer ({len(answer)} chars)")
+        return answer
+
     async def _save_snapshot(self, hand_id: str, chat_id: int,
                               source_type: str, user_input: str | None,
                               image_data: bytes | None,
@@ -3016,6 +3054,22 @@ class GeminiSessionManager:
                 r = on_status(msg)
                 if asyncio.iscoroutine(r):
                     await r
+
+        # Deterministic grounded path for P0/P1 follow-up intents (coach_facts).
+        # Only when we have a cached analyzed hand and the grounding gate matched.
+        # 'other'/unknown intents return None -> keep the existing tool loop below.
+        if force_tools:
+            grounded = await asyncio.to_thread(
+                self._try_coach_facts, chat_id, user_text, user_id, refresh_token)
+            if grounded:
+                grounded = _normalize_terms(grounded)
+                history = self.histories.get(chat_id, [])
+                history.append(types.Content(role="user",
+                                             parts=[types.Part(text=user_text)]))
+                history.append(types.Content(role="model",
+                                             parts=[types.Part(text=grounded)]))
+                self.histories[chat_id] = history[-20:]
+                return grounded
 
         for round_num in range(max_rounds):
             gen_kwargs = dict(
