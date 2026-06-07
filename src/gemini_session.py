@@ -4123,6 +4123,8 @@ class GeminiSessionManager:
             group.sort(key=lambda hand: -hand[2])
             total = sum(hand[2] for hand in group)
             lines.append(f"- {_action_label(code, solution)}（{total:.0f} combos）: {_compress_range(group)}")
+        if any("~" in line for line in lines):
+            lines.append("(~ = 該組已併入 >80% 高頻手牌，非 100% 純頻)")
         return "\n".join(lines)
 
     @staticmethod

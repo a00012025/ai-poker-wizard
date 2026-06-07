@@ -380,11 +380,28 @@ def format_range_overview(spot_solution: dict, position: str) -> str:
     return "\n".join(lines)
 
 
-def _compress_range(hands: list[tuple[str, float, float]]) -> str:
+# Range-compression frequency thresholds.
+# Hands at or above _MERGE_FREQ are folded into the compact range notation
+# (22+, AXs, K3o+, ...) instead of being broken out with an inline "(NN%)".
+# Hands that merge but sit below _PURE_FREQ (i.e. high but not ~100%) get a
+# trailing "~" approximate marker on their token so users know the simplified
+# group still contains some high-frequency mixed hands.
+_PURE_FREQ = 0.995
+_MERGE_FREQ = 0.80
+
+
+def _compress_range(
+    hands: list[tuple[str, float, float]],
+    merge_threshold: float = _MERGE_FREQ,
+) -> str:
     """Compress hand list into standard poker notation.
 
     Input: [(hand_name, freq, combos), ...]
     Output: "22+, AXo, AXs, K3o+, K2s+, Q8o+, Q5s+, J9o+, J7s+, T9o, T8s+"
+
+    Hands with freq >= ``merge_threshold`` are merged into the compact notation.
+    Those that merge while still below ``_PURE_FREQ`` carry a trailing "~"
+    marker, e.g. "22+~" (the run includes a high-but-not-pure pair like JJ@99%).
     """
     # Separate by type: pairs, suited, offsuit
     pairs = {}  # rank_idx -> (freq, combos)
@@ -408,8 +425,10 @@ def _compress_range(hands: list[tuple[str, float, float]]) -> str:
     # Pairs: find consecutive runs (22+ means 22 through AA)
     if pairs:
         pair_ranks = sorted(pairs.keys())  # ascending by rank index (A=0, K=1, ..., 2=12)
-        pure_pairs = [r for r in pair_ranks if pairs[r][0] >= 0.995]
-        mixed_pairs = [(r, pairs[r][0]) for r in pair_ranks if pairs[r][0] < 0.995]
+        pure_pairs = [r for r in pair_ranks if pairs[r][0] >= merge_threshold]
+        mixed_pairs = [(r, pairs[r][0]) for r in pair_ranks if pairs[r][0] < merge_threshold]
+        # Ranks that merged but are below _PURE_FREQ → token needs "~" marker.
+        soft_pairs = {r for r in pure_pairs if pairs[r][0] < _PURE_FREQ}
 
         if pure_pairs:
             # Check if consecutive from some rank down to 22 (index 12)
@@ -418,13 +437,16 @@ def _compress_range(hands: list[tuple[str, float, float]]) -> str:
             highest_pure = min(pure_pairs)  # lowest index = highest rank (e.g., 0=AA)
             expected = set(range(highest_pure, lowest_pure + 1))
             if set(pure_pairs) == expected and len(pure_pairs) > 1:
-                parts.append(f"{_RANK_ORDER[lowest_pure]}{_RANK_ORDER[lowest_pure]}+")
+                mark = "~" if soft_pairs else ""
+                parts.append(f"{_RANK_ORDER[lowest_pure]}{_RANK_ORDER[lowest_pure]}+{mark}")
             elif len(pure_pairs) == 1:
                 r = pure_pairs[0]
-                parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}")
+                mark = "~" if r in soft_pairs else ""
+                parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}{mark}")
             else:
                 for r in pure_pairs:
-                    parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}")
+                    mark = "~" if r in soft_pairs else ""
+                    parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}{mark}")
 
         for r, freq in mixed_pairs:
             parts.append(f"{_RANK_ORDER[r]}{_RANK_ORDER[r]}({freq*100:.0f}%)")
@@ -443,36 +465,42 @@ def _compress_range(hands: list[tuple[str, float, float]]) -> str:
             kickers = by_high[h]
             high_rank = _RANK_ORDER[h]
 
-            pure = [(l, f, c) for l, f, c in kickers if f >= 0.995]
-            mixed = [(l, f, c) for l, f, c in kickers if f < 0.995]
+            pure = [(l, f, c) for l, f, c in kickers if f >= merge_threshold]
+            mixed = [(l, f, c) for l, f, c in kickers if f < merge_threshold]
+            # Kickers that merged but are below _PURE_FREQ → token needs "~".
+            soft_lows = {l for l, f, _ in pure if f < _PURE_FREQ}
 
             if pure:
                 pure_lows = sorted([l for l, _, _ in pure])
                 # Check if "all kickers" (h+1 to 12)
                 all_kickers = list(range(h + 1, 13))
                 if set(pure_lows) == set(all_kickers):
-                    parts.append(f"{high_rank}X{label}")
+                    mark = "~" if soft_lows else ""
+                    parts.append(f"{high_rank}X{label}{mark}")
                 elif len(pure) == 1:
                     l = pure[0][0]
-                    parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}")
+                    mark = "~" if l in soft_lows else ""
+                    parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}{mark}")
                 else:
                     lowest = max(pure_lows)  # highest index = lowest rank
                     highest = min(pure_lows)  # lowest index = highest rank
                     expected = set(range(highest, lowest + 1))
                     if set(pure_lows) == expected:
+                        mark = "~" if soft_lows else ""
                         # "+" notation only valid if range reaches the top kicker
                         if highest == h + 1:
                             # Range goes all the way up: "K3o+" = K3o through KQo
-                            parts.append(f"{high_rank}{_RANK_ORDER[lowest]}{label}+")
+                            parts.append(f"{high_rank}{_RANK_ORDER[lowest]}{label}+{mark}")
                         else:
                             # Range doesn't reach top: "Q2s-Q4s" not "Q2s+"
                             parts.append(
                                 f"{high_rank}{_RANK_ORDER[lowest]}{label}"
-                                f"-{high_rank}{_RANK_ORDER[highest]}{label}"
+                                f"-{high_rank}{_RANK_ORDER[highest]}{label}{mark}"
                             )
                     else:
                         for l in sorted(pure_lows):
-                            parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}")
+                            mark = "~" if l in soft_lows else ""
+                            parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}{mark}")
 
             for l, f, c in sorted(mixed, key=lambda x: x[0]):
                 parts.append(f"{high_rank}{_RANK_ORDER[l]}{label}({f*100:.0f}%)")
@@ -684,6 +712,9 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
             compressed = _compress_range(group)
             lines.append(f"\n{label}（{total:.0f} combos）:")
             lines.append(f"  {compressed}")
+
+    if any("~" in line for line in lines):
+        lines.append("\n(~ = 該組已併入 >80% 高頻手牌，非 100% 純頻)")
 
     return "\n".join(lines)
 
