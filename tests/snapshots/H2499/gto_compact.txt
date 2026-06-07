@@ -2,6 +2,7 @@
 
 ─── Preflop ───
 GTO: All-in 69% / RAISE 8.3（95% pot） 31%
+→ Hero raise 95% pot ✅
 
 ─── Flop: KdAc4h ───
 🎯 頂對 (A)

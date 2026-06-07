@@ -1008,6 +1008,119 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
     return f"⚠ EV 損失 {ev_loss:.2f}bb（{hero_label} {hero_ev:.2f}bb vs {best_label} {best_ev:.2f}bb）"
 
 
+# --- EV-impact severity (preflop absolute bb, postflop pot-relative) --------
+# Deviating from the GTO top action is only a real "mistake" if it costs
+# meaningful EV. How much counts as negligible differs by street: preflop we
+# judge in absolute bb (small pots, fixed sizing); postflop we normalise against
+# the pot, because a 0.5bb loss is noise in an 80bb pot but huge in a 4bb pot.
+# Below the negligible line the action is a frequency/mix preference, not an
+# error — the coach must not call it a blunder.
+EV_NEGLIGIBLE_PREFLOP_BB = 0.05
+EV_NEGLIGIBLE_POSTFLOP_POT_FRAC = 0.005  # 0.5% of the pot
+
+
+def classify_ev_impact(ev_loss: float, is_preflop: bool,
+                       pot_bb: float | None = None) -> dict:
+    """Classify how much an EV loss actually matters.
+
+    Returns {"negligible": bool, "pot_frac": float|None}. Preflop uses the
+    absolute bb threshold; postflop normalises against the node pot, falling
+    back to the bb threshold when the pot is unknown.
+    """
+    if ev_loss < 0:
+        ev_loss = 0.0
+    if is_preflop:
+        return {"negligible": ev_loss <= EV_NEGLIGIBLE_PREFLOP_BB,
+                "pot_frac": None}
+    if pot_bb and pot_bb > 0:
+        pot_frac = ev_loss / pot_bb
+        return {"negligible": pot_frac <= EV_NEGLIGIBLE_POSTFLOP_POT_FRAC,
+                "pot_frac": pot_frac}
+    return {"negligible": ev_loss <= EV_NEGLIGIBLE_PREFLOP_BB, "pot_frac": None}
+
+
+def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
+                   hero_pos: str, is_preflop: bool,
+                   combo_idx: int | None = None) -> dict | None:
+    """Structured EV-loss of hero's action vs the solver's best action.
+
+    Returns None when there is no meaningful loss or data is unavailable
+    (mirrors format_ev_comparison's gating, including the max-frequency-fold
+    case). Otherwise returns
+    {ev_loss, hero_ev, best_ev, best_code, pot_bb, pot_frac, negligible}.
+    """
+    if not spot_solution or "action_solutions" not in spot_solution:
+        return None
+
+    if is_preflop:
+        from hh_deviation_check import _get_action_evs_preflop
+        action_evs = _get_action_evs_preflop(spot_solution, hero_hand, hero_pos)
+    else:
+        from hh_deviation_check import _get_action_evs_postflop
+        if combo_idx is not None and not _combo_idx_in_player_range(
+            spot_solution, hero_pos, combo_idx
+        ):
+            return None
+        action_evs = _get_action_evs_postflop(
+            spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
+
+    if not action_evs:
+        return None
+
+    # A high-frequency fold is not a loss even when its EV looks lower — the
+    # solver mixes folds that are ~indifferent. Mirror format_ev_comparison.
+    strategy_freqs = _get_action_strategy_frequencies(
+        spot_solution, hero_hand, hero_pos, is_preflop, combo_idx
+    )
+    taken_freq = strategy_freqs.get(taken_code) if strategy_freqs else None
+    max_freq = max(strategy_freqs.values()) if strategy_freqs else None
+    if (
+        taken_code == "F"
+        and taken_freq is not None
+        and max_freq is not None
+        and taken_freq >= 0.05
+        and taken_freq >= max_freq - 0.005
+    ):
+        return None
+
+    hero_ev = action_evs.get(taken_code)
+    if hero_ev is None:
+        return None
+
+    best_code = max(action_evs, key=action_evs.get)
+    best_ev = action_evs[best_code]
+    ev_loss = best_ev - hero_ev
+    if ev_loss < 0:
+        ev_loss = 0.0
+
+    pot_bb = None
+    if not is_preflop:
+        raw_pot = (spot_solution.get("game") or {}).get("pot")
+        try:
+            pot_bb = float(raw_pot) if raw_pot is not None else None
+        except (TypeError, ValueError):
+            pot_bb = None
+
+    impact = classify_ev_impact(ev_loss, is_preflop, pot_bb)
+    return {
+        "ev_loss": ev_loss,
+        "hero_ev": hero_ev,
+        "best_ev": best_ev,
+        "best_code": best_code,
+        "pot_bb": pot_bb,
+        "pot_frac": impact["pot_frac"],
+        "negligible": impact["negligible"],
+    }
+
+
+def format_ev_magnitude(detail: dict) -> str:
+    """EV magnitude for display: '0.02bb' preflop, '0.30bb（0.4% pot）' postflop."""
+    s = f"{detail['ev_loss']:.2f}bb"
+    if detail.get("pot_frac") is not None:
+        s += f"（{detail['pot_frac'] * 100:.1f}% pot）"
+    return s
+
+
 def _action_label(code: str, spot_solution: dict) -> str:
     """Convert action code to readable label."""
     if code == "X":

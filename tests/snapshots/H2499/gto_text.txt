@@ -20,6 +20,8 @@ Preflop actions 校正: F-F-F-F-R2-F-R7-F-C → F-F-F-F-R2.2-F-R8.3-F-C
   策略:
     All-in: 68.6%（8.2 combos） EV 1.70bb
     RAISE 8.3（95% pot）: 31.4%（3.8 combos） EV 1.70bb
+  → 實際行動: SB R8.3（solver code: R8.3）
+
 
 ==================================================
 【Flop: KdAc4h】
@@ -65,4 +67,4 @@ Hero AJo 牌型: 頂對 (A)
     Bet 2.8（10% pot）: 0.2%（0.0 combos）
   → 實際行動: SB R24.5 24.5bb（solver code: RAI）
 
-⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.1s
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
