@@ -298,6 +298,20 @@ def _partial_columns_are_vlm_recoverable(columns: list[dict]) -> bool:
     return False
 
 
+def _flag_possible_ft(hand: dict, table_color: str | None) -> None:
+    """Flag a purple-felt table as a *possible* final table (ask, don't assume).
+
+    N8 renders FT with a purple felt, but purple is not a guarantee — auto-
+    committing to ICM/FT over-triggered tournament analysis (H3518). Set a
+    soft ``possible_ft`` hint so the bot asks the user to confirm, unless the
+    parse already resolved ICM from a stronger signal (user text keyword).
+    """
+    if not hand:
+        return
+    if table_color == "purple" and not hand.get("tournament_type"):
+        hand["possible_ft"] = True
+
+
 def parse_n8_screenshot(image_bytes: bytes) -> dict:
     """Parse N8 replay screenshot into hand JSON.
 
@@ -1824,12 +1838,12 @@ def _assemble_hand(
     if stacks and len(stacks) == players_at_table:
         hand["player_stacks"] = stacks
 
-    # Final Table detection (temporarily disabled — purple-felt heuristic
-    # was over-triggering ICM analysis. Users can still opt in via text
-    # keywords like "FT/決賽桌" handled in gemini_session parsing.)
-    # if table_color == "purple":
-    #     hand["tournament_type"] = "icm"
-    #     hand["phase"] = "FT"
+    # Purple felt is a final-table SIGNAL on N8, not a guarantee — auto-setting
+    # ICM/FT from it over-triggered ICM analysis (H3518: an 8-handed purple
+    # table judged FT). Don't commit; flag it so the bot ASKS the user to
+    # confirm (chip-EV analysis runs meanwhile). User text keywords like
+    # "FT/決賽桌" still opt in directly via gemini_session parsing.
+    _flag_possible_ft(hand, table_color)
 
     # Pot consistency check
     conf_parts["pot_consistency"] = _check_pot_consistency(columns)
