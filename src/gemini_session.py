@@ -1949,6 +1949,9 @@ class GeminiSessionManager:
             hand_json = await asyncio.wait_for(
                 self._parse_hand(chat_id, user_text, usage_acc=usage_acc), timeout=60,
             )
+            if hand_json:
+                hand_json = await self._reparse_if_rules_invalid(
+                    chat_id, user_text, hand_json, usage_acc)
             t_parse = time.time()
 
             if hand_json:
@@ -2016,6 +2019,9 @@ class GeminiSessionManager:
                         hand_id, chat_id, result))
                     if hand_id:
                         result = f"📋 `{hand_id}`\n\n{result}"
+                    _vwarn = (context.get("validation") or {}).get("user_warning")
+                    if _vwarn:
+                        result += f"\n\n{_vwarn}"
                     t_total = time.time()
                     await self._save_usage(chat_id, "hand_analysis", self.model,
                                            usage_acc, int((t_total - t0) * 1000))
@@ -2097,6 +2103,9 @@ class GeminiSessionManager:
                     hand_id, chat_id, _coaching_only))
                 if hand_id:
                     result = f"📋 `{hand_id}`\n\n{result}"
+                _vwarn = (context.get("validation") or {}).get("user_warning")
+                if _vwarn:
+                    result += f"\n\n{_vwarn}"
                 t_total = time.time()
                 self._logger.info(
                     f"[chat={chat_id}] Done: parse={t_parse - t0:.1f}s "
@@ -2328,6 +2337,12 @@ class GeminiSessionManager:
                     "如果是的話，回覆「決賽桌分析」即可切換到 ICM 模式重新分析。"
                 )
 
+            # Rules-validator note (§5): the parse contained a poker-rules
+            # contradiction (e.g. an orphan call) or a low-confidence signal.
+            _vwarn = (context.get("validation") or {}).get("user_warning")
+            if _vwarn:
+                result += f"\n\n{_vwarn}"
+
             t_total = time.time()
             self._logger.info(
                 f"[chat={chat_id}] Image done: parse={t_parse - t0:.1f}s "
@@ -2513,7 +2528,7 @@ class GeminiSessionManager:
                                 ocr_result["hand"], gemini_hero_hand
                             )
                             self._normalize_cards(hand)
-                            self._fix_folded_players(hand)
+                            self._fix_folded_players_guarded(hand, chat_id)
                             if self._cards_only_merge_safe(
                                 ocr_result, gemini_hero_hand
                             ):
@@ -2540,7 +2555,7 @@ class GeminiSessionManager:
                                     f"structure instead of destructive full parse"
                                 )
                                 self._normalize_cards(hand)
-                                self._fix_folded_players(hand)
+                                self._fix_folded_players_guarded(hand, chat_id)
                                 hand["__ocr_conf__"] = float(ocr_conf)
                                 return hand
                         # else fall through to full Gemini parse below
@@ -2566,7 +2581,7 @@ class GeminiSessionManager:
                         f"[chat={chat_id}] Using OCR result (FAST tier conf={ocr_conf:.2f})"
                     )
                     self._normalize_cards(hand)
-                    self._fix_folded_players(hand)
+                    self._fix_folded_players_guarded(hand, chat_id)
                     hand["__ocr_conf__"] = float(ocr_conf)
                     return hand
 
@@ -2577,7 +2592,7 @@ class GeminiSessionManager:
                         f"dispatching async Gemini cross-check)"
                     )
                     self._normalize_cards(hand)
-                    self._fix_folded_players(hand)
+                    self._fix_folded_players_guarded(hand, chat_id)
                     hand["__ocr_conf__"] = float(ocr_conf)
                     # Fire-and-forget cross-check — user sees OCR result
                     # immediately; disagreements become training data.
@@ -2674,7 +2689,7 @@ class GeminiSessionManager:
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
                 self._normalize_cards(hand)
-                self._fix_folded_players(hand)
+                self._fix_folded_players_guarded(hand, chat_id)
                 # Remove extra keys the vision model sometimes adds
                 for street in hand.get("streets", []):
                     street.pop("street", None)
@@ -2820,6 +2835,32 @@ class GeminiSessionManager:
             "no_hero_hand": True,
             "preflop_actions": "-".join(actions),
         }
+
+    def _fix_folded_players_guarded(self, hand: dict, chat_id: int):
+        """``_fix_folded_players`` with a rules before/after double-check (§4a).
+
+        If our own post-processing turns a rules-valid parse into an invalid one
+        — exactly the H3517 failure mode where a real villain action was stripped
+        onto a folded seat — log loudly and keep the pre-processing version.
+        """
+        try:
+            from hand_validator import validate_hand
+            import copy
+            before_ok = validate_hand(hand).ok
+            snapshot = copy.deepcopy(hand) if before_ok else None
+        except Exception:
+            self._fix_folded_players(hand)
+            return
+        self._fix_folded_players(hand)
+        try:
+            if before_ok and snapshot is not None and not validate_hand(hand).ok:
+                self._logger.error(
+                    f"[chat={chat_id}] _fix_folded_players corrupted a valid parse "
+                    f"(rules now broken) — reverting to the pre-processing version")
+                hand.clear()
+                hand.update(snapshot)
+        except Exception:
+            pass
 
     @staticmethod
     def _fix_folded_players(hand: dict):
@@ -3012,10 +3053,15 @@ class GeminiSessionManager:
         return False
 
     async def _parse_hand(self, chat_id: int, user_text: str,
-                           usage_acc: dict | None = None) -> dict | None:
-        """Parse user's natural language into hand JSON. Uses Flash for speed."""
+                           usage_acc: dict | None = None,
+                           feedback_hint: str = "") -> dict | None:
+        """Parse user's natural language into hand JSON. Uses Flash for speed.
+
+        ``feedback_hint`` (rules-validator Channel B) appends a precise
+        correction note when re-parsing a hand whose first parse broke the rules.
+        """
         structured_icm = self._parse_structured_icm_range_query(user_text)
-        if structured_icm:
+        if structured_icm and not feedback_hint:
             self._logger.info(
                 f"[chat={chat_id}] Parsed structured ICM range query: "
                 f"{json.dumps(structured_icm, ensure_ascii=False)}"
@@ -3033,6 +3079,8 @@ class GeminiSessionManager:
             return None
 
         prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_text}"
+        if feedback_hint:
+            prompt += f"\n\n{feedback_hint}"
         self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
 
         response = await asyncio.wait_for(
@@ -3068,6 +3116,38 @@ class GeminiSessionManager:
             self._logger.warning(f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}")
 
         return None
+
+    async def _reparse_if_rules_invalid(
+        self, chat_id: int, user_text: str, hand_json: dict,
+        usage_acc: dict | None) -> dict:
+        """Rules-validator Channel B: one re-parse if the text parse breaks the rules.
+
+        Feeds the precise violation (street + orphan-call/act-after-fold/...) back
+        to Gemini and re-reads the action order.  Keeps whichever parse the rules
+        accept; falls back to the original if the retry doesn't improve.
+        """
+        try:
+            from hand_validator import validate_hand, to_parser_feedback
+        except Exception:
+            return hand_json
+        report = validate_hand(hand_json)
+        if report.ok:
+            return hand_json
+        feedback = to_parser_feedback(report)
+        self._logger.warning(
+            f"[chat={chat_id}] Text parse broke poker rules, re-parsing once: "
+            f"{[i.code for i in report.hard]}")
+        try:
+            retry = await asyncio.wait_for(
+                self._parse_hand(chat_id, user_text, usage_acc=usage_acc,
+                                 feedback_hint=feedback), timeout=60)
+        except Exception as e:
+            self._logger.warning(f"[chat={chat_id}] Channel-B re-parse failed: {e}")
+            return hand_json
+        if retry and validate_hand(retry).ok:
+            self._logger.info(f"[chat={chat_id}] Channel-B re-parse fixed the hand")
+            return retry
+        return hand_json
 
     async def _coach(self, chat_id: int, user_text: str, gto_data: str) -> str:
         """Generate coaching analysis from GTO solver data."""
