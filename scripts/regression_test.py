@@ -295,6 +295,40 @@ def test_build_streets_tags_sized_allin():
 
 
 @test
+def test_build_streets_multiway_fold_not_attributed_to_the_bettor():
+    """OCR: a multiway cold-caller's fold must not land on the bettor's seat.
+
+    H3531 (3-way flop, hero CO vs SB vs BB): SB bets, BB folds, hero calls.
+    N8's per-row reconciliation/order-inference tagged BB's fold to SB (the
+    bettor), giving the impossible 'SB bet then SB fold'. That broke the
+    multiway→HU collapse (flop_actions became R2-F instead of R2-C) and dropped
+    every post-flop solver node. A fold can never belong to a seat that already
+    acted this street; it must be reassigned to the first un-acted opponent.
+    """
+    from ocr.n8_parser import _build_streets
+
+    street_cols = [{
+        "name": "Flop",
+        "entries": [
+            {"type": "opponent", "position": "SB", "action": "Bet", "size": 3.6},
+            # BB's fold whose badge was misread onto the bettor's SB seat.
+            {"type": "opponent", "position": "SB", "action": "Fold"},
+            {"type": "hero", "position": None, "action": "Call", "size": 3.6},
+        ],
+    }]
+    streets = _build_streets(
+        street_cols, board_cards=["Th", "2c", "6h"],
+        pos_order=["UTG", "UTG+1", "MP", "MP1", "CO", "BTN", "SB", "BB"],
+        hero_position="CO", active_positions=["CO", "SB", "BB"],
+    )
+    flop = streets[0]["actions"]
+    assert_eq(flop[0]["position"], "SB", "the bettor stays SB")
+    assert_eq(flop[1]["action"], "F", "second action is the fold")
+    assert_eq(flop[1]["position"], "BB", "fold reassigned off the bettor to BB")
+    assert_eq(flop[2]["position"], "CO", "hero call stays CO")
+
+
+@test
 def test_effective_bb_opp_shove_called_uses_investment_not_misread_stack():
     """Opp shoves all-in, hero calls in full → eff_bb = opp's investment.
 

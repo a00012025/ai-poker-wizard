@@ -2234,6 +2234,24 @@ def _build_streets(street_cols: list[dict], board_cards: list[str],
                     opp_idx += 1
                 else:
                     pos = ocr_pos or "?"
+                # A fold can never belong to a seat that already acted
+                # (bet/raised/called) on this street.  In multiway pots a
+                # cold-caller's fold is sometimes mapped — by a misread per-row
+                # badge or by order inference — onto an already-acted seat, most
+                # often the bettor (H3531: BB's flop fold tagged SB, the SB
+                # bettor).  That leaves an impossible self-fold that breaks the
+                # multiway→HU collapse and drops every post-flop solver node.
+                # Reassign the fold to the first live opponent who has not yet
+                # acted this street (the real cold-caller).
+                if action_text == "fold":
+                    acted = {a["position"] for a in actions if a["action"] != "F"}
+                    if pos in acted:
+                        unacted = [
+                            p for p in opp_positions_remaining
+                            if p not in acted and p not in folded_in_streets
+                        ]
+                        if unacted:
+                            pos = unacted[0]
                 if player_name and pos and pos != "?":
                     street_name_positions.append((player_name, pos))
 
