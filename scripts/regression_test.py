@@ -12066,6 +12066,380 @@ def test_image_parse_prompt_purple_does_not_auto_ft():
                   "prompt no longer auto-sets ICM/FT from purple felt")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Poker-rules structural validator (scripts/hand_validator.py)
+# Replays each parsed hand as a real Hold'em betting game; any rule the game
+# forbids is a parse bug that must never silently reach the solver.
+# See docs/handoffs/2026-06-08-poker-rules-validator.md
+# ──────────────────────────────────────────────────────────────────────────
+
+def _vhand(**over):
+    """Build a minimal, structurally-valid hand dict for validator tests."""
+    h = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 30,
+        "players_at_table": 8,
+        "hero_position": "CO",
+        "hero_hand": "AsKd",
+        "preflop_actions": "F-F-F-F-R2-F-F-C",  # CO opens, BB calls
+        "streets": [],
+    }
+    h.update(over)
+    return h
+
+
+def _hard_codes(report):
+    return [i.code for i in report.hard]
+
+
+def _soft_codes(report):
+    return [i.code for i in report.soft]
+
+
+@test
+def test_validator_legal_check_bet_call_passes():
+    """A clean single-raised pot replayed street-by-street must validate."""
+    from hand_validator import validate_hand
+    h = _vhand(streets=[
+        {"board": "Js6h5s", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "CO", "action": "R2", "size": 2.0},
+            {"position": "BB", "action": "C", "size": 2.0}]},
+        {"card": "Kc", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "CO", "action": "X"}]},
+    ])
+    r = validate_hand(h)
+    assert_true(r.ok, f"clean hand flagged: {_hard_codes(r)}")
+
+
+@test
+def test_validator_flags_orphan_call():
+    """A Call with no preceding bet this street is an orphan call (H2565/H3485)."""
+    from hand_validator import validate_hand
+    h = _vhand(
+        players_at_table=7, hero_position="BB", hero_hand="6d4h",
+        preflop_actions="F-F-R2-F-F-F-C",
+        streets=[{"board": "2dQh4c", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "BB", "action": "C", "size": 1.8}]}])
+    r = validate_hand(h)
+    assert_in("ORPHAN_CALL", _hard_codes(r), "orphan call not flagged")
+    assert_true(not r.ok, "hand with orphan call must be invalid")
+
+
+@test
+def test_validator_flags_act_after_fold():
+    """A player who folded pre-flop must not act post-flop (H2838)."""
+    from hand_validator import validate_hand
+    # 8-max: CO opens (R2), BB calls; SB folded pre-flop yet acts on the flop.
+    h = _vhand(
+        hero_position="BTN", hero_hand="Ac9s",
+        preflop_actions="F-F-F-F-F-R2-F-C",  # BTN opens, BB calls
+        streets=[{"board": "8c5d2h", "actions": [
+            {"position": "SB", "action": "X"},
+            {"position": "BB", "action": "X"}]}])
+    r = validate_hand(h)
+    assert_in("ACT_AFTER_FOLD", _hard_codes(r), "folded SB acting not flagged")
+
+
+@test
+def test_validator_recognizes_all_aggression_codes():
+    """AI<n>, RAI, bare R, and allin:true all close an orphan-call check (H2740)."""
+    from hand_validator import validate_hand
+    for aggr in (
+        {"position": "CO", "action": "AI14", "size": 14},
+        {"position": "CO", "action": "RAI", "size": 14},
+        {"position": "CO", "action": "R", "size": 14},
+        {"position": "CO", "action": "AllIn", "size": 14, "allin": True},
+    ):
+        h = _vhand(streets=[{"board": "Qd9h4s", "actions": [
+            {"position": "BB", "action": "X"},
+            dict(aggr),
+            {"position": "BB", "action": "C", "size": 14}]}])
+        r = validate_hand(h)
+        assert_not_in("ORPHAN_CALL", _hard_codes(r),
+                      f"{aggr['action']} not treated as aggression → false orphan call")
+
+
+@test
+def test_validator_flags_illegal_check_facing_bet():
+    """A check is illegal once someone has wagered this street."""
+    from hand_validator import validate_hand
+    h = _vhand(streets=[{"board": "Js6h5s", "actions": [
+        {"position": "CO", "action": "R2", "size": 2.0},
+        {"position": "BB", "action": "X"}]}])
+    r = validate_hand(h)
+    assert_in("ILLEGAL_CHECK", _hard_codes(r), "check facing a bet not flagged")
+
+
+@test
+def test_validator_flags_non_monotonic_raise():
+    """A raise must exceed the standing bet."""
+    from hand_validator import validate_hand
+    h = _vhand(streets=[{"board": "Js6h5s", "actions": [
+        {"position": "BB", "action": "R10", "size": 10.0},
+        {"position": "CO", "action": "R8", "size": 8.0}]}])
+    r = validate_hand(h)
+    assert_in("NON_MONOTONIC_RAISE", _hard_codes(r), "shrinking raise not flagged")
+
+
+@test
+def test_validator_flags_action_after_allin_called():
+    """Once an all-in is called the round closes; later actions are illegal."""
+    from hand_validator import validate_hand
+    h = _vhand(streets=[{"board": "Js6h5s", "actions": [
+        {"position": "CO", "action": "AI20", "size": 20.0, "allin": True},
+        {"position": "BB", "action": "C", "size": 20.0, "allin": True},
+        {"position": "CO", "action": "R30", "size": 30.0}]}])
+    r = validate_hand(h)
+    assert_in("ACTION_AFTER_ALLIN_CALLED", _hard_codes(r),
+              "action after a called all-in not flagged")
+
+
+@test
+def test_validator_flags_duplicate_card():
+    """The same card cannot appear in hero's hand and on the board."""
+    from hand_validator import validate_hand
+    h = _vhand(hero_hand="AsKd", streets=[{"board": "AsQh3c", "actions": []}])
+    r = validate_hand(h)
+    assert_in("DUP_CARD", _hard_codes(r), "duplicate As not flagged")
+
+
+@test
+def test_validator_flags_bad_card_and_board_count():
+    """Illegal card faces and wrong board lengths are structural errors."""
+    from hand_validator import validate_hand
+    bad_face = validate_hand(_vhand(hero_hand="ZxKd"))
+    assert_in("BAD_CARD", _hard_codes(bad_face), "illegal rank not flagged")
+    short_flop = validate_hand(_vhand(streets=[{"board": "AsQh", "actions": []}]))
+    assert_in("BOARD_COUNT", _hard_codes(short_flop), "2-card flop not flagged")
+
+
+@test
+def test_validator_flags_hero_pos_and_preflop_len_and_effbb():
+    """Hero position, pre-flop length and effective_bb invariants."""
+    from hand_validator import validate_hand
+    assert_in("HERO_POS_INVALID",
+              _hard_codes(validate_hand(_vhand(hero_position="UTG+2"))),  # not in 8-max
+              "invalid hero position not flagged")
+    assert_in("PREFLOP_LEN",
+              _hard_codes(validate_hand(_vhand(preflop_actions="F-F-R2-C"))),
+              "short pre-flop line not flagged")
+    assert_in("EFFECTIVE_BB",
+              _hard_codes(validate_hand(_vhand(effective_bb=0))),
+              "non-positive effective_bb not flagged")
+
+
+@test
+def test_validator_legal_allin_called_runout_passes():
+    """All-in + call + a dealt runout with NO decisions is legal."""
+    from hand_validator import validate_hand
+    h = _vhand(streets=[
+        {"board": "Js6h5s", "actions": [
+            {"position": "CO", "action": "AI20", "size": 20.0, "allin": True},
+            {"position": "BB", "action": "C", "size": 20.0, "allin": True}]},
+        {"card": "Kc", "actions": []},   # runout, no decisions
+        {"card": "2d", "actions": []}])
+    r = validate_hand(h)
+    assert_true(r.ok, f"legal all-in runout flagged: {_hard_codes(r)}")
+
+
+@test
+def test_validator_multiway_hero_fold_reconcile_clean():
+    """H3511: hero folded pre-flop per the raw string but plays the flop.
+
+    The reconciled participant model must NOT flag the hero (or the other flop
+    participants) as acting-after-fold — that was the prototype's false positive.
+    """
+    from hand_validator import validate_hand
+    h = _vhand(
+        players_at_table=8, hero_position="BTN", hero_hand="6h7h",
+        effective_bb=60,
+        preflop_actions="F-F-R2-C-C-F-F-C",  # raw: BTN folded (wrong)
+        streets=[
+            {"board": "9sJcQh", "actions": [
+                {"position": "BB", "action": "X"}, {"position": "LJ", "action": "X"},
+                {"position": "CO", "action": "X"}, {"position": "BTN", "action": "X"}]},
+            {"card": "Th", "actions": [
+                {"position": "LJ", "action": "R", "size": 2.6},
+                {"position": "CO", "action": "F"},
+                {"position": "BTN", "action": "C", "size": 2.6},
+                {"position": "BB", "action": "F"}]},
+            {"card": "Ac", "actions": [
+                {"position": "LJ", "action": "X"}, {"position": "BTN", "action": "X"}]},
+        ])
+    r = validate_hand(h)
+    assert_true(r.ok, f"reconciled multiway hand false-positived: {_hard_codes(r)}")
+
+
+@test
+def test_validator_soft_stacks_len_mismatch():
+    """player_stacks length ≠ players_at_table is a SOFT warning, not a block."""
+    from hand_validator import validate_hand
+    h = _vhand(players_at_table=8, player_stacks=[30, 25, 40])  # too few
+    r = validate_hand(h)
+    assert_in("STACKS_LEN", _soft_codes(r), "stacks length mismatch not warned")
+    assert_true(r.ok, "stacks length is SOFT — must not invalidate the hand")
+
+
+@test
+def test_validator_user_warning_messages():
+    """user_warning picks the right zh-TW note for hard / soft / clean reports."""
+    from hand_validator import validate_hand, user_warning, HARD_WARNING, SOFT_WARNING
+    # Hard-invalid → the "contradiction, re-send" message.
+    hard = validate_hand(_vhand(streets=[{"board": "2dQh4c", "actions": [
+        {"position": "BB", "action": "X"}, {"position": "BB", "action": "C"}]}]))
+    assert_eq(user_warning(hard), HARD_WARNING, "hard report → hard warning")
+    # Soft-only → the low-confidence note; hand still ok.
+    soft = validate_hand(_vhand(possible_ft=True))
+    assert_eq(user_warning(soft), SOFT_WARNING, "soft-only report → soft warning")
+    # Clean → no warning.
+    assert_eq(user_warning(validate_hand(_vhand())), "", "clean report → no warning")
+
+
+@test
+def test_validator_parser_feedback_localizes_the_spot():
+    """to_parser_feedback renders the failing street + repair hint for re-parse."""
+    from hand_validator import validate_hand, to_parser_feedback
+    r = validate_hand(_vhand(streets=[{"board": "2dQh4c", "actions": [
+        {"position": "BB", "action": "X"}, {"position": "BB", "action": "C"}]}]))
+    fb = to_parser_feedback(r)
+    assert_in("2dQh4c", fb, "feedback must name the street")
+    assert_in("Call", fb, "feedback must describe the orphan call")
+
+
+@test
+def test_validator_hero_folded_but_plays_with_continuation_tokens_clean():
+    """H2823: hero folded pre-flop but plays — even with 3-bet continuation tokens.
+
+    `_reconcile_preflop_with_streets` bails when the line has continuation
+    tokens (len != table size), so the participant model must independently
+    trust that a hero who acts post-flop did not fold (else false ACT_AFTER_FOLD).
+    """
+    from hand_validator import validate_hand
+    h = _vhand(
+        players_at_table=7, hero_position="HJ", hero_hand="Ac4c",
+        preflop_actions="F-F-F-R2.2-R7-F-F-F-C",  # raw folds HJ; has cont token
+        streets=[
+            {"board": "9sAd7s", "actions": [
+                {"position": "HJ", "action": "X"},
+                {"position": "CO", "action": "R8", "size": 8.0},
+                {"position": "HJ", "action": "C", "size": 8.0}]},
+            {"card": "2h", "actions": [
+                {"position": "HJ", "action": "X"}, {"position": "CO", "action": "X"}]},
+        ])
+    r = validate_hand(h)
+    assert_true(r.ok, f"hero-plays-after-raw-fold false-positived: {_hard_codes(r)}")
+
+
+@test
+def test_validator_unknown_hero_hand_is_not_a_card_error():
+    """An 'XX' placeholder (hero folded pre-flop, cards unknown) is not BAD_CARD."""
+    from hand_validator import validate_hand
+    r = validate_hand(_vhand(hero_hand="XX", preflop_actions="F-F-F-F-F-R2.5-R12-F",
+                             streets=[]))
+    assert_not_in("BAD_CARD", _hard_codes(r), "unknown-hero placeholder wrongly flagged")
+
+
+@test
+def test_validator_soft_size_exceeds_stack():
+    """A bet larger than the effective stack is a SOFT warning (OCR noise)."""
+    from hand_validator import validate_hand
+    h = _vhand(effective_bb=25, streets=[{"board": "Js6h5s", "actions": [
+        {"position": "BB", "action": "X"},
+        {"position": "CO", "action": "R80", "size": 80.0}]}])  # 80 >> 25
+    r = validate_hand(h)
+    assert_in("SIZE_EXCEEDS_STACK", _soft_codes(r), "oversized bet not warned")
+    assert_true(r.ok, "size check is SOFT — must not invalidate")
+
+
+# Known triaged hands whose STORED parse legitimately violates the rules — every
+# one is a confirmed silent parse bug (position mislabel, duplicate card, orphan
+# call, or dropped pre-flop seat).  The corpus gate asserts the validator flags
+# NOTHING outside this set; a new entry here must come with a triage note, and a
+# new *un-triaged* flag fails the build (forces a participant-model/aggression fix
+# before merge).  See docs/handoffs/2026-06-08-poker-rules-validator.md §7.3.
+KNOWN_VALIDATOR_FLAGS = {
+    # ACT_AFTER_FOLD — a live player's action mislabeled onto a folded seat:
+    "H2492", "H2496", "H2543", "H2548", "H2549", "H2630", "H2838",
+    # DUP_CARD — the same card parsed into hero's hand and the board (impossible):
+    "H2534", "H2551", "H2615", "H2626", "H2686", "H2849",
+    # ORPHAN_CALL — a Call with no preceding bet on that street:
+    "H2554", "H2565", "H2764", "H3485",
+    # PREFLOP_LEN — a pre-flop seat dropped from the action line:
+    "H2527", "H2651", "H2835", "H3494",
+}
+
+
+@test
+def test_validator_corpus_no_new_false_positives():
+    """Corpus gate: validator must flag nothing outside the triaged bug set.
+
+    Runs validate_hand over every stored snapshot's parse.  Guards against a
+    participant-model/aggression regression silently re-introducing false
+    positives (e.g. the AI14 or multiway-reconcile classes).  Skips when the DB
+    is unreachable so offline core runs still pass.
+    """
+    import asyncio
+    from hand_validator import validate_hand
+
+    dsn = os.environ.get("SUPABASE_CONN")
+    if not dsn:
+        if _verbose:
+            print("    (skipped: SUPABASE_CONN unset)")
+        return
+    try:
+        import asyncpg
+    except ImportError:
+        return
+
+    async def _scan():
+        conn = await asyncpg.connect(dsn, statement_cache_size=0)
+        try:
+            rows = await conn.fetch(
+                "SELECT hand_id, expected_json, parsed_json FROM analysis_snapshots")
+        finally:
+            await conn.close()
+        flagged = {}
+        for row in rows:
+            raw = row["expected_json"] or row["parsed_json"]
+            if not raw:
+                continue
+            try:
+                hand = json.loads(raw)
+            except Exception:
+                continue
+            rep = validate_hand(hand)
+            if not rep.ok:
+                flagged[row["hand_id"]] = sorted({i.code for i in rep.hard})
+        return flagged
+
+    try:
+        flagged = asyncio.run(_scan())
+    except Exception as e:
+        if _verbose:
+            print(f"    (skipped: DB error {e})")
+        return
+
+    new_fps = {h: c for h, c in flagged.items() if h not in KNOWN_VALIDATOR_FLAGS}
+    assert_eq(new_fps, {},
+              "validator produced NEW false positives outside the triaged set — "
+              "fix the participant model/aggression handling, do not just add them here")
+
+
+@test
+def test_validator_soft_icm_unconfirmed():
+    """possible_ft set without a confirmed ICM signal is a SOFT warning."""
+    from hand_validator import validate_hand
+    r = validate_hand(_vhand(possible_ft=True))
+    assert_in("ICM_UNCONFIRMED", _soft_codes(r), "possible_ft not surfaced as soft")
+    assert_true(r.ok, "ICM uncertainty is SOFT — must not invalidate")
+    # A normal chip-EV hand must stay quiet.
+    assert_not_in("ICM_UNCONFIRMED", _soft_codes(validate_hand(_vhand())),
+                  "chip-EV hand wrongly flagged ICM_UNCONFIRMED")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

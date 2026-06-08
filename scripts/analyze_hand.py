@@ -2892,7 +2892,14 @@ def analyze_hand_full(hand: dict) -> dict:
         hero_spots: list of {street, params, ...} per hero decision
         solutions: list of raw spot-solution API responses (parallel to hero_spots)
     """
+    # Last line of defense (§4b): replay the hand as a real betting game.  A
+    # hard-invalid parse must NOT silently fall through to "（無 solver 數據）"
+    # — attach a structured report the bot turns into a user warning, and log
+    # loudly so a parse bug is distinguishable from a genuinely off-tree spot.
+    validation = _build_validation(hand)
+
     result = _run_analysis(hand)
+    result["validation"] = validation
 
     # Cash-game fallback: if all spot solutions came back None (typically a 403
     # from a subscription that doesn't cover the cash solver tree), retry as
@@ -2914,9 +2921,45 @@ def analyze_hand_full(hand: dict) -> dict:
         if any(s is not None for s in mtt_solutions):
             note = "⚠ Cash 牌型無對應 solver 解（可能訂閱未涵蓋 Cash 6-max），已自動改用 MTT 100bb 參考"
             mtt_result["text"] = note + "\n\n" + mtt_result.get("text", "")
+            mtt_result["validation"] = validation
             return mtt_result
 
     return result
+
+
+def _build_validation(hand: dict) -> dict:
+    """Replay ``hand`` through the rules validator; return a serializable report.
+
+    Pure + defensive: any validator error degrades to "ok" so analysis is never
+    blocked by the safety net itself.
+    """
+    try:
+        from hand_validator import validate_hand, user_warning, to_parser_feedback
+
+        report = validate_hand(hand)
+        if report.hard:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[hand_validator] hard-invalid parse reached analysis: %s",
+                "; ".join(f"{i.code}@{i.street}:{i.message}" for i in report.hard))
+
+        def _ser(i):
+            return {"code": i.code, "severity": i.severity, "street": i.street,
+                    "action_index": i.action_index, "positions": i.positions,
+                    "message": i.message, "repair_hint": i.repair_hint}
+
+        return {
+            "ok": report.ok,
+            "hard": [_ser(i) for i in report.hard],
+            "soft": [_ser(i) for i in report.soft],
+            "user_warning": user_warning(report),
+            "parser_feedback": to_parser_feedback(report),
+        }
+    except Exception as e:  # never let the validator block analysis
+        import logging
+        logging.getLogger(__name__).warning("[hand_validator] validation skipped: %s", e)
+        return {"ok": True, "hard": [], "soft": [], "user_warning": "",
+                "parser_feedback": ""}
 
 
 def main():

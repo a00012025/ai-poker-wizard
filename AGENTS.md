@@ -17,6 +17,7 @@ scripts/
   gto_token.py         — JWT auth & token refresh (.tokens.json)
   icm_modes.py         — ICM game mode discovery and stack matching
   hand_eval.py         — Deterministic hand type evaluation
+  hand_validator.py    — Poker-rules structural validator: replays each parsed hand as a real betting game; catches orphan calls, act-after-fold, dup cards, dropped seats before they silently reach the solver (attached to analyze_hand_full as result["validation"])
   hh_parser.py         — Parse GGPoker HH files → analyze_hand_full() input JSON
   hh_deviation_check.py — Direct GTO API deviation checking per hand
   hh_deviation_report.py — analyze_hands() + format_deviation_report()
