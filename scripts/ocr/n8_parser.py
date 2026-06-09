@@ -1367,10 +1367,58 @@ def _compute_effective_bb(
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
 
+    # ---- Pot-bounded over-compute guard (computed early so walkover honours it) ----
+    # A player's PERMANENT investment cannot exceed the chips that actually
+    # entered the pot. The largest observed street-pot header bounds the total
+    # contributions, so start = displayed + investment must satisfy
+    #   start <= displayed + pot_bound.
+    # OCR garbage (e.g. a "Call 77.0" misread) inflates hero_perm past any
+    # physical pot; such an estimate is dropped. (TM5875583251: hero displayed
+    # 56.97, action-walk adds ~80bb ⇒ 137.7, but the largest pot is ~8.9.)
+    pot_values = [p for p in pot_by_street.values()
+                  if isinstance(p, (int, float)) and p > 0]
+    pot_bound = max(pot_values) if pot_values else None
+    # Street-start headers EXCLUDE the final street's action (no header comes
+    # after it), so add the final action street's MATCHED contribution on top.
+    # Uncalled chips don't count (they're returned), so a lone uncalled shove
+    # does NOT raise the bound. (H3514 river: shove 5.8 + call 5.8 ⇒ +11.6,
+    # so hero's legit 8.8 invest is within bound; TM5875583251 river all-in is
+    # uncalled ⇒ +0, leaving the garbled 80bb invest correctly out of bound.)
+    if pot_bound is not None:
+        last_matched = 0.0
+        for col in reversed(_all_cols):
+            ents = [e for e in (col.get("entries", []) if col else [])
+                    if (e.get("action") or "").lower() not in ("fold", "check")]
+            if not ents:
+                continue
+            hero_c = 0.0
+            opp_c = 0.0
+            for e in ents:
+                ea = (e.get("action") or "").lower()
+                es = e.get("size") or 0.0
+                if e.get("type") == "hero":
+                    hero_c = es if ea in ("raise", "all-in") else hero_c + es
+                else:
+                    opp_c = es if ea in ("raise", "all-in") else opp_c + es
+            matched = min(hero_c, opp_c) if hero_c > 0 and opp_c > 0 else 0.0
+            last_matched = matched * 2  # both sides' matched chips enter the pot
+            break
+        pot_bound = pot_bound + last_matched
+    over_compute = (
+        pot_bound is not None
+        and (hero_starting - hero_stack_displayed) > pot_bound + 0.5
+    )
+
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
         # Walkover: nobody contested. effective == hero's own stack, unless a
-        # matched all-in (rare in a walkover) caps it lower.
+        # matched all-in (rare in a walkover) caps it lower. An over-computed
+        # hero_starting here is physically impossible → abstain.
+        if over_compute and not (
+            matched_allin_floor is not None
+            and matched_allin_floor <= (pot_bound or 0) + 0.5
+        ):
+            return (None, hero_start_rounded, 0.0)
         if matched_allin_floor is not None and hero_start_rounded:
             return (round(min(hero_start_rounded, matched_allin_floor), 1),
                     hero_start_rounded, 1.0)
@@ -1403,6 +1451,13 @@ def _compute_effective_bb(
         # and avoids the multiway double-count baked into opp_perm.
         per_villain_invest = opp_preflop_total + opp_postflop_matched
 
+        # A villain's investment likewise cannot exceed the pot, so cap the
+        # modeled per-villain investment by the pot bound (drops a runaway
+        # per_villain_invest from OCR-garbled bet sizes).
+        capped_invest = per_villain_invest
+        if pot_bound is not None and capped_invest > pot_bound + 0.5:
+            capped_invest = pot_bound
+
         villain_starts = []
         matched_names = set()
         if active_opp_names and named_stacks:
@@ -1410,7 +1465,7 @@ def _compute_effective_bb(
                 for ns in named_stacks:
                     nm = ns.get("name")
                     if nm and _fuzzy_name_match(opp_name, nm):
-                        villain_starts.append(ns["stack"] + per_villain_invest)
+                        villain_starts.append(ns["stack"] + capped_invest)
                         matched_names.add(nm)
                         break
 
@@ -1426,7 +1481,7 @@ def _compute_effective_bb(
             if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
                 non_hero_stacks.remove(hero_stack_displayed)
             if non_hero_stacks:
-                opp_starting = min(s + per_villain_invest for s in non_hero_stacks)
+                opp_starting = min(s + capped_invest for s in non_hero_stacks)
             else:
                 opp_starting = hero_starting
 
@@ -1435,6 +1490,20 @@ def _compute_effective_bb(
         # A matched all-in caps the effective stack of the confrontation.
         all_starting.append(matched_allin_floor)
     effective_bb = round(min(all_starting), 1)
+
+    # If hero's reconstruction over-computed, the floor from a matched all-in
+    # (which is bounded by real shove sizes) may still be trustworthy and lower
+    # than the bogus hero/opp starts. Otherwise we have no consistent estimate.
+    if over_compute:
+        if (matched_allin_floor is not None
+                and matched_allin_floor <= (pot_bound or 0) + 0.5
+                and matched_allin_floor < hero_starting):
+            effective_bb = round(matched_allin_floor, 1)
+            over_compute = False  # recovered a physical estimate
+        else:
+            # Abstain: hero_starting is physically impossible and nothing else
+            # constrains the effective stack. Confidence finalized in Commit 3.
+            return (None, round(hero_starting, 1) if hero_starting >= 1.0 else None, 0.0)
 
     if effective_bb < 1.0:
         if all_stacks:

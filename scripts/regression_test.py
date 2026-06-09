@@ -447,6 +447,29 @@ def test_effbb_multiway_selection():
 
 
 @test
+def test_effbb_overcompute_bounded():
+    """effbb: over-compute past table max is rejected (bounded or abstain)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    o = rows["TM5875533783"]; inp = o["inputs"]   # gt 21.0, p_eff 80.5, gt_max 69.1
+    gt_max = max(o["gt"]["stacks_bb"])
+    eff, hero_start, conf = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_true(eff is None or eff <= gt_max * 1.1)
+    # TM5875583251: gt 9.2, action-walk inflates hero to 137.7 vs gt_max 62 -> abstain
+    o2 = rows["TM5875583251"]; inp2 = o2["inputs"]
+    gt_max2 = max(o2["gt"]["stacks_bb"])
+    eff2, _hs2, _c2 = _compute_effective_bb(
+        inp2["columns"], inp2["hero_stack"], inp2["hero_position"],
+        inp2["stacks"], inp2["named_stacks"])
+    assert_true(eff2 is None or eff2 <= gt_max2 * 1.1)
+
+
+@test
 def test_collapse_allin_into_call_merges_shove_frequency():
     """A call facing a shove matches the GTO commit, not a phantom raise.
 
