@@ -1724,6 +1724,7 @@ def _compute_effective_bb(
     # that folded preflop can't undershoot. opp_perm is the modeled continuing
     # opponent's investment — an upper bound on any single active villain's
     # contribution, so displayed + opp_perm is a safe per-villain start.
+    name_matched_villain = False
     if opp_went_allin:
         if opp_allin_display is not None:
             # Opponent went all-in and we know their display (uncalled portion)
@@ -1764,6 +1765,7 @@ def _compute_effective_bb(
 
         if villain_starts:
             opp_starting = min(villain_starts)
+            name_matched_villain = True
         else:
             # Name matching failed (names None/garbled). Before guessing the
             # shortest seat, try POSITION/GEOMETRY attribution: map the active
@@ -1813,6 +1815,19 @@ def _compute_effective_bb(
         all_starting.append(uncalled_shove_ceiling)
     effective_bb = round(min(all_starting), 1)
 
+    # Which source produced the binding (minimum) starting stack? Confidence is
+    # driven by the CERTAINTY of that attribution, not by a second estimator
+    # that eats the same inputs.
+    _bind = round(min(all_starting), 1)
+    binding_from_allin = (
+        (matched_allin_floor is not None
+         and round(matched_allin_floor, 1) <= _bind + 0.05)
+        or (uncalled_shove_ceiling is not None
+            and round(uncalled_shove_ceiling, 1) <= _bind + 0.05)
+    )
+    binding_from_hero = round(hero_starting, 1) <= _bind + 0.05
+    binding_from_opp = round(opp_starting, 1) <= _bind + 0.05
+
     # If hero's reconstruction over-computed, a hard physical ceiling (matched
     # all-in OR an uncalled-jam size, both bounded by real shove sizes) may
     # still be trustworthy and lower than the bogus hero/opp starts. Otherwise
@@ -1839,77 +1854,38 @@ def _compute_effective_bb(
                 round(hero_starting, 1) if hero_starting >= 1.0 else None,
                 0.0)
 
-    # ---- Dual-estimator confidence ----
-    # eff_actionwalk: the reconstruction above (per-entry call/raise sizes).
-    # eff_pothdr: an INDEPENDENT estimate from the pot-header totals alone
-    # (the table-centre pot is a separate OCR signal). Each active player
-    # contributed roughly an equal share of the matched pot, so hero's
-    # investment ≈ total_pot / num_active_contributors; the effective stack is
-    # then min over active players of (displayed + that share). When the two
-    # estimates land in the SAME solver-depth bucket we are confident; when
-    # they disagree we abstain.
-    from effbb_metrics import depth_bucket as _bucket, AVAILABLE_DEPTHS  # local, no cycle
+    # ---- Attribution-certainty confidence ----
+    # Confidence reflects how firmly we identified the seat/size that BINDS the
+    # effective stack — not a second estimator that eats the same OCR inputs
+    # (those agree-or-disagree but don't track correctness). High when:
+    #   * the binding came from an explicit panel all-in size (matched floor or
+    #     uncalled-jam ceiling) — read directly off the screen;
+    #   * the binding villain was pinned by a NAME match;
+    #   * hero himself is the (shortest) binding stack — no villain attribution
+    #     needed (hero's own displayed stack is the most reliable read);
+    #   * there is a single unambiguous active villain (heads-up).
+    # Medium when a villain was pinned only by POSITION/GEOMETRY (right seat,
+    # no name confirmation). LOW (abstain) when the binding came from the
+    # nameless shortest-seat GUESS — that's where attribution is genuinely
+    # ambiguous and the input-bound residual lives.
+    distinct_active = {p for p in opp_entered_positions
+                       if p not in opp_folded_positions}
+    single_active_villain = len(distinct_active) == 1 or n_opp_preflop == 1
 
-    eff_actionwalk = effective_bb
-    eff_pothdr = None
-    if pot_bound is not None and pot_bound > 0:
-        # Distinct continuing villains (names repeat across streets; None is one
-        # unknown seat). Each active player matched an equal share of the pot.
-        distinct = {n for n in opp_names_entered if n}
-        n_villains = max(1, len(distinct) if distinct else 1)
-        n_active = n_villains + 1  # + hero
-        hero_share = pot_bound / n_active
-        pot_starts = [hero_stack_displayed + hero_share]
-        if all_stacks:
-            non_hero = [s for s in all_stacks if s != hero_stack_displayed]
-            if non_hero:
-                pot_starts.append(min(non_hero) + hero_share)
-        if matched_allin_floor is not None:
-            pot_starts.append(matched_allin_floor)
-        eff_pothdr = round(min(pot_starts), 1)
-
-    # Agreement at the solver-depth bucket level, tolerating ONE adjacent bucket
-    # (the pot-share estimator is coarse; exact-bucket agreement would abstain
-    # many correct adjacent-bucket hands). _bucket_distance counts steps along
-    # the AVAILABLE_DEPTHS ladder.
-    def _bucket_distance(a, b):
-        ba, bb = _bucket(a), _bucket(b)
-        if ba is None or bb is None:
-            return None
-        ladder = sorted(set(int(round(d)) for d in AVAILABLE_DEPTHS))
-        if ba not in ladder or bb not in ladder:
-            return abs(ladder.index(min(ladder, key=lambda x: abs(x - ba)))
-                       - ladder.index(min(ladder, key=lambda x: abs(x - bb))))
-        return abs(ladder.index(ba) - ladder.index(bb))
-
-    # NOTE: empirically (full corpus) the pot-share eff_pothdr is too crude for
-    # its bucket-level AGREEMENT with eff_actionwalk to track ground-truth
-    # correctness — conf=1.0 (exact agreement) hands are NOT more precise than
-    # disagreeing ones. So we do NOT abstain on disagreement (that nuked
-    # coverage for zero precision gain). We keep the two estimates only as a
-    # WEAK positive signal: a far-apart divergence is downgraded but not below
-    # the well-founded abstention signals (over-compute, nameless fallback,
-    # physical-floor) which DO predict error. Tuned further in the follow-up.
-    if eff_pothdr is not None and eff_actionwalk is not None:
-        dist = _bucket_distance(eff_pothdr, eff_actionwalk)
-        # Estimates agree → highest soft confidence; far divergence → a notch
-        # lower but still ABOVE the default floor (the agreement is only weakly
-        # predictive, so it must not gate coverage by default — it is a tuning
-        # knob for the follow-up task, not a hard abstain).
-        if dist is not None and dist >= 3:
-            confidence = 0.75
-        else:
-            confidence = 1.0
+    if binding_from_allin:
+        confidence = 1.0          # explicit shove size off the panel
+    elif binding_from_hero and not binding_from_opp:
+        confidence = 0.95         # hero's own displayed stack binds
+    elif binding_from_opp and name_matched_villain:
+        confidence = 0.95         # villain pinned by name
+    elif binding_from_opp and geometry_pinned:
+        confidence = 0.8          # villain pinned by position/geometry only
+    elif binding_from_opp and single_active_villain:
+        confidence = 0.8          # one obvious villain, even if unnamed
+    elif nameless_fallback:
+        confidence = 0.5          # shortest-seat guess — ambiguous, abstain
     else:
-        confidence = 0.8  # single estimator only
-
-    # The nameless multiway fallback can't name-match the active villain. It is
-    # a softer signal than it looks: empirically these hands are NOT less
-    # bucket-accurate than name-matched ones (the shortest-seat heuristic is
-    # often right), so we only mildly downgrade — abstaining them outright trims
-    # coverage for no precision gain. Keep above the default floor.
-    if nameless_fallback:
-        confidence = min(confidence, 0.75)
+        confidence = 0.85
 
     # Internal-consistency abstain (narrow, NOT a precision lever): hero is the
     # BINDING (shortest) stack, hero barely invested (<3bb total), hero folded,

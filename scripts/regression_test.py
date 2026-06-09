@@ -526,6 +526,47 @@ def test_effbb_geometry_villain_attribution():
 
 
 @test
+def test_effbb_confidence_is_calibrated_monotonic():
+    """effbb: attribution-certainty confidence yields a MONOTONIC precision/
+    coverage curve — raising the floor trades coverage for precision (the old
+    dual-estimator agreement-confidence produced a flat curve)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import hero_folded_preflop, bucket_match
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    active = []
+    for line in open(cache, encoding="utf-8"):
+        o = json.loads(line)
+        gt = o.get("gt") or {}
+        ge = gt.get("effective_bb")
+        if ge is None or ge < 1.0 or "inputs" not in o:
+            continue
+        if hero_folded_preflop(gt) is not False:
+            continue
+        inp = o["inputs"]
+        eff, _hs, conf = _compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])
+        if eff is not None:
+            active.append((eff, conf, bucket_match(eff, ge)))
+
+    def prec_at(floor):
+        em = [a for a in active if a[1] >= floor]
+        ok = [a for a in em if a[2]]
+        return (100 * len(ok) / len(em)) if em else 0.0, len(em)
+
+    p0, _ = prec_at(0.0)
+    p7, _ = prec_at(0.7)
+    p9, _ = prec_at(0.9)
+    # Higher floor must not LOWER precision (monotone non-decreasing), and the
+    # top band must be meaningfully more precise than the whole population.
+    assert_true(p7 >= p0 - 0.5, f"precision dropped raising floor 0->0.7: {p0:.1f}->{p7:.1f}")
+    assert_true(p9 >= p7 - 0.5, f"precision dropped raising floor 0.7->0.9: {p7:.1f}->{p9:.1f}")
+    assert_true(p9 >= p0 + 3.0, f"high-conf band not more precise: all={p0:.1f} conf>=0.9={p9:.1f}")
+
+
+@test
 def test_effbb_abstain_or_correct_on_divergence():
     """effbb: ambiguous/divergent reconstruction abstains or hits the right bucket."""
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
