@@ -1113,15 +1113,26 @@ def _compute_effective_bb(
     # also consider the cleaned seat-ring length and take the larger plausible.
     if num_players is None:
         _panel_pos = _panel_distinct_positions(columns)
-        _ring_seats = _seat_ring(named_stacks)
         if _panel_pos:
-            num_players = len(_panel_pos)
-        elif _ring_seats:
-            num_players = len(_ring_seats)
-        if num_players is not None:
-            num_players = min(max(num_players, 2), 9)
-            if num_players not in POSITION_ORDERS:
-                num_players = None
+            # Smallest table size whose position set COVERS every observed
+            # panel position. The panel omits some seats (a fold-through BB is
+            # often not shown), so a raw distinct count under-counts; but the
+            # SET of positions pins the table size because position names are
+            # table-size-specific (e.g. an LJ rules out 5-max). This is far
+            # more robust than counting seat stickers (bet/pot phantoms) or the
+            # raw panel count. (TM5863068088: panel {LJ,HJ,CO,BTN,SB} → 6-max,
+            # not 5; the unshown BB is the binding seat behind a HJ open.)
+            for _sz in range(2, 10):
+                _order = POSITION_ORDERS.get(_sz)
+                if _order and _panel_pos.issubset(set(_order)):
+                    num_players = _sz
+                    break
+        if num_players is None:
+            _ring_seats = _seat_ring(named_stacks)
+            if _ring_seats:
+                num_players = min(max(len(_ring_seats), 2), 9)
+                if num_players not in POSITION_ORDERS:
+                    num_players = None
 
     # ---- Locate columns ----
     blinds_col = None
@@ -1563,6 +1574,44 @@ def _compute_effective_bb(
             actor = (key[0], key[1]) if len(key) >= 2 else key
             _prior_invest[actor] = _prior_invest.get(actor, 0.0) + total
 
+    # ---- Uncalled preflop shove ceiling ----
+    # When hero VOLUNTARILY invested preflop (raise/call, but did NOT shove)
+    # and an opponent then jams all-in that hero folds to (the shove is
+    # uncalled — everyone after folds), the shover's whole stack went in, so
+    # the shove size is that villain's STARTING stack and an upper bound on the
+    # effective stack of the spot. With several opponent jams, the SHORTEST one
+    # binds (the smallest committed villain). The displayed-stack reconstruction
+    # misses this because the shover's table stack reads ~0 and the names are
+    # often None. (TM5863067496: hero SB R6.7, BB jams 20.4, hero folds — GT
+    # eff 20.4; function returned 36.7.) This is NARROW on purpose: it does not
+    # fire when hero himself shoved (that case is the matched_allin_floor).
+    uncalled_shove_ceiling = None
+    if preflop_col:
+        pf_entries = preflop_col.get("entries", [])
+        hero_shoved_pf = any(
+            (e.get("action") or "").lower() == "all-in"
+            and e.get("type") == "hero"
+            for e in pf_entries
+        )
+        hero_invested_pf = any(
+            (e.get("action") or "").lower() in ("raise", "call", "bet")
+            and e.get("type") == "hero"
+            for e in pf_entries
+        )
+        if hero_invested_pf and not hero_shoved_pf:
+            opp_jams = [
+                (i, e) for i, e in enumerate(pf_entries)
+                if (e.get("action") or "").lower() == "all-in"
+                and e.get("type") != "hero"
+                and e.get("size")
+            ]
+            if opp_jams:
+                last_i = opp_jams[-1][0]
+                after = pf_entries[last_i + 1:]
+                # Uncalled: nobody called/raised after the final jam.
+                if all((a.get("action") or "").lower() == "fold" for a in after):
+                    uncalled_shove_ceiling = min(e["size"] for _, e in opp_jams)
+
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
 
@@ -1725,16 +1774,25 @@ def _compute_effective_bb(
     if matched_allin_floor is not None:
         # A matched all-in caps the effective stack of the confrontation.
         all_starting.append(matched_allin_floor)
+    if uncalled_shove_ceiling is not None:
+        # An uncalled villain jam hero folded to: the jam size is the villain's
+        # whole (starting) stack and bounds the effective stack.
+        all_starting.append(uncalled_shove_ceiling)
     effective_bb = round(min(all_starting), 1)
 
-    # If hero's reconstruction over-computed, the floor from a matched all-in
-    # (which is bounded by real shove sizes) may still be trustworthy and lower
-    # than the bogus hero/opp starts. Otherwise we have no consistent estimate.
+    # If hero's reconstruction over-computed, a hard physical ceiling (matched
+    # all-in OR an uncalled-jam size, both bounded by real shove sizes) may
+    # still be trustworthy and lower than the bogus hero/opp starts. Otherwise
+    # we have no consistent estimate.
+    _physical_floor = None
+    for _f in (matched_allin_floor, uncalled_shove_ceiling):
+        if _f is not None and (_physical_floor is None or _f < _physical_floor):
+            _physical_floor = _f
     if over_compute:
-        if (matched_allin_floor is not None
-                and matched_allin_floor <= (pot_bound or 0) + 0.5
-                and matched_allin_floor < hero_starting):
-            effective_bb = round(matched_allin_floor, 1)
+        if (_physical_floor is not None
+                and _physical_floor <= (pot_bound or 0) + 0.5
+                and _physical_floor < hero_starting):
+            effective_bb = round(_physical_floor, 1)
             over_compute = False  # recovered a physical estimate
         else:
             # Abstain: hero_starting is physically impossible and nothing else

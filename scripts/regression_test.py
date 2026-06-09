@@ -464,6 +464,47 @@ def test_effbb_deep_invested_not_nulled():
 
 
 @test
+def test_effbb_walkover_seat_attribution():
+    """effbb: a fold-through open binds on the shortest seat still to act,
+    resolved by position/geometry — not hero's own (deeper) stack."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    # TM5863067852: hero HJ opens, all fold. GT eff 10.7 (a short seat behind),
+    # NOT hero's 24.8 stack.
+    for hid in ("TM5863067852", "TM5863068088"):
+        o = rows[hid]; inp = o["inputs"]
+        eff, _hs, _c = _compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])
+        assert_true(eff is not None)
+        assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
+
+
+@test
+def test_effbb_uncalled_shove_ceiling():
+    """effbb: hero invests preflop then folds to an uncalled villain jam — the
+    jam size is the villain's whole stack and caps the effective stack."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    # TM5863067496: hero SB R6.7, BB jams 20.4 uncalled, hero folds. GT eff 20.4
+    # (the jam size), not hero's 36.7 reconstructed start.
+    o = rows["TM5863067496"]; inp = o["inputs"]
+    eff, _hs, _c = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_true(eff is not None)
+    assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
+
+
+@test
 def test_effbb_abstain_or_correct_on_divergence():
     """effbb: ambiguous/divergent reconstruction abstains or hits the right bucket."""
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
