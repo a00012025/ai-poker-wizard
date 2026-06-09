@@ -12514,6 +12514,59 @@ def test_validator_soft_icm_unconfirmed():
                   "chip-EV hand wrongly flagged ICM_UNCONFIRMED")
 
 
+@test
+def test_effbb_depth_bucket():
+    """effbb_metrics: depth_bucket snaps to AVAILABLE_DEPTHS"""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    from effbb_metrics import depth_bucket
+    assert_eq(depth_bucket(21.6), 20)
+    assert_eq(depth_bucket(24.0), 25)   # |25-24|=1 < |20-24|=4
+    assert_eq(depth_bucket(29.3), 30)
+    assert_eq(depth_bucket(None), None)
+    assert_eq(depth_bucket("x"), None)
+
+
+@test
+def test_effbb_bucket_match():
+    """effbb_metrics: bucket_match compares snapped depths"""
+    from effbb_metrics import bucket_match
+    assert_true(bucket_match(21.6, 19.0))    # both -> 20
+    assert_true(not bucket_match(29.3, 36.2)) # 30 vs 35
+    assert_true(not bucket_match(None, 20.0))
+
+
+@test
+def test_effbb_hero_folded():
+    """effbb_metrics: hero_folded_preflop reads position-ordered action string"""
+    from effbb_metrics import hero_folded_preflop
+    # 8-max, hero UTG (index 0), preflop UTG folds
+    gt = {"num_players": 8, "table_size": 8, "hero_position": "UTG",
+          "preflop_actions": "F-F-F-F-F-R2.0-F-C"}
+    assert_eq(hero_folded_preflop(gt), True)
+    # hero UTG+1 raises
+    gt2 = {"num_players": 8, "table_size": 8, "hero_position": "UTG+1",
+           "preflop_actions": "F-R2.2-C-F-F-C-F-F"}
+    assert_eq(hero_folded_preflop(gt2), False)
+
+
+@test
+def test_effbb_classify_fault():
+    """effbb_metrics: classify_fault buckets the 4 error classes"""
+    from effbb_metrics import classify_fault
+    # overshoot beyond any table stack -> impossible_over
+    assert_eq(classify_fault(p_eff=162.9, gt_eff=20.4, hero_start=20.4,
+                             gt_max=63.0), "impossible_over")
+    # returned hero's own start, a shorter villain existed -> selection
+    assert_eq(classify_fault(p_eff=36.2, gt_eff=29.3, hero_start=36.2,
+                             gt_max=69.4), "selection")
+    # under-compute
+    assert_eq(classify_fault(p_eff=7.4, gt_eff=24.1, hero_start=24.1,
+                             gt_max=80.0), "undershoot")
+    # adjacent-bucket near miss
+    assert_eq(classify_fault(p_eff=40.0, gt_eff=37.1, hero_start=45.0,
+                             gt_max=78.0), "near")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
