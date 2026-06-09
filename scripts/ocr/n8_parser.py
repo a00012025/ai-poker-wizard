@@ -1714,6 +1714,19 @@ def _assemble_hand(
         columns, hero_stack, hero_position, stacks, named_stacks,
     )
 
+    # Phase-0 effbb cache: stash the raw inputs so effbb_eval can replay
+    # _compute_effective_bb without re-OCR. Gated by env var; no prod cost.
+    if os.getenv("EFFBB_CAPTURE"):
+        hand_capture = {
+            "columns": columns,
+            "hero_stack": hero_stack,
+            "hero_position": hero_position,
+            "stacks": stacks,
+            "named_stacks": named_stacks,
+        }
+    else:
+        hand_capture = None
+
     preflop_actions, preflop_size_repairs = _repair_implausible_open_raise_sizes(
         preflop_actions
     )
@@ -1837,6 +1850,9 @@ def _assemble_hand(
     # Mismatched stacks cause position mapping errors downstream.
     if stacks and len(stacks) == players_at_table:
         hand["player_stacks"] = stacks
+
+    if hand_capture is not None:
+        hand["__effbb_inputs__"] = hand_capture
 
     # Purple felt is a final-table SIGNAL on N8, not a guarantee — auto-setting
     # ICM/FT from it over-triggered ICM analysis (H3518: an 8-handed purple
