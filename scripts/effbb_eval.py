@@ -67,7 +67,7 @@ def main() -> int:
         print(f"\n## {name}: n={len(subset)} emitted={len(emitted)} "
               f"coverage={cov:.1f}% bucket-precision={prec:.2f}% "
               f"({len(ok)}/{len(emitted)})")
-        wrong = [x for x in emitted if x not in ok]
+        wrong = [x for x in emitted if not bucket_match(x["p_eff"], x["gt_eff"])]
         faults = {}
         for x in wrong:
             f = classify_fault(p_eff=x["p_eff"], gt_eff=x["gt_eff"],
