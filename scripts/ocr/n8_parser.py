@@ -1830,6 +1830,14 @@ def _compute_effective_bb(
                 else:
                     opp_starting = hero_starting
 
+    # When HERO jams uncalled, the opponents all FOLDED — none committed, so a
+    # folder's reconstructed (and often misread-short) stack must not undercut
+    # hero's shove. The effective is hero's shove size, capped only by a genuine
+    # all-in floor. (TM5866594919: hero jams 22.9, opener folds; the opener's
+    # seat misread to 17 wrongly bound it — GT is 22.9.)
+    if hero_uncalled_shove is not None:
+        opp_starting = hero_starting
+
     all_starting = [hero_starting, opp_starting]
     if matched_allin_floor is not None:
         # A matched all-in caps the effective stack of the confrontation.
