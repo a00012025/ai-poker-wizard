@@ -61,3 +61,4 @@ data/cards/
 
 
 .claude/scheduled_tasks.lock
+data/effbb_cache/
