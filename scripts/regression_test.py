@@ -447,6 +447,40 @@ def test_effbb_multiway_selection():
 
 
 @test
+def test_effbb_deep_invested_not_nulled():
+    """effbb: deep-invested hero keeps a real value (no displayed*5 false-null)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    o = rows["TM5896148353"]; inp = o["inputs"]
+    eff, hero_start, conf = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_true(eff is not None)
+    assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
+
+
+@test
+def test_effbb_abstain_or_correct_on_divergence():
+    """effbb: ambiguous/divergent reconstruction abstains or hits the right bucket."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    o = rows["TM5863941844"]; inp = o["inputs"]
+    eff, hero_start, conf = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    # Either it now lands on the right bucket, or it correctly abstains.
+    assert_true(eff is None or depth_bucket(eff) == depth_bucket(o["gt"]["effective_bb"]))
+
+
+@test
 def test_effbb_overcompute_bounded():
     """effbb: over-compute past table max is rejected (bounded or abstain)."""
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))

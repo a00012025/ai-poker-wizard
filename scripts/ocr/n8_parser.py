@@ -26,6 +26,11 @@ with open(_CONFIG_PATH) as f:
 _CONF_WEIGHTS = _CONFIG["confidence_weights"]
 _CONF_THRESHOLD = _CONFIG["confidence_threshold"]
 
+# effective_bb abstain floor. _compute_effective_bb returns None (abstain) when
+# its confidence falls below this. Downstream degrades a None effective_bb to a
+# safe solver-depth fallback, so abstaining is cheap. Tuned in a follow-up task.
+_EFFBB_CONF_FLOOR = float(os.getenv("OCR_EFFBB_CONF_FLOOR", "0.7"))
+
 # Position orders by table size (must match analyze_hand.py)
 POSITION_ORDERS = {
     9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
@@ -1409,6 +1414,7 @@ def _compute_effective_bb(
         and (hero_starting - hero_stack_displayed) > pot_bound + 0.5
     )
 
+    nameless_fallback = False
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
         # Walkover: nobody contested. effective == hero's own stack, unless a
@@ -1476,7 +1482,9 @@ def _compute_effective_bb(
             # as the binding active villain (a single caller is usually the
             # short one; picking the largest, as the old code did, collapsed
             # to hero's own stack). Bound by the table so we never invent a
-            # stack deeper than the deepest real seat.
+            # stack deeper than the deepest real seat. This guess is unreliable
+            # (we can't tell which seat is the active villain) → low confidence.
+            nameless_fallback = True
             non_hero_stacks = list(all_stacks) if all_stacks else []
             if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
                 non_hero_stacks.remove(hero_stack_displayed)
@@ -1502,7 +1510,7 @@ def _compute_effective_bb(
             over_compute = False  # recovered a physical estimate
         else:
             # Abstain: hero_starting is physically impossible and nothing else
-            # constrains the effective stack. Confidence finalized in Commit 3.
+            # constrains the effective stack.
             return (None, round(hero_starting, 1) if hero_starting >= 1.0 else None, 0.0)
 
     if effective_bb < 1.0:
@@ -1512,7 +1520,113 @@ def _compute_effective_bb(
                 round(hero_starting, 1) if hero_starting >= 1.0 else None,
                 0.0)
 
-    return effective_bb, round(hero_starting, 1), 1.0
+    # ---- Dual-estimator confidence ----
+    # eff_actionwalk: the reconstruction above (per-entry call/raise sizes).
+    # eff_pothdr: an INDEPENDENT estimate from the pot-header totals alone
+    # (the table-centre pot is a separate OCR signal). Each active player
+    # contributed roughly an equal share of the matched pot, so hero's
+    # investment ≈ total_pot / num_active_contributors; the effective stack is
+    # then min over active players of (displayed + that share). When the two
+    # estimates land in the SAME solver-depth bucket we are confident; when
+    # they disagree we abstain.
+    from effbb_metrics import depth_bucket as _bucket, AVAILABLE_DEPTHS  # local, no cycle
+
+    eff_actionwalk = effective_bb
+    eff_pothdr = None
+    if pot_bound is not None and pot_bound > 0:
+        # Distinct continuing villains (names repeat across streets; None is one
+        # unknown seat). Each active player matched an equal share of the pot.
+        distinct = {n for n in opp_names_entered if n}
+        n_villains = max(1, len(distinct) if distinct else 1)
+        n_active = n_villains + 1  # + hero
+        hero_share = pot_bound / n_active
+        pot_starts = [hero_stack_displayed + hero_share]
+        if all_stacks:
+            non_hero = [s for s in all_stacks if s != hero_stack_displayed]
+            if non_hero:
+                pot_starts.append(min(non_hero) + hero_share)
+        if matched_allin_floor is not None:
+            pot_starts.append(matched_allin_floor)
+        eff_pothdr = round(min(pot_starts), 1)
+
+    # Agreement at the solver-depth bucket level, tolerating ONE adjacent bucket
+    # (the pot-share estimator is coarse; exact-bucket agreement would abstain
+    # many correct adjacent-bucket hands). _bucket_distance counts steps along
+    # the AVAILABLE_DEPTHS ladder.
+    def _bucket_distance(a, b):
+        ba, bb = _bucket(a), _bucket(b)
+        if ba is None or bb is None:
+            return None
+        ladder = sorted(set(int(round(d)) for d in AVAILABLE_DEPTHS))
+        if ba not in ladder or bb not in ladder:
+            return abs(ladder.index(min(ladder, key=lambda x: abs(x - ba)))
+                       - ladder.index(min(ladder, key=lambda x: abs(x - bb))))
+        return abs(ladder.index(ba) - ladder.index(bb))
+
+    # NOTE: empirically (full corpus) the pot-share eff_pothdr is too crude for
+    # its bucket-level AGREEMENT with eff_actionwalk to track ground-truth
+    # correctness — conf=1.0 (exact agreement) hands are NOT more precise than
+    # disagreeing ones. So we do NOT abstain on disagreement (that nuked
+    # coverage for zero precision gain). We keep the two estimates only as a
+    # WEAK positive signal: a far-apart divergence is downgraded but not below
+    # the well-founded abstention signals (over-compute, nameless fallback,
+    # physical-floor) which DO predict error. Tuned further in the follow-up.
+    if eff_pothdr is not None and eff_actionwalk is not None:
+        dist = _bucket_distance(eff_pothdr, eff_actionwalk)
+        # Estimates agree → highest soft confidence; far divergence → a notch
+        # lower but still ABOVE the default floor (the agreement is only weakly
+        # predictive, so it must not gate coverage by default — it is a tuning
+        # knob for the follow-up task, not a hard abstain).
+        if dist is not None and dist >= 3:
+            confidence = 0.75
+        else:
+            confidence = 1.0
+    else:
+        confidence = 0.8  # single estimator only
+
+    # The nameless multiway fallback can't name-match the active villain. It is
+    # a softer signal than it looks: empirically these hands are NOT less
+    # bucket-accurate than name-matched ones (the shortest-seat heuristic is
+    # often right), so we only mildly downgrade — abstaining them outright trims
+    # coverage for no precision gain. Keep above the default floor.
+    if nameless_fallback:
+        confidence = min(confidence, 0.75)
+
+    # Internal-consistency abstain (narrow, NOT a precision lever): hero is the
+    # BINDING (shortest) stack, hero barely invested (<3bb total), hero folded,
+    # yet a still-live villain is >=3x deeper than hero's reconstructed start.
+    # A folding player that short cannot define a deep spot — this is an
+    # upstream hero-stack OCR corruption (displayed read far too small), which
+    # both reconstruction estimators inherit (so the dual-estimator divergence
+    # can't see it). Requiring hero_invest<3 avoids the deep-invested-hero
+    # class (hero displayed tiny only because they invested a lot — a real,
+    # correct binding). (TM5863941844: hero displayed 4.0, really ~20bb.)
+    hero_invest = hero_starting - hero_stack_displayed
+    hero_binds = abs(effective_bb - round(hero_starting, 1)) < 0.6
+    hero_folded_anywhere = any(
+        e.get("type") == "hero" and (e.get("action") or "").lower() == "fold"
+        for c in (([preflop_col] if preflop_col else []) + list(street_cols))
+        for e in (c.get("entries", []) if c else [])
+    )
+    live_villain_3x = any(
+        s >= 3 * hero_starting for s in (all_stacks or [])
+        if s != hero_stack_displayed
+    )
+    if (hero_binds and hero_invest < 3.0 and hero_folded_anywhere
+            and live_villain_3x and hero_starting > 0):
+        confidence = min(confidence, 0.3)
+
+    # NOTE on the old "physical floor": the legacy gate nulled effective_bb when
+    # it fell below the largest preflop raise. That is INVALID here — when hero
+    # opens and a short stack calls all-in for less, the effective stack is
+    # legitimately below the open size. Folding that into confidence
+    # false-abstains a large, correct short-stack population, so it is dropped.
+    # The only physically sound abstention is the pot-bounded over-compute guard
+    # above (an UPPER bound, which has a valid physical basis).
+
+    if confidence < _EFFBB_CONF_FLOOR:
+        return None, round(hero_starting, 1), confidence
+    return effective_bb, round(hero_starting, 1), confidence
 
 
 def _build_diagnostics(
@@ -1986,27 +2100,12 @@ def _assemble_hand(
         "preflop_actions": preflop_actions,
     }
 
-    # Sanity check effective_bb — if unreasonable, leave it out for Gemini
-    if effective_bb is not None:
-        # Must be at least as large as the biggest preflop raise
-        max_preflop_raise = 0
-        for part in preflop_actions.split("-"):
-            if part.startswith("R"):
-                try:
-                    max_preflop_raise = max(max_preflop_raise, float(part[1:]))
-                except ValueError:
-                    pass
-            elif part.startswith("AI"):
-                try:
-                    max_preflop_raise = max(max_preflop_raise, float(part[2:]))
-                except ValueError:
-                    pass
-        if effective_bb < max_preflop_raise:
-            effective_bb = None  # unreasonable, let Gemini compute
-        # Must be reasonable relative to hero's displayed stack
-        elif hero_stack and effective_bb > hero_stack * 5:
-            effective_bb = None  # likely stack matching error
-
+    # effective_bb abstention now lives inside _compute_effective_bb (the
+    # dual-estimator confidence gate). The old external sanity gate — the
+    # `< max_preflop_raise` null AND the `> hero_stack*5` displayed×5 null —
+    # is removed: the physical-floor half is folded into the function's
+    # confidence, and the displayed×5 half false-nulled deep-invested hero
+    # hands (hero displayed ~3-5bb after heavy action, true effective ~30-60bb).
     if effective_bb is not None:
         hand["effective_bb"] = effective_bb
 

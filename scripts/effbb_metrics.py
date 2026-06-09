@@ -3,7 +3,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from gto_api import nearest_depth
+from gto_api import nearest_depth, AVAILABLE_DEPTHS
 
 try:
     from analyze_hand import POSITION_ORDERS
