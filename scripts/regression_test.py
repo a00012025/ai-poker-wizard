@@ -526,6 +526,26 @@ def test_effbb_geometry_villain_attribution():
 
 
 @test
+def test_effbb_hero_uncalled_shove_starting_stack():
+    """effbb: when hero jams preflop and everyone folds (uncalled), hero's shove
+    size is hero's authoritative starting stack."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+    # TM5866594919: hero HJ jams 22.9, all fold. GT 22.9 (the shove size). The
+    # displayed+reconstruction path abstained (None) before.
+    o = rows["TM5866594919"]; inp = o["inputs"]
+    eff, _hs, _c = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_true(eff is not None)
+    assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
+
+
+@test
 def test_effbb_confidence_is_calibrated_monotonic():
     """effbb: attribution-certainty confidence yields a MONOTONIC precision/
     coverage curve — raising the floor trades coverage for precision (the old

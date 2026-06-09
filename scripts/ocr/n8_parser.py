@@ -1595,6 +1595,28 @@ def _compute_effective_bb(
     # eff 20.4; function returned 36.7.) This is NARROW on purpose: it does not
     # fire when hero himself shoved (that case is the matched_allin_floor).
     uncalled_shove_ceiling = None
+    # When HERO jams preflop and everyone folds (uncalled), hero's shove size
+    # IS hero's whole starting stack — a direct panel read, more reliable than
+    # the displayed+reconstruction estimate (which can drift on a misread call
+    # size). We fold it into hero_starting as an authoritative value.
+    hero_uncalled_shove = None
+    _has_postflop = any(
+        (c.get("name") or "").lower() in ("flop", "turn", "river")
+        and c.get("entries")
+        for c in columns
+    )
+    if preflop_col:
+        pf_entries = preflop_col.get("entries", [])
+        _hero_jam = None
+        for _i, _e in enumerate(pf_entries):
+            if ((_e.get("action") or "").lower() == "all-in"
+                    and _e.get("type") == "hero" and _e.get("size")):
+                _hero_jam = (_i, _e)
+        if _hero_jam and not _has_postflop:
+            _ji, _je = _hero_jam
+            if all((a.get("action") or "").lower() == "fold"
+                   for a in pf_entries[_ji + 1:]):
+                hero_uncalled_shove = _je["size"]
     if preflop_col:
         pf_entries = preflop_col.get("entries", [])
         hero_shoved_pf = any(
@@ -1623,6 +1645,9 @@ def _compute_effective_bb(
 
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
+    # A hero uncalled-jam size is hero's authoritative starting stack.
+    if hero_uncalled_shove is not None:
+        hero_starting = hero_uncalled_shove
 
     # ---- Pot-bounded over-compute guard (computed early so walkover honours it) ----
     # A player's PERMANENT investment cannot exceed the chips that actually
@@ -1872,7 +1897,9 @@ def _compute_effective_bb(
                        if p not in opp_folded_positions}
     single_active_villain = len(distinct_active) == 1 or n_opp_preflop == 1
 
-    if binding_from_allin:
+    if binding_from_allin or (
+        hero_uncalled_shove is not None and binding_from_hero
+    ):
         confidence = 1.0          # explicit shove size off the panel
     elif binding_from_hero and not binding_from_opp:
         confidence = 0.95         # hero's own displayed stack binds
