@@ -412,11 +412,38 @@ def test_effective_bb_opp_shove_called_uses_investment_not_misread_stack():
         {"name": "Gao zU", "stack": 18.9},   # MISREAD: pot chips, really ~0
         {"name": "cbd191320", "stack": 25.9},
     ]
-    eff, hero_start = _compute_effective_bb(
+    eff, hero_start, _conf = _compute_effective_bb(
         columns, 25.9, "BTN",
         [20.2, 15.4, 18.9, 18.8, 19.1, 55.4, 25.9], named_stacks)
     assert_eq(hero_start, 34.7, "hero starting stack = display 25.9 + invested 8.8")
     assert_eq(eff, 8.8, "eff_bb = BB's full investment (all-in), not misread stack")
+
+
+@test
+def test_effbb_multiway_selection():
+    """effbb: multiway returns min(hero, shortest active villain) bucket."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    by_id = {}
+    for line in open(cache, encoding="utf-8"):
+        o = json.loads(line)
+        if "inputs" in o:
+            by_id[o["hand_id"]] = o
+    # TM5873208532: multiway, hero 36.2 vs shortest active caller ~29.3 -> bucket 30
+    inp = by_id["TM5873208532"]["inputs"]
+    eff, hero_start, conf = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_eq(depth_bucket(eff), 30)
+    # TM5862907992: heads-up, true effective 16.5 (shorter opener) not hero's 22.9 -> bucket 17
+    inp2 = by_id["TM5862907992"]["inputs"]
+    eff2, _hs2, _c2 = _compute_effective_bb(
+        inp2["columns"], inp2["hero_stack"], inp2["hero_position"],
+        inp2["stacks"], inp2["named_stacks"])
+    assert_eq(depth_bucket(eff2), 17)
 
 
 @test

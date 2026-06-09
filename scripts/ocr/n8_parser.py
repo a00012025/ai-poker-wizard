@@ -904,19 +904,25 @@ def _compute_effective_bb(
     hero_position: str | None,
     all_stacks: list[float] | None,
     named_stacks: list[dict] | None = None,
-) -> float | None:
+) -> tuple:
     """Compute effective_bb from active players' starting stacks.
+
+    Returns a 3-tuple ``(effective_bb, hero_starting_stack, confidence)``.
+    ``effective_bb`` is ``None`` when we abstain (low confidence / no data);
+    downstream degrades a ``None`` to a safe solver-depth fallback, so
+    abstaining is cheap and correct.
 
     In N8 replays, displayed stacks = starting - permanently_invested.
     The pot is shown separately in the table centre, so this equation
     holds for BOTH the winner and the loser(s).
 
-    Uses player name matching between table stacks and panel entries
-    to identify the correct opponent stack.  Falls back to heuristic
-    stack selection when name matching fails.
+    effective_bb = min(hero_starting, shortest_active_villain_starting),
+    computed over ALL villains that entered preflop and did not fold
+    preflop (so a folded short stack can't undershoot, and a deep seat
+    can't mask the binding short villain).
     """
     if hero_stack_displayed is None:
-        return None, None
+        return None, None, 0.0
 
     # ---- Locate columns ----
     blinds_col = None
@@ -1046,6 +1052,15 @@ def _compute_effective_bb(
     hero_perm += hero_preflop_total
     opp_perm += opp_preflop_total
 
+    # Per-villain investment to remain in the pot (for min-over-villains).
+    # Starts at the preflop bet level a continuing villain matched (= the
+    # final preflop bet level, e.g. a villain's 3bet size). Postflop we add
+    # the SHARED matched level per street (hero_matched), NOT opp_matched —
+    # opp_matched aggregates every caller in a multiway pot and double-counts
+    # a single villain. This respects a villain who raised and hero folded
+    # (their preflop level), and stays single-villain in multiway pots.
+    opp_postflop_matched = 0.0
+
     # ---- Walk postflop streets ----
     # Use pot-header progression where available to compute per-street
     # contributions.  For the last street (no next header), fall back
@@ -1117,7 +1132,12 @@ def _compute_effective_bb(
             hero_matched = min(hero_street, opp_street) if hero_street > 0 and opp_street > 0 else hero_street
             if last_action == "fold":
                 if last_is_hero:
-                    hero_matched = hero_street
+                    # Hero folded: an UNCALLED hero bet is returned, so hero
+                    # only permanently invested what actually entered the pot
+                    # this street (bounded by the pot delta). Without this,
+                    # a hero "Bet X then Fold" mislabel (delta≈0) inflates
+                    # hero_starting by X. (TM5862907992 turn 4.56 bet+fold.)
+                    hero_matched = max(0.0, min(hero_street, delta))
                 else:
                     hero_matched = min(hero_street, opp_street)
             elif last_action == "call" and not last_is_hero:
@@ -1131,19 +1151,24 @@ def _compute_effective_bb(
                 opp_matched = 0.0
             hero_perm += hero_matched
             opp_perm += opp_matched
+            # Single continuing villain matched the shared street level.
+            opp_postflop_matched += hero_matched
         else:
             # Last street or no pot headers — use entry-based logic
             if last_action == "fold":
                 if last_is_hero:
                     hero_perm += hero_street
                     opp_perm += min(opp_street, hero_street)
+                    opp_postflop_matched += min(opp_street, hero_street)
                 else:
                     opp_perm += opp_street
                     hero_perm += min(hero_street, opp_street)
+                    opp_postflop_matched += min(hero_street, opp_street)
             elif last_action == "call":
                 if last_is_hero:
                     hero_perm += hero_street
                     opp_perm += opp_street
+                    opp_postflop_matched += min(hero_street, opp_street)
                 else:
                     # Opp's Call size sometimes can't be read when an
                     # "All-In" badge overlaps the size sticker. Without
@@ -1159,9 +1184,11 @@ def _compute_effective_bb(
                         opp_street = hero_street
                     opp_perm += opp_street
                     hero_perm += min(hero_street, opp_street)
+                    opp_postflop_matched += min(hero_street, opp_street)
             else:
                 hero_perm += hero_street
                 opp_perm += opp_street
+                opp_postflop_matched += min(hero_street, opp_street)
 
     # ---- Detect opponent all-in ----
     # Case 1: Partial call — opponent's total street commitment < hero's.
@@ -1235,14 +1262,127 @@ def _compute_effective_bb(
                         opp_allin_display = s
                         break
 
+    # ---- Matched all-in floor ----
+    # When a player is all-in for S and another non-folding player matches it,
+    # S caps the effective stack of that confrontation (once the short stack is
+    # in, no more chips move between them). The smallest CALLED all-in size is
+    # therefore an upper bound on effective_bb. This captures the large all-in
+    # population (preflop shove wars, short-stack jams) that the displayed-stack
+    # reconstruction otherwise misses (names often None ⇒ no name match).
+    # We require the all-in to be MATCHED so an uncalled (folded-to) shove does
+    # not pull effective_bb down to a stack that never went to showdown.
+    matched_allin_floor = None
+    _all_cols = ([preflop_col] if preflop_col else []) + list(street_cols)
+    # A real all-in player cannot act again. Collect (type, name) that act on
+    # a LATER street than their all-in, so a mislabeled "All-In" bet (the
+    # player keeps acting) doesn't pull effective_bb down. (TM5863569047 flop
+    # "All-In 12.27" then turn "All-In 23.09" — the flop one isn't a real shove.)
+    _allin_actor_street = {}
+    _acted_street = {}
+    for sidx, col in enumerate(_all_cols):
+        for i, e in enumerate(col.get("entries", []) if col else []):
+            ea = (e.get("action") or "").lower()
+            if ea in ("fold", "check"):
+                continue
+            key = (e.get("type"), e.get("player_name"))
+            if e.get("player_name") is None:
+                continue  # can't track unnamed across streets reliably
+            _acted_street.setdefault(key, []).append(sidx)
+            if ea == "all-in":
+                _allin_actor_street[key] = sidx
+    _false_allin = {
+        k for k, s in _allin_actor_street.items()
+        if any(st > s for st in _acted_street.get(k, []))
+    }
+    # Hero is a unique stream even when unnamed: a hero all-in followed by ANY
+    # later hero action means the earlier "All-In" was a mislabeled bet.
+    # (TM5863569047: flop hero "All-In 12.27" then turn hero "All-In 23.09".)
+    _hero_streets = [sidx for sidx, col in enumerate(_all_cols)
+                     if col and any(e.get("type") == "hero"
+                                    and (e.get("action") or "").lower() not in ("fold", "check")
+                                    for e in col.get("entries", []))]
+    _hero_allin_streets = [sidx for sidx, col in enumerate(_all_cols)
+                           if col and any(e.get("type") == "hero"
+                                          and (e.get("action") or "").lower() == "all-in"
+                                          for e in col.get("entries", []))]
+    _false_hero_allin_streets = {
+        s for s in _hero_allin_streets if any(hs > s for hs in _hero_streets)
+    }
+    # Prior cross-street investment per actor (named, + hero by type). A
+    # shover's STARTING stack = shove size (their remaining) + what they
+    # already committed on earlier streets. (H3514: BB shoves 5.8 on the
+    # river but had invested ~3.0 before ⇒ starting 8.8, not 5.8.)
+    _prior_invest = {}  # actor-key -> committed total before current street
+    # Seed with posted blinds/antes so a blind player's shove floor includes
+    # the chips they already had in. (H3514: BB posted 1.0 before calling.)
+    if blinds_col:
+        for e in blinds_col.get("entries", []):
+            ea = (e.get("action") or "").lower()
+            es = e.get("size") or 0.0
+            if es and ("sb" in ea or "bb" in ea or "ante" in ea or "blind" in ea):
+                actor = (e.get("type"), e.get("player_name"))
+                # blind call entries in preflop also add the call increment;
+                # the blind seeds the base level only.
+                _prior_invest[actor] = max(_prior_invest.get(actor, 0.0), es)
+    for _sidx, col in enumerate(_all_cols):
+        entries = col.get("entries", []) if col else []
+        # Highest committed amount on this street by any single player, and
+        # the set of total commitments, to decide what got matched.
+        running = {}       # id -> running total this street (calls additive)
+        order = []
+        for i, e in enumerate(entries):
+            ea = (e.get("action") or "").lower()
+            es = e.get("size") or 0.0
+            if ea in ("fold", "check"):
+                continue
+            key = (e.get("type"), e.get("player_name"), i if e.get("player_name") is None else None)
+            if ea in ("raise", "all-in", "bet"):
+                running[key] = es  # raise/bet-to replaces; shove sets level
+            elif ea == "call":
+                running[key] = running.get(key, 0.0) + es
+            order.append((key, ea, es, i))
+        for key, ea, es, i in order:
+            if ea == "all-in" and es and es > 0:
+                actor = (key[0], key[1]) if len(key) >= 2 else key
+                if actor in _false_allin:
+                    continue  # player acted again later — not a real all-in
+                if key[0] == "hero" and _sidx in _false_hero_allin_streets:
+                    continue  # hero acted again on a later street — mislabel
+                # Was this shove matched by another player to >= its size?
+                shove = es
+                matched = any(
+                    k2 != key and v2 >= shove - 0.5
+                    for k2, v2 in running.items()
+                )
+                if matched:
+                    # starting = remaining (shove) + prior cross-street invest
+                    floor = shove + _prior_invest.get(actor, 0.0)
+                    if matched_allin_floor is None or floor < matched_allin_floor:
+                        matched_allin_floor = floor
+        # Accumulate this street's commitments into prior-investment totals.
+        for key, total in running.items():
+            actor = (key[0], key[1]) if len(key) >= 2 else key
+            _prior_invest[actor] = _prior_invest.get(actor, 0.0) + total
+
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
 
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
-        return (hero_start_rounded, hero_start_rounded)
+        # Walkover: nobody contested. effective == hero's own stack, unless a
+        # matched all-in (rare in a walkover) caps it lower.
+        if matched_allin_floor is not None and hero_start_rounded:
+            return (round(min(hero_start_rounded, matched_allin_floor), 1),
+                    hero_start_rounded, 1.0)
+        return (hero_start_rounded, hero_start_rounded, 1.0)
 
-    # ---- Determine opponent starting stack ----
+    # ---- Determine opponent starting stack: min over ALL active villains ----
+    # An "active villain" entered preflop (call/raise/bet/all-in) and did not
+    # fold preflop. For each, estimate start = displayed + investment and take
+    # the MIN, so a deep seat can't mask the binding short villain and a seat
+    # that folded preflop can't undershoot. opp_perm is the modeled continuing
+    # opponent's investment — an upper bound on any single active villain's
+    # contribution, so displayed + opp_perm is a safe per-villain start.
     if opp_went_allin:
         if opp_allin_display is not None:
             # Opponent went all-in and we know their display (uncalled portion)
@@ -1251,52 +1391,59 @@ def _compute_effective_bb(
             # Opponent went all-in: starting = total investment (display ≈ 0)
             opp_starting = opp_perm
     else:
-        # Find opponent's displayed stack using name matching.
-        # Prefer postflop names (the player who stayed), then preflop.
-        active_opp_names = opp_names_postflop or opp_names_entered
-        best_stack = None
+        # Names of villains who entered and did not fold preflop. Prefer the
+        # full entered set (every contesting villain bounds the effective
+        # stack); postflop names alone would miss a villain who entered and
+        # folded on a later street while still being the shortest stack.
+        active_opp_names = list(opp_names_entered)
 
+        # Per-villain investment to remain = preflop bet level a continuing
+        # villain matched + the shared matched level each postflop street.
+        # This respects a villain who 3bet and hero folded (preflop level),
+        # and avoids the multiway double-count baked into opp_perm.
+        per_villain_invest = opp_preflop_total + opp_postflop_matched
+
+        villain_starts = []
+        matched_names = set()
         if active_opp_names and named_stacks:
-            # Try to match the active opponent's name to a table stack
             for opp_name in active_opp_names:
                 for ns in named_stacks:
-                    if ns.get("name") and _fuzzy_name_match(opp_name, ns["name"]):
-                        candidate = ns["stack"]
-                        # Sanity: opp display + investment shouldn't wildly
-                        # exceed hero starting (allow some tolerance)
-                        if candidate + opp_perm <= hero_starting * 2.5:
-                            best_stack = candidate
-                            break
-                if best_stack is not None:
-                    break
+                    nm = ns.get("name")
+                    if nm and _fuzzy_name_match(opp_name, nm):
+                        villain_starts.append(ns["stack"] + per_villain_invest)
+                        matched_names.add(nm)
+                        break
 
-        # Fallback: heuristic stack selection when name matching fails
-        if best_stack is None:
+        if villain_starts:
+            opp_starting = min(villain_starts)
+        else:
+            # Name matching failed — pick the SHORTEST plausible non-hero seat
+            # as the binding active villain (a single caller is usually the
+            # short one; picking the largest, as the old code did, collapsed
+            # to hero's own stack). Bound by the table so we never invent a
+            # stack deeper than the deepest real seat.
             non_hero_stacks = list(all_stacks) if all_stacks else []
             if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
                 non_hero_stacks.remove(hero_stack_displayed)
-
             if non_hero_stacks:
-                candidates = [
-                    s for s in non_hero_stacks
-                    if s + opp_perm <= hero_starting + 1.0
-                ]
-                if candidates:
-                    best_stack = max(candidates)
-                elif non_hero_stacks:
-                    best_stack = min(non_hero_stacks)
-
-        opp_starting = (best_stack + opp_perm) if best_stack is not None else hero_starting
+                opp_starting = min(s + per_villain_invest for s in non_hero_stacks)
+            else:
+                opp_starting = hero_starting
 
     all_starting = [hero_starting, opp_starting]
+    if matched_allin_floor is not None:
+        # A matched all-in caps the effective stack of the confrontation.
+        all_starting.append(matched_allin_floor)
     effective_bb = round(min(all_starting), 1)
 
     if effective_bb < 1.0:
         if all_stacks:
-            return round(min(all_stacks), 1), round(hero_starting, 1)
-        return None, round(hero_starting, 1) if hero_starting >= 1.0 else None
+            return round(min(all_stacks), 1), round(hero_starting, 1), 0.6
+        return (None,
+                round(hero_starting, 1) if hero_starting >= 1.0 else None,
+                0.0)
 
-    return effective_bb, round(hero_starting, 1)
+    return effective_bb, round(hero_starting, 1), 1.0
 
 
 def _build_diagnostics(
@@ -1710,7 +1857,7 @@ def _assemble_hand(
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
     named_stacks = table_result.get("named_stacks", [])
-    effective_bb, hero_starting_stack = _compute_effective_bb(
+    effective_bb, hero_starting_stack, _effbb_conf = _compute_effective_bb(
         columns, hero_stack, hero_position, stacks, named_stacks,
     )
 
