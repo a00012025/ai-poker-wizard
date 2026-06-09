@@ -903,12 +903,188 @@ def _fuzzy_name_match(name1: str, name2: str) -> bool:
     return False
 
 
+def _clean_seat_geometry(named_stacks: list[dict] | None) -> list[dict]:
+    """Drop center-region (pot/street-header) phantom rows from named_stacks.
+
+    N8 sometimes OCRs the central pot chip stack and the Pre-Flop/Flop/Turn/River
+    column headers as ``named_stacks`` entries (e.g. ``{name:'Flop', stack:67.0}``
+    sitting near the table centre, or a small pot value at mid-table). Real seats
+    sit on the table perimeter. We keep only seats whose normalised distance from
+    the bounding-box centre exceeds a threshold — those are the actual chairs.
+    """
+    import math as _math
+
+    _HEADER_NAMES = {"blinds", "blind", "pre-flop", "preflop", "pre", "flop",
+                     "turn", "river"}
+    ns = [
+        s for s in (named_stacks or [])
+        if s.get("x") is not None and s.get("y") is not None
+        and isinstance(s.get("stack"), (int, float)) and s.get("stack")
+        # Panel column headers (Pre-Flop/Flop/Turn/River) leak into
+        # named_stacks as a bottom row; drop them by name.
+        and (s.get("name") or "").strip().lower() not in _HEADER_NAMES
+    ]
+    if len(ns) <= 2:
+        return ns
+    xs = [s["x"] for s in ns]
+    ys = [s["y"] for s in ns]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0
+    hy = (max(ys) - min(ys)) or 1.0
+    # Hero is the bottom-centre seat. The street-header phantom row (and the
+    # central pot stack) sit near the centre OR below hero; drop both.
+    hero_y = max(s["y"] for s in ns)
+    kept = [
+        s for s in ns
+        if _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy) > 0.18
+        and s["y"] <= hero_y + 1
+    ]
+    return kept or ns
+
+
+def _seat_ring(named_stacks: list[dict] | None) -> list[dict]:
+    """Order the physical seats clockwise starting at the hero seat.
+
+    Hero is the bottom-centre seat (largest y in N8 layout). Seats are returned
+    starting at hero and proceeding around the table by polar angle about the
+    table centre. The caller resolves which angular direction matches the
+    position-action order using the panel folder positions.
+    """
+    import math as _math
+
+    seats = _clean_seat_geometry(named_stacks)
+    if not seats:
+        return []
+    hero = max(seats, key=lambda s: s["y"])
+    xs = [s["x"] for s in seats]
+    ys = [s["y"] for s in seats]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    ordered = sorted(seats, key=lambda s: _math.atan2(s["y"] - cy, s["x"] - cx))
+    hi = ordered.index(hero)
+    return ordered[hi:] + ordered[:hi]
+
+
+def _panel_distinct_positions(columns: list[dict]) -> set:
+    """Set of distinct table positions that appear anywhere in the panel.
+
+    N8 assigns every acting seat (incl. folders) a position, so the count of
+    distinct positions is a reliable estimate of the physical player count —
+    far more robust than counting OCR'd seat stickers (which include bet/pot
+    chip phantoms). The BB is occasionally omitted when the open folds through.
+    """
+    out = set()
+    for col in columns:
+        for e in col.get("entries", []):
+            if e.get("position"):
+                out.add(e["position"])
+    return out
+
+
+def _reconcile_ring_to_count(ring: list[dict], target: int) -> list[dict]:
+    """Trim phantom (bet/chip-sticker) seats so the ring matches ``target``.
+
+    Extra rows are unnamed chip-amount stickers that sit INWARD of the true
+    seat circle. When the ring is longer than the expected player count, drop
+    the innermost name-less seats (closest to the table centre) first — those
+    are the bet/pot stickers, never real chairs.
+    """
+    import math as _math
+
+    if target is None or len(ring) <= target or target < 2:
+        return ring
+    xs = [s["x"] for s in ring]
+    ys = [s["y"] for s in ring]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0
+    hy = (max(ys) - min(ys)) or 1.0
+
+    def centrality(s):
+        return _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy)
+
+    extra = len(ring) - target
+    # Candidate phantoms: name-less seats, most central first.
+    nameless = sorted(
+        [s for s in ring if not (s.get("name") or "").strip()],
+        key=centrality,
+    )
+    drop = set(id(s) for s in nameless[:extra])
+    trimmed = [s for s in ring if id(s) not in drop]
+    if len(trimmed) == target:
+        return trimmed
+    return ring  # couldn't cleanly reconcile — leave as-is for caller to reject
+
+
+def _map_positions_to_seats(
+    named_stacks: list[dict] | None,
+    panel_position_names: dict,
+    hero_position: str | None,
+    num_players: int | None,
+) -> dict | None:
+    """Map each table POSITION to its physical seat (a named_stacks dict).
+
+    Builds a seat ring from geometry (``_seat_ring``), anchors hero at
+    ``hero_position``, then walks the position-action order in BOTH angular
+    directions, scoring each candidate by agreement with the panel's
+    position→player-name evidence (folders carry a reliable position+name). The
+    higher-scoring direction wins. Returns ``None`` when the seat count does not
+    match the table size (ambiguous — caller should fall back / abstain).
+
+    ``panel_position_names``: {position_str -> player_name} for NON-hero seats
+    whose position the panel reported (folders, callers, raisers).
+    """
+    ring = _seat_ring(named_stacks)
+    order = POSITION_ORDERS.get(num_players)
+    if not ring or not order or hero_position not in order:
+        return None
+    if len(ring) > len(order):
+        ring = _reconcile_ring_to_count(ring, len(order))
+    if len(ring) != len(order):
+        return None  # seat count disagrees with table size → don't guess
+    hi = order.index(hero_position)
+    best = None
+    best_score = None
+    for direction in (1, -1):
+        mapping = {
+            order[(hi + direction * k) % len(order)]: ring[k]
+            for k in range(len(ring))
+        }
+        matches = mismatches = 0
+        for pos, nm in panel_position_names.items():
+            seat = mapping.get(pos)
+            if seat and seat.get("name"):
+                if _fuzzy_name_match(nm, seat["name"]):
+                    matches += 1
+                else:
+                    mismatches += 1
+        score = matches - mismatches
+        if best_score is None or score > best_score:
+            best_score = score
+            best = mapping
+    return best
+
+
+def _panel_position_names(columns: list[dict]) -> dict:
+    """Extract {position -> player_name} for non-hero seats from the panel."""
+    out = {}
+    for col in columns:
+        for e in col.get("entries", []):
+            pos = e.get("position")
+            nm = e.get("player_name")
+            if pos and e.get("type") != "hero" and nm:
+                out.setdefault(pos, nm)
+    return out
+
+
 def _compute_effective_bb(
     columns: list[dict],
     hero_stack_displayed: float | None,
     hero_position: str | None,
     all_stacks: list[float] | None,
     named_stacks: list[dict] | None = None,
+    num_players: int | None = None,
 ) -> tuple:
     """Compute effective_bb from active players' starting stacks.
 
@@ -928,6 +1104,24 @@ def _compute_effective_bb(
     """
     if hero_stack_displayed is None:
         return None, None, 0.0
+
+    # ---- Physical table size (for position/geometry seat attribution) ----
+    # Prefer the caller's count; otherwise infer from the panel's distinct
+    # position set (every acting seat — incl. folders — gets a position, so
+    # this counts players far more reliably than seat stickers, which include
+    # bet/pot chip phantoms). The BB is sometimes omitted on a fold-through, so
+    # also consider the cleaned seat-ring length and take the larger plausible.
+    if num_players is None:
+        _panel_pos = _panel_distinct_positions(columns)
+        _ring_seats = _seat_ring(named_stacks)
+        if _panel_pos:
+            num_players = len(_panel_pos)
+        elif _ring_seats:
+            num_players = len(_ring_seats)
+        if num_players is not None:
+            num_players = min(max(num_players, 2), 9)
+            if num_players not in POSITION_ORDERS:
+                num_players = None
 
     # ---- Locate columns ----
     blinds_col = None
@@ -1417,18 +1611,52 @@ def _compute_effective_bb(
     nameless_fallback = False
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
-        # Walkover: nobody contested. effective == hero's own stack, unless a
-        # matched all-in (rare in a walkover) caps it lower. An over-computed
-        # hero_starting here is physically impossible → abstain.
+        # Walkover: hero opened (or limped) and everyone folded through. The
+        # GTO spot is hero vs the players STILL TO ACT behind the opener, so the
+        # effective stack is min(hero_start, the shortest seat from hero's
+        # position through the BB). The old code returned hero's OWN stack,
+        # which is almost always too deep (a short BB/blind behind binds the
+        # spot). We resolve those seats by mapping table positions to physical
+        # seats via geometry (names are often None), reading each seat's
+        # displayed stack. (TM5863067852 HJ-open: GT 10.7 = a short seat behind,
+        # not hero's 24.8; TM5863068088 GT 13.8.)
         if over_compute and not (
             matched_allin_floor is not None
             and matched_allin_floor <= (pot_bound or 0) + 0.5
         ):
             return (None, hero_start_rounded, 0.0)
-        if matched_allin_floor is not None and hero_start_rounded:
-            return (round(min(hero_start_rounded, matched_allin_floor), 1),
-                    hero_start_rounded, 1.0)
-        return (hero_start_rounded, hero_start_rounded, 1.0)
+
+        walkover_eff = hero_start_rounded
+        walkover_conf = 0.55  # hero-own-stack fallback is usually too deep
+        if hero_position and num_players:
+            seat_map = _map_positions_to_seats(
+                named_stacks, _panel_position_names(columns),
+                hero_position, num_players,
+            )
+            order = POSITION_ORDERS.get(num_players)
+            if seat_map and order and hero_position in order:
+                behind = order[order.index(hero_position):]  # hero + later seats
+                behind_stacks = [
+                    seat_map[p]["stack"]
+                    for p in behind
+                    if p in seat_map and seat_map[p].get("stack")
+                ]
+                # Need to actually see the seats behind hero to bind the spot;
+                # require >=1 opponent seat resolved (hero alone learns nothing).
+                if len(behind_stacks) >= 2 and hero_start_rounded:
+                    cand = min(behind_stacks + [hero_start_rounded])
+                    walkover_eff = round(cand, 1)
+                    # Confident: geometry resolved all seats behind hero.
+                    walkover_conf = (
+                        1.0 if len(behind_stacks) >= len(behind) else 0.85
+                    )
+
+        if matched_allin_floor is not None and walkover_eff:
+            return (round(min(walkover_eff, matched_allin_floor), 1),
+                    hero_start_rounded, max(walkover_conf, 1.0))
+        if walkover_eff:
+            return (walkover_eff, hero_start_rounded, walkover_conf)
+        return (hero_start_rounded, hero_start_rounded, 0.55)
 
     # ---- Determine opponent starting stack: min over ALL active villains ----
     # An "active villain" entered preflop (call/raise/bet/all-in) and did not

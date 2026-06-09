@@ -21,7 +21,10 @@ from ocr.n8_parser import _compute_effective_bb
 
 def recompute(inp):
     """Replay one cached input tuple through _compute_effective_bb.
-    Tolerates both the 2-tuple (legacy) and 3-tuple (rewritten) returns."""
+    Tolerates both the 2-tuple (legacy) and 3-tuple (rewritten) returns.
+
+    NOTE: num_players is NOT passed — the function infers physical table size
+    from seat geometry, exactly as it must in production (no GT leak)."""
     res = _compute_effective_bb(
         inp["columns"], inp["hero_stack"], inp["hero_position"],
         inp["stacks"], inp["named_stacks"],
