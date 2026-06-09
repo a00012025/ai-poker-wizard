@@ -1202,6 +1202,11 @@ def _compute_effective_bb(
 
     # Collect opponent names from panel entries (for name matching)
     opp_names_entered = []  # names of opponents who entered the pot
+    # Positions of opponents who entered AND did not later fold preflop — the
+    # active villains whose stacks bind the effective. Used by the geometry
+    # fallback when names are None/garbled. (preflop fold removes a seat.)
+    opp_entered_positions = []   # all who voluntarily entered preflop
+    opp_folded_positions = set()
 
     if preflop_col:
         entries = preflop_col.get("entries", [])
@@ -1213,6 +1218,8 @@ def _compute_effective_bb(
             is_hero = entry.get("type") == "hero"
 
             if action == "fold":
+                if not is_hero and entry.get("position"):
+                    opp_folded_positions.add(entry["position"])
                 continue
 
             if is_hero:
@@ -1232,6 +1239,8 @@ def _compute_effective_bb(
                     opp_name = entry.get("player_name")
                     if opp_name:
                         opp_names_entered.append(opp_name)
+                    if entry.get("position"):
+                        opp_entered_positions.append(entry["position"])
                     if action in ("raise", "all-in"):
                         current_bet = size
 
@@ -1658,6 +1667,7 @@ def _compute_effective_bb(
     )
 
     nameless_fallback = False
+    geometry_pinned = False
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
         # Walkover: hero opened (or limped) and everyone folded through. The
@@ -1755,20 +1765,43 @@ def _compute_effective_bb(
         if villain_starts:
             opp_starting = min(villain_starts)
         else:
-            # Name matching failed — pick the SHORTEST plausible non-hero seat
-            # as the binding active villain (a single caller is usually the
-            # short one; picking the largest, as the old code did, collapsed
-            # to hero's own stack). Bound by the table so we never invent a
-            # stack deeper than the deepest real seat. This guess is unreliable
-            # (we can't tell which seat is the active villain) → low confidence.
-            nameless_fallback = True
-            non_hero_stacks = list(all_stacks) if all_stacks else []
-            if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
-                non_hero_stacks.remove(hero_stack_displayed)
-            if non_hero_stacks:
-                opp_starting = min(s + capped_invest for s in non_hero_stacks)
+            # Name matching failed (names None/garbled). Before guessing the
+            # shortest seat, try POSITION/GEOMETRY attribution: map the active
+            # villains' positions (entered preflop, not folded preflop) to
+            # physical seats and read each binding villain's DISPLAYED stack +
+            # its modeled investment. This pins the RIGHT seat instead of the
+            # shortest arbitrary one. (TM5863067607: the active villain is a
+            # None-named 16.4 seat, not the misread 2.9 SebFerra seat.)
+            active_positions = [
+                p for p in opp_entered_positions
+                if p not in opp_folded_positions
+            ]
+            geo_starts = []
+            if active_positions and num_players and hero_position:
+                seat_map = _map_positions_to_seats(
+                    named_stacks, _panel_position_names(columns),
+                    hero_position, num_players,
+                )
+                if seat_map:
+                    for p in set(active_positions):
+                        seat = seat_map.get(p)
+                        if seat and seat.get("stack"):
+                            geo_starts.append(seat["stack"] + capped_invest)
+            if geo_starts:
+                opp_starting = min(geo_starts)
+                geometry_pinned = True
             else:
-                opp_starting = hero_starting
+                # Last resort — shortest plausible non-hero seat. A single
+                # caller is usually the short one; picking the largest (old
+                # code) collapsed to hero's own stack. Unreliable → low conf.
+                nameless_fallback = True
+                non_hero_stacks = list(all_stacks) if all_stacks else []
+                if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
+                    non_hero_stacks.remove(hero_stack_displayed)
+                if non_hero_stacks:
+                    opp_starting = min(s + capped_invest for s in non_hero_stacks)
+                else:
+                    opp_starting = hero_starting
 
     all_starting = [hero_starting, opp_starting]
     if matched_allin_floor is not None:
