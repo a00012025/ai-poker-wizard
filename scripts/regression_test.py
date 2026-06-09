@@ -180,6 +180,46 @@ def test_corner_ocr_can_rescue_low_conf_overlapped_card():
 
 
 @test
+def test_board_corner_override_blocks_confident_cnn_ace():
+    """OCR: board corner OCR must not flip a confident CNN board rank.
+
+    H2565: river A♥ — CNN A@0.91 — was overwritten by EasyOCR's Ace-glyph→"4"
+    corner read (the naive "corner_conf >= 0.90" board rule had no CNN-support
+    guard the hero path already used).  The bad board 4h then collided with the
+    hero's correct 4h and conflict resolution rewrote the hero to Ah6d.  Block
+    the override when the CNN is confident and the corner rank is absent from
+    the CNN top-2; keep the WIN-sticker rescue when the CNN is unsure (verified
+    zero-change across the 7,183-image corpus).
+    """
+    from ocr.table_parser import _board_corner_override_allowed
+
+    # H2565: confident CNN Ace, corner "4" not in CNN top-2 → keep the CNN.
+    assert_true(
+        not _board_corner_override_allowed(
+            cnn_rank="A", cnn_conf=0.908, corner_rank="4",
+            corner_conf=0.942, rank_top2=[("A", 0.908), ("K", 0.091)],
+        ),
+        "corner '4' must not override a confident CNN board Ace (H2565)",
+    )
+    # WIN-sticker rescue: CNN near-random, corner confident → still override.
+    assert_true(
+        _board_corner_override_allowed(
+            cnn_rank="4", cnn_conf=0.188, corner_rank="Q",
+            corner_conf=0.942, rank_top2=[("4", 0.188), ("2", 0.163)],
+        ),
+        "low-confidence CNN board read must still defer to a clean corner",
+    )
+    # Corner rank present in the CNN top-2 → legitimate rescue, override stays.
+    assert_true(
+        _board_corner_override_allowed(
+            cnn_rank="K", cnn_conf=0.985, corner_rank="2",
+            corner_conf=0.95, rank_top2=[("K", 0.985), ("2", 0.009)],
+        ),
+        "corner rescue supported by the CNN top-2 must still override",
+    )
+
+
+@test
 def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     """OCR: sticker-only All-In fragments still belong to the prior raise.
 

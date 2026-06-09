@@ -22,6 +22,12 @@ ENSEMBLE_FLOOR = float(os.getenv("OCR_ENSEMBLE_FLOOR", "0.50"))
 # gate: anything under it already pays a network round-trip, so a cheap local
 # retry is strictly worth attempting.
 HERO_RELOCATE_CONF = float(os.getenv("OCR_HERO_RELOCATE_CONF", "0.70"))
+# Board corner-OCR override is blocked only when the CNN is at least this
+# confident about a different rank (and the corner rank is absent from the CNN
+# top-2).  Above it the CNN rank head is trustworthy and a clean-corner EasyOCR
+# misread (A-glyph→"4") must not overwrite it (H2565); below it the CNN is too
+# unsure to trust over a confident corner read, so the rescue still fires.
+_BOARD_CORNER_CNN_TRUST = float(os.getenv("OCR_BOARD_CORNER_CNN_TRUST", "0.80"))
 
 
 def _detect_table_color(table_region: np.ndarray) -> str:
@@ -259,7 +265,13 @@ def _find_board_cards(
         rank_source = "classifier"
         corner_disagree = False
         corner_rank, corner_conf = _rank_from_corner_ocr(crop)
-        if corner_rank and corner_conf >= 0.90 and corner_rank != rank:
+        if _board_corner_override_allowed(
+            cnn_rank=rank,
+            cnn_conf=rank_conf,
+            corner_rank=corner_rank,
+            corner_conf=corner_conf,
+            rank_top2=detail.get("rank_top2", []),
+        ):
             corner_disagree = True
             rank = corner_rank
             rank_conf = float(corner_conf)
@@ -715,6 +727,39 @@ def _corner_rank_supported_by_cnn_top2(
         if rank == corner_rank and float(conf or 0.0) >= min_support:
             return True
     return False
+
+
+def _board_corner_override_allowed(
+    *,
+    cnn_rank: str | None,
+    cnn_conf: float,
+    corner_rank: str | None,
+    corner_conf: float,
+    rank_top2: list,
+) -> bool:
+    """Whether corner OCR may override the CNN rank on a *board* card.
+
+    Board corner OCR rescues WIN-sticker/noise cases where the full-card CNN is
+    near-random (~0.18 top-1) but the isolated corner read is clean.  The naive
+    "corner_conf >= 0.90" rule, however, let EasyOCR's Ace-glyph→"4" misread
+    overwrite a *confident* CNN board read (H2565: river A♥, CNN A@0.91, corner
+    "4" — "4" absent from the CNN top-2 [A,K]); the corrupted board card then
+    dragged hero/board conflict resolution into rewriting the hero's correct
+    4h→Ah.  So block the override only in that pattern — the CNN is confident
+    (>= _BOARD_CORNER_CNN_TRUST) about a different rank and the corner rank is
+    one the CNN deems implausible (absent from its top-2).  When the CNN is
+    unsure, keep trusting the corner: that is the rescue this override exists
+    for, and it must not regress (verified zero-change on the 7,183-image
+    corpus).
+    """
+    if not (corner_rank and corner_conf >= 0.90 and corner_rank != cnn_rank):
+        return False
+    if (
+        cnn_conf >= _BOARD_CORNER_CNN_TRUST
+        and not _corner_rank_supported_by_cnn_top2(corner_rank, rank_top2)
+    ):
+        return False
+    return True
 
 
 def _corner_rank_can_override(
