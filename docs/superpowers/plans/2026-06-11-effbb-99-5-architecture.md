@@ -226,6 +226,44 @@ positions on panel-order divergence so neither path recovers 13.7);
 - **5-fold pooled CV** over 1,805 hero-active; pick threshold maximizing
   coverage s.t. empirical precision ≥ 99.5% (binomial lower-bound check). Lock.
 
+**Phase 4 STATUS (shipped, 2026-06-11) — 99.5% PROVEN UNREACHABLE; shipped the
+precision-maximizing structural gate honestly.**
+
+*Built:* per-hand abstain-feature surfacing in `_compute_effective_bb`
+(`_LAST_EFFBB_FEATURES` + `_effbb_last_features`, all returns routed through a
+`_finish()` finalizer; pure calibration instrumentation, prod reads nothing) +
+a bucket-cell boundary-distance fragility helper + the calibration harness
+`scripts/effbb_calibrate.py` (5-fold pooled CV split by hand, Wilson 95% LB,
+interpretable hard gates, no hand-ID literals).
+
+*The honest frontier (1,805 hero-active cache, the deliverable, NOT a vanity
+number):* **99.5% point-precision is UNREACHABLE at any usable coverage.** An
+exhaustive small-combo search over every surfaced feature tops out at an
+**absolute precision ceiling of ~86% @ ~10% coverage** (~78% @ 45%). The
+residual wrong emits are layout-INDEPENDENT, internally-consistent VALUE errors
+(hero/villain stack misread, start-vs-displayed) — EVERY reconstruction
+hypothesis agrees on the same wrong bucket, so no consensus/ambiguity feature
+separates them from correct emits (confirms the Phase-2/3 finding). The
+calibration features (boundary_dist, pot_residual, engine-agree, etc.) measure
+ambiguity/consistency, but these errors are confidently consistent. 5-fold CV
+@ target 99.5% finds no train operating point → falls back to the
+max-precision point (~77% @ ~27% held-out).
+
+*Shipped (the defensible operating point):* a calibrated **structural abstain
+gate** (`OCR_EFFBB_STRUCTURAL_GATE`, default ON; `=0` reverts to the bare conf
+floor → 70.9% @ 78.2%). It abstains: geometry/heuristic binding the betting
+engine didn't confirm; hero all-in (displayed ~0) the engine can't confirm;
+independent engine bucket dissents; floors-on vs stack-only straddle — the
+broad two SCOPED OFF strong M1/M2 panel reads (base_conf≥0.95) so correct
+M1/M2 emits survive. **Measured (effbb_eval, default floor 0.7): 70.94% @ 78.2%
+→ 74.21% @ 61.0%** emitted precision; 5-fold held-out CV is stable across seeds
+(fixed interpretable gate, not per-fold-tuned). Abstaining is cheap (None →
+safe generic solver depth). RECOMMENDATION: ship the gate (a real +3.3pp
+precision win) and STOP — 99.5% is not attainable from the single action-panel
+frame; the only path to it is a second frame (hand-start screenshot) the user
+confirmed does not exist, or a fundamentally better numeric OCR (Phase-3
+de-risking proved re-read does not help). Phase 5 (VLM) stays DROPPED.
+
 ### Phase 5 — targeted VLM fallback (residual only)
 - Trigger only when one relevant crop is unreadable / bucket disagreement comes
   from a single numeric field. Crop+enlarge → VLM "read this one number, JSON
