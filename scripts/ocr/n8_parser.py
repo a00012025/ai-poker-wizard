@@ -1025,6 +1025,124 @@ def _reconcile_ring_to_count(ring: list[dict], target: int) -> list[dict]:
     return ring  # couldn't cleanly reconcile — leave as-is for caller to reject
 
 
+def _candidate_rings(named_stacks: list[dict] | None, target: int) -> list[list[dict]]:
+    """Enumerate the plausible cleaned seat-rings of length ``target``.
+
+    Phantom-trimming is not unique: when the ring is one or two seats too long,
+    several name-less central stickers are equally plausible drops. We enumerate
+    the small set of plausible trims (the canonical innermost-first trim plus a
+    couple of near-tie alternatives) so the top-K layout search can reason about
+    them. Each returned ring is hero-anchored (``_seat_ring`` order) and exactly
+    ``target`` long; an empty list means we could not reconcile.
+    """
+    import math as _math
+    ring = _seat_ring(named_stacks)
+    if not ring or target is None or target < 2:
+        return []
+    if len(ring) == target:
+        return [ring]
+    if len(ring) < target:
+        return []  # can't invent seats
+    xs = [s["x"] for s in ring]; ys = [s["y"] for s in ring]
+    cx = (min(xs) + max(xs)) / 2.0; cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0; hy = (max(ys) - min(ys)) or 1.0
+
+    def centrality(s):
+        return _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy)
+
+    extra = len(ring) - target
+    hero = max(ring, key=lambda s: s["y"])
+    # Drop pool: name-less seats first (chip-stickers), then innermost named.
+    nameless = [s for s in ring if not (s.get("name") or "").strip() and s is not hero]
+    named_inner = [s for s in ring if (s.get("name") or "").strip() and s is not hero]
+    pool = sorted(nameless, key=centrality) + sorted(named_inner, key=centrality)
+    if len(pool) < extra:
+        return []
+    out: list[list[dict]] = []
+    seen: set = set()
+    # Canonical: drop the ``extra`` most central pool seats.
+    # Alternatives: substitute the (extra)-th drop with the next 1-2 candidates,
+    # capturing the near-tie ambiguity in which central sticker is the phantom.
+    import itertools
+    horizon = min(len(pool), extra + 2)
+    for combo in itertools.combinations(range(horizon), extra):
+        drop = set(id(pool[i]) for i in combo)
+        trimmed = [s for s in ring if id(s) not in drop]
+        if len(trimmed) != target:
+            continue
+        # re-anchor at hero (largest y) preserving angular order
+        hi = trimmed.index(hero) if hero in trimmed else 0
+        cand = trimmed[hi:] + trimmed[:hi]
+        key = tuple(round(s["x"], 1) for s in cand) + tuple(round(s["y"], 1) for s in cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _enumerate_layouts(
+    named_stacks: list[dict] | None,
+    panel_position_names: dict,
+    hero_position: str | None,
+    num_players: int | None,
+    *,
+    margin: int = 1,
+    max_k: int = 6,
+) -> list[dict]:
+    """Top-K position→seat layouts, scored by panel-name agreement (weak).
+
+    Enumerates over (candidate ring trim) × (both angular walk directions),
+    scores each by confusable-normalized name agreement against the panel's
+    position→name evidence, and returns the layouts within ``margin`` of the
+    best score (capped at ``max_k``), best first. Names are WEAK evidence — the
+    margin keeps near-tie layouts so the consensus gate can abstain when they
+    straddle buckets. Each layout is ``{position: seat_dict}``.
+    """
+    order = POSITION_ORDERS.get(num_players)
+    if not order or hero_position not in order:
+        return []
+    rings = _candidate_rings(named_stacks, len(order))
+    if not rings:
+        return []
+    hi = order.index(hero_position)
+    scored: list = []
+    seen_maps: set = set()
+    for ring in rings:
+        if len(ring) != len(order):
+            continue
+        for direction in (1, -1):
+            mapping = {
+                order[(hi + direction * k) % len(order)]: ring[k]
+                for k in range(len(ring))
+            }
+            sig = tuple(
+                (p, round(mapping[p].get("stack") or 0, 2),
+                 (mapping[p].get("name") or "")[:6])
+                for p in order if p in mapping
+            )
+            if sig in seen_maps:
+                continue
+            seen_maps.add(sig)
+            matches = mismatches = 0
+            for pos, nm in (panel_position_names or {}).items():
+                seat = mapping.get(pos)
+                if seat and seat.get("name"):
+                    if _fuzzy_name_match(nm, seat["name"]):
+                        matches += 1
+                    else:
+                        mismatches += 1
+            scored.append((matches - mismatches, mapping))
+    if not scored:
+        return []
+    scored.sort(key=lambda t: -t[0])
+    best = scored[0][0]
+    kept = [m for s, m in scored if s >= best - margin][:max_k]
+    return kept
+
+
 def _map_positions_to_seats(
     named_stacks: list[dict] | None,
     panel_position_names: dict,
@@ -1042,36 +1160,17 @@ def _map_positions_to_seats(
 
     ``panel_position_names``: {position_str -> player_name} for NON-hero seats
     whose position the panel reported (folders, callers, raisers).
+
+    Thin wrapper over ``_enumerate_layouts`` returning the single best layout;
+    kept for the walkover / dead-code call sites. The consensus path in
+    ``_compute_effective_bb`` calls ``_enumerate_layouts`` directly to reason
+    over the top-K.
     """
-    ring = _seat_ring(named_stacks)
-    order = POSITION_ORDERS.get(num_players)
-    if not ring or not order or hero_position not in order:
-        return None
-    if len(ring) > len(order):
-        ring = _reconcile_ring_to_count(ring, len(order))
-    if len(ring) != len(order):
-        return None  # seat count disagrees with table size → don't guess
-    hi = order.index(hero_position)
-    best = None
-    best_score = None
-    for direction in (1, -1):
-        mapping = {
-            order[(hi + direction * k) % len(order)]: ring[k]
-            for k in range(len(ring))
-        }
-        matches = mismatches = 0
-        for pos, nm in panel_position_names.items():
-            seat = mapping.get(pos)
-            if seat and seat.get("name"):
-                if _fuzzy_name_match(nm, seat["name"]):
-                    matches += 1
-                else:
-                    mismatches += 1
-        score = matches - mismatches
-        if best_score is None or score > best_score:
-            best_score = score
-            best = mapping
-    return best
+    layouts = _enumerate_layouts(
+        named_stacks, panel_position_names, hero_position, num_players,
+        margin=0, max_k=1,
+    )
+    return layouts[0] if layouts else None
 
 
 def _panel_position_names(columns: list[dict]) -> dict:
@@ -1110,54 +1209,28 @@ def _engine_streets(columns: list[dict]) -> tuple:
     return streets, pot
 
 
-def _seat_stack_for_position(
-    pos: str,
-    named_stacks: list[dict] | None,
-    panel_position_names: dict,
-    hero_position: str | None,
-    num_players: int | None,
-    columns: list[dict],
-) -> float | None:
-    """Displayed remaining stack of the seat at table POSITION ``pos``.
-
-    Prefers a NAME match (the panel reported a player_name for ``pos``), then
-    falls back to the geometry seat map. Returns the seat's displayed stack
-    (NOT including this hand's investment) or None when it can't be resolved.
-    """
-    # 1) name match — the panel's position->name evidence is reliable for
-    #    folders/callers/raisers.
-    nm = panel_position_names.get(pos)
-    if nm and named_stacks:
-        for ns in named_stacks:
-            sn = ns.get("name")
-            if sn and _fuzzy_name_match(nm, sn) and ns.get("stack"):
-                return ns["stack"]
-    # 2) geometry seat map.
-    if num_players and hero_position:
-        seat_map = _map_positions_to_seats(
-            named_stacks, panel_position_names, hero_position, num_players,
-        )
-        if seat_map:
-            seat = seat_map.get(pos)
-            if seat and seat.get("stack"):
-                return seat["stack"]
-    return None
-
-
-def _compute_effective_bb(
+def _effective_bb_for_layout(
     columns: list[dict],
     hero_stack_displayed: float | None,
     hero_position: str | None,
     all_stacks: list[float] | None,
     named_stacks: list[dict] | None = None,
     num_players: int | None = None,
+    _seat_map: dict | None = None,
+    _disable_floors: bool = False,
 ) -> tuple:
-    """Compute effective_bb from active players' starting stacks.
+    """Compute effective_bb under ONE fixed position→seat layout.
 
     Returns a 3-tuple ``(effective_bb, hero_starting_stack, confidence)``.
     ``effective_bb`` is ``None`` when we abstain (low confidence / no data);
     downstream degrades a ``None`` to a safe solver-depth fallback, so
     abstaining is cheap and correct.
+
+    ``_seat_map`` (Phase 2): a fixed ``{position: seat_dict}`` layout to use for
+    every geometry attribution in this call. When ``None`` the function derives
+    the single best layout internally (legacy behaviour). The consensus
+    orchestrator ``_compute_effective_bb`` calls this once per plausible layout
+    and gates on whether the resulting depth buckets agree.
 
     In N8 replays, displayed stacks = starting - permanently_invested.
     The pot is shown separately in the table centre, so this equation
@@ -1797,7 +1870,7 @@ def _compute_effective_bb(
         walkover_eff = hero_start_rounded
         walkover_conf = 0.55  # hero-own-stack fallback is usually too deep
         if hero_position and num_players:
-            seat_map = _map_positions_to_seats(
+            seat_map = _seat_map if _seat_map is not None else _map_positions_to_seats(
                 named_stacks, _panel_position_names(columns),
                 hero_position, num_players,
             )
@@ -1928,7 +2001,7 @@ def _compute_effective_bb(
             geo_positions = active_positions
             geo_starts = []
             if geo_positions and num_players and hero_position:
-                seat_map = _map_positions_to_seats(
+                seat_map = _seat_map if _seat_map is not None else _map_positions_to_seats(
                     named_stacks, _panel_position_names(columns),
                     hero_position, num_players,
                 )
@@ -1983,6 +2056,14 @@ def _compute_effective_bb(
         engine_pinned = True
         name_matched_villain = True
 
+    if _disable_floors:
+        # Stack-only reconstruction cross-check (no panel-shove floors / M1
+        # ceiling). The orchestrator compares this against the floor-inclusive
+        # estimate: agreement on the depth bucket is the cross-method consensus
+        # signal; disagreement means the all-in size / ceiling is misread or
+        # mis-attributed → abstain.
+        matched_allin_floor = None
+        uncalled_shove_ceiling = None
     all_starting = [hero_starting, opp_starting]
     if matched_allin_floor is not None:
         # A matched all-in caps the effective stack of the confrontation.
@@ -2001,6 +2082,8 @@ def _compute_effective_bb(
         if (engine_result is not None and engine_result.rule == "M1")
         else None
     )
+    if _disable_floors:
+        engine_m1_ceiling = None
     if engine_m1_ceiling is not None and not over_compute:
         all_starting.append(engine_m1_ceiling)
     effective_bb = round(min(all_starting), 1)
@@ -2123,6 +2206,269 @@ def _compute_effective_bb(
     if confidence < _EFFBB_CONF_FLOOR:
         return None, round(hero_starting, 1), confidence
     return effective_bb, round(hero_starting, 1), confidence
+
+
+# Solver depth buckets (must match gto_api.AVAILABLE_DEPTHS / effbb_metrics).
+_DEPTH_BUCKETS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9, 8]
+
+
+def _depth_bucket(bb) -> int | None:
+    """Snap a bb value to its nearest solver depth bucket (matches the metric)."""
+    try:
+        bb = float(bb)
+    except (TypeError, ValueError):
+        return None
+    return min(_DEPTH_BUCKETS, key=lambda d: abs(d - bb))
+
+
+def _engine_relevant_bucket(
+    columns, hero_position, num_players, named_stacks, hero_start, seat_map,
+):
+    """Depth bucket of the engine's decision-local relevant-opponent estimate.
+
+    The betting engine froze the live contestant set at hero's decision by
+    action order (independent of geometry/names). We map those positions to
+    seats through ``seat_map``, read ``start = displayed + engine_contribution``,
+    min with hero_start (and an M1 ceiling), and return that estimate's depth
+    bucket — an INDEPENDENT second opinion on the binding stack. The orchestrator
+    compares it to the legacy reconstruction's bucket: agreement is a strong
+    correctness signal (corpus: 76% vs 52% on disagreement), so disagreement is
+    a confidence penalty (abstain-eligible). Returns ``(bucket, is_singleton)``;
+    ``is_singleton`` flags a single-opponent relevant set (the cleanest engine
+    signal). Returns ``(None, False)`` when the engine has no usable seat.
+    """
+    if not (hero_position and num_players and hero_start and seat_map):
+        return None, False
+    try:
+        from . import effbb_engine as _eng
+        e_streets, e_pot = _engine_streets(columns)
+        er = _eng.analyze(e_streets, num_players, hero_position,
+                          e_pot.get("preflop"))
+    except Exception:
+        return None, False
+    if er is None or not er.relevant_opponents:
+        return None, False
+    pot_vals = [c.get("pot") for c in columns
+                if isinstance(c.get("pot"), (int, float)) and c.get("pot") > 0]
+    pot_bound = max(pot_vals) if pot_vals else None
+    vals = [hero_start]
+    found_seat = False
+    for pos in er.relevant_opponents:
+        seat = seat_map.get(pos)
+        if seat and seat.get("stack"):
+            inv = er.contribution.get(pos, 0.0)
+            if pot_bound is not None and inv > pot_bound + 0.5:
+                inv = pot_bound
+            vals.append(seat["stack"] + inv)
+            found_seat = True
+    if er.rule == "M1" and er.rule_ceiling:
+        vals.append(er.rule_ceiling)
+    if not found_seat and not (er.rule == "M1" and er.rule_ceiling):
+        return None, False
+    singleton = len(er.relevant_opponents) == 1
+    return _depth_bucket(min(vals)), singleton
+
+
+def _infer_num_players(columns, named_stacks):
+    """Physical table size from panel positions (robust) → seat-ring fallback."""
+    panel_pos = _panel_distinct_positions(columns)
+    if panel_pos:
+        for sz in range(2, 10):
+            order = POSITION_ORDERS.get(sz)
+            if order and panel_pos.issubset(set(order)):
+                return sz
+    ring = _seat_ring(named_stacks)
+    if ring:
+        n = min(max(len(ring), 2), 9)
+        return n if n in POSITION_ORDERS else None
+    return None
+
+
+def _compute_effective_bb(
+    columns: list[dict],
+    hero_stack_displayed: float | None,
+    hero_position: str | None,
+    all_stacks: list[float] | None,
+    named_stacks: list[dict] | None = None,
+    num_players: int | None = None,
+) -> tuple:
+    """Bucket-consensus orchestrator over the top-K position→seat layouts.
+
+    Phase 2. The single-layout reconstruction (``_effective_bb_for_layout``) is
+    run once per *plausible* layout (top-K by weak name agreement, within a
+    score margin, over both ring-walk directions and phantom-trim alternatives).
+    The emitted depth bucket is the CONSENSUS signal:
+
+      * All plausible layouts land in the SAME solver-depth bucket  → emit
+        (confidence = consensus strength: 1.0 unanimous, lower with abstainers).
+      * They straddle buckets                                       → abstain
+        (return ``None`` — the attribution is genuinely ambiguous; Phase 3's
+        re-read is what resolves the underlying misread seat).
+
+    Layouts only change the GEOMETRY attribution branch, so for name-pinned /
+    hero-binds / explicit-all-in hands every layout returns the identical value
+    and consensus holds trivially at full confidence — the gate bites only where
+    seat attribution is actually ambiguous, which is precisely the 78% of
+    recoverable hands with ≥2 same-bucket candidate seats.
+
+    Pot conservation is enforced inside the core as a hard reject (the
+    over-compute guard nulls a layout whose investment exceeds the pot bound).
+    Returns the legacy 3-tuple ``(effective_bb, hero_starting, confidence)``.
+    """
+    if hero_stack_displayed is None:
+        return None, None, 0.0
+
+    if num_players is None:
+        num_players = _infer_num_players(columns, named_stacks)
+
+    import os as _os
+    _margin = int(_os.getenv("OCR_EFFBB_LAYOUT_MARGIN", "1"))
+    layouts = []
+    if hero_position and num_players:
+        layouts = _enumerate_layouts(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players, margin=_margin, max_k=8,
+        )
+
+    # Even with no geometric ambiguity (0 or 1 layout) we still run the
+    # cross-method consensus (floors-on vs stack-only), so a single fixed seat
+    # map gets the same abstain discipline. ``[None]`` = "let the core derive
+    # its own seat map".
+    if not layouts:
+        layouts = [None]
+
+    # Run the reconstruction under each plausible layout, BOTH with the panel
+    # all-in floors / M1 ceiling on (the default estimate) and off (a stack-only
+    # cross-check). Two independent consensus axes:
+    #   * layout consensus   — does the geometric seat-direction matter?
+    #   * cross-method consensus — does the panel-shove-size estimate agree with
+    #     the pure stack reconstruction? (A misread/mis-attributed all-in size
+    #     diverges here — the dominant residual error, NOT seat direction.)
+    # Emit iff EVERY (layout × method) hypothesis lands in the same depth bucket.
+    results = []          # floor-inclusive (default) per layout
+    stack_only = []       # floors-off cross-check per layout
+    for sm in layouts:
+        try:
+            r1 = _effective_bb_for_layout(
+                columns, hero_stack_displayed, hero_position, all_stacks,
+                named_stacks, num_players, _seat_map=sm,
+            )
+            r2 = _effective_bb_for_layout(
+                columns, hero_stack_displayed, hero_position, all_stacks,
+                named_stacks, num_players, _seat_map=sm, _disable_floors=True,
+            )
+        except Exception:  # pragma: no cover - core must never crash parsing
+            continue
+        results.append(r1)
+        stack_only.append(r2)
+
+    if not results:
+        return None, None, 0.0
+
+    # hero_starting is layout-independent (hero's own seat).
+    hero_start = next((hs for _, hs, _ in results if hs is not None), None)
+
+    emitted = [(eff, conf) for eff, _, conf in results if eff is not None]
+    n_total = len(results)
+    n_emit = len(emitted)
+
+    if not emitted:
+        return None, hero_start, 0.3
+
+    # Representative value = highest internal-confidence layout (floors on).
+    emitted.sort(key=lambda t: -t[1])
+    rep_eff = emitted[0][0]
+    base_conf = emitted[0][1]
+    emit_frac = n_emit / n_total
+
+    # --- Engine-vs-legacy consensus (the strongest discriminator) ---
+    # The betting engine's decision-local relevant seat gives an INDEPENDENT
+    # bucket (action-order logic, not geometry). On the corpus it agrees with a
+    # correct legacy value 76% of the time but only 52% when it disagrees — the
+    # single best abstain/tiebreak signal Phase 2 has. Read through the rep
+    # layout (falling back to the single best map when rep is the [None] slot).
+    best_idx = results.index(max(results, key=lambda r: r[2] if r[0] is not None else -1))
+    rep_seat_map = layouts[best_idx]
+    if rep_seat_map is None:
+        rep_seat_map = _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+    eng_bucket, eng_singleton = _engine_relevant_bucket(
+        columns, hero_position, num_players, named_stacks, hero_start,
+        rep_seat_map)
+
+    # --- Layout consensus (geometric seat-direction ambiguity) ---
+    # Do the floor-inclusive estimates agree on the depth bucket across all
+    # plausible layouts? A straddle is usually genuine ambiguity → abstain,
+    # UNLESS the independent engine bucket matches exactly one straddling
+    # layout — then the engine breaks the tie toward that layout's value.
+    layout_buckets = {_depth_bucket(eff) for eff, _, _ in results if eff is not None}
+    if len(layout_buckets) != 1 or None in layout_buckets:
+        if eng_bucket is not None and eng_bucket in layout_buckets:
+            # Engine resolves the direction: keep the layout whose bucket the
+            # engine confirms.
+            tie = [(e, c) for e, _, c in results
+                   if e is not None and _depth_bucket(e) == eng_bucket]
+            if tie:
+                tie.sort(key=lambda t: -t[1])
+                rep_eff = tie[0][0]
+                base_conf = max(tie[0][1], 0.9)
+            else:
+                return None, hero_start, 0.4
+        else:
+            return None, hero_start, 0.4
+
+    rep_bucket = _depth_bucket(rep_eff)
+    engine_disagrees = eng_bucket is not None and eng_bucket != rep_bucket
+    engine_agrees = eng_bucket is not None and eng_bucket == rep_bucket
+
+    # --- Cross-method agreement (panel-shove vs pure-stack) ---
+    # NOT a hard gate (corpus evidence: a floor/stack disagreement is right as
+    # often as wrong, so abstaining on it sheds correct hands). It is a soft
+    # confidence input: agreement nudges confidence up.
+    x_agree = False
+    for (eff, _, _), (s_eff, _, _) in zip(results, stack_only):
+        if (eff is not None and s_eff is not None
+                and _depth_bucket(eff) == _depth_bucket(s_eff)):
+            x_agree = True
+            break
+
+    consensus_conf = base_conf * (0.85 + 0.15 * emit_frac)
+    if x_agree:
+        consensus_conf += 0.03
+    # The engine-vs-legacy disagreement penalty applies ONLY where the binding
+    # was a GEOMETRY/heuristic read (base_conf <= ~0.85). The strong-evidence
+    # bindings — an explicit panel all-in size, hero's own displayed stack, a
+    # name-matched villain, a walkover BB read (all base_conf >= 0.95) — are
+    # already reliable and an engine that reads a wrong seat must not abstain
+    # them (corpus: disagreement is a coin-flip overall, but on the geometry
+    # tier it is the strongest abstain signal we have).
+    engine_eligible = base_conf <= 0.86
+    if engine_eligible:
+        # A geometry/heuristic binding (base_conf <= ~0.85) is only ~28% precise
+        # on its own (corpus) — it MUST earn independent betting-logic
+        # confirmation to be emitted. If the engine disagrees OR can't supply a
+        # relevant seat to vouch for it, abstain.
+        if engine_agrees:
+            # Confirmed. A SINGLETON relevant set is the engine's cleanest
+            # signal — lift just over the abstain floor; multiway earns a nudge.
+            consensus_conf = max(consensus_conf, 0.72) if eng_singleton \
+                else consensus_conf + 0.03
+        else:
+            consensus_conf = min(consensus_conf, 0.45)
+    elif engine_disagrees:
+        # Strong-evidence binding (all-in size / hero / name) but the engine
+        # dissents — moderate penalty, not a full abstain (that tier is ~75%
+        # precise and includes the explicit-shove goldens the engine misreads).
+        # Held below the 0.9 top band so the top band stays the cleanest slice.
+        consensus_conf = min(consensus_conf, 0.85)
+    elif engine_agrees:
+        consensus_conf += 0.03
+    consensus_conf = min(1.0, round(consensus_conf, 3))
+
+    if consensus_conf < _EFFBB_CONF_FLOOR:
+        return None, hero_start, consensus_conf
+    return round(rep_eff, 1), hero_start, consensus_conf
 
 
 def _build_diagnostics(

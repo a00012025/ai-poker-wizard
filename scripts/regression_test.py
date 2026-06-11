@@ -784,6 +784,135 @@ def test_effbb_engine_m1_endtoend_bucket():
     assert_eq(depth_bucket(eff), 20)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: top-K layout enumeration + bucket-consensus emission
+# ---------------------------------------------------------------------------
+@test
+def test_engine_hu_postflop_order_bb_first():
+    """HU (2-handed) postflop the BB acts FIRST (carry-over fix). Preflop the
+    SB/BTN acts first; postflop the order flips to ['BB','SB']."""
+    eng = _engine()
+    assert_eq(eng._postflop_order(["SB", "BB"], 2), ["BB", "SB"])
+    # 3+ handed is unchanged: blinds (SB) lead postflop.
+    assert_eq(eng._postflop_order(["LJ", "HJ", "CO", "BTN", "SB", "BB"], 6)[0],
+              "SB")
+
+
+@test
+def test_phase2_dead_code_removed():
+    """The unused _seat_stack_for_position helper was removed in Phase 2."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    import ocr.n8_parser as P
+    assert_true(not hasattr(P, "_seat_stack_for_position"),
+                "_seat_stack_for_position should be deleted (dead code)")
+
+
+@test
+def test_phase2_enumerate_layouts_topk():
+    """_enumerate_layouts returns the top-K position->seat layouts, each a full
+    {position: seat} map for the table, best-first by weak name agreement."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    import ocr.n8_parser as P
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l)
+            for l in open(cache, encoding="utf-8") if l.strip()}
+    inp = rows["TM5862907992"]["inputs"]
+    nump = P._infer_num_players(inp["columns"], inp["named_stacks"])
+    layouts = P._enumerate_layouts(
+        inp["named_stacks"], P._panel_position_names(inp["columns"]),
+        inp["hero_position"], nump, margin=99, max_k=8)
+    assert_true(len(layouts) >= 1, "expected at least one layout")
+    order = P.POSITION_ORDERS[nump]
+    for m in layouts:
+        # Hero anchored at hero_position in every layout.
+        assert_in(inp["hero_position"], m)
+        # Each layout covers the full position ring.
+        assert_eq(set(m.keys()), set(order))
+
+
+@test
+def test_phase2_consensus_holds_emits_correct_bucket():
+    """When all plausible layouts + the engine's relevant seat agree on the
+    bucket, the consensus path emits the correct bucket. TM5862907992: a
+    2-direction straddle the engine's single live opponent (UTG) resolves to
+    bucket 17 (true effective 16.5, not hero's deeper 22.9)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l)
+            for l in open(cache, encoding="utf-8") if l.strip()}
+    o = rows["TM5862907992"]; inp = o["inputs"]
+    eff, _hs, conf = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_true(eff is not None, "consensus should emit, not abstain")
+    assert_eq(depth_bucket(eff), 17)
+    assert_true(conf >= 0.7, f"emitted confidence below floor: {conf}")
+
+
+@test
+def test_phase2_layout_straddle_abstains():
+    """When the plausible geometric layouts straddle DIFFERENT depth buckets
+    and the engine cannot break the tie, the consensus path ABSTAINS (None) —
+    the attribution is genuinely ambiguous. TM5864409682 / TM5866699022 both
+    straddle two buckets."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l)
+            for l in open(cache, encoding="utf-8") if l.strip()}
+    for hid in ("TM5864409682", "TM5866699022"):
+        inp = rows[hid]["inputs"]
+        eff, _hs, conf = _compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])
+        assert_true(eff is None,
+                    f"{hid}: bucket-straddle must abstain, got {eff}")
+        assert_true(conf < 0.7, f"{hid}: abstain conf should be low, got {conf}")
+
+
+@test
+def test_phase2_consensus_curve_trades_coverage_for_precision():
+    """The consensus confidence yields a real precision/coverage frontier on
+    hero-active hands: raising the floor must not lower precision and the top
+    band is meaningfully cleaner than the whole emitted population."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import hero_folded_preflop, bucket_match
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    active = []
+    for line in open(cache, encoding="utf-8"):
+        if not line.strip():
+            continue
+        o = json.loads(line)
+        gt = o.get("gt") or {}
+        ge = gt.get("effective_bb")
+        if ge is None or ge < 1.0 or "inputs" not in o:
+            continue
+        if hero_folded_preflop(gt) is not False:
+            continue
+        inp = o["inputs"]
+        eff, _hs, conf = _compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])
+        if eff is not None:
+            active.append((conf, bucket_match(eff, ge)))
+
+    def prec_cov(floor):
+        em = [a for a in active if a[0] >= floor]
+        ok = [a for a in em if a[1]]
+        return (100 * len(ok) / len(em) if em else 0.0,
+                100 * len(em) / len(active) if active else 0.0)
+
+    p0, c0 = prec_cov(0.0)
+    p9, c9 = prec_cov(0.9)
+    assert_true(p9 >= p0 + 3.0,
+                f"top band not cleaner: all={p0:.1f}@{c0:.0f}% conf>=0.9={p9:.1f}@{c9:.0f}%")
+    assert_true(c9 < c0, "raising the floor must reduce coverage")
+
+
 @test
 def test_collapse_allin_into_call_merges_shove_frequency():
     """A call facing a shove matches the GTO commit, not a phantom raise.
