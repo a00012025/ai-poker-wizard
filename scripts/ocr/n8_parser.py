@@ -2823,9 +2823,13 @@ def _compute_effective_bb(
             # so method-straddle must not abstain it. (TM5875127705: BB calls
             # a 9.51 jam — floor 9.51 vs stack-only 18.4.)
             or base_conf >= 0.999)
+        # NOTE: the original Phase-4 gate also abstained
+        # ``hero_near_zero and not engine_agrees`` — after the matched-floor
+        # keying/blind-credit fixes that slice measures 81% marginally precise
+        # (ABOVE the emitted average), so suppressing it costs ~4pp coverage
+        # for negative precision value. Dropped (scripts/_tmp_gate.py audit).
         structural_abstain = (
             (engine_eligible and not engine_agrees)      # geometry binding unconfirmed
-            or (hero_near_zero and not engine_agrees)    # all-in shove unconfirmed
             or (engine_disagrees and not strong_panel_read)   # independent engine dissents
             or (feat["method_straddle"] and not strong_panel_read)  # floors↔stack straddle
         )
