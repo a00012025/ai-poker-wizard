@@ -166,11 +166,15 @@ def shipped_gate(f: dict, conf_floor: float = 0.7) -> bool:
     a noisy seat must not abstain them. This is the operating point in prod."""
     if (f.get("confidence") or 0.0) < conf_floor:
         return True
-    strong = (f.get("decision_class") in ("M1", "M2")
-              and (f.get("base_conf") or 0.0) >= 0.95)
+    strong = ((f.get("decision_class") in ("M1", "M2")
+               and (f.get("base_conf") or 0.0) >= 0.95)
+              # explicit panel all-in binding (matched floor / uncalled jam)
+              or (f.get("base_conf") or 0.0) >= 0.999)
+    # NOTE: the hero_stack_near_zero clause was DROPPED from the shipped gate
+    # (2026-06-11): post matched-floor fixes that slice measures 81% marginally
+    # precise — above the emitted average (scripts/_tmp_gate.py audit).
     return bool(
         (f.get("binding_geometry_only") and not f.get("engine_agrees"))
-        or (f.get("hero_stack_near_zero") and not f.get("engine_agrees"))
         or (f.get("engine_disagrees") and not strong)
         or (f.get("method_straddle") and not strong)
     )

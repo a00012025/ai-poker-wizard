@@ -287,3 +287,67 @@ Verify every "fix" against the REAL screenshot / cache, never the stored
 expected_json alone ([[validation-backlog-mostly-stale]]). Snapshot suite flakes
 under concurrent runs on shared `.gto_cache` — baseline sequentially
 ([[multiway-preflop-reconcile]]).
+
+---
+
+## Phase 6 (2026-06-11 PM) — the "86% ceiling" challenge: VERDICT + logic fixes
+
+**STATUS: DONE.** The user rejected the Phase-4 "absolute ceiling ~86%" claim
+and asked for it to be dissected. The dissection (scripts/_tmp_diag*.py over
+the 284 wrong emits) proved the claim WRONG in the way that matters:
+
+* The 86% number was a ceiling on **abstain-calibration given the then-current
+  reconstruction**, not a ceiling on accuracy. No feature separates the
+  internally-consistent value errors — true — but the errors themselves were
+  largely FIXABLE LOGIC, not input-bound noise:
+  - boundary coin-flips: 18% of wrong emits (metric harshness, depth ~right)
+  - GT noise: **0** programmatic inconsistencies (replayed GT vs hh_parser
+    defs); 1 deep HH audit confirmed GT correct; 2 degenerate rows
+  - truly input-bound: only **39/1101 = 3.5% of emitted** → in-principle
+    ceiling on emitted ≈ 96%, far above 86%
+  - the rest: attribution/selection logic vs the GT definition
+
+**Fixes landed (all measured on effbb_eval, hero-active):**
+1. *Hero-stream matched-shove floor*: hero's unnamed raise-then-call rows were
+   keyed per-index so a called villain jam never registered as matched
+   (TM5863575308); + blind credit for BB/SB callers when the Blinds column is
+   empty (TM5875127705); + strong_panel_read extended to base_conf 1.0 panel
+   all-in bindings so the gate doesn't method-straddle-abstain them.
+2. *GT-aligned preflop-only relevant set* (engine + core behind-hero bound):
+   a hand that truly ends preflop is bound by every seat acting after hero
+   (incl. folders behind) + earlier voluntary entrants — matches hh_parser's
+   in_pot definition. Guards: no preflop all-in (matched jam = board ran out →
+   postflop def; uncalled jam = authoritative M1 ceiling), binder seat must be
+   named or panel-present. M2 set widened [BB] → all seats behind.
+3. *Poker-rules legality guard on all-in evidence*: an "All-In" row that does
+   not exceed what a covering player already committed, followed by that
+   player's fold, is a misparsed raise (TM5878838751: Bet 9.0 → "All-In 1.0" →
+   Fold bound a 44bb spot at 1.0).
+4. *Dropped the hero-near-zero structural-abstain clause*: post-fixes that
+   slice measures 81% marginally precise (ABOVE the emitted average) — the
+   clause was costing ~4pp coverage for negative precision value
+   (scripts/_tmp_gate.py per-condition audit; engine-dissent stays at 48%
+   marginal and keeps earning its abstains).
+
+**Frontier: 74.21% @ 61.0% → 76.83% @ 71.2%** (correct emits 817 → 988, +21%).
+Gate-off (ungated): 70.9%@78.2% → 74.07%@79.3%. conf≥0.9 band: 79.9%@60.9%.
+Boundary-tolerant (±1 bucket when both values within max(1bb,4%) of the shared
+cell edge): **81.4%**; any-adjacent: 86.6%.
+
+**Residual error mass** (298 wrong emits): ~20% boundary coin-flips, ~17%
+input-bound, the rest idiosyncratic seat-value misreads binding wrongly in
+either direction (no separating feature; deep-undershoot/no-jam implausibility
+probes measured ≈ average marginal precision — not actionable). Tested and
+rejected: attribution-free named-min bound (−140 net), engine villain-invest
+add (net-negative, unchanged), committed>60%-no-jam abstain (15 hands @ 47% —
+too small/borderline).
+
+**Open decisions for the user:**
+* 99.5% point-precision from the single frame remains out of reach (best
+  clean slice ~80% @ 61%); the honest routes stay (a) the boundary-tolerant
+  metric — 81.4% today — if adjacent-near-boundary counts as correct for the
+  product, and (b) HH-first for exactness (hh_parser computes effective_bb
+  from the HH directly — the GT generator itself — so HH uploads are exact by
+  construction; bot already ingests them).
+* Snapshot suite: 16 pre-existing failures (hero_hand/board/action-size/
+  Call→Limp formatter renames — stale expected, none effective_bb-related).
