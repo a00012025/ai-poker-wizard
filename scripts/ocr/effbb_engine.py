@@ -199,7 +199,13 @@ def _preflop_order(order: list, n: int) -> list:
 
 
 def _postflop_order(order: list, n: int) -> list:
-    """Postflop acting order: SB-first … BTN-last (blinds act first)."""
+    """Postflop acting order: SB-first … BTN-last (blinds act first).
+
+    Heads-up (2-handed) is the exception: the SB/BTN acts FIRST preflop but the
+    BB acts FIRST postflop. So for n==2 the postflop order is ['BB','SB'].
+    """
+    if n == 2 and set(order) == {"SB", "BB"}:
+        return ["BB", "SB"]
     # order is UTG..BB; postflop starts at SB. Rotate so SB leads.
     if "SB" in order:
         i = order.index("SB")
