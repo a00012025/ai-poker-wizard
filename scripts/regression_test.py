@@ -626,6 +626,164 @@ def test_effbb_overcompute_bounded():
     assert_true(eff2 is None or eff2 <= gt_max2 * 1.1)
 
 
+# ---------------------------------------------------------------------------
+# Phase 1: betting-state engine (scripts/ocr/effbb_engine.py)
+# ---------------------------------------------------------------------------
+def _engine():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr import effbb_engine as eng
+    return eng
+
+
+def _eng_streets_from_cache(hid):
+    """Load a cached hand and split its panel into the engine's streets/pot."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _engine_streets
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l)
+            for l in open(cache, encoding="utf-8") if l.strip()}
+    o = rows[hid]
+    streets, pot = _engine_streets(o["inputs"]["columns"])
+    return o, streets, pot
+
+
+@test
+def test_engine_position_orders_match_parser():
+    """Engine's POSITION_ORDERS must be identical to the parser's."""
+    eng = _engine()
+    from ocr.n8_parser import POSITION_ORDERS as PARSER_ORDERS
+    assert_eq(eng.POSITION_ORDERS, PARSER_ORDERS,
+              "engine POSITION_ORDERS drifted from n8_parser")
+
+
+@test
+def test_engine_infer_blinds():
+    """Engine infers SB=0.5/BB=1.0 and a BB-ante from the preflop pot."""
+    eng = _engine()
+    sb, bb, ante, ok = eng.infer_blinds(1.5, 6)   # no ante
+    assert_eq((sb, bb), (0.5, 1.0)); assert_true(ok and ante == 0.0)
+    sb, bb, ante, ok = eng.infer_blinds(2.4, 6)   # 0.9 BB-ante
+    assert_true(ok and abs(ante - 0.9) < 0.01, f"ante={ante}")
+    _sb, _bb, _ante, ok2 = eng.infer_blinds(99.0, 6)  # absurd → not ok
+    assert_true(not ok2, "absurd preflop pot should not reconcile")
+
+
+@test
+def test_engine_action_order_assignment_preflop():
+    """Engine assigns positions by legal action order, not player_name."""
+    eng = _engine()
+    # 6-max, hero HJ opens, folds through. Rows are in UTG-first order.
+    streets = {"preflop": [
+        {"type": "opponent", "action": "Fold", "player_name": "x", "position": "LJ"},
+        {"type": "hero", "action": "Raise", "size": 2.0, "position": "HJ"},
+        {"type": "opponent", "action": "Fold", "player_name": "y", "position": "CO"},
+        {"type": "opponent", "action": "Fold", "player_name": "z", "position": "BTN"},
+        {"type": "opponent", "action": "Fold", "player_name": "w", "position": "SB"},
+    ]}
+    assigned = eng.assign_positions(
+        eng.normalize_streets(streets, "HJ"), 6, "HJ")
+    by = {(a.position, a.action) for a in assigned}
+    assert_in(("HJ", "raise"), by)
+    assert_in(("LJ", "fold"), by)
+    assert_in(("SB", "fold"), by)
+
+
+@test
+def test_engine_m1_uncalled_shove_ceiling():
+    """M1: hero invests then folds to an uncalled villain jam → ceiling = the
+    shover's TOTAL contribution (prior streets + shove). TM5863067496 GT 20.4."""
+    eng = _engine()
+    o, streets, pot = _eng_streets_from_cache("TM5863067496")
+    r = eng.analyze(streets, o["gt"]["num_players"],
+                    o["inputs"]["hero_position"], pot.get("preflop"))
+    assert_eq(r.rule, "M1")
+    from effbb_metrics import depth_bucket
+    assert_eq(depth_bucket(r.rule_ceiling), 20,
+              f"M1 ceiling {r.rule_ceiling} should be bucket 20")
+
+
+@test
+def test_engine_m1_postflop_jam_uses_total_contribution():
+    """M1: a small river jam over a deep prior invest must use the shover's
+    TOTAL contribution, not the bare shove size. TM5880480237 GT 15.0."""
+    eng = _engine()
+    o, streets, pot = _eng_streets_from_cache("TM5880480237")
+    r = eng.analyze(streets, o["gt"]["num_players"],
+                    o["inputs"]["hero_position"], pot.get("preflop"))
+    assert_eq(r.rule, "M1")
+    from effbb_metrics import depth_bucket
+    assert_eq(depth_bucket(r.rule_ceiling), depth_bucket(o["gt"]["effective_bb"]),
+              f"ceiling {r.rule_ceiling} vs GT {o['gt']['effective_bb']}")
+
+
+@test
+def test_engine_m2_walkover_binds_on_bb():
+    """M2: hero opens and folds through → relevant opponent is the BB seat.
+    TM5863067852 (GT 10.7) and TM5863068088 (GT 13.8)."""
+    eng = _engine()
+    for hid in ("TM5863067852", "TM5863068088"):
+        o, streets, pot = _eng_streets_from_cache(hid)
+        r = eng.analyze(streets, o["gt"]["num_players"],
+                        o["inputs"]["hero_position"], pot.get("preflop"))
+        assert_eq(r.rule, "M2", f"{hid} should be a walkover")
+        assert_eq(r.relevant_opponents, ["BB"],
+                  f"{hid} walkover binds on BB, got {r.relevant_opponents}")
+
+
+@test
+def test_engine_m3_multiway_live_set():
+    """M3: relevant = the live contestants at hero's decision (action order),
+    NOT showdown survivors or a folded short seat. TM5863067607: hero BB, SB
+    limps, hero checks, SB bets flop, hero folds → live = {SB}."""
+    eng = _engine()
+    o, streets, pot = _eng_streets_from_cache("TM5863067607")
+    r = eng.analyze(streets, o["gt"]["num_players"],
+                    o["inputs"]["hero_position"], pot.get("preflop"))
+    assert_eq(r.rule, "M3")
+    # The engine must SELECT the SB limper as the lone live opponent. (Reading
+    # SB's seat STACK correctly is a Phase-2 attribution job — the cached SB
+    # sticker is OCR-misread to 2.9 vs the true ~17.4, so the final bucket is
+    # not yet recoverable here; this test pins the Phase-1 deliverable: the
+    # right POSITION.)
+    assert_eq(r.relevant_opponents, ["SB"],
+              f"live set should be the SB limper, got {r.relevant_opponents}")
+
+
+@test
+def test_engine_m3_multiway_postflop_callers_in_live_set():
+    """M3: a caller who acts AFTER hero's open stays in the live set when hero
+    does not fold — freezing at hero's open would drop the very callers who
+    define the spot. TM5873208532: hero UTG+1 opens, LJ+CO call; LJ folds the
+    river, CO calls to the end → CO is the live binding opponent (and the engine
+    must NOT pick a folded-preflop short seat)."""
+    eng = _engine()
+    o, streets, pot = _eng_streets_from_cache("TM5873208532")
+    r = eng.analyze(streets, o["gt"]["num_players"],
+                    o["inputs"]["hero_position"], pot.get("preflop"))
+    assert_in("CO", r.relevant_opponents,
+              f"river contestant CO must be live, got {r.relevant_opponents}")
+    # No seat that folded preflop (UTG, HJ, BTN, SB, BB) may be in the live set.
+    for folded in ("UTG", "HJ", "BTN", "SB", "BB"):
+        assert_true(folded not in r.relevant_opponents,
+                    f"{folded} folded preflop, must not be live")
+
+
+@test
+def test_effbb_engine_m1_endtoend_bucket():
+    """End-to-end: the M1 ceiling reaches _compute_effective_bb. TM5863067496
+    GT 20.4 (bucket 20) — read straight off the panel shove."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    o, _s, _p = _eng_streets_from_cache("TM5863067496")
+    inp = o["inputs"]
+    eff, _hs, _c = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    assert_eq(depth_bucket(eff), 20)
+
+
 @test
 def test_collapse_allin_into_call_merges_shove_frequency():
     """A call facing a shove matches the GTO commit, not a phantom raise.
