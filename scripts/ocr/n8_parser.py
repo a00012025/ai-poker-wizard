@@ -2232,6 +2232,37 @@ def _effective_bb_for_layout(
                 name_matched_villain = False
                 geometry_pinned = True
 
+    # Hero jammed UNCALLED preflop — the ground truth still binds by a
+    # genuinely short seat folding behind (TM5874529592: hero jams 12.6, a
+    # 2.9bb blind folds behind — GT 2.9). Tension with the misread-folder
+    # golden (TM5866594919, stays green): NAMED seats only. Measured
+    # +1.36pp precision / −0.8pp coverage (6 fixed, 15 wrong→abstain,
+    # 1 correct→abstain).
+    if (_os_bb.getenv("OCR_EFFBB_BEHIND_BOUND_HEROJAM", "1") == "1"
+            and hero_uncalled_shove is not None and not _has_postflop
+            and hero_position and num_players):
+        _smj = _seat_map if _seat_map is not None else _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+        _orderj = POSITION_ORDERS.get(num_players) or []
+        if _smj and hero_position in _orderj:
+            _hj = _orderj.index(hero_position)
+            _relj = set(_orderj[_hj + 1:]) | {
+                p for p in opp_entered_positions if p in _orderj[:_hj]}
+            _cands = []
+            for _p in _relj:
+                _seat = _smj.get(_p)
+                if (_seat and _seat.get("stack")
+                        and (_seat.get("name") or "").strip()):
+                    _inv = (engine_result.contribution.get(_p, 0.0) or 0.0
+                            if engine_result is not None else 0.0)
+                    _cands.append(_seat["stack"] + _inv)
+            if _cands and min(_cands) < opp_starting:
+                opp_starting = round(min(_cands), 1)
+                engine_pinned = True
+                name_matched_villain = False
+                geometry_pinned = True
+
     # ---- Engine single-opponent selection correction (downward-only) ----
     # When the engine name-resolved the lone live opponent at hero's fold, use
     # it ONLY if it does not INFLATE the legacy opp_starting. The legacy
