@@ -1806,6 +1806,51 @@ def _effective_bb_for_layout(
     if hero_uncalled_shove is not None:
         hero_starting = hero_uncalled_shove
 
+    # ---- Hero all-in / stack≈0 starting-stack reconstruction (Phase 3) ----
+    # When hero's DISPLAYED stack reads ~0, hero is committed (all-in, or called
+    # a villain's all-in for their whole stack): hero's STARTING stack is exactly
+    # what hero permanently put in. The legacy displayed+walk estimate
+    # (hero_perm) is noisy on these — a misread call/raise size over- or
+    # under-adds (TM5875510185: hero SB called a shove for 13.19, legacy walk
+    # over-computed hero_starting to 19.6 vs the true ~13.7; the engine's
+    # decision-local hero contribution reads 13.69). The betting engine's
+    # per-position contribution is an INDEPENDENT reconstruction of the same
+    # amount; we prefer it when both agree on the depth bucket, and flag a
+    # disagreement so the orchestrator can abstain (the input-bound residual:
+    # TM5874977534 hero shows a partial 1.24 shove sticker for a true 11.2 stack
+    # — neither read recovers it). ``hero_allin_recon_disagree`` is surfaced via
+    # a confidence cap so the consensus gate drops the unrecoverable ones.
+    hero_allin_recon = None
+    hero_allin_recon_disagree = False
+    if (hero_stack_displayed is not None and hero_stack_displayed <= 0.6
+            and hero_uncalled_shove is None
+            and engine_result is not None and hero_position):
+        eng_hero_contrib = engine_result.contribution.get(hero_position)
+        # Fire only when hero is genuinely committed: the engine saw hero shove,
+        # or hero's last action was a Call that matched a villain all-in.
+        hero_committed = engine_result.hero_all_in
+        if not hero_committed:
+            for col in ([preflop_col] if preflop_col else []) + list(street_cols):
+                ents = col.get("entries", []) if col else []
+                for k, e in enumerate(ents):
+                    if e.get("type") == "hero" and (e.get("action") or "").lower() == "call":
+                        # A call with a villain all-in anywhere this street = hero
+                        # committed for the displayed-0 remaining.
+                        if any((o.get("action") or "").lower() == "all-in"
+                               and o.get("type") != "hero" for o in ents):
+                            hero_committed = True
+        if hero_committed and eng_hero_contrib and eng_hero_contrib >= 1.0:
+            if _depth_bucket(eng_hero_contrib) == _depth_bucket(hero_starting):
+                # Both reconstructions agree on the bucket → trust the engine's
+                # exact contribution (less noisy than displayed≈0 + walk).
+                hero_allin_recon = eng_hero_contrib
+                hero_starting = eng_hero_contrib
+            else:
+                # The legacy walk and the engine disagree on hero's committed
+                # amount and hero's displayed read is uninformative (~0): we
+                # cannot reconstruct it from this frame → mark for abstain.
+                hero_allin_recon_disagree = True
+
     # ---- Pot-bounded over-compute guard (computed early so walkover honours it) ----
     # A player's PERMANENT investment cannot exceed the chips that actually
     # entered the pot. The largest observed street-pot header bounds the total
@@ -2202,6 +2247,13 @@ def _effective_bb_for_layout(
     # false-abstains a large, correct short-stack population, so it is dropped.
     # The only physically sound abstention is the pot-bounded over-compute guard
     # above (an UPPER bound, which has a valid physical basis).
+
+    # Hero displayed ~0 (all-in / called-all-in) but the two independent
+    # reconstructions of hero's committed amount disagree on the bucket — the
+    # single-frame input does not determine hero's starting stack (the shove
+    # sticker is partial/misread). Abstain. (TM5874977534: 1.24 shown vs 11.2.)
+    if hero_allin_recon_disagree:
+        confidence = min(confidence, 0.3)
 
     if confidence < _EFFBB_CONF_FLOOR:
         return None, round(hero_starting, 1), confidence
