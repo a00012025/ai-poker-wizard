@@ -401,12 +401,18 @@ def analyze(
     res.hero_folded = any(a.action == _FOLD for a in hero_rows)
     res.hero_all_in = any(a.action == _ALLIN for a in hero_rows)
 
-    # Hero's deepest (last) genuine decision row — that's where we freeze the
-    # live set. If hero never acted voluntarily, fall back to end of hand.
-    decisions = _hero_decisions(assigned)
-    if decisions:
-        last = decisions[-1]
-        live = _live_at(assigned, last.street, last.idx)
+    # Relevant-opponent set:
+    #  * If hero FOLDS, freeze the live set at hero's fold — the contestants
+    #    hero was actually up against at the decision (a villain who only
+    #    entered AFTER hero folded never faced hero).
+    #  * If hero does NOT fold (calls/checks/shoves to the end), the binding
+    #    villain is anyone STILL IN at the end of the hand — including players
+    #    who act after hero (callers behind an open). Freezing at hero's open
+    #    would drop the very callers who define the spot.
+    if res.hero_folded:
+        hero_fold = next(a for a in reversed(assigned)
+                         if a.is_hero and a.action == _FOLD)
+        live = _live_at(assigned, hero_fold.street, hero_fold.idx)
     elif assigned:
         last = assigned[-1]
         live = _live_at(assigned, last.street, last.idx)
@@ -441,10 +447,14 @@ def analyze(
 
     # M1 uncalled-shove ceiling: there exists an all-in that nobody calls/raises
     # after, AND hero did not get all-in matched (hero folds to it, or hero's own
-    # shove is uncalled). Effective ≤ the (shortest such) shove size.
-    #   - villain jam, hero folds  → ceiling = shove size (villain's whole stack)
-    #   - hero jam, all fold        → ceiling = hero's shove size (hero's stack)
-    m1_ceiling = _uncalled_shove_ceiling(assigned, hero_position)
+    # shove is uncalled). The shover is all-in, so their STARTING stack equals
+    # their TOTAL contribution (prior streets + the shove) — NOT the bare shove
+    # size, which is only the remaining stack at the moment of the jam. That
+    # whole stack bounds the effective. The shortest such shover binds.
+    #   - villain jam, hero folds  → ceiling = villain's total contribution
+    #   - hero jam, all fold        → ceiling = hero's total contribution
+    m1_ceiling = _uncalled_shove_ceiling(assigned, hero_position,
+                                         res.contribution)
     if m1_ceiling is not None:
         res.rule = "M1"
         res.rule_ceiling = round(m1_ceiling, 1)
@@ -460,19 +470,25 @@ def analyze(
     return res
 
 
-def _uncalled_shove_ceiling(assigned: list, hero_position: str) -> float | None:
-    """Smallest UNCALLED all-in size that binds the spot, else None.
+def _uncalled_shove_ceiling(
+    assigned: list,
+    hero_position: str,
+    contribution: dict,
+) -> float | None:
+    """Smallest UNCALLED all-in shover's TOTAL contribution, else None.
 
     An all-in is 'uncalled' when no later voluntary action (call/raise/all-in)
-    by any OTHER player meets it. We only fire when hero is NOT the matched
-    caller — i.e. hero folds to a villain jam, or hero's own jam goes through
-    uncalled. A matched shove is handled by the seat-stack reconstruction
-    (it is not a ceiling, both stacks may be deeper than the shove).
+    by any OTHER player meets it. We only fire when the shove went uncalled —
+    hero folds to a villain jam, or hero's own jam goes through. The shover is
+    all-in, so their starting stack = their total committed contribution (prior
+    streets + the shove), which the caller uses as an upper bound. Using the
+    bare shove size would undershoot when the shover invested earlier streets
+    (TM5880480237 river jam 5.5 over a 9.5bb prior invest → real stack 15.0).
     """
     n = len(assigned)
     best: float | None = None
     for i, a in enumerate(assigned):
-        if a.action != _ALLIN or not a.size:
+        if a.action != _ALLIN or not a.size or a.position is None:
             continue
         # Anyone after this jam (same street) who calls/raises/jams = matched.
         matched = False
@@ -487,17 +503,8 @@ def _uncalled_shove_ceiling(assigned: list, hero_position: str) -> float | None:
                 break
         if matched:
             continue
-        # Uncalled jam. Does it bind?
-        #  - villain jam that hero folds to: binds (villain's whole stack ≤ this)
-        #  - hero jam everyone folds to: binds (hero's whole stack = this)
-        if a.is_hero:
-            # hero jam — only a ceiling if it actually went uncalled (matched
-            # already excluded above). Hero's stack = shove size.
-            cand = a.size
-        else:
-            # villain jam — hero must have folded to it (not matched). The
-            # villain is all-in for their whole stack = shove size.
-            cand = a.size
+        # Uncalled jam: the shover's whole stack = their total contribution.
+        cand = contribution.get(a.position, a.size)
         if best is None or cand < best:
             best = cand
     return best

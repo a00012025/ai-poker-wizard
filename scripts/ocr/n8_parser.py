@@ -31,6 +31,14 @@ _CONF_THRESHOLD = _CONFIG["confidence_threshold"]
 # safe solver-depth fallback, so abstaining is cheap. Tuned in a follow-up task.
 _EFFBB_CONF_FLOOR = float(os.getenv("OCR_EFFBB_CONF_FLOOR", "0.7"))
 
+# The engine's single-opponent value override corrects the legacy selection by
+# reading the lone live opponent's seat — but with current (Phase-1) attribution
+# the seat read is noisy enough that it is net-negative on the cache, so it is
+# OFF by default. Phase 2 (robust position→seat) re-enables it. The engine's M1
+# uncalled-shove ceiling (a pure panel read, no seat dependency) stays ON.
+# Set OCR_EFFBB_ENGINE_OPP=1 to A/B the override back on.
+_ENGINE_OPP_OVERRIDE_DISABLED = not bool(os.getenv("OCR_EFFBB_ENGINE_OPP"))
+
 # Position orders by table size (must match analyze_hand.py)
 POSITION_ORDERS = {
     9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
@@ -1078,6 +1086,64 @@ def _panel_position_names(columns: list[dict]) -> dict:
     return out
 
 
+def _engine_streets(columns: list[dict]) -> tuple:
+    """Split panel columns into the engine's {street: entries} dict + pot map."""
+    streets: dict = {}
+    pot: dict = {}
+    for col in columns:
+        nm = (col.get("name") or "").lower()
+        key = None
+        if "blind" in nm:
+            continue
+        if "pre" in nm:
+            key = "preflop"
+        elif nm in ("flop", "turn", "river"):
+            key = nm
+        if key:
+            streets[key] = col.get("entries", [])
+            pot[key] = col.get("pot")
+    # Recover a Pre-Flop column misnamed "Flop" (mirror of the main locator).
+    if "preflop" not in streets and "flop" in streets:
+        streets = {("preflop" if k == "flop" else k): v
+                   for k, v in streets.items()}
+        pot = {("preflop" if k == "flop" else k): v for k, v in pot.items()}
+    return streets, pot
+
+
+def _seat_stack_for_position(
+    pos: str,
+    named_stacks: list[dict] | None,
+    panel_position_names: dict,
+    hero_position: str | None,
+    num_players: int | None,
+    columns: list[dict],
+) -> float | None:
+    """Displayed remaining stack of the seat at table POSITION ``pos``.
+
+    Prefers a NAME match (the panel reported a player_name for ``pos``), then
+    falls back to the geometry seat map. Returns the seat's displayed stack
+    (NOT including this hand's investment) or None when it can't be resolved.
+    """
+    # 1) name match — the panel's position->name evidence is reliable for
+    #    folders/callers/raisers.
+    nm = panel_position_names.get(pos)
+    if nm and named_stacks:
+        for ns in named_stacks:
+            sn = ns.get("name")
+            if sn and _fuzzy_name_match(nm, sn) and ns.get("stack"):
+                return ns["stack"]
+    # 2) geometry seat map.
+    if num_players and hero_position:
+        seat_map = _map_positions_to_seats(
+            named_stacks, panel_position_names, hero_position, num_players,
+        )
+        if seat_map:
+            seat = seat_map.get(pos)
+            if seat and seat.get("stack"):
+                return seat["stack"]
+    return None
+
+
 def _compute_effective_bb(
     columns: list[dict],
     hero_stack_displayed: float | None,
@@ -1135,6 +1201,24 @@ def _compute_effective_bb(
                     num_players = None
 
     # ---- Locate columns ----
+    # ---- Betting-state engine (Phase 1) ----
+    # Replay the panel as a real betting game to choose the RIGHT relevant
+    # position(s) by action order, independent of name/geometry. The engine is
+    # advisory: the legacy reconstruction below stays the safety net; when the
+    # engine resolves a clean decision we let it pick the binding position(s),
+    # then read those seats' stacks via name/geometry attribution.
+    engine_result = None
+    if hero_position and num_players and not globals().get("_DISABLE_ENGINE"):
+        try:
+            from . import effbb_engine as _eng
+            _eng_streets, _eng_pot = _engine_streets(columns)
+            engine_result = _eng.analyze(
+                _eng_streets, num_players, hero_position,
+                _eng_pot.get("preflop"),
+            )
+        except Exception:  # pragma: no cover - engine must never crash parsing
+            engine_result = None
+
     blinds_col = None
     preflop_col = None
     street_cols = []
@@ -1750,6 +1834,8 @@ def _compute_effective_bb(
     # opponent's investment — an upper bound on any single active villain's
     # contribution, so displayed + opp_perm is a safe per-villain start.
     name_matched_villain = False
+    engine_pinned = False
+    engine_opp_candidate = None
     if opp_went_allin:
         if opp_allin_display is not None:
             # Opponent went all-in and we know their display (uncalled portion)
@@ -1777,9 +1863,40 @@ def _compute_effective_bb(
         if pot_bound is not None and capped_invest > pot_bound + 0.5:
             capped_invest = pot_bound
 
+        # ---- Engine-driven relevant-opponent attribution (Phase 1) ----
+        # The betting engine froze a decision-local live set by action order. We
+        # use it as a SELECTION corrector for the multiway case the legacy
+        # name-match gets wrong: when hero FOLDS facing a known live set and a
+        # SINGLE relevant opponent survives, the legacy min-over-all-entered set
+        # both over-includes folded villains AND can match a stale name to the
+        # wrong seat. In that narrow, low-risk case we read the one relevant
+        # seat by NAME (reliable) + its exact engine contribution. We do NOT
+        # override the broad multiway value reconstruction (its tuned heuristics
+        # beat a geometry-read seat — that is Phase 2's job). (TM5863067607:
+        # relevant={SB}, the limper, name-resolved — not the wrong seat.)
+        ppn = _panel_position_names(columns)
+        if (engine_result is not None
+                and engine_result.hero_folded
+                and len(engine_result.relevant_opponents) == 1
+                and not over_compute and not _ENGINE_OPP_OVERRIDE_DISABLED):
+            pos = engine_result.relevant_opponents[0]
+            nm = ppn.get(pos)
+            seat = None
+            if nm and named_stacks:
+                for ns in named_stacks:
+                    sn = ns.get("name")
+                    if sn and _fuzzy_name_match(nm, sn) and ns.get("stack"):
+                        seat = ns["stack"]
+                        break
+            if seat is not None:
+                contrib = engine_result.contribution.get(pos, 0.0)
+                if pot_bound is not None and contrib > pot_bound + 0.5:
+                    contrib = pot_bound
+                engine_opp_candidate = seat + contrib
+
         villain_starts = []
         matched_names = set()
-        if active_opp_names and named_stacks:
+        if not engine_pinned and active_opp_names and named_stacks:
             for opp_name in active_opp_names:
                 for ns in named_stacks:
                     nm = ns.get("name")
@@ -1788,7 +1905,9 @@ def _compute_effective_bb(
                         matched_names.add(nm)
                         break
 
-        if villain_starts:
+        if engine_pinned:
+            pass
+        elif villain_starts:
             opp_starting = min(villain_starts)
             name_matched_villain = True
         else:
@@ -1799,21 +1918,33 @@ def _compute_effective_bb(
             # its modeled investment. This pins the RIGHT seat instead of the
             # shortest arbitrary one. (TM5863067607: the active villain is a
             # None-named 16.4 seat, not the misread 2.9 SebFerra seat.)
+            # Prefer the engine's decision-local live set (excludes villains who
+            # folded on a LATER street, which the preflop-only filter keeps and
+            # which then undershoots). Fall back to the preflop-entered set.
             active_positions = [
                 p for p in opp_entered_positions
                 if p not in opp_folded_positions
             ]
+            geo_positions = active_positions
             geo_starts = []
-            if active_positions and num_players and hero_position:
+            if geo_positions and num_players and hero_position:
                 seat_map = _map_positions_to_seats(
                     named_stacks, _panel_position_names(columns),
                     hero_position, num_players,
                 )
                 if seat_map:
-                    for p in set(active_positions):
+                    for p in set(geo_positions):
                         seat = seat_map.get(p)
                         if seat and seat.get("stack"):
-                            geo_starts.append(seat["stack"] + capped_invest)
+                            # Use the engine's per-position contribution when we
+                            # have it (exact), else the shared modeled invest.
+                            inv = capped_invest
+                            if (engine_result is not None
+                                    and p in engine_result.contribution):
+                                inv = engine_result.contribution[p]
+                                if pot_bound is not None and inv > pot_bound + 0.5:
+                                    inv = pot_bound
+                            geo_starts.append(seat["stack"] + inv)
             if geo_starts:
                 opp_starting = min(geo_starts)
                 geometry_pinned = True
@@ -1838,6 +1969,20 @@ def _compute_effective_bb(
     if hero_uncalled_shove is not None:
         opp_starting = hero_starting
 
+    # ---- Engine single-opponent selection correction (downward-only) ----
+    # When the engine name-resolved the lone live opponent at hero's fold, use
+    # it ONLY if it does not INFLATE the legacy opp_starting. The legacy
+    # min-over-all-entered set over-includes a deep seat or matches a wrong
+    # (deeper) name; the engine's decision-local single seat corrects that
+    # downward. We never let the engine raise opp_starting — an inflated engine
+    # value means the engine's name→seat read landed on a deep seat (the
+    # attribution noise Phase 2 fixes), so we don't trust it upward.
+    if (engine_opp_candidate is not None
+            and engine_opp_candidate <= opp_starting + 0.05):
+        opp_starting = engine_opp_candidate
+        engine_pinned = True
+        name_matched_villain = True
+
     all_starting = [hero_starting, opp_starting]
     if matched_allin_floor is not None:
         # A matched all-in caps the effective stack of the confrontation.
@@ -1846,6 +1991,18 @@ def _compute_effective_bb(
         # An uncalled villain jam hero folded to: the jam size is the villain's
         # whole (starting) stack and bounds the effective stack.
         all_starting.append(uncalled_shove_ceiling)
+    # Engine M1: an uncalled-shove ceiling read straight off the panel. It is an
+    # UPPER bound (the shover's whole stack), so it can only lower effective —
+    # safe to add even when the legacy ceilings already fired. Suppress when
+    # hero's own reconstruction over-computed (then the ceiling could be the
+    # only sane value, handled by the over_compute recovery below).
+    engine_m1_ceiling = (
+        engine_result.rule_ceiling
+        if (engine_result is not None and engine_result.rule == "M1")
+        else None
+    )
+    if engine_m1_ceiling is not None and not over_compute:
+        all_starting.append(engine_m1_ceiling)
     effective_bb = round(min(all_starting), 1)
 
     # Which source produced the binding (minimum) starting stack? Confidence is
@@ -1857,6 +2014,8 @@ def _compute_effective_bb(
          and round(matched_allin_floor, 1) <= _bind + 0.05)
         or (uncalled_shove_ceiling is not None
             and round(uncalled_shove_ceiling, 1) <= _bind + 0.05)
+        or (engine_m1_ceiling is not None
+            and round(engine_m1_ceiling, 1) <= _bind + 0.05)
     )
     binding_from_hero = round(hero_starting, 1) <= _bind + 0.05
     binding_from_opp = round(opp_starting, 1) <= _bind + 0.05
@@ -1911,6 +2070,13 @@ def _compute_effective_bb(
         confidence = 1.0          # explicit shove size off the panel
     elif binding_from_hero and not binding_from_opp:
         confidence = 0.95         # hero's own displayed stack binds
+    elif binding_from_opp and engine_pinned and name_matched_villain:
+        confidence = 0.95         # engine-chosen seat, name-confirmed
+    elif binding_from_opp and engine_pinned:
+        # The betting engine froze the live set and chose this position by
+        # action order; the seat stack was read by geometry/name. Right
+        # position, possibly geometry-read stack — solid but not name-certain.
+        confidence = 0.85
     elif binding_from_opp and name_matched_villain:
         confidence = 0.95         # villain pinned by name
     elif binding_from_opp and geometry_pinned:
