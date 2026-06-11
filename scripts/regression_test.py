@@ -1232,6 +1232,21 @@ def test_effbb_behind_hero_bound_preflop_only():
 
 
 @test
+def test_effbb_hero_jam_behind_bound():
+    """Hero jams UNCALLED preflop: a genuinely short NAMED seat folding behind
+    still binds the ground-truth effective (hh_parser in_pot definition).
+    TM5866747832 (opener 19.2 < hero's 27.7 jam) / TM5919864376 (27.9 vs an
+    84.9 jam). The misread-folder golden TM5866594919 (hero jam 22.9 IS the
+    GT) must stay green — the bound reads NAMED seats only."""
+    from effbb_metrics import bucket_match
+    for hid in ("TM5866747832", "TM5919864376", "TM5896802248",
+                "TM5866594919"):
+        eff, gt = _effbb_run(hid)
+        assert_true(eff is not None and bucket_match(eff, gt),
+                    f"{hid}: hero-jam behind bound wrong: {eff} vs GT {gt}")
+
+
+@test
 def test_effbb_allin_legality_guard():
     """An 'All-In' row that does not exceed what a player already committed,
     followed by a fold from that covering player, is a misparsed raise — it
