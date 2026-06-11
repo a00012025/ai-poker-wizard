@@ -142,14 +142,40 @@ discriminator (+~5pp at 60% coverage), (c) the carry-over fixes. The 411
 wrong-contestant / wrong-hero-stack residual is handed to Phase 3 (reread hero +
 candidate-seat + shove crops) and Phase 5 (VLM on the residual).
 
-### Phase 3 — dedicated numeric re-read OCR
-- Extract seat-stack & action-size crops; auto-label from HH
-  (`displayed = starting − invested`; action sizes aligned by street/order).
-- Train a small CRNN/CTC (charset `0123456789.`) + preprocessing ensemble +
-  a second cheap reader; accept on agreement (exact or same bucket-impact).
-- Re-read only the 2–4 relevant crops (hero + candidate contestant seats +
-  explicit shove/raise rows). **Validate:** held-out digit accuracy + downstream
-  bucket precision/coverage. Expected 99.5% @ ~68–78%.
+### Phase 3 de-risking RESULT (2026-06-11) — RE-READ IS A DEAD LEVER
+A whole-image VLM re-read experiment (`scripts/effbb_reread_probe.py`, Gemini
+2.5-pro + gpt-5.4 vision, 60 wrong + 20 correct real hands) proved the re-read
+premise WRONG: **the displayed numbers are already OCR'd correctly ~95% of the
+time** (VLM agrees with our OCR; GT-bucket value present in VLM reads 63% ≈ our
+OCR 62% — re-read surfaces nothing new). Whole-image VLM recovered only 8–35% of
+wrong hands and *broke* up to 60% of correct ones. **35% of wrong hands have the
+right value in NEITHER read** because the error is STRUCTURAL, not legibility:
+(a) **start-vs-displayed** — the screenshot shows the *mid-hand* stack; the true
+effective is the *starting* stack = displayed + invested (e.g. hero displayed
+11.67 but GT 13.7); (b) **hero all-in shows stack=0 + shove badge** — effective =
+the shove size, a reconstruction/attribution problem. The single action-panel
+frame underdetermines the starting stack for deep-invested / all-in lines (no
+hand-start frame available). **→ A trained CRNN and a VLM fallback are both
+wasted effort. DROP Phase 5 (VLM) and the CRNN.** User-confirmed 2026-06-11.
+
+### Phase 3 (REDEFINED) — reconstruction logic, not re-read
+The residual is reconstruction logic + a hard single-frame information limit:
+- **Starting-stack reconstruction:** ensure effective uses STARTING stacks
+  (displayed + correctly-computed invested chips: posted blinds + antes + calls +
+  bets), using the Phase-1 engine's per-position contribution model under the
+  Phase-2 robust attribution + consensus gate. Fix the cases where invested chips
+  are under/over-added (start-vs-displayed gap).
+- **All-in ceiling / stack≈0 attribution:** when a contestant (hero OR a villain)
+  is all-in showing ~0 + a shove badge, use the shove SIZE (read from the panel,
+  it IS present) as that seat's committed/starting amount in min-over-contestants,
+  correctly identifying whose shove it is.
+- Turn the engine relevant-opponent value path ON (now that attribution is
+  robust) gated by consensus; keep pot-conservation hard reject.
+- **Validate** on the cache: precision up, the `selection`/`undershoot`/all-in
+  residual down. Whatever cannot be confidently reconstructed → abstain (Phase 4).
+  Realistic target after Phase 3+4: **99.5% precision @ ~50–65% coverage.**
+
+### ~~Phase 5 — targeted VLM fallback~~ DROPPED (de-risked ineffective 2026-06-11)
 
 ### Phase 4 — calibrated abstain (hard gates + selector)
 - Hard gates: decision type resolved; position set unique; no arithmetic
