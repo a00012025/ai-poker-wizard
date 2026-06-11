@@ -351,3 +351,21 @@ too small/borderline).
   construction; bot already ingests them).
 * Snapshot suite: 16 pre-existing failures (hero_hand/board/action-size/
   Call→Limp formatter renames — stale expected, none effective_bb-related).
+
+### Phase 6 addendum (same day, later)
+Fifth fix landed: *behind-hero bound under an uncalled hero jam* (named seats
+only; misread-folder golden TM5866594919 stays green). **Final frontier:
+78.19% @ 70.4%** (conf≥0.9 band: 80.7% @ 60.3%). Correct emits 817 → 993
+(+21.5%) vs the Phase-4 operating point at +9.4pp coverage.
+
+Additionally tested and REJECTED (measured net-negative):
+- per-villain engine-contribution invest in the name-matched branch (+44
+  abstain→wrong: legacy values converge to the engine read, so the dissent
+  gate loses its independence — keep the shared capped_invest there);
+- named behind-seat bound under a villain's UNCALLED jam (fix 10 / break 27 —
+  the M1 ceiling is authoritative);
+- per-name own-rows invest as the villain estimate (fix 19 / break 203 —
+  panel call sizes are increments with inconsistent semantics).
+
+Suite: 625 passed / 1 pre-existing failure (H2494, unrelated). Snapshot suite:
+16 pre-existing stale-expected failures, none effective_bb-related.
