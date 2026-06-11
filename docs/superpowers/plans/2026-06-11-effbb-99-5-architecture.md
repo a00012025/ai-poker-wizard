@@ -74,6 +74,28 @@ Bucket cell boundaries (for interval emission):
 - **Validate:** unit tests on labeled M1/M2/M3 hands; `effbb_eval` precision up,
   selection+undershoot faults down. Expected ~70–76% @ ~86%.
 
+**Phase 1 STATUS (shipped, `scripts/ocr/effbb_engine.py` + wiring):** the pure
+engine is built (action-order assignment with `normalize_streets` hero-mislabel
+scrubbing, blind/ante inference, per-position contribution, decision-local
+relevant set, M1/M2/M3). Engine unit + M1/M2/M3 cached goldens green.
+**Measured: 65.92% → 66.28% @ 86.1% hero-active — NOT the 70–76% the plan
+projected.** Honest root cause: the engine selects the right *position*
+reliably, but converting position → effective still needs a *seat-stack read*,
+and with current attribution that read is noisy enough that letting the engine
+*override* the legacy reconstruction is **net-negative** (76 regress / 26 gain
+on the cache) — it corrects toward a misread seat. So the engine's
+single-opponent value override is gated OFF by default (`OCR_EFFBB_ENGINE_OPP=1`
+to A/B); only its **M1 uncalled-shove ceiling** (a pure panel read, no seat
+dependency — and now using the shover's TOTAL contribution, not the bare shove
+size) is applied, which is the small net win. This *confirms the oracle finding*
+(78% of recoverable hands have ≥2 same-bucket candidate seats): the precision
+ceiling is **seat attribution**, not position logic. The gain the plan budgeted
+to Phase 1 actually lands in **Phase 2** (robust position→seat layout) — the
+engine is the prerequisite that makes Phase 2's position choice trustworthy.
+TM5863067607's final bucket is a concrete Phase-2 example: the engine picks the
+SB limper correctly, but the SB sticker is OCR-misread (2.9 vs ~17.4), so every
+seat-read path lands on 2.9 until Phase 2/3.
+
 ### Phase 2 — top-K layout + bucket-consensus emission
 - Fit geometric ring templates `(μ_x,μ_y,Σ)` per (table_size, ring-slot) from a
   clean name-aligned subset (bootstrap + spot-verify).
