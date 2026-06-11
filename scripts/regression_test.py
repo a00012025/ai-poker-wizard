@@ -1118,9 +1118,11 @@ def test_phase4_gate_abstains_structurally_wrong_hands():
                 f"fixture no longer a wrong emit ungated: {eff_off} vs {gt}")
     eff_on, _ = _effbb_run("TM5863067607", gate=True)
     assert_true(eff_on is None, f"gate failed to abstain wrong hand: {eff_on}")
-    # TM5863941899: hero displayed stack is itself an OCR corruption (1.0).
-    eff_on2, _ = _effbb_run("TM5863941899", gate=True)
-    assert_true(eff_on2 is None, f"gate failed to abstain corrupt-hero hand: {eff_on2}")
+    # NOTE: TM5863941899 (hero displayed read corrupted to 1.0) used to be
+    # abstained by the hero-near-zero clause; that clause measured 81%
+    # marginally precise overall (above the emitted average) and was dropped —
+    # this corrupt-hero case is an accepted residual of the better operating
+    # point (see test_effbb_herozero_slice_emitted for the upside).
 
 
 @test
@@ -1185,15 +1187,71 @@ def test_phase4_gate_lifts_precision_over_baseline():
     p_off, c_off = frontier(False)
     p_on, c_on = frontier(True)
     # The gate raises precision by a real margin and trades coverage for it.
-    assert_true(p_on >= p_off + 2.5,
+    # (Margin re-centred after the matched-floor / behind-bound / legality
+    # fixes lifted the UNGATED baseline too: ~74.1%@79.3% off vs
+    # ~76.8%@71.2% on as of 2026-06-11.)
+    assert_true(p_on >= p_off + 1.5,
                 f"gate did not lift precision: off={p_off:.1f} on={p_on:.1f}")
     assert_true(c_on < c_off,
                 f"gate must trade coverage: off={c_off:.1f}% on={c_on:.1f}%")
     # Guard the calibrated operating point doesn't silently collapse/loosen.
-    assert_true(71.0 <= p_on <= 78.0,
-                f"shipped precision off calibrated band (~74%): {p_on:.1f}%")
-    assert_true(56.0 <= c_on <= 66.0,
-                f"shipped coverage off calibrated band (~61%): {c_on:.1f}%")
+    assert_true(73.0 <= p_on <= 84.0,
+                f"shipped precision off calibrated band (~77%): {p_on:.1f}%")
+    assert_true(64.0 <= c_on <= 80.0,
+                f"shipped coverage off calibrated band (~71%): {c_on:.1f}%")
+
+
+@test
+def test_effbb_called_shove_floor_binds():
+    """A villain shove that hero CALLS binds the effective stack — the explicit
+    panel all-in size is the authoritative read. Guards two fixes:
+    (1) hero is ONE running stream even when unnamed, so hero's raise-then-call
+        accumulates and the shove registers as matched (TM5863575308);
+    (2) a BB/SB caller gets blind credit when the Blinds column is empty
+        (TM5875127705: BB calls 8.51 over a posted 1.0 vs a 9.51 jam)."""
+    from effbb_metrics import bucket_match
+    for hid in ("TM5863575308", "TM5875127705", "TM5879715175",
+                "TM5887364784"):
+        eff, gt = _effbb_run(hid)
+        assert_true(eff is not None and bucket_match(eff, gt),
+                    f"{hid}: called-shove floor missed: {eff} vs GT {gt}")
+
+
+@test
+def test_effbb_behind_hero_bound_preflop_only():
+    """A hand that truly ends preflop (no jam, no run-out) is bound by every
+    seat acting AFTER hero — including seats that folded behind — plus earlier
+    voluntary entrants (the HH ground-truth in_pot definition). TM5866773503 /
+    TM5873598400 / TM5867329780: the entered-only min over-estimated; the
+    behind-hero seat-map bound recovers the exact GT bucket."""
+    from effbb_metrics import bucket_match
+    for hid in ("TM5866773503", "TM5873598400", "TM5867329780"):
+        eff, gt = _effbb_run(hid)
+        assert_true(eff is not None and bucket_match(eff, gt),
+                    f"{hid}: behind-hero bound missed: {eff} vs GT {gt}")
+
+
+@test
+def test_effbb_allin_legality_guard():
+    """An 'All-In' row that does not exceed what a player already committed,
+    followed by a fold from that covering player, is a misparsed raise — it
+    must not bind. TM5878838751: river hero Bet 9.0 → 'All-In 1.0' → hero
+    Fold on a 44.3bb spot; the bogus 1.0 floor must not be emitted."""
+    eff, gt = _effbb_run("TM5878838751")
+    assert_true(eff is None or eff >= 5.0,
+                f"illegal sub-level all-in misread bound the spot: {eff}")
+
+
+@test
+def test_effbb_herozero_slice_emitted():
+    """Hero displayed ≈0 (all-in) with no engine confirmation is EMITTED when
+    the other gate clauses pass — the old blanket herozero abstain measured
+    81% marginally precise (above the emitted average) and was dropped."""
+    from effbb_metrics import bucket_match
+    for hid in ("TM5963779172", "TM5920068321"):
+        eff, gt = _effbb_run(hid)
+        assert_true(eff is not None and bucket_match(eff, gt),
+                    f"{hid}: herozero hand wrongly abstained/wrong: {eff} vs GT {gt}")
 
 
 @test
