@@ -546,6 +546,98 @@ def test_effbb_hero_uncalled_shove_starting_stack():
 
 
 @test
+def test_effbb_hero_allin_stack_zero_reconstruction():
+    """effbb (Phase 3): when hero's displayed stack reads ~0 (all-in / called a
+    villain shove), hero's STARTING stack is what hero permanently committed —
+    reconstructed from the engine's decision-local hero contribution, NOT the
+    noisy displayed+walk estimate. The two reconstructions must agree on the
+    depth bucket to emit; otherwise abstain (single-frame unrecoverable).
+
+    Every hero-stack~0 emit must be CORRECT-OR-ABSTAIN — no confidently-wrong
+    value (the Phase-3 contract).
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import depth_bucket
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {json.loads(l)["hand_id"]: json.loads(l) for l in open(cache, encoding="utf-8")}
+
+    # TM5875510185: hero SB called a BTN 19.58 shove for their last 13.19 — hero
+    # is the SHORT stack, true effective ~13.7. The legacy walk over-computed
+    # hero_starting to 19.6 (wrong bucket 20). The engine reconstructs hero's
+    # committed 13.69 (bucket 14); the two disagree on the bucket, so we ABSTAIN
+    # rather than emit the wrong 19.6.
+    o = rows["TM5875510185"]; inp = o["inputs"]
+    eff, _hs, _c = _compute_effective_bb(
+        inp["columns"], inp["hero_stack"], inp["hero_position"],
+        inp["stacks"], inp["named_stacks"])
+    # correct-or-abstain: never the wrong 19.6 (bucket 20).
+    if eff is not None:
+        assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]),
+                  "TM5875510185 must abstain or hit GT bucket, never the wrong 20")
+
+    # TM5873208901: hero LJ all-in over a messy multiway line; the displayed
+    # walk computed a wrong 3.8. With the disagree-abstain it no longer emits a
+    # confidently-wrong value.
+    o2 = rows["TM5873208901"]; inp2 = o2["inputs"]
+    eff2, _h2, _c2 = _compute_effective_bb(
+        inp2["columns"], inp2["hero_stack"], inp2["hero_position"],
+        inp2["stacks"], inp2["named_stacks"])
+    if eff2 is not None:
+        assert_eq(depth_bucket(eff2), depth_bucket(o2["gt"]["effective_bb"]),
+                  "TM5873208901 must abstain or hit GT bucket, never the wrong 3.8")
+
+    # A genuinely recoverable hero-all-in hand stays CORRECT (the agreement path
+    # emits the engine's committed reconstruction). TM5866911989 GT 19.9.
+    o3 = rows["TM5866911989"]; inp3 = o3["inputs"]
+    eff3, _h3, _c3 = _compute_effective_bb(
+        inp3["columns"], inp3["hero_stack"], inp3["hero_position"],
+        inp3["stacks"], inp3["named_stacks"])
+    assert_true(eff3 is not None, "TM5866911989 (clean hero all-in) must emit")
+    assert_eq(depth_bucket(eff3), depth_bucket(o3["gt"]["effective_bb"]))
+
+
+@test
+def test_effbb_hero_stack_zero_no_confident_wrong():
+    """effbb (Phase 3): across ALL hero-active, hero-stack~0 emits, the
+    correct-or-abstain contract holds at high precision — the hero all-in
+    reconstruction converts confidently-wrong emits into abstains rather than
+    emitting a misread shove value. Guards the Phase-3 gain (24 wrong->abstain,
+    0 regressions vs the prior commit)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb
+    from effbb_metrics import hero_folded_preflop, bucket_match
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    emit = ok = 0
+    for line in open(cache, encoding="utf-8"):
+        o = json.loads(line)
+        gt = o.get("gt") or {}
+        ge = gt.get("effective_bb")
+        if ge is None or ge < 1.0 or "inputs" not in o:
+            continue
+        if hero_folded_preflop(gt) is not False:
+            continue
+        inp = o["inputs"]
+        hs_disp = inp["hero_stack"]
+        if hs_disp is None or hs_disp > 0.6:
+            continue
+        eff, _h, _c = _compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])
+        if eff is not None:
+            emit += 1
+            if bucket_match(eff, ge):
+                ok += 1
+    # Emitted hero-stack~0 precision must clear 88% (Phase-3 measured ~91.6%);
+    # before the reconstruction the same slice emitted at ~85%.
+    prec = 100 * ok / emit if emit else 0.0
+    assert_true(prec >= 88.0,
+                f"hero-stack~0 emitted precision regressed below 88%: {prec:.1f}% ({ok}/{emit})")
+
+
+@test
 def test_effbb_confidence_is_calibrated_monotonic():
     """effbb: attribution-certainty confidence yields a MONOTONIC precision/
     coverage curve — raising the floor trades coverage for precision (the old
