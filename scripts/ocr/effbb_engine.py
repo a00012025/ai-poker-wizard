@@ -272,7 +272,16 @@ def assign_positions(
                     cursor = hi + 1
                     pos = hero_position
                 else:
-                    # Next live non-hero seat from the cursor.
+                    # Next live non-hero seat from the cursor (legal action
+                    # order). NOTE: the panel carries an explicit ``position`` on
+                    # ~91% of rows, but it is NOT reliable enough to trust here —
+                    # on TM5873208532 the panel drifts hero across UTG+1/LJ/BB and
+                    # mislabels the river caller, while the action-order walk
+                    # correctly resolves the live contestant. Trusting panel
+                    # positions was corpus-neutral (69.9% vs 69.95%) yet broke a
+                    # multiway live-set golden, so we keep the betting-order
+                    # re-derivation (normalize_streets already scrubs the
+                    # systematic hero mislabels first).
                     guard = 0
                     while guard < ring_len:
                         cand = live[cursor % ring_len]
