@@ -26,6 +26,36 @@ with open(_CONFIG_PATH) as f:
 _CONF_WEIGHTS = _CONFIG["confidence_weights"]
 _CONF_THRESHOLD = _CONFIG["confidence_threshold"]
 
+# effective_bb abstain floor. _compute_effective_bb returns None (abstain) when
+# its confidence falls below this. Downstream degrades a None effective_bb to a
+# safe solver-depth fallback, so abstaining is cheap. Tuned in a follow-up task.
+_EFFBB_CONF_FLOOR = float(os.getenv("OCR_EFFBB_CONF_FLOOR", "0.7"))
+
+# The engine's single-opponent value override corrects the legacy selection by
+# reading the lone live opponent's seat — but with current (Phase-1) attribution
+# the seat read is noisy enough that it is net-negative on the cache, so it is
+# OFF by default. Phase 2 (robust position→seat) re-enables it. The engine's M1
+# uncalled-shove ceiling (a pure panel read, no seat dependency) stays ON.
+# Set OCR_EFFBB_ENGINE_OPP=1 to A/B the override back on.
+_ENGINE_OPP_OVERRIDE_DISABLED = not bool(os.getenv("OCR_EFFBB_ENGINE_OPP"))
+
+# Phase 4 — calibrated STRUCTURAL abstain. Beyond the scalar confidence floor,
+# abstain whenever a structural error signal fires (calibrated on the 1,805-hand
+# hero-active cache via scripts/effbb_calibrate.py, 5-fold pooled CV):
+#   * geometry/heuristic binding the betting engine did NOT confirm,
+#   * the engine's independent decision-local bucket DISAGREES with the emit,
+#   * floors-on vs stack-only reconstructions land in different buckets,
+#   * hero shoved / called all-in (displayed ~0) and the engine can't confirm.
+# These isolate the layout-INDEPENDENT value errors the bucket-consensus signal
+# is blind to. Held-out CV: lifts emitted precision 70.9%→76.5% at 48.8% coverage
+# (from 78.2%). 99.5% is provably UNREACHABLE on single-frame inputs (the wrong
+# emits are internally-consistent stack/start-vs-displayed misreads no feature
+# separates; absolute ceiling ~86% @ ~10% cov — see the calibrate harness +
+# docs plan Phase-4). Abstaining is cheap (None → safe generic solver depth), so
+# the precision-maximizing structural gate is ON by default; set
+# OCR_EFFBB_STRUCTURAL_GATE=0 to revert to the bare conf floor (70.9% @ 78.2%).
+_EFFBB_STRUCTURAL_GATE = os.getenv("OCR_EFFBB_STRUCTURAL_GATE", "1") != "0"
+
 # Position orders by table size (must match analyze_hand.py)
 POSITION_ORDERS = {
     9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
@@ -898,27 +928,387 @@ def _fuzzy_name_match(name1: str, name2: str) -> bool:
     return False
 
 
-def _compute_effective_bb(
+def _clean_seat_geometry(named_stacks: list[dict] | None) -> list[dict]:
+    """Drop center-region (pot/street-header) phantom rows from named_stacks.
+
+    N8 sometimes OCRs the central pot chip stack and the Pre-Flop/Flop/Turn/River
+    column headers as ``named_stacks`` entries (e.g. ``{name:'Flop', stack:67.0}``
+    sitting near the table centre, or a small pot value at mid-table). Real seats
+    sit on the table perimeter. We keep only seats whose normalised distance from
+    the bounding-box centre exceeds a threshold — those are the actual chairs.
+    """
+    import math as _math
+
+    _HEADER_NAMES = {"blinds", "blind", "pre-flop", "preflop", "pre", "flop",
+                     "turn", "river"}
+    ns = [
+        s for s in (named_stacks or [])
+        if s.get("x") is not None and s.get("y") is not None
+        and isinstance(s.get("stack"), (int, float)) and s.get("stack")
+        # Panel column headers (Pre-Flop/Flop/Turn/River) leak into
+        # named_stacks as a bottom row; drop them by name.
+        and (s.get("name") or "").strip().lower() not in _HEADER_NAMES
+    ]
+    if len(ns) <= 2:
+        return ns
+    xs = [s["x"] for s in ns]
+    ys = [s["y"] for s in ns]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0
+    hy = (max(ys) - min(ys)) or 1.0
+    # Hero is the bottom-centre seat. The street-header phantom row (and the
+    # central pot stack) sit near the centre OR below hero; drop both.
+    hero_y = max(s["y"] for s in ns)
+    kept = [
+        s for s in ns
+        if _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy) > 0.18
+        and s["y"] <= hero_y + 1
+    ]
+    return kept or ns
+
+
+def _seat_ring(named_stacks: list[dict] | None) -> list[dict]:
+    """Order the physical seats clockwise starting at the hero seat.
+
+    Hero is the bottom-centre seat (largest y in N8 layout). Seats are returned
+    starting at hero and proceeding around the table by polar angle about the
+    table centre. The caller resolves which angular direction matches the
+    position-action order using the panel folder positions.
+    """
+    import math as _math
+
+    seats = _clean_seat_geometry(named_stacks)
+    if not seats:
+        return []
+    hero = max(seats, key=lambda s: s["y"])
+    xs = [s["x"] for s in seats]
+    ys = [s["y"] for s in seats]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    ordered = sorted(seats, key=lambda s: _math.atan2(s["y"] - cy, s["x"] - cx))
+    hi = ordered.index(hero)
+    return ordered[hi:] + ordered[:hi]
+
+
+def _panel_distinct_positions(columns: list[dict]) -> set:
+    """Set of distinct table positions that appear anywhere in the panel.
+
+    N8 assigns every acting seat (incl. folders) a position, so the count of
+    distinct positions is a reliable estimate of the physical player count —
+    far more robust than counting OCR'd seat stickers (which include bet/pot
+    chip phantoms). The BB is occasionally omitted when the open folds through.
+    """
+    out = set()
+    for col in columns:
+        for e in col.get("entries", []):
+            if e.get("position"):
+                out.add(e["position"])
+    return out
+
+
+def _reconcile_ring_to_count(ring: list[dict], target: int) -> list[dict]:
+    """Trim phantom (bet/chip-sticker) seats so the ring matches ``target``.
+
+    Extra rows are unnamed chip-amount stickers that sit INWARD of the true
+    seat circle. When the ring is longer than the expected player count, drop
+    the innermost name-less seats (closest to the table centre) first — those
+    are the bet/pot stickers, never real chairs.
+    """
+    import math as _math
+
+    if target is None or len(ring) <= target or target < 2:
+        return ring
+    xs = [s["x"] for s in ring]
+    ys = [s["y"] for s in ring]
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0
+    hy = (max(ys) - min(ys)) or 1.0
+
+    def centrality(s):
+        return _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy)
+
+    extra = len(ring) - target
+    # Candidate phantoms: name-less seats, most central first.
+    nameless = sorted(
+        [s for s in ring if not (s.get("name") or "").strip()],
+        key=centrality,
+    )
+    drop = set(id(s) for s in nameless[:extra])
+    trimmed = [s for s in ring if id(s) not in drop]
+    if len(trimmed) == target:
+        return trimmed
+    return ring  # couldn't cleanly reconcile — leave as-is for caller to reject
+
+
+def _candidate_rings(named_stacks: list[dict] | None, target: int) -> list[list[dict]]:
+    """Enumerate the plausible cleaned seat-rings of length ``target``.
+
+    Phantom-trimming is not unique: when the ring is one or two seats too long,
+    several name-less central stickers are equally plausible drops. We enumerate
+    the small set of plausible trims (the canonical innermost-first trim plus a
+    couple of near-tie alternatives) so the top-K layout search can reason about
+    them. Each returned ring is hero-anchored (``_seat_ring`` order) and exactly
+    ``target`` long; an empty list means we could not reconcile.
+    """
+    import math as _math
+    ring = _seat_ring(named_stacks)
+    if not ring or target is None or target < 2:
+        return []
+    if len(ring) == target:
+        return [ring]
+    if len(ring) < target:
+        return []  # can't invent seats
+    xs = [s["x"] for s in ring]; ys = [s["y"] for s in ring]
+    cx = (min(xs) + max(xs)) / 2.0; cy = (min(ys) + max(ys)) / 2.0
+    hx = (max(xs) - min(xs)) or 1.0; hy = (max(ys) - min(ys)) or 1.0
+
+    def centrality(s):
+        return _math.hypot((s["x"] - cx) / hx, (s["y"] - cy) / hy)
+
+    extra = len(ring) - target
+    hero = max(ring, key=lambda s: s["y"])
+    # Drop pool: name-less seats first (chip-stickers), then innermost named.
+    nameless = [s for s in ring if not (s.get("name") or "").strip() and s is not hero]
+    named_inner = [s for s in ring if (s.get("name") or "").strip() and s is not hero]
+    pool = sorted(nameless, key=centrality) + sorted(named_inner, key=centrality)
+    if len(pool) < extra:
+        return []
+    out: list[list[dict]] = []
+    seen: set = set()
+    # Canonical: drop the ``extra`` most central pool seats.
+    # Alternatives: substitute the (extra)-th drop with the next 1-2 candidates,
+    # capturing the near-tie ambiguity in which central sticker is the phantom.
+    import itertools
+    horizon = min(len(pool), extra + 2)
+    for combo in itertools.combinations(range(horizon), extra):
+        drop = set(id(pool[i]) for i in combo)
+        trimmed = [s for s in ring if id(s) not in drop]
+        if len(trimmed) != target:
+            continue
+        # re-anchor at hero (largest y) preserving angular order
+        hi = trimmed.index(hero) if hero in trimmed else 0
+        cand = trimmed[hi:] + trimmed[:hi]
+        key = tuple(round(s["x"], 1) for s in cand) + tuple(round(s["y"], 1) for s in cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _enumerate_layouts(
+    named_stacks: list[dict] | None,
+    panel_position_names: dict,
+    hero_position: str | None,
+    num_players: int | None,
+    *,
+    margin: int = 1,
+    max_k: int = 6,
+) -> list[dict]:
+    """Top-K position→seat layouts, scored by panel-name agreement (weak).
+
+    Enumerates over (candidate ring trim) × (both angular walk directions),
+    scores each by confusable-normalized name agreement against the panel's
+    position→name evidence, and returns the layouts within ``margin`` of the
+    best score (capped at ``max_k``), best first. Names are WEAK evidence — the
+    margin keeps near-tie layouts so the consensus gate can abstain when they
+    straddle buckets. Each layout is ``{position: seat_dict}``.
+    """
+    order = POSITION_ORDERS.get(num_players)
+    if not order or hero_position not in order:
+        return []
+    rings = _candidate_rings(named_stacks, len(order))
+    if not rings:
+        return []
+    hi = order.index(hero_position)
+    scored: list = []
+    seen_maps: set = set()
+    for ring in rings:
+        if len(ring) != len(order):
+            continue
+        for direction in (1, -1):
+            mapping = {
+                order[(hi + direction * k) % len(order)]: ring[k]
+                for k in range(len(ring))
+            }
+            sig = tuple(
+                (p, round(mapping[p].get("stack") or 0, 2),
+                 (mapping[p].get("name") or "")[:6])
+                for p in order if p in mapping
+            )
+            if sig in seen_maps:
+                continue
+            seen_maps.add(sig)
+            matches = mismatches = 0
+            for pos, nm in (panel_position_names or {}).items():
+                seat = mapping.get(pos)
+                if seat and seat.get("name"):
+                    if _fuzzy_name_match(nm, seat["name"]):
+                        matches += 1
+                    else:
+                        mismatches += 1
+            scored.append((matches - mismatches, mapping))
+    if not scored:
+        return []
+    scored.sort(key=lambda t: -t[0])
+    best = scored[0][0]
+    kept = [m for s, m in scored if s >= best - margin][:max_k]
+    return kept
+
+
+def _map_positions_to_seats(
+    named_stacks: list[dict] | None,
+    panel_position_names: dict,
+    hero_position: str | None,
+    num_players: int | None,
+) -> dict | None:
+    """Map each table POSITION to its physical seat (a named_stacks dict).
+
+    Builds a seat ring from geometry (``_seat_ring``), anchors hero at
+    ``hero_position``, then walks the position-action order in BOTH angular
+    directions, scoring each candidate by agreement with the panel's
+    position→player-name evidence (folders carry a reliable position+name). The
+    higher-scoring direction wins. Returns ``None`` when the seat count does not
+    match the table size (ambiguous — caller should fall back / abstain).
+
+    ``panel_position_names``: {position_str -> player_name} for NON-hero seats
+    whose position the panel reported (folders, callers, raisers).
+
+    Thin wrapper over ``_enumerate_layouts`` returning the single best layout;
+    kept for the walkover / dead-code call sites. The consensus path in
+    ``_compute_effective_bb`` calls ``_enumerate_layouts`` directly to reason
+    over the top-K.
+    """
+    layouts = _enumerate_layouts(
+        named_stacks, panel_position_names, hero_position, num_players,
+        margin=0, max_k=1,
+    )
+    return layouts[0] if layouts else None
+
+
+def _panel_position_names(columns: list[dict]) -> dict:
+    """Extract {position -> player_name} for non-hero seats from the panel."""
+    out = {}
+    for col in columns:
+        for e in col.get("entries", []):
+            pos = e.get("position")
+            nm = e.get("player_name")
+            if pos and e.get("type") != "hero" and nm:
+                out.setdefault(pos, nm)
+    return out
+
+
+def _engine_streets(columns: list[dict]) -> tuple:
+    """Split panel columns into the engine's {street: entries} dict + pot map."""
+    streets: dict = {}
+    pot: dict = {}
+    for col in columns:
+        nm = (col.get("name") or "").lower()
+        key = None
+        if "blind" in nm:
+            continue
+        if "pre" in nm:
+            key = "preflop"
+        elif nm in ("flop", "turn", "river"):
+            key = nm
+        if key:
+            streets[key] = col.get("entries", [])
+            pot[key] = col.get("pot")
+    # Recover a Pre-Flop column misnamed "Flop" (mirror of the main locator).
+    if "preflop" not in streets and "flop" in streets:
+        streets = {("preflop" if k == "flop" else k): v
+                   for k, v in streets.items()}
+        pot = {("preflop" if k == "flop" else k): v for k, v in pot.items()}
+    return streets, pot
+
+
+def _effective_bb_for_layout(
     columns: list[dict],
     hero_stack_displayed: float | None,
     hero_position: str | None,
     all_stacks: list[float] | None,
     named_stacks: list[dict] | None = None,
-) -> float | None:
-    """Compute effective_bb from active players' starting stacks.
+    num_players: int | None = None,
+    _seat_map: dict | None = None,
+    _disable_floors: bool = False,
+) -> tuple:
+    """Compute effective_bb under ONE fixed position→seat layout.
+
+    Returns a 3-tuple ``(effective_bb, hero_starting_stack, confidence)``.
+    ``effective_bb`` is ``None`` when we abstain (low confidence / no data);
+    downstream degrades a ``None`` to a safe solver-depth fallback, so
+    abstaining is cheap and correct.
+
+    ``_seat_map`` (Phase 2): a fixed ``{position: seat_dict}`` layout to use for
+    every geometry attribution in this call. When ``None`` the function derives
+    the single best layout internally (legacy behaviour). The consensus
+    orchestrator ``_compute_effective_bb`` calls this once per plausible layout
+    and gates on whether the resulting depth buckets agree.
 
     In N8 replays, displayed stacks = starting - permanently_invested.
     The pot is shown separately in the table centre, so this equation
     holds for BOTH the winner and the loser(s).
 
-    Uses player name matching between table stacks and panel entries
-    to identify the correct opponent stack.  Falls back to heuristic
-    stack selection when name matching fails.
+    effective_bb = min(hero_starting, shortest_active_villain_starting),
+    computed over ALL villains that entered preflop and did not fold
+    preflop (so a folded short stack can't undershoot, and a deep seat
+    can't mask the binding short villain).
     """
     if hero_stack_displayed is None:
-        return None, None
+        return None, None, 0.0
+
+    # ---- Physical table size (for position/geometry seat attribution) ----
+    # Prefer the caller's count; otherwise infer from the panel's distinct
+    # position set (every acting seat — incl. folders — gets a position, so
+    # this counts players far more reliably than seat stickers, which include
+    # bet/pot chip phantoms). The BB is sometimes omitted on a fold-through, so
+    # also consider the cleaned seat-ring length and take the larger plausible.
+    if num_players is None:
+        _panel_pos = _panel_distinct_positions(columns)
+        if _panel_pos:
+            # Smallest table size whose position set COVERS every observed
+            # panel position. The panel omits some seats (a fold-through BB is
+            # often not shown), so a raw distinct count under-counts; but the
+            # SET of positions pins the table size because position names are
+            # table-size-specific (e.g. an LJ rules out 5-max). This is far
+            # more robust than counting seat stickers (bet/pot phantoms) or the
+            # raw panel count. (TM5863068088: panel {LJ,HJ,CO,BTN,SB} → 6-max,
+            # not 5; the unshown BB is the binding seat behind a HJ open.)
+            for _sz in range(2, 10):
+                _order = POSITION_ORDERS.get(_sz)
+                if _order and _panel_pos.issubset(set(_order)):
+                    num_players = _sz
+                    break
+        if num_players is None:
+            _ring_seats = _seat_ring(named_stacks)
+            if _ring_seats:
+                num_players = min(max(len(_ring_seats), 2), 9)
+                if num_players not in POSITION_ORDERS:
+                    num_players = None
 
     # ---- Locate columns ----
+    # ---- Betting-state engine (Phase 1) ----
+    # Replay the panel as a real betting game to choose the RIGHT relevant
+    # position(s) by action order, independent of name/geometry. The engine is
+    # advisory: the legacy reconstruction below stays the safety net; when the
+    # engine resolves a clean decision we let it pick the binding position(s),
+    # then read those seats' stacks via name/geometry attribution.
+    engine_result = None
+    if hero_position and num_players and not globals().get("_DISABLE_ENGINE"):
+        try:
+            from . import effbb_engine as _eng
+            _eng_streets, _eng_pot = _engine_streets(columns)
+            engine_result = _eng.analyze(
+                _eng_streets, num_players, hero_position,
+                _eng_pot.get("preflop"),
+            )
+        except Exception:  # pragma: no cover - engine must never crash parsing
+            engine_result = None
+
     blinds_col = None
     preflop_col = None
     street_cols = []
@@ -986,6 +1376,11 @@ def _compute_effective_bb(
 
     # Collect opponent names from panel entries (for name matching)
     opp_names_entered = []  # names of opponents who entered the pot
+    # Positions of opponents who entered AND did not later fold preflop — the
+    # active villains whose stacks bind the effective. Used by the geometry
+    # fallback when names are None/garbled. (preflop fold removes a seat.)
+    opp_entered_positions = []   # all who voluntarily entered preflop
+    opp_folded_positions = set()
 
     if preflop_col:
         entries = preflop_col.get("entries", [])
@@ -997,6 +1392,8 @@ def _compute_effective_bb(
             is_hero = entry.get("type") == "hero"
 
             if action == "fold":
+                if not is_hero and entry.get("position"):
+                    opp_folded_positions.add(entry["position"])
                 continue
 
             if is_hero:
@@ -1016,6 +1413,8 @@ def _compute_effective_bb(
                     opp_name = entry.get("player_name")
                     if opp_name:
                         opp_names_entered.append(opp_name)
+                    if entry.get("position"):
+                        opp_entered_positions.append(entry["position"])
                     if action in ("raise", "all-in"):
                         current_bet = size
 
@@ -1045,6 +1444,15 @@ def _compute_effective_bb(
 
     hero_perm += hero_preflop_total
     opp_perm += opp_preflop_total
+
+    # Per-villain investment to remain in the pot (for min-over-villains).
+    # Starts at the preflop bet level a continuing villain matched (= the
+    # final preflop bet level, e.g. a villain's 3bet size). Postflop we add
+    # the SHARED matched level per street (hero_matched), NOT opp_matched —
+    # opp_matched aggregates every caller in a multiway pot and double-counts
+    # a single villain. This respects a villain who raised and hero folded
+    # (their preflop level), and stays single-villain in multiway pots.
+    opp_postflop_matched = 0.0
 
     # ---- Walk postflop streets ----
     # Use pot-header progression where available to compute per-street
@@ -1117,7 +1525,12 @@ def _compute_effective_bb(
             hero_matched = min(hero_street, opp_street) if hero_street > 0 and opp_street > 0 else hero_street
             if last_action == "fold":
                 if last_is_hero:
-                    hero_matched = hero_street
+                    # Hero folded: an UNCALLED hero bet is returned, so hero
+                    # only permanently invested what actually entered the pot
+                    # this street (bounded by the pot delta). Without this,
+                    # a hero "Bet X then Fold" mislabel (delta≈0) inflates
+                    # hero_starting by X. (TM5862907992 turn 4.56 bet+fold.)
+                    hero_matched = max(0.0, min(hero_street, delta))
                 else:
                     hero_matched = min(hero_street, opp_street)
             elif last_action == "call" and not last_is_hero:
@@ -1131,19 +1544,24 @@ def _compute_effective_bb(
                 opp_matched = 0.0
             hero_perm += hero_matched
             opp_perm += opp_matched
+            # Single continuing villain matched the shared street level.
+            opp_postflop_matched += hero_matched
         else:
             # Last street or no pot headers — use entry-based logic
             if last_action == "fold":
                 if last_is_hero:
                     hero_perm += hero_street
                     opp_perm += min(opp_street, hero_street)
+                    opp_postflop_matched += min(opp_street, hero_street)
                 else:
                     opp_perm += opp_street
                     hero_perm += min(hero_street, opp_street)
+                    opp_postflop_matched += min(hero_street, opp_street)
             elif last_action == "call":
                 if last_is_hero:
                     hero_perm += hero_street
                     opp_perm += opp_street
+                    opp_postflop_matched += min(hero_street, opp_street)
                 else:
                     # Opp's Call size sometimes can't be read when an
                     # "All-In" badge overlaps the size sticker. Without
@@ -1159,9 +1577,11 @@ def _compute_effective_bb(
                         opp_street = hero_street
                     opp_perm += opp_street
                     hero_perm += min(hero_street, opp_street)
+                    opp_postflop_matched += min(hero_street, opp_street)
             else:
                 hero_perm += hero_street
                 opp_perm += opp_street
+                opp_postflop_matched += min(hero_street, opp_street)
 
     # ---- Detect opponent all-in ----
     # Case 1: Partial call — opponent's total street commitment < hero's.
@@ -1235,14 +1655,390 @@ def _compute_effective_bb(
                         opp_allin_display = s
                         break
 
+    # ---- Matched all-in floor ----
+    # When a player is all-in for S and another non-folding player matches it,
+    # S caps the effective stack of that confrontation (once the short stack is
+    # in, no more chips move between them). The smallest CALLED all-in size is
+    # therefore an upper bound on effective_bb. This captures the large all-in
+    # population (preflop shove wars, short-stack jams) that the displayed-stack
+    # reconstruction otherwise misses (names often None ⇒ no name match).
+    # We require the all-in to be MATCHED so an uncalled (folded-to) shove does
+    # not pull effective_bb down to a stack that never went to showdown.
+    matched_allin_floor = None
+    _all_cols = ([preflop_col] if preflop_col else []) + list(street_cols)
+    # A real all-in player cannot act again. Collect (type, name) that act on
+    # a LATER street than their all-in, so a mislabeled "All-In" bet (the
+    # player keeps acting) doesn't pull effective_bb down. (TM5863569047 flop
+    # "All-In 12.27" then turn "All-In 23.09" — the flop one isn't a real shove.)
+    _allin_actor_street = {}
+    _acted_street = {}
+    for sidx, col in enumerate(_all_cols):
+        for i, e in enumerate(col.get("entries", []) if col else []):
+            ea = (e.get("action") or "").lower()
+            if ea in ("fold", "check"):
+                continue
+            key = (e.get("type"), e.get("player_name"))
+            if e.get("player_name") is None:
+                continue  # can't track unnamed across streets reliably
+            _acted_street.setdefault(key, []).append(sidx)
+            if ea == "all-in":
+                _allin_actor_street[key] = sidx
+    _false_allin = {
+        k for k, s in _allin_actor_street.items()
+        if any(st > s for st in _acted_street.get(k, []))
+    }
+    # Hero is a unique stream even when unnamed: a hero all-in followed by ANY
+    # later hero action means the earlier "All-In" was a mislabeled bet.
+    # (TM5863569047: flop hero "All-In 12.27" then turn hero "All-In 23.09".)
+    _hero_streets = [sidx for sidx, col in enumerate(_all_cols)
+                     if col and any(e.get("type") == "hero"
+                                    and (e.get("action") or "").lower() not in ("fold", "check")
+                                    for e in col.get("entries", []))]
+    _hero_allin_streets = [sidx for sidx, col in enumerate(_all_cols)
+                           if col and any(e.get("type") == "hero"
+                                          and (e.get("action") or "").lower() == "all-in"
+                                          for e in col.get("entries", []))]
+    _false_hero_allin_streets = {
+        s for s in _hero_allin_streets if any(hs > s for hs in _hero_streets)
+    }
+    # Prior cross-street investment per actor (named, + hero by type). A
+    # shover's STARTING stack = shove size (their remaining) + what they
+    # already committed on earlier streets. (H3514: BB shoves 5.8 on the
+    # river but had invested ~3.0 before ⇒ starting 8.8, not 5.8.)
+    _prior_invest = {}  # actor-key -> committed total before current street
+    # Seed with posted blinds/antes so a blind player's shove floor includes
+    # the chips they already had in. (H3514: BB posted 1.0 before calling.)
+    if blinds_col:
+        for e in blinds_col.get("entries", []):
+            ea = (e.get("action") or "").lower()
+            es = e.get("size") or 0.0
+            if es and ("sb" in ea or "bb" in ea or "ante" in ea or "blind" in ea):
+                actor = (e.get("type"), e.get("player_name"))
+                # blind call entries in preflop also add the call increment;
+                # the blind seeds the base level only.
+                _prior_invest[actor] = max(_prior_invest.get(actor, 0.0), es)
+    for _sidx, col in enumerate(_all_cols):
+        entries = col.get("entries", []) if col else []
+        # Highest committed amount on this street by any single player, and
+        # the set of total commitments, to decide what got matched.
+        running = {}       # id -> running total this street (calls additive)
+        _key_pos = {}      # id -> panel position (for preflop blind credit)
+        _is_preflop_col = bool(preflop_col) and _sidx == 0
+        order = []
+        for i, e in enumerate(entries):
+            ea = (e.get("action") or "").lower()
+            es = e.get("size") or 0.0
+            if ea in ("fold", "check"):
+                continue
+            # Hero is ONE stream even when unnamed (panel hero rows carry no
+            # player_name): keying unnamed entries per-index split a hero
+            # raise-then-call across two streams, so the running total never
+            # reached a villain's shove size and the matched-allin floor
+            # silently never fired (TM5863575308: hero R2.0 + C2.65 vs BTN
+            # All-In 4.65 — matched in reality, unmatched under per-index keys).
+            _unnamed_idx = i if (e.get("player_name") is None
+                                 and e.get("type") != "hero") else None
+            key = (e.get("type"), e.get("player_name"), _unnamed_idx)
+            if ea in ("raise", "all-in", "bet"):
+                running[key] = es  # raise/bet-to replaces; shove sets level
+            elif ea == "call":
+                running[key] = running.get(key, 0.0) + es
+            if e.get("position"):
+                _key_pos.setdefault(key, e["position"])
+            order.append((key, ea, es, i))
+
+        def _blind_credit(k):
+            # A blind caller's street running misses their POSTED chips (the
+            # Blinds column is often empty, so _prior_invest can't seed it):
+            # BB calling a 9.51 shove shows Call 8.51 — matched in reality,
+            # short by exactly the blind under the bare test. Credit the
+            # posted blind on the preflop street only. (TM5875127705)
+            if not _is_preflop_col:
+                return 0.0
+            pos = _key_pos.get(k)
+            return 1.0 if pos == "BB" else (0.5 if pos == "SB" else 0.0)
+
+        _fold_rows = [(k, e) for k, e in enumerate(entries)
+                      if (e.get("action") or "").lower() == "fold"]
+        for key, ea, es, i in order:
+            if ea == "all-in" and es and es > 0:
+                actor = (key[0], key[1]) if len(key) >= 2 else key
+                if actor in _false_allin:
+                    continue  # player acted again later — not a real all-in
+                if key[0] == "hero" and _sidx in _false_hero_allin_streets:
+                    continue  # hero acted again on a later street — mislabel
+                # Poker-rules legality: an "All-In" that does not exceed what a
+                # player ALREADY committed this street is a call-for-less from
+                # that player's view — a player who covers the jam CANNOT fold
+                # to it. If such a covering player folds right after, the
+                # "All-In" row is a misparsed raise with a garbled size; it
+                # must not become a floor. (TM5878838751: hero Bet 9.0 →
+                # "All-In 1.0" → hero Fold; the 1.0 would bind a 44bb spot.
+                # A third player folding after a genuine short call-allin is
+                # legal — they fold to the original bet — so the folder's own
+                # commitment is what must cover the jam, TM5863942611.)
+                _lvl_run: dict = {}
+                for k2, ea2, es2, i2 in order:
+                    if i2 >= i or k2 == key:
+                        continue
+                    if ea2 in ("raise", "bet", "all-in"):
+                        _lvl_run[k2] = es2
+                    elif ea2 == "call":
+                        _lvl_run[k2] = _lvl_run.get(k2, 0.0) + es2
+
+                def _covering_folder_after(jam_idx, jam_key, jam_size):
+                    for fk, fe in _fold_rows:
+                        if fk <= jam_idx:
+                            continue
+                        f_is_hero = fe.get("type") == "hero"
+                        committed = 0.0
+                        for k2, v2 in _lvl_run.items():
+                            k2_is_hero = k2[0] == "hero"
+                            k2_name = k2[1] if len(k2) >= 2 else None
+                            if f_is_hero and k2_is_hero:
+                                committed = max(committed, v2)
+                            elif (not f_is_hero and not k2_is_hero
+                                  and k2_name and fe.get("player_name")
+                                  and _fuzzy_name_match(k2_name,
+                                                        fe["player_name"])):
+                                committed = max(committed, v2)
+                        if committed >= jam_size - 0.25:
+                            return True
+                    return False
+
+                if es <= (max(_lvl_run.values()) if _lvl_run else 0.0) + 0.25 \
+                        and _covering_folder_after(i, key, es):
+                    continue
+                # Was this shove matched by another player to >= its size?
+                shove = es
+                matched = any(
+                    k2 != key and v2 + _blind_credit(k2) >= shove - 0.5
+                    for k2, v2 in running.items()
+                )
+                if matched:
+                    # starting = remaining (shove) + prior cross-street invest
+                    floor = shove + _prior_invest.get(actor, 0.0)
+                    if matched_allin_floor is None or floor < matched_allin_floor:
+                        matched_allin_floor = floor
+        # Accumulate this street's commitments into prior-investment totals.
+        for key, total in running.items():
+            actor = (key[0], key[1]) if len(key) >= 2 else key
+            _prior_invest[actor] = _prior_invest.get(actor, 0.0) + total
+
+    # ---- Uncalled preflop shove ceiling ----
+    # When hero VOLUNTARILY invested preflop (raise/call, but did NOT shove)
+    # and an opponent then jams all-in that hero folds to (the shove is
+    # uncalled — everyone after folds), the shover's whole stack went in, so
+    # the shove size is that villain's STARTING stack and an upper bound on the
+    # effective stack of the spot. With several opponent jams, the SHORTEST one
+    # binds (the smallest committed villain). The displayed-stack reconstruction
+    # misses this because the shover's table stack reads ~0 and the names are
+    # often None. (TM5863067496: hero SB R6.7, BB jams 20.4, hero folds — GT
+    # eff 20.4; function returned 36.7.) This is NARROW on purpose: it does not
+    # fire when hero himself shoved (that case is the matched_allin_floor).
+    uncalled_shove_ceiling = None
+    # When HERO jams preflop and everyone folds (uncalled), hero's shove size
+    # IS hero's whole starting stack — a direct panel read, more reliable than
+    # the displayed+reconstruction estimate (which can drift on a misread call
+    # size). We fold it into hero_starting as an authoritative value.
+    hero_uncalled_shove = None
+    _has_postflop = any(
+        (c.get("name") or "").lower() in ("flop", "turn", "river")
+        and c.get("entries")
+        for c in columns
+    )
+    if preflop_col:
+        pf_entries = preflop_col.get("entries", [])
+        _hero_jam = None
+        for _i, _e in enumerate(pf_entries):
+            if ((_e.get("action") or "").lower() == "all-in"
+                    and _e.get("type") == "hero" and _e.get("size")):
+                _hero_jam = (_i, _e)
+        if _hero_jam and not _has_postflop:
+            _ji, _je = _hero_jam
+            if all((a.get("action") or "").lower() == "fold"
+                   for a in pf_entries[_ji + 1:]):
+                hero_uncalled_shove = _je["size"]
+    if preflop_col:
+        pf_entries = preflop_col.get("entries", [])
+        hero_shoved_pf = any(
+            (e.get("action") or "").lower() == "all-in"
+            and e.get("type") == "hero"
+            for e in pf_entries
+        )
+        hero_invested_pf = any(
+            (e.get("action") or "").lower() in ("raise", "call", "bet")
+            and e.get("type") == "hero"
+            for e in pf_entries
+        )
+        if hero_invested_pf and not hero_shoved_pf:
+            opp_jams = [
+                (i, e) for i, e in enumerate(pf_entries)
+                if (e.get("action") or "").lower() == "all-in"
+                and e.get("type") != "hero"
+                and e.get("size")
+            ]
+            if opp_jams:
+                last_i = opp_jams[-1][0]
+                after = pf_entries[last_i + 1:]
+                # Uncalled: nobody called/raised after the final jam.
+                if all((a.get("action") or "").lower() == "fold" for a in after):
+                    uncalled_shove_ceiling = min(e["size"] for _, e in opp_jams)
+
     # ---- Compute starting stacks ----
     hero_starting = hero_stack_displayed + hero_perm
+    # A hero uncalled-jam size is hero's authoritative starting stack.
+    if hero_uncalled_shove is not None:
+        hero_starting = hero_uncalled_shove
 
+    # ---- Hero all-in / stack≈0 starting-stack reconstruction (Phase 3) ----
+    # When hero's DISPLAYED stack reads ~0, hero is committed (all-in, or called
+    # a villain's all-in for their whole stack): hero's STARTING stack is exactly
+    # what hero permanently put in. The legacy displayed+walk estimate
+    # (hero_perm) is noisy on these — a misread call/raise size over- or
+    # under-adds (TM5875510185: hero SB called a shove for 13.19, legacy walk
+    # over-computed hero_starting to 19.6 vs the true ~13.7; the engine's
+    # decision-local hero contribution reads 13.69). The betting engine's
+    # per-position contribution is an INDEPENDENT reconstruction of the same
+    # amount; we prefer it when both agree on the depth bucket, and flag a
+    # disagreement so the orchestrator can abstain (the input-bound residual:
+    # TM5874977534 hero shows a partial 1.24 shove sticker for a true 11.2 stack
+    # — neither read recovers it). ``hero_allin_recon_disagree`` is surfaced via
+    # a confidence cap so the consensus gate drops the unrecoverable ones.
+    hero_allin_recon = None
+    hero_allin_recon_disagree = False
+    if (hero_stack_displayed is not None and hero_stack_displayed <= 0.6
+            and hero_uncalled_shove is None
+            and engine_result is not None and hero_position):
+        eng_hero_contrib = engine_result.contribution.get(hero_position)
+        # Fire only when hero is genuinely committed: the engine saw hero shove,
+        # or hero's last action was a Call that matched a villain all-in.
+        hero_committed = engine_result.hero_all_in
+        if not hero_committed:
+            for col in ([preflop_col] if preflop_col else []) + list(street_cols):
+                ents = col.get("entries", []) if col else []
+                for k, e in enumerate(ents):
+                    if e.get("type") == "hero" and (e.get("action") or "").lower() == "call":
+                        # A call with a villain all-in anywhere this street = hero
+                        # committed for the displayed-0 remaining.
+                        if any((o.get("action") or "").lower() == "all-in"
+                               and o.get("type") != "hero" for o in ents):
+                            hero_committed = True
+        if hero_committed and eng_hero_contrib and eng_hero_contrib >= 1.0:
+            if _depth_bucket(eng_hero_contrib) == _depth_bucket(hero_starting):
+                # Both reconstructions agree on the bucket → trust the engine's
+                # exact contribution (less noisy than displayed≈0 + walk).
+                hero_allin_recon = eng_hero_contrib
+                hero_starting = eng_hero_contrib
+            else:
+                # The legacy walk and the engine disagree on hero's committed
+                # amount and hero's displayed read is uninformative (~0): we
+                # cannot reconstruct it from this frame → mark for abstain.
+                hero_allin_recon_disagree = True
+
+    # ---- Pot-bounded over-compute guard (computed early so walkover honours it) ----
+    # A player's PERMANENT investment cannot exceed the chips that actually
+    # entered the pot. The largest observed street-pot header bounds the total
+    # contributions, so start = displayed + investment must satisfy
+    #   start <= displayed + pot_bound.
+    # OCR garbage (e.g. a "Call 77.0" misread) inflates hero_perm past any
+    # physical pot; such an estimate is dropped. (TM5875583251: hero displayed
+    # 56.97, action-walk adds ~80bb ⇒ 137.7, but the largest pot is ~8.9.)
+    pot_values = [p for p in pot_by_street.values()
+                  if isinstance(p, (int, float)) and p > 0]
+    pot_bound = max(pot_values) if pot_values else None
+    # Street-start headers EXCLUDE the final street's action (no header comes
+    # after it), so add the final action street's MATCHED contribution on top.
+    # Uncalled chips don't count (they're returned), so a lone uncalled shove
+    # does NOT raise the bound. (H3514 river: shove 5.8 + call 5.8 ⇒ +11.6,
+    # so hero's legit 8.8 invest is within bound; TM5875583251 river all-in is
+    # uncalled ⇒ +0, leaving the garbled 80bb invest correctly out of bound.)
+    if pot_bound is not None:
+        last_matched = 0.0
+        for col in reversed(_all_cols):
+            ents = [e for e in (col.get("entries", []) if col else [])
+                    if (e.get("action") or "").lower() not in ("fold", "check")]
+            if not ents:
+                continue
+            hero_c = 0.0
+            opp_c = 0.0
+            for e in ents:
+                ea = (e.get("action") or "").lower()
+                es = e.get("size") or 0.0
+                if e.get("type") == "hero":
+                    hero_c = es if ea in ("raise", "all-in") else hero_c + es
+                else:
+                    opp_c = es if ea in ("raise", "all-in") else opp_c + es
+            matched = min(hero_c, opp_c) if hero_c > 0 and opp_c > 0 else 0.0
+            last_matched = matched * 2  # both sides' matched chips enter the pot
+            break
+        pot_bound = pot_bound + last_matched
+    over_compute = (
+        pot_bound is not None
+        and (hero_starting - hero_stack_displayed) > pot_bound + 0.5
+    )
+
+    nameless_fallback = False
+    geometry_pinned = False
     hero_start_rounded = round(hero_starting, 1) if hero_starting >= 1.0 else None
     if not opp_entered:
-        return (hero_start_rounded, hero_start_rounded)
+        # Walkover: hero opened (or limped) and everyone folded through. The
+        # GTO spot is hero vs the players STILL TO ACT behind the opener, so the
+        # effective stack is min(hero_start, the shortest seat from hero's
+        # position through the BB). The old code returned hero's OWN stack,
+        # which is almost always too deep (a short BB/blind behind binds the
+        # spot). We resolve those seats by mapping table positions to physical
+        # seats via geometry (names are often None), reading each seat's
+        # displayed stack. (TM5863067852 HJ-open: GT 10.7 = a short seat behind,
+        # not hero's 24.8; TM5863068088 GT 13.8.)
+        if over_compute and not (
+            matched_allin_floor is not None
+            and matched_allin_floor <= (pot_bound or 0) + 0.5
+        ):
+            return (None, hero_start_rounded, 0.0)
 
-    # ---- Determine opponent starting stack ----
+        walkover_eff = hero_start_rounded
+        walkover_conf = 0.55  # hero-own-stack fallback is usually too deep
+        if hero_position and num_players:
+            seat_map = _seat_map if _seat_map is not None else _map_positions_to_seats(
+                named_stacks, _panel_position_names(columns),
+                hero_position, num_players,
+            )
+            order = POSITION_ORDERS.get(num_players)
+            if seat_map and order and hero_position in order:
+                behind = order[order.index(hero_position):]  # hero + later seats
+                behind_stacks = [
+                    seat_map[p]["stack"]
+                    for p in behind
+                    if p in seat_map and seat_map[p].get("stack")
+                ]
+                # Need to actually see the seats behind hero to bind the spot;
+                # require >=1 opponent seat resolved (hero alone learns nothing).
+                if len(behind_stacks) >= 2 and hero_start_rounded:
+                    cand = min(behind_stacks + [hero_start_rounded])
+                    walkover_eff = round(cand, 1)
+                    # Confident: geometry resolved all seats behind hero.
+                    walkover_conf = (
+                        1.0 if len(behind_stacks) >= len(behind) else 0.85
+                    )
+
+        if matched_allin_floor is not None and walkover_eff:
+            return (round(min(walkover_eff, matched_allin_floor), 1),
+                    hero_start_rounded, max(walkover_conf, 1.0))
+        if walkover_eff:
+            return (walkover_eff, hero_start_rounded, walkover_conf)
+        return (hero_start_rounded, hero_start_rounded, 0.55)
+
+    # ---- Determine opponent starting stack: min over ALL active villains ----
+    # An "active villain" entered preflop (call/raise/bet/all-in) and did not
+    # fold preflop. For each, estimate start = displayed + investment and take
+    # the MIN, so a deep seat can't mask the binding short villain and a seat
+    # that folded preflop can't undershoot. opp_perm is the modeled continuing
+    # opponent's investment — an upper bound on any single active villain's
+    # contribution, so displayed + opp_perm is a safe per-villain start.
+    name_matched_villain = False
+    engine_pinned = False
+    engine_opp_candidate = None
     if opp_went_allin:
         if opp_allin_display is not None:
             # Opponent went all-in and we know their display (uncalled portion)
@@ -1251,52 +2047,827 @@ def _compute_effective_bb(
             # Opponent went all-in: starting = total investment (display ≈ 0)
             opp_starting = opp_perm
     else:
-        # Find opponent's displayed stack using name matching.
-        # Prefer postflop names (the player who stayed), then preflop.
-        active_opp_names = opp_names_postflop or opp_names_entered
-        best_stack = None
+        # Names of villains who entered and did not fold preflop. Prefer the
+        # full entered set (every contesting villain bounds the effective
+        # stack); postflop names alone would miss a villain who entered and
+        # folded on a later street while still being the shortest stack.
+        active_opp_names = list(opp_names_entered)
 
-        if active_opp_names and named_stacks:
-            # Try to match the active opponent's name to a table stack
+        # Per-villain investment to remain = preflop bet level a continuing
+        # villain matched + the shared matched level each postflop street.
+        # This respects a villain who 3bet and hero folded (preflop level),
+        # and avoids the multiway double-count baked into opp_perm.
+        per_villain_invest = opp_preflop_total + opp_postflop_matched
+
+        # A villain's investment likewise cannot exceed the pot, so cap the
+        # modeled per-villain investment by the pot bound (drops a runaway
+        # per_villain_invest from OCR-garbled bet sizes).
+        capped_invest = per_villain_invest
+        if pot_bound is not None and capped_invest > pot_bound + 0.5:
+            capped_invest = pot_bound
+
+        # ---- Engine-driven relevant-opponent attribution (Phase 1) ----
+        # The betting engine froze a decision-local live set by action order. We
+        # use it as a SELECTION corrector for the multiway case the legacy
+        # name-match gets wrong: when hero FOLDS facing a known live set and a
+        # SINGLE relevant opponent survives, the legacy min-over-all-entered set
+        # both over-includes folded villains AND can match a stale name to the
+        # wrong seat. In that narrow, low-risk case we read the one relevant
+        # seat by NAME (reliable) + its exact engine contribution. We do NOT
+        # override the broad multiway value reconstruction (its tuned heuristics
+        # beat a geometry-read seat — that is Phase 2's job). (TM5863067607:
+        # relevant={SB}, the limper, name-resolved — not the wrong seat.)
+        ppn = _panel_position_names(columns)
+        if (engine_result is not None
+                and engine_result.hero_folded
+                and len(engine_result.relevant_opponents) == 1
+                and not over_compute and not _ENGINE_OPP_OVERRIDE_DISABLED):
+            pos = engine_result.relevant_opponents[0]
+            nm = ppn.get(pos)
+            seat = None
+            if nm and named_stacks:
+                for ns in named_stacks:
+                    sn = ns.get("name")
+                    if sn and _fuzzy_name_match(nm, sn) and ns.get("stack"):
+                        seat = ns["stack"]
+                        break
+            if seat is not None:
+                contrib = engine_result.contribution.get(pos, 0.0)
+                if pot_bound is not None and contrib > pot_bound + 0.5:
+                    contrib = pot_bound
+                engine_opp_candidate = seat + contrib
+
+        villain_starts = []
+        matched_names = set()
+        if not engine_pinned and active_opp_names and named_stacks:
             for opp_name in active_opp_names:
                 for ns in named_stacks:
-                    if ns.get("name") and _fuzzy_name_match(opp_name, ns["name"]):
-                        candidate = ns["stack"]
-                        # Sanity: opp display + investment shouldn't wildly
-                        # exceed hero starting (allow some tolerance)
-                        if candidate + opp_perm <= hero_starting * 2.5:
-                            best_stack = candidate
-                            break
-                if best_stack is not None:
-                    break
+                    nm = ns.get("name")
+                    if nm and _fuzzy_name_match(opp_name, nm):
+                        villain_starts.append(ns["stack"] + capped_invest)
+                        matched_names.add(nm)
+                        break
 
-        # Fallback: heuristic stack selection when name matching fails
-        if best_stack is None:
-            non_hero_stacks = list(all_stacks) if all_stacks else []
-            if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
-                non_hero_stacks.remove(hero_stack_displayed)
+        if engine_pinned:
+            pass
+        elif villain_starts:
+            opp_starting = min(villain_starts)
+            name_matched_villain = True
+        else:
+            # Name matching failed (names None/garbled). Before guessing the
+            # shortest seat, try POSITION/GEOMETRY attribution: map the active
+            # villains' positions (entered preflop, not folded preflop) to
+            # physical seats and read each binding villain's DISPLAYED stack +
+            # its modeled investment. This pins the RIGHT seat instead of the
+            # shortest arbitrary one. (TM5863067607: the active villain is a
+            # None-named 16.4 seat, not the misread 2.9 SebFerra seat.)
+            # Prefer the engine's decision-local live set (excludes villains who
+            # folded on a LATER street, which the preflop-only filter keeps and
+            # which then undershoots). Fall back to the preflop-entered set.
+            active_positions = [
+                p for p in opp_entered_positions
+                if p not in opp_folded_positions
+            ]
+            geo_positions = active_positions
+            geo_starts = []
+            if geo_positions and num_players and hero_position:
+                seat_map = _seat_map if _seat_map is not None else _map_positions_to_seats(
+                    named_stacks, _panel_position_names(columns),
+                    hero_position, num_players,
+                )
+                if seat_map:
+                    for p in set(geo_positions):
+                        seat = seat_map.get(p)
+                        if seat and seat.get("stack"):
+                            # Use the engine's per-position contribution when we
+                            # have it (exact), else the shared modeled invest.
+                            inv = capped_invest
+                            if (engine_result is not None
+                                    and p in engine_result.contribution):
+                                inv = engine_result.contribution[p]
+                                if pot_bound is not None and inv > pot_bound + 0.5:
+                                    inv = pot_bound
+                            geo_starts.append(seat["stack"] + inv)
+            if geo_starts:
+                opp_starting = min(geo_starts)
+                geometry_pinned = True
+            else:
+                # Last resort — shortest plausible non-hero seat. A single
+                # caller is usually the short one; picking the largest (old
+                # code) collapsed to hero's own stack. Unreliable → low conf.
+                nameless_fallback = True
+                non_hero_stacks = list(all_stacks) if all_stacks else []
+                if hero_stack_displayed is not None and hero_stack_displayed in non_hero_stacks:
+                    non_hero_stacks.remove(hero_stack_displayed)
+                if non_hero_stacks:
+                    opp_starting = min(s + capped_invest for s in non_hero_stacks)
+                else:
+                    opp_starting = hero_starting
 
-            if non_hero_stacks:
-                candidates = [
-                    s for s in non_hero_stacks
-                    if s + opp_perm <= hero_starting + 1.0
-                ]
-                if candidates:
-                    best_stack = max(candidates)
-                elif non_hero_stacks:
-                    best_stack = min(non_hero_stacks)
+    # When HERO jams uncalled, the opponents all FOLDED — none committed, so a
+    # folder's reconstructed (and often misread-short) stack must not undercut
+    # hero's shove. The effective is hero's shove size, capped only by a genuine
+    # all-in floor. (TM5866594919: hero jams 22.9, opener folds; the opener's
+    # seat misread to 17 wrongly bound it — GT is 22.9.)
+    if hero_uncalled_shove is not None:
+        opp_starting = hero_starting
 
-        opp_starting = (best_stack + opp_perm) if best_stack is not None else hero_starting
+    # ---- Preflop-only behind-hero bound (GT-aligned relevant set) ----
+    # Hand ended preflop with hero still in (and hero did not jam uncalled —
+    # see above): every seat acting AFTER hero binds the spot, including seats
+    # that folded behind (a 2bb stack folding behind hero's open still defined
+    # the depth of the decision), plus earlier voluntary entrants. The
+    # entered-only min above misses the behind-hero folders → systematic
+    # over-estimate on short-bound preflop spots. The engine's relevant set is
+    # GT-aligned for this shape; read it through the layout seat map (a
+    # folder's displayed stack ≈ starting; entrants add their engine-tracked
+    # contribution). Downward-only. (TM5874529608: hero opens, a 2.1bb CO
+    # folds behind — GT 2.1, entered-min said 16.8.)
+    # A MATCHED preflop all-in means the board ran out (all-in showdown): the
+    # ground-truth definition then switches to the POSTFLOP form (only active,
+    # non-folded players bind) — a short stack folding behind hero does NOT
+    # bind a called jam. (TM5866748216: hero calls CO's 21.2 jam, BTN's real
+    # 7.9 folds behind — GT 21.2, not 7.9.) So the behind-hero set only binds
+    # a hand that truly ended preflop with NO matched shove.
+    # An UNCALLED villain jam likewise blocks the bound: the M1 ceiling is an
+    # authoritative panel read that a noisy behind-seat read must not undercut
+    # (TM5896105025: jam 10.0 is GT; a misattributed 6.2 seat read is not).
+    import os as _os_bb
+    _any_pf_allin = any(
+        (e.get("action") or "").lower() == "all-in"
+        for e in (preflop_col.get("entries", []) if preflop_col else [])
+    )
+    if (not _has_postflop and hero_uncalled_shove is None
+            and matched_allin_floor is None and not _any_pf_allin
+            and _os_bb.getenv("OCR_EFFBB_BEHIND_BOUND", "1") != "0"
+            and engine_result is not None
+            and not engine_result.hero_folded
+            and engine_result.relevant_opponents
+            and hero_position and num_players):
+        _smb = _seat_map if _seat_map is not None else _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+        _panel_pos_set = _panel_distinct_positions(columns)
+        if _smb:
+            _behind_cand = []
+            for _p in engine_result.relevant_opponents:
+                _seat = _smb.get(_p)
+                # Only trust a REAL chair: a named seat, or a position the
+                # panel itself shows acting. A nameless seat at a position the
+                # panel never mentions is a chip-sticker phantom whose tiny
+                # read would wrongly undercut the spot. (TM5963740052: unseen
+                # "BB" seat read 2.84 vs GT binder 13.6.)
+                if not (_seat and _seat.get("stack")):
+                    continue
+                if not ((_seat.get("name") or "").strip()
+                        or _p in _panel_pos_set):
+                    continue
+                _inv = engine_result.contribution.get(_p, 0.0) or 0.0
+                if pot_bound is not None and _inv > pot_bound + 0.5:
+                    _inv = pot_bound
+                _behind_cand.append(_seat["stack"] + _inv)
+            if _behind_cand and min(_behind_cand) < opp_starting:
+                opp_starting = round(min(_behind_cand), 1)
+                engine_pinned = True
+                name_matched_villain = False
+                geometry_pinned = True
 
+    # Hero jammed UNCALLED preflop — the ground truth still binds by a
+    # genuinely short seat folding behind (TM5874529592: hero jams 12.6, a
+    # 2.9bb blind folds behind — GT 2.9). Tension with the misread-folder
+    # golden (TM5866594919, stays green): NAMED seats only. Measured
+    # +1.36pp precision / −0.8pp coverage (6 fixed, 15 wrong→abstain,
+    # 1 correct→abstain).
+    if (_os_bb.getenv("OCR_EFFBB_BEHIND_BOUND_HEROJAM", "1") == "1"
+            and hero_uncalled_shove is not None and not _has_postflop
+            and hero_position and num_players):
+        _smj = _seat_map if _seat_map is not None else _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+        _orderj = POSITION_ORDERS.get(num_players) or []
+        if _smj and hero_position in _orderj:
+            _hj = _orderj.index(hero_position)
+            _relj = set(_orderj[_hj + 1:]) | {
+                p for p in opp_entered_positions if p in _orderj[:_hj]}
+            _cands = []
+            for _p in _relj:
+                _seat = _smj.get(_p)
+                if (_seat and _seat.get("stack")
+                        and (_seat.get("name") or "").strip()):
+                    _inv = (engine_result.contribution.get(_p, 0.0) or 0.0
+                            if engine_result is not None else 0.0)
+                    _cands.append(_seat["stack"] + _inv)
+            if _cands and min(_cands) < opp_starting:
+                opp_starting = round(min(_cands), 1)
+                engine_pinned = True
+                name_matched_villain = False
+                geometry_pinned = True
+
+    # ---- Engine single-opponent selection correction (downward-only) ----
+    # When the engine name-resolved the lone live opponent at hero's fold, use
+    # it ONLY if it does not INFLATE the legacy opp_starting. The legacy
+    # min-over-all-entered set over-includes a deep seat or matches a wrong
+    # (deeper) name; the engine's decision-local single seat corrects that
+    # downward. We never let the engine raise opp_starting — an inflated engine
+    # value means the engine's name→seat read landed on a deep seat (the
+    # attribution noise Phase 2 fixes), so we don't trust it upward.
+    if (engine_opp_candidate is not None
+            and engine_opp_candidate <= opp_starting + 0.05):
+        opp_starting = engine_opp_candidate
+        engine_pinned = True
+        name_matched_villain = True
+
+    if _disable_floors:
+        # Stack-only reconstruction cross-check (no panel-shove floors / M1
+        # ceiling). The orchestrator compares this against the floor-inclusive
+        # estimate: agreement on the depth bucket is the cross-method consensus
+        # signal; disagreement means the all-in size / ceiling is misread or
+        # mis-attributed → abstain.
+        matched_allin_floor = None
+        uncalled_shove_ceiling = None
     all_starting = [hero_starting, opp_starting]
+    if matched_allin_floor is not None:
+        # A matched all-in caps the effective stack of the confrontation.
+        all_starting.append(matched_allin_floor)
+    if uncalled_shove_ceiling is not None:
+        # An uncalled villain jam hero folded to: the jam size is the villain's
+        # whole (starting) stack and bounds the effective stack.
+        all_starting.append(uncalled_shove_ceiling)
+    # Engine M1: an uncalled-shove ceiling read straight off the panel. It is an
+    # UPPER bound (the shover's whole stack), so it can only lower effective —
+    # safe to add even when the legacy ceilings already fired. Suppress when
+    # hero's own reconstruction over-computed (then the ceiling could be the
+    # only sane value, handled by the over_compute recovery below).
+    engine_m1_ceiling = (
+        engine_result.rule_ceiling
+        if (engine_result is not None and engine_result.rule == "M1")
+        else None
+    )
+    if _disable_floors:
+        engine_m1_ceiling = None
+    if engine_m1_ceiling is not None and not over_compute:
+        all_starting.append(engine_m1_ceiling)
     effective_bb = round(min(all_starting), 1)
+
+    # Which source produced the binding (minimum) starting stack? Confidence is
+    # driven by the CERTAINTY of that attribution, not by a second estimator
+    # that eats the same inputs.
+    _bind = round(min(all_starting), 1)
+    binding_from_allin = (
+        (matched_allin_floor is not None
+         and round(matched_allin_floor, 1) <= _bind + 0.05)
+        or (uncalled_shove_ceiling is not None
+            and round(uncalled_shove_ceiling, 1) <= _bind + 0.05)
+        or (engine_m1_ceiling is not None
+            and round(engine_m1_ceiling, 1) <= _bind + 0.05)
+    )
+    binding_from_hero = round(hero_starting, 1) <= _bind + 0.05
+    binding_from_opp = round(opp_starting, 1) <= _bind + 0.05
+
+    # If hero's reconstruction over-computed, a hard physical ceiling (matched
+    # all-in OR an uncalled-jam size, both bounded by real shove sizes) may
+    # still be trustworthy and lower than the bogus hero/opp starts. Otherwise
+    # we have no consistent estimate.
+    _physical_floor = None
+    for _f in (matched_allin_floor, uncalled_shove_ceiling):
+        if _f is not None and (_physical_floor is None or _f < _physical_floor):
+            _physical_floor = _f
+    if over_compute:
+        if (_physical_floor is not None
+                and _physical_floor <= (pot_bound or 0) + 0.5
+                and _physical_floor < hero_starting):
+            effective_bb = round(_physical_floor, 1)
+            over_compute = False  # recovered a physical estimate
+        else:
+            # Abstain: hero_starting is physically impossible and nothing else
+            # constrains the effective stack.
+            return (None, round(hero_starting, 1) if hero_starting >= 1.0 else None, 0.0)
 
     if effective_bb < 1.0:
         if all_stacks:
-            return round(min(all_stacks), 1), round(hero_starting, 1)
-        return None, round(hero_starting, 1) if hero_starting >= 1.0 else None
+            return round(min(all_stacks), 1), round(hero_starting, 1), 0.6
+        return (None,
+                round(hero_starting, 1) if hero_starting >= 1.0 else None,
+                0.0)
 
-    return effective_bb, round(hero_starting, 1)
+    # ---- Attribution-certainty confidence ----
+    # Confidence reflects how firmly we identified the seat/size that BINDS the
+    # effective stack — not a second estimator that eats the same OCR inputs
+    # (those agree-or-disagree but don't track correctness). High when:
+    #   * the binding came from an explicit panel all-in size (matched floor or
+    #     uncalled-jam ceiling) — read directly off the screen;
+    #   * the binding villain was pinned by a NAME match;
+    #   * hero himself is the (shortest) binding stack — no villain attribution
+    #     needed (hero's own displayed stack is the most reliable read);
+    #   * there is a single unambiguous active villain (heads-up).
+    # Medium when a villain was pinned only by POSITION/GEOMETRY (right seat,
+    # no name confirmation). LOW (abstain) when the binding came from the
+    # nameless shortest-seat GUESS — that's where attribution is genuinely
+    # ambiguous and the input-bound residual lives.
+    distinct_active = {p for p in opp_entered_positions
+                       if p not in opp_folded_positions}
+    single_active_villain = len(distinct_active) == 1 or n_opp_preflop == 1
+
+    if binding_from_allin or (
+        hero_uncalled_shove is not None and binding_from_hero
+    ):
+        confidence = 1.0          # explicit shove size off the panel
+    elif binding_from_hero and not binding_from_opp:
+        confidence = 0.95         # hero's own displayed stack binds
+    elif binding_from_opp and engine_pinned and name_matched_villain:
+        confidence = 0.95         # engine-chosen seat, name-confirmed
+    elif binding_from_opp and engine_pinned:
+        # The betting engine froze the live set and chose this position by
+        # action order; the seat stack was read by geometry/name. Right
+        # position, possibly geometry-read stack — solid but not name-certain.
+        confidence = 0.85
+    elif binding_from_opp and name_matched_villain:
+        confidence = 0.95         # villain pinned by name
+    elif binding_from_opp and geometry_pinned:
+        confidence = 0.8          # villain pinned by position/geometry only
+    elif binding_from_opp and single_active_villain:
+        confidence = 0.8          # one obvious villain, even if unnamed
+    elif nameless_fallback:
+        confidence = 0.5          # shortest-seat guess — ambiguous, abstain
+    else:
+        confidence = 0.85
+
+    # Internal-consistency abstain (narrow, NOT a precision lever): hero is the
+    # BINDING (shortest) stack, hero barely invested (<3bb total), hero folded,
+    # yet a still-live villain is >=3x deeper than hero's reconstructed start.
+    # A folding player that short cannot define a deep spot — this is an
+    # upstream hero-stack OCR corruption (displayed read far too small), which
+    # both reconstruction estimators inherit (so the dual-estimator divergence
+    # can't see it). Requiring hero_invest<3 avoids the deep-invested-hero
+    # class (hero displayed tiny only because they invested a lot — a real,
+    # correct binding). (TM5863941844: hero displayed 4.0, really ~20bb.)
+    hero_invest = hero_starting - hero_stack_displayed
+    hero_binds = abs(effective_bb - round(hero_starting, 1)) < 0.6
+    hero_folded_anywhere = any(
+        e.get("type") == "hero" and (e.get("action") or "").lower() == "fold"
+        for c in (([preflop_col] if preflop_col else []) + list(street_cols))
+        for e in (c.get("entries", []) if c else [])
+    )
+    live_villain_3x = any(
+        s >= 3 * hero_starting for s in (all_stacks or [])
+        if s != hero_stack_displayed
+    )
+    if (hero_binds and hero_invest < 3.0 and hero_folded_anywhere
+            and live_villain_3x and hero_starting > 0):
+        confidence = min(confidence, 0.3)
+
+    # NOTE on the old "physical floor": the legacy gate nulled effective_bb when
+    # it fell below the largest preflop raise. That is INVALID here — when hero
+    # opens and a short stack calls all-in for less, the effective stack is
+    # legitimately below the open size. Folding that into confidence
+    # false-abstains a large, correct short-stack population, so it is dropped.
+    # The only physically sound abstention is the pot-bounded over-compute guard
+    # above (an UPPER bound, which has a valid physical basis).
+
+    # Hero displayed ~0 (all-in / called-all-in) but the two independent
+    # reconstructions of hero's committed amount disagree on the bucket — the
+    # single-frame input does not determine hero's starting stack (the shove
+    # sticker is partial/misread). Abstain. (TM5874977534: 1.24 shown vs 11.2.)
+    if hero_allin_recon_disagree:
+        confidence = min(confidence, 0.3)
+
+    if confidence < _EFFBB_CONF_FLOOR:
+        return None, round(hero_starting, 1), confidence
+    return effective_bb, round(hero_starting, 1), confidence
+
+
+# Solver depth buckets (must match gto_api.AVAILABLE_DEPTHS / effbb_metrics).
+_DEPTH_BUCKETS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9, 8]
+
+
+def _depth_bucket(bb) -> int | None:
+    """Snap a bb value to its nearest solver depth bucket (matches the metric)."""
+    try:
+        bb = float(bb)
+    except (TypeError, ValueError):
+        return None
+    return min(_DEPTH_BUCKETS, key=lambda d: abs(d - bb))
+
+
+# Bucket cell boundaries (the midpoints between adjacent solver depths, the
+# decision surfaces of _depth_bucket). A value near one of these edges flips its
+# bucket under a tiny OCR error → a Phase-4 abstain risk signal. Edges, high→low:
+# 90, 70, 55, 45, 37.5, 32.5, 27.5, 22.5, 18.5, 15.5, 13, 11, 9.5, 8.5.
+_BUCKET_EDGES = sorted(
+    (_DEPTH_BUCKETS[i] + _DEPTH_BUCKETS[i + 1]) / 2.0
+    for i in range(len(_DEPTH_BUCKETS) - 1)
+)
+
+
+def _bucket_boundary_distance(bb) -> float | None:
+    """Relative distance from ``bb`` to the nearest bucket-cell edge.
+
+    Returns ``abs(bb - nearest_edge) / bb`` (a small value = the emitted depth is
+    fragile: a few-percent OCR error in the binding stack would flip its solver
+    bucket). ``None`` on bad input. Values above the top edge (no upper bound on
+    the 100bb cell) return a large sentinel so deep stacks aren't flagged fragile.
+    """
+    try:
+        bb = float(bb)
+    except (TypeError, ValueError):
+        return None
+    if bb <= 0:
+        return None
+    nearest = min(_BUCKET_EDGES, key=lambda e: abs(e - bb))
+    return abs(bb - nearest) / bb
+
+
+# --- Phase 4: per-hand abstain-feature capture ---------------------------------
+# _compute_effective_bb stashes the abstain-signal features for the LAST hand it
+# scored here, so the calibration harness (scripts/effbb_calibrate.py) can pull
+# them WITHOUT re-OCR. Production reads nothing from this; it is pure debug/calib
+# instrumentation (a single dict, overwritten each call — no memory growth).
+_LAST_EFFBB_FEATURES: dict = {}
+
+
+def _effbb_last_features() -> dict:
+    """Return the abstain-signal features captured for the last scored hand."""
+    return dict(_LAST_EFFBB_FEATURES)
+
+
+def _engine_relevant_bucket(
+    columns, hero_position, num_players, named_stacks, hero_start, seat_map,
+):
+    """Depth bucket of the engine's decision-local relevant-opponent estimate.
+
+    The betting engine froze the live contestant set at hero's decision by
+    action order (independent of geometry/names). We map those positions to
+    seats through ``seat_map``, read ``start = displayed + engine_contribution``,
+    min with hero_start (and an M1 ceiling), and return that estimate's depth
+    bucket — an INDEPENDENT second opinion on the binding stack. The orchestrator
+    compares it to the legacy reconstruction's bucket: agreement is a strong
+    correctness signal (corpus: 76% vs 52% on disagreement), so disagreement is
+    a confidence penalty (abstain-eligible). Returns ``(bucket, is_singleton)``;
+    ``is_singleton`` flags a single-opponent relevant set (the cleanest engine
+    signal). Returns ``(None, False)`` when the engine has no usable seat.
+    """
+    if not (hero_position and num_players and hero_start and seat_map):
+        return None, False
+    try:
+        from . import effbb_engine as _eng
+        e_streets, e_pot = _engine_streets(columns)
+        er = _eng.analyze(e_streets, num_players, hero_position,
+                          e_pot.get("preflop"))
+    except Exception:
+        return None, False
+    if er is None or not er.relevant_opponents:
+        return None, False
+    pot_vals = [c.get("pot") for c in columns
+                if isinstance(c.get("pot"), (int, float)) and c.get("pot") > 0]
+    pot_bound = max(pot_vals) if pot_vals else None
+    vals = [hero_start]
+    found_seat = False
+    for pos in er.relevant_opponents:
+        seat = seat_map.get(pos)
+        if seat and seat.get("stack"):
+            inv = er.contribution.get(pos, 0.0)
+            if pot_bound is not None and inv > pot_bound + 0.5:
+                inv = pot_bound
+            vals.append(seat["stack"] + inv)
+            found_seat = True
+    if er.rule == "M1" and er.rule_ceiling:
+        vals.append(er.rule_ceiling)
+    if not found_seat and not (er.rule == "M1" and er.rule_ceiling):
+        return None, False
+    singleton = len(er.relevant_opponents) == 1
+    return _depth_bucket(min(vals)), singleton
+
+
+def _infer_num_players(columns, named_stacks):
+    """Physical table size from panel positions (robust) → seat-ring fallback."""
+    panel_pos = _panel_distinct_positions(columns)
+    if panel_pos:
+        for sz in range(2, 10):
+            order = POSITION_ORDERS.get(sz)
+            if order and panel_pos.issubset(set(order)):
+                return sz
+    ring = _seat_ring(named_stacks)
+    if ring:
+        n = min(max(len(ring), 2), 9)
+        return n if n in POSITION_ORDERS else None
+    return None
+
+
+def _compute_effective_bb(
+    columns: list[dict],
+    hero_stack_displayed: float | None,
+    hero_position: str | None,
+    all_stacks: list[float] | None,
+    named_stacks: list[dict] | None = None,
+    num_players: int | None = None,
+) -> tuple:
+    """Bucket-consensus orchestrator over the top-K position→seat layouts.
+
+    Phase 2. The single-layout reconstruction (``_effective_bb_for_layout``) is
+    run once per *plausible* layout (top-K by weak name agreement, within a
+    score margin, over both ring-walk directions and phantom-trim alternatives).
+    The emitted depth bucket is the CONSENSUS signal:
+
+      * All plausible layouts land in the SAME solver-depth bucket  → emit
+        (confidence = consensus strength: 1.0 unanimous, lower with abstainers).
+      * They straddle buckets                                       → abstain
+        (return ``None`` — the attribution is genuinely ambiguous; Phase 3's
+        re-read is what resolves the underlying misread seat).
+
+    Layouts only change the GEOMETRY attribution branch, so for name-pinned /
+    hero-binds / explicit-all-in hands every layout returns the identical value
+    and consensus holds trivially at full confidence — the gate bites only where
+    seat attribution is actually ambiguous, which is precisely the 78% of
+    recoverable hands with ≥2 same-bucket candidate seats.
+
+    Pot conservation is enforced inside the core as a hard reject (the
+    over-compute guard nulls a layout whose investment exceeds the pot bound).
+    Returns the legacy 3-tuple ``(effective_bb, hero_starting, confidence)``.
+    """
+    # --- Phase 4 feature capture (debug/calibration only; prod ignores it) ---
+    # Accumulate the candidate abstain signals as we compute them, and flush to
+    # the module-level store at every return via _finish(). No GT here.
+    global _LAST_EFFBB_FEATURES
+    feat: dict = {
+        "hero_stack_displayed": hero_stack_displayed,
+        "hero_position": hero_position,
+        "num_players": num_players,
+        "n_layouts": 0,
+        "layout_buckets": [],
+        "layout_straddle": False,
+        "rep_eff": None,
+        "rep_bucket": None,
+        "base_conf": None,
+        "emit_frac": None,
+        "eng_bucket": None,
+        "eng_singleton": None,
+        "engine_agrees": None,
+        "engine_disagrees": None,
+        "engine_eligible": None,
+        "x_agree": None,
+        "boundary_dist": None,
+        "hero_stack_near_zero": (hero_stack_displayed is not None
+                                 and hero_stack_displayed <= 1.5),
+        "decision_class": None,
+        "n_relevant_opp": None,
+        "rule_ceiling": None,
+        "pot_residual": None,
+        "binding_geometry_only": None,
+        "stackonly_buckets": [],
+        "method_straddle": False,
+        "confidence": 0.0,
+        "effective_bb": None,
+    }
+
+    def _finish(eff, hero_start_, conf):
+        global _LAST_EFFBB_FEATURES
+        feat["effective_bb"] = eff
+        feat["confidence"] = conf
+        if eff is not None:
+            feat["boundary_dist"] = _bucket_boundary_distance(eff)
+            feat["rep_bucket"] = _depth_bucket(eff)
+        _LAST_EFFBB_FEATURES = feat
+        return eff, hero_start_, conf
+
+    if hero_stack_displayed is None:
+        return _finish(None, None, 0.0)
+
+    if num_players is None:
+        num_players = _infer_num_players(columns, named_stacks)
+    feat["num_players"] = num_players
+
+    import os as _os
+    _margin = int(_os.getenv("OCR_EFFBB_LAYOUT_MARGIN", "1"))
+    layouts = []
+    if hero_position and num_players:
+        layouts = _enumerate_layouts(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players, margin=_margin, max_k=8,
+        )
+
+    # Even with no geometric ambiguity (0 or 1 layout) we still run the
+    # cross-method consensus (floors-on vs stack-only), so a single fixed seat
+    # map gets the same abstain discipline. ``[None]`` = "let the core derive
+    # its own seat map".
+    if not layouts:
+        layouts = [None]
+
+    # Run the reconstruction under each plausible layout, BOTH with the panel
+    # all-in floors / M1 ceiling on (the default estimate) and off (a stack-only
+    # cross-check). Two independent consensus axes:
+    #   * layout consensus   — does the geometric seat-direction matter?
+    #   * cross-method consensus — does the panel-shove-size estimate agree with
+    #     the pure stack reconstruction? (A misread/mis-attributed all-in size
+    #     diverges here — the dominant residual error, NOT seat direction.)
+    # Emit iff EVERY (layout × method) hypothesis lands in the same depth bucket.
+    results = []          # floor-inclusive (default) per layout
+    stack_only = []       # floors-off cross-check per layout
+    for sm in layouts:
+        try:
+            r1 = _effective_bb_for_layout(
+                columns, hero_stack_displayed, hero_position, all_stacks,
+                named_stacks, num_players, _seat_map=sm,
+            )
+            r2 = _effective_bb_for_layout(
+                columns, hero_stack_displayed, hero_position, all_stacks,
+                named_stacks, num_players, _seat_map=sm, _disable_floors=True,
+            )
+        except Exception:  # pragma: no cover - core must never crash parsing
+            continue
+        results.append(r1)
+        stack_only.append(r2)
+
+    feat["n_layouts"] = len(layouts)
+    feat["layout_buckets"] = sorted(
+        {b for b in (_depth_bucket(eff) for eff, _, _ in results
+                     if eff is not None) if b is not None})
+    feat["stackonly_buckets"] = sorted(
+        {b for b in (_depth_bucket(eff) for eff, _, _ in stack_only
+                     if eff is not None) if b is not None})
+
+    if not results:
+        return _finish(None, None, 0.0)
+
+    # hero_starting is layout-independent (hero's own seat).
+    hero_start = next((hs for _, hs, _ in results if hs is not None), None)
+
+    emitted = [(eff, conf) for eff, _, conf in results if eff is not None]
+    n_total = len(results)
+    n_emit = len(emitted)
+
+    if not emitted:
+        return _finish(None, hero_start, 0.3)
+
+    # Representative value = highest internal-confidence layout (floors on).
+    emitted.sort(key=lambda t: -t[1])
+    rep_eff = emitted[0][0]
+    base_conf = emitted[0][1]
+    emit_frac = n_emit / n_total
+
+    # --- Engine-vs-legacy consensus (the strongest discriminator) ---
+    # The betting engine's decision-local relevant seat gives an INDEPENDENT
+    # bucket (action-order logic, not geometry). On the corpus it agrees with a
+    # correct legacy value 76% of the time but only 52% when it disagrees — the
+    # single best abstain/tiebreak signal Phase 2 has. Read through the rep
+    # layout (falling back to the single best map when rep is the [None] slot).
+    best_idx = results.index(max(results, key=lambda r: r[2] if r[0] is not None else -1))
+    rep_seat_map = layouts[best_idx]
+    if rep_seat_map is None:
+        rep_seat_map = _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+    eng_bucket, eng_singleton = _engine_relevant_bucket(
+        columns, hero_position, num_players, named_stacks, hero_start,
+        rep_seat_map)
+    feat["base_conf"] = base_conf
+    feat["emit_frac"] = emit_frac
+    feat["eng_bucket"] = eng_bucket
+    feat["eng_singleton"] = eng_singleton
+
+    # --- Engine decision class / pot-conservation residual (Phase-4 features) ---
+    # One extra engine read for the calibration features (decision class M1/M2/M3
+    # or standard, relevant-opponent count, M1 ceiling, and the preflop
+    # pot-conservation residual: |inferred contributions − pot header|). Wrapped
+    # so a feature-only failure never affects emission.
+    try:
+        from . import effbb_engine as _eng_f
+        _es, _ep = _engine_streets(columns)
+        _er = _eng_f.analyze(_es, num_players, hero_position, _ep.get("preflop"))
+        if _er is not None:
+            feat["decision_class"] = _er.rule or "standard"
+            feat["n_relevant_opp"] = len(_er.relevant_opponents or [])
+            feat["rule_ceiling"] = _er.rule_ceiling
+            pot_hdr = _ep.get("preflop")
+            if pot_hdr and _er.contribution:
+                recon = sum(_er.contribution.values()) + (_er.ante_total or 0.0)
+                feat["pot_residual"] = abs(recon - pot_hdr) / pot_hdr \
+                    if pot_hdr > 0 else None
+            feat["blinds_ok"] = bool(_er.blinds_ok)
+    except Exception:
+        pass
+
+    # --- Layout consensus (geometric seat-direction ambiguity) ---
+    # Do the floor-inclusive estimates agree on the depth bucket across all
+    # plausible layouts? A straddle is usually genuine ambiguity → abstain,
+    # UNLESS the independent engine bucket matches exactly one straddling
+    # layout — then the engine breaks the tie toward that layout's value.
+    layout_buckets = {_depth_bucket(eff) for eff, _, _ in results if eff is not None}
+    if len(layout_buckets) != 1 or None in layout_buckets:
+        feat["layout_straddle"] = True
+        if eng_bucket is not None and eng_bucket in layout_buckets:
+            # Engine resolves the direction: keep the layout whose bucket the
+            # engine confirms.
+            tie = [(e, c) for e, _, c in results
+                   if e is not None and _depth_bucket(e) == eng_bucket]
+            if tie:
+                tie.sort(key=lambda t: -t[1])
+                rep_eff = tie[0][0]
+                base_conf = max(tie[0][1], 0.9)
+            else:
+                return _finish(None, hero_start, 0.4)
+        else:
+            return _finish(None, hero_start, 0.4)
+
+    rep_bucket = _depth_bucket(rep_eff)
+    engine_disagrees = eng_bucket is not None and eng_bucket != rep_bucket
+    engine_agrees = eng_bucket is not None and eng_bucket == rep_bucket
+    feat["rep_eff"] = rep_eff
+    feat["engine_disagrees"] = engine_disagrees
+    feat["engine_agrees"] = engine_agrees
+    # method straddle: floors-on vs stack-only disagree on bucket across layouts
+    feat["method_straddle"] = (
+        bool(feat["stackonly_buckets"])
+        and set(feat["layout_buckets"]) != set(feat["stackonly_buckets"]))
+
+    # --- Cross-method agreement (panel-shove vs pure-stack) ---
+    # NOT a hard gate (corpus evidence: a floor/stack disagreement is right as
+    # often as wrong, so abstaining on it sheds correct hands). It is a soft
+    # confidence input: agreement nudges confidence up.
+    x_agree = False
+    for (eff, _, _), (s_eff, _, _) in zip(results, stack_only):
+        if (eff is not None and s_eff is not None
+                and _depth_bucket(eff) == _depth_bucket(s_eff)):
+            x_agree = True
+            break
+
+    consensus_conf = base_conf * (0.85 + 0.15 * emit_frac)
+    if x_agree:
+        consensus_conf += 0.03
+    # The engine-vs-legacy disagreement penalty applies ONLY where the binding
+    # was a GEOMETRY/heuristic read (base_conf <= ~0.85). The strong-evidence
+    # bindings — an explicit panel all-in size, hero's own displayed stack, a
+    # name-matched villain, a walkover BB read (all base_conf >= 0.95) — are
+    # already reliable and an engine that reads a wrong seat must not abstain
+    # them (corpus: disagreement is a coin-flip overall, but on the geometry
+    # tier it is the strongest abstain signal we have).
+    engine_eligible = base_conf <= 0.86
+    feat["x_agree"] = x_agree
+    feat["engine_eligible"] = engine_eligible
+    feat["binding_geometry_only"] = engine_eligible
+    if engine_eligible:
+        # A geometry/heuristic binding (base_conf <= ~0.85) is only ~28% precise
+        # on its own (corpus) — it MUST earn independent betting-logic
+        # confirmation to be emitted. If the engine disagrees OR can't supply a
+        # relevant seat to vouch for it, abstain.
+        if engine_agrees:
+            # Confirmed. A SINGLETON relevant set is the engine's cleanest
+            # signal — lift just over the abstain floor; multiway earns a nudge.
+            consensus_conf = max(consensus_conf, 0.72) if eng_singleton \
+                else consensus_conf + 0.03
+        else:
+            consensus_conf = min(consensus_conf, 0.45)
+    elif engine_disagrees:
+        # Strong-evidence binding (all-in size / hero / name) but the engine
+        # dissents — moderate penalty, not a full abstain (that tier is ~75%
+        # precise and includes the explicit-shove goldens the engine misreads).
+        # Held below the 0.9 top band so the top band stays the cleanest slice.
+        consensus_conf = min(consensus_conf, 0.85)
+    elif engine_agrees:
+        consensus_conf += 0.03
+    consensus_conf = min(1.0, round(consensus_conf, 3))
+
+    if consensus_conf < _EFFBB_CONF_FLOOR:
+        return _finish(None, hero_start, consensus_conf)
+
+    # --- Phase 4: calibrated structural abstain (precision-maximizing) ---
+    # The conf floor catches AMBIGUITY; these catch internally-consistent VALUE
+    # errors the consensus signal is blind to. Any firing → abstain (cap conf so
+    # downstream sees a None). Calibrated on the 1,805-hand hero-active cache
+    # (scripts/effbb_calibrate.py, 5-fold pooled CV). The broad engine-disagree /
+    # method-straddle signals are SCOPED OFF the strong panel-read bindings
+    # (M1 uncalled-shove ceiling / M2 walkover at base_conf>=0.95) — on those
+    # the engine reads a noisy seat and falsely dissents, so applying them there
+    # is net-negative AND would abstain correct M1/M2 emits. Held-out: lifts
+    # emitted precision ~70.9%→~73-75% at the cost of ~25pp coverage (cheap:
+    # None → safe generic solver depth). 99.5% is NOT reachable on single-frame
+    # inputs (the wrong residual is internally-consistent stack misreads no
+    # feature separates — ceiling ~86% @ ~10% cov; see the plan Phase-4).
+    if _EFFBB_STRUCTURAL_GATE:
+        hero_near_zero = (hero_stack_displayed is not None
+                          and hero_stack_displayed <= 1.5)
+        strong_panel_read = (
+            (feat.get("decision_class") in ("M1", "M2") and base_conf >= 0.95)
+            # base_conf 1.0 = the binding value is an explicit panel all-in
+            # size (matched-shove floor / uncalled-jam ceiling) — read straight
+            # off the screen, same trust tier as M1/M2. The stack-only
+            # cross-check legitimately diverges there (it can't see the shove),
+            # so method-straddle must not abstain it. (TM5875127705: BB calls
+            # a 9.51 jam — floor 9.51 vs stack-only 18.4.)
+            or base_conf >= 0.999)
+        # NOTE: the original Phase-4 gate also abstained
+        # ``hero_near_zero and not engine_agrees`` — after the matched-floor
+        # keying/blind-credit fixes that slice measures 81% marginally precise
+        # (ABOVE the emitted average), so suppressing it costs ~4pp coverage
+        # for negative precision value. Dropped (scripts/_tmp_gate.py audit).
+        structural_abstain = (
+            (engine_eligible and not engine_agrees)      # geometry binding unconfirmed
+            or (engine_disagrees and not strong_panel_read)   # independent engine dissents
+            or (feat["method_straddle"] and not strong_panel_read)  # floors↔stack straddle
+        )
+        if structural_abstain:
+            return _finish(None, hero_start, min(consensus_conf, 0.69))
+
+    return _finish(round(rep_eff, 1), hero_start, consensus_conf)
 
 
 def _build_diagnostics(
@@ -1710,9 +3281,22 @@ def _assemble_hand(
     hero_stack = table_result.get("hero_stack")
     stacks = table_result.get("player_stacks", [])
     named_stacks = table_result.get("named_stacks", [])
-    effective_bb, hero_starting_stack = _compute_effective_bb(
+    effective_bb, hero_starting_stack, _effbb_conf = _compute_effective_bb(
         columns, hero_stack, hero_position, stacks, named_stacks,
     )
+
+    # Phase-0 effbb cache: stash the raw inputs so effbb_eval can replay
+    # _compute_effective_bb without re-OCR. Gated by env var; no prod cost.
+    if os.getenv("EFFBB_CAPTURE"):
+        hand_capture = {
+            "columns": columns,
+            "hero_stack": hero_stack,
+            "hero_position": hero_position,
+            "stacks": stacks,
+            "named_stacks": named_stacks,
+        }
+    else:
+        hand_capture = None
 
     preflop_actions, preflop_size_repairs = _repair_implausible_open_raise_sizes(
         preflop_actions
@@ -1757,27 +3341,12 @@ def _assemble_hand(
         "preflop_actions": preflop_actions,
     }
 
-    # Sanity check effective_bb — if unreasonable, leave it out for Gemini
-    if effective_bb is not None:
-        # Must be at least as large as the biggest preflop raise
-        max_preflop_raise = 0
-        for part in preflop_actions.split("-"):
-            if part.startswith("R"):
-                try:
-                    max_preflop_raise = max(max_preflop_raise, float(part[1:]))
-                except ValueError:
-                    pass
-            elif part.startswith("AI"):
-                try:
-                    max_preflop_raise = max(max_preflop_raise, float(part[2:]))
-                except ValueError:
-                    pass
-        if effective_bb < max_preflop_raise:
-            effective_bb = None  # unreasonable, let Gemini compute
-        # Must be reasonable relative to hero's displayed stack
-        elif hero_stack and effective_bb > hero_stack * 5:
-            effective_bb = None  # likely stack matching error
-
+    # effective_bb abstention now lives inside _compute_effective_bb (the
+    # dual-estimator confidence gate). The old external sanity gate — the
+    # `< max_preflop_raise` null AND the `> hero_stack*5` displayed×5 null —
+    # is removed: the physical-floor half is folded into the function's
+    # confidence, and the displayed×5 half false-nulled deep-invested hero
+    # hands (hero displayed ~3-5bb after heavy action, true effective ~30-60bb).
     if effective_bb is not None:
         hand["effective_bb"] = effective_bb
 
@@ -1837,6 +3406,9 @@ def _assemble_hand(
     # Mismatched stacks cause position mapping errors downstream.
     if stacks and len(stacks) == players_at_table:
         hand["player_stacks"] = stacks
+
+    if hand_capture is not None:
+        hand["__effbb_inputs__"] = hand_capture
 
     # Purple felt is a final-table SIGNAL on N8, not a guarantee — auto-setting
     # ICM/FT from it over-triggered ICM analysis (H3518: an 8-handed purple

@@ -1,0 +1,14 @@
+
+## HERO ACTIVE (target population): n=1805 emitted=1729 coverage=95.8% bucket-precision=47.02% (813/1729)
+   faults: {'selection': 617, 'near': 111, 'undershoot': 152, 'impossible_over': 36}
+
+## HERO FOLDED (context only): n=5103 emitted=4799 coverage=94.0% bucket-precision=35.80% (1718/4799)
+   faults: {'undershoot': 483, 'impossible_over': 37, 'selection': 2153, 'near': 408}
+
+--- precision/coverage curve (hero-active, by confidence floor) ---
+  conf>=0.0: coverage= 95.8%  precision= 47.02%
+  conf>=0.5: coverage= 95.8%  precision= 47.02%
+  conf>=0.6: coverage= 95.8%  precision= 47.02%
+  conf>=0.7: coverage= 95.8%  precision= 47.02%
+  conf>=0.8: coverage= 95.8%  precision= 47.02%
+  conf>=0.9: coverage= 95.8%  precision= 47.02%
