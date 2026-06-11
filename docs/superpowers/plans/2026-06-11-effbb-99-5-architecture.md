@@ -175,6 +175,45 @@ The residual is reconstruction logic + a hard single-frame information limit:
   residual down. Whatever cannot be confidently reconstructed → abstain (Phase 4).
   Realistic target after Phase 3+4: **99.5% precision @ ~50–65% coverage.**
 
+**Phase 3 STATUS (shipped, 2026-06-11) — hero side recovered, villain side
+confirmed unrecoverable.**
+
+*Implemented (net win):* a **hero all-in / stack≈0 starting-stack
+reconstruction** in `_effective_bb_for_layout`. When hero's displayed stack
+reads ~0 (hero shoved, or called a villain shove for their whole stack), hero's
+STARTING stack is exactly hero's permanent commitment. The betting engine's
+decision-local per-position hero contribution is an INDEPENDENT reconstruction
+of that amount; we prefer it when it agrees with the legacy displayed+walk
+estimate on the depth bucket, and ABSTAIN (confidence cap) when they disagree
+and the displayed read is uninformative (the partial/misread shove sticker is
+single-frame unrecoverable). Measured effect on the 1,805 hero-active cache: **0
+regressions, 0 wrong→right, 24 wrong→ABSTAIN** — purely an abstain-quality win.
+Frontier moved **69.95% @ 79.8% → 70.94% @ 78.2%**; conf≥0.9 **75.07% @ 60.0% →
+76.13% @ 58.7%**; conf=1.0 **76.44% @ 46.1% → 77.74% @ 45.0%**. The
+hero-stack~0 sub-population (277 hands) emits at **~91.6% precision @ 77%
+coverage** (was ~85% @ 90%).
+
+*Confirmed not improvable (the single-frame VALUE limit):* turning the engine
+relevant-opponent value override ON (`OCR_EFFBB_ENGINE_OPP=1`) is still
+net-negative (69.63% vs 69.95%) — the engine reads a noisy seat, as Phase 1/2
+found. Replacing the legacy villain invest with the engine's per-position
+contribution (or with a panel-position contribution that DOES fix the canonical
+start-vs-displayed hand TM5864261096 → 13.7) is net-NEGATIVE wholesale
+(~107 better / ~510–539 worse): the same change that fixes one start-vs-displayed
+villain over-adds invested chips on ~5× as many multiway hands where a villain
+folded mid-street or the panel position drifts. So the **villain start-vs-displayed
+class is layout-INDEPENDENT VALUE error with no input redundancy to vote against
+it** — exactly the residual Phase 2 measured (411 wrong emits) and which the
+Phase-3 de-risking proved is NOT a legibility problem. These stay OFF; the
+residual is handed to **Phase 4 calibrated abstain**, not forced to a guess.
+
+*Genuinely unrecoverable examples (→ Phase 4 abstain):* `TM5874977534` (hero
+all-in sticker shows 1.24 for a true 11.2 stack — both reconstructions agree on
+the wrong tiny value, no internal signal; stays a wrong emit); `TM5864261096`
+(real start-vs-displayed villain under-add, but the engine MIS-assigns its
+positions on panel-order divergence so neither path recovers 13.7);
+`TM5863941899` (hero displayed 1.0 is itself an OCR corruption).
+
 ### ~~Phase 5 — targeted VLM fallback~~ DROPPED (de-risked ineffective 2026-06-11)
 
 ### Phase 4 — calibrated abstain (hard gates + selector)
