@@ -818,17 +818,25 @@ def test_engine_m1_postflop_jam_uses_total_contribution():
 
 
 @test
-def test_engine_m2_walkover_binds_on_bb():
-    """M2: hero opens and folds through → relevant opponent is the BB seat.
-    TM5863067852 (GT 10.7) and TM5863068088 (GT 13.8)."""
+def test_engine_m2_walkover_binds_on_seats_behind():
+    """M2: hero opens and folds through → EVERY seat still to act behind hero
+    binds the steal spot (GT-aligned preflop-only set: a short BTN/SB behind
+    defines the depth as much as the BB; hh_parser in_pot_chips includes all
+    of them). BB must be in the set; no seat acting BEFORE hero that folded
+    may be. TM5863067852 (GT 10.7) and TM5863068088 (GT 13.8)."""
     eng = _engine()
     for hid in ("TM5863067852", "TM5863068088"):
         o, streets, pot = _eng_streets_from_cache(hid)
+        order = eng.POSITION_ORDERS[o["gt"]["num_players"]]
+        hidx = order.index(o["inputs"]["hero_position"])
         r = eng.analyze(streets, o["gt"]["num_players"],
                         o["inputs"]["hero_position"], pot.get("preflop"))
         assert_eq(r.rule, "M2", f"{hid} should be a walkover")
-        assert_eq(r.relevant_opponents, ["BB"],
-                  f"{hid} walkover binds on BB, got {r.relevant_opponents}")
+        assert_in("BB", r.relevant_opponents,
+                  f"{hid} BB must bind the walkover, got {r.relevant_opponents}")
+        assert_eq(sorted(r.relevant_opponents), sorted(order[hidx + 1:]),
+                  f"{hid} walkover binds on all seats behind hero, "
+                  f"got {r.relevant_opponents}")
 
 
 @test

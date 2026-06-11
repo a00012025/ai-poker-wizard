@@ -1722,18 +1722,42 @@ def _effective_bb_for_layout(
         # Highest committed amount on this street by any single player, and
         # the set of total commitments, to decide what got matched.
         running = {}       # id -> running total this street (calls additive)
+        _key_pos = {}      # id -> panel position (for preflop blind credit)
+        _is_preflop_col = bool(preflop_col) and _sidx == 0
         order = []
         for i, e in enumerate(entries):
             ea = (e.get("action") or "").lower()
             es = e.get("size") or 0.0
             if ea in ("fold", "check"):
                 continue
-            key = (e.get("type"), e.get("player_name"), i if e.get("player_name") is None else None)
+            # Hero is ONE stream even when unnamed (panel hero rows carry no
+            # player_name): keying unnamed entries per-index split a hero
+            # raise-then-call across two streams, so the running total never
+            # reached a villain's shove size and the matched-allin floor
+            # silently never fired (TM5863575308: hero R2.0 + C2.65 vs BTN
+            # All-In 4.65 — matched in reality, unmatched under per-index keys).
+            _unnamed_idx = i if (e.get("player_name") is None
+                                 and e.get("type") != "hero") else None
+            key = (e.get("type"), e.get("player_name"), _unnamed_idx)
             if ea in ("raise", "all-in", "bet"):
                 running[key] = es  # raise/bet-to replaces; shove sets level
             elif ea == "call":
                 running[key] = running.get(key, 0.0) + es
+            if e.get("position"):
+                _key_pos.setdefault(key, e["position"])
             order.append((key, ea, es, i))
+
+        def _blind_credit(k):
+            # A blind caller's street running misses their POSTED chips (the
+            # Blinds column is often empty, so _prior_invest can't seed it):
+            # BB calling a 9.51 shove shows Call 8.51 — matched in reality,
+            # short by exactly the blind under the bare test. Credit the
+            # posted blind on the preflop street only. (TM5875127705)
+            if not _is_preflop_col:
+                return 0.0
+            pos = _key_pos.get(k)
+            return 1.0 if pos == "BB" else (0.5 if pos == "SB" else 0.0)
+
         for key, ea, es, i in order:
             if ea == "all-in" and es and es > 0:
                 actor = (key[0], key[1]) if len(key) >= 2 else key
@@ -1744,7 +1768,7 @@ def _effective_bb_for_layout(
                 # Was this shove matched by another player to >= its size?
                 shove = es
                 matched = any(
-                    k2 != key and v2 >= shove - 0.5
+                    k2 != key and v2 + _blind_credit(k2) >= shove - 0.5
                     for k2, v2 in running.items()
                 )
                 if matched:
@@ -2103,6 +2127,66 @@ def _effective_bb_for_layout(
     # seat misread to 17 wrongly bound it — GT is 22.9.)
     if hero_uncalled_shove is not None:
         opp_starting = hero_starting
+
+    # ---- Preflop-only behind-hero bound (GT-aligned relevant set) ----
+    # Hand ended preflop with hero still in (and hero did not jam uncalled —
+    # see above): every seat acting AFTER hero binds the spot, including seats
+    # that folded behind (a 2bb stack folding behind hero's open still defined
+    # the depth of the decision), plus earlier voluntary entrants. The
+    # entered-only min above misses the behind-hero folders → systematic
+    # over-estimate on short-bound preflop spots. The engine's relevant set is
+    # GT-aligned for this shape; read it through the layout seat map (a
+    # folder's displayed stack ≈ starting; entrants add their engine-tracked
+    # contribution). Downward-only. (TM5874529608: hero opens, a 2.1bb CO
+    # folds behind — GT 2.1, entered-min said 16.8.)
+    # A MATCHED preflop all-in means the board ran out (all-in showdown): the
+    # ground-truth definition then switches to the POSTFLOP form (only active,
+    # non-folded players bind) — a short stack folding behind hero does NOT
+    # bind a called jam. (TM5866748216: hero calls CO's 21.2 jam, BTN's real
+    # 7.9 folds behind — GT 21.2, not 7.9.) So the behind-hero set only binds
+    # a hand that truly ended preflop with NO matched shove.
+    # An UNCALLED villain jam likewise blocks the bound: the M1 ceiling is an
+    # authoritative panel read that a noisy behind-seat read must not undercut
+    # (TM5896105025: jam 10.0 is GT; a misattributed 6.2 seat read is not).
+    import os as _os_bb
+    _any_pf_allin = any(
+        (e.get("action") or "").lower() == "all-in"
+        for e in (preflop_col.get("entries", []) if preflop_col else [])
+    )
+    if (not _has_postflop and hero_uncalled_shove is None
+            and matched_allin_floor is None and not _any_pf_allin
+            and _os_bb.getenv("OCR_EFFBB_BEHIND_BOUND", "1") != "0"
+            and engine_result is not None
+            and not engine_result.hero_folded
+            and engine_result.relevant_opponents
+            and hero_position and num_players):
+        _smb = _seat_map if _seat_map is not None else _map_positions_to_seats(
+            named_stacks, _panel_position_names(columns),
+            hero_position, num_players)
+        _panel_pos_set = _panel_distinct_positions(columns)
+        if _smb:
+            _behind_cand = []
+            for _p in engine_result.relevant_opponents:
+                _seat = _smb.get(_p)
+                # Only trust a REAL chair: a named seat, or a position the
+                # panel itself shows acting. A nameless seat at a position the
+                # panel never mentions is a chip-sticker phantom whose tiny
+                # read would wrongly undercut the spot. (TM5963740052: unseen
+                # "BB" seat read 2.84 vs GT binder 13.6.)
+                if not (_seat and _seat.get("stack")):
+                    continue
+                if not ((_seat.get("name") or "").strip()
+                        or _p in _panel_pos_set):
+                    continue
+                _inv = engine_result.contribution.get(_p, 0.0) or 0.0
+                if pot_bound is not None and _inv > pot_bound + 0.5:
+                    _inv = pot_bound
+                _behind_cand.append(_seat["stack"] + _inv)
+            if _behind_cand and min(_behind_cand) < opp_starting:
+                opp_starting = round(min(_behind_cand), 1)
+                engine_pinned = True
+                name_matched_villain = False
+                geometry_pinned = True
 
     # ---- Engine single-opponent selection correction (downward-only) ----
     # When the engine name-resolved the lone live opponent at hero's fold, use
@@ -2687,7 +2771,14 @@ def _compute_effective_bb(
         hero_near_zero = (hero_stack_displayed is not None
                           and hero_stack_displayed <= 1.5)
         strong_panel_read = (
-            feat.get("decision_class") in ("M1", "M2") and base_conf >= 0.95)
+            (feat.get("decision_class") in ("M1", "M2") and base_conf >= 0.95)
+            # base_conf 1.0 = the binding value is an explicit panel all-in
+            # size (matched-shove floor / uncalled-jam ceiling) — read straight
+            # off the screen, same trust tier as M1/M2. The stack-only
+            # cross-check legitimately diverges there (it can't see the shove),
+            # so method-straddle must not abstain it. (TM5875127705: BB calls
+            # a 9.51 jam — floor 9.51 vs stack-only 18.4.)
+            or base_conf >= 0.999)
         structural_abstain = (
             (engine_eligible and not engine_agrees)      # geometry binding unconfirmed
             or (hero_near_zero and not engine_agrees)    # all-in shove unconfirmed

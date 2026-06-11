@@ -434,6 +434,42 @@ def analyze(
     else:
         live = set()
     rel = sorted(p for p in live if p != hero_position)
+
+    # Hand ended PREFLOP with hero still in: the spot's effective stack is
+    # bound by every seat that acted AFTER hero (a short stack folding behind
+    # still defined the depth of hero's decision) plus any earlier seat whose
+    # FIRST action voluntarily entered (limp/raise — even if it later folded
+    # to a re-raise). The live-at-end set misses the behind-hero folders,
+    # which systematically over-estimates short-bound preflop spots. This
+    # matches the HH ground-truth definition (hh_parser preflop-only
+    # in_pot_chips). (TM5874529608: hero opens, a 2.1bb seat folds behind —
+    # GT effective 2.1, live-at-end said the 3bettor's 16.8.)
+    _has_postflop_rows = any(
+        a.street in ("flop", "turn", "river") for a in assigned
+    )
+    # ANY preflop jam disables the union: a MATCHED jam means the board ran
+    # out (ground truth switches to the postflop definition — active players
+    # only), and an UNCALLED jam is an authoritative M1 panel read that noisy
+    # behind-seat reads must not undercut (TM5896105025: jam 10.0 is GT; a
+    # misattributed 6.2 behind-seat read is not).
+    _any_pf_jam = any(
+        a.street == "preflop" and a.action == _ALLIN for a in assigned
+    )
+    _order_full = POSITION_ORDERS.get(table_size) or []
+    if (not _has_postflop_rows and not res.hero_folded and not _any_pf_jam
+            and hero_position in _order_full):
+        _hidx = _order_full.index(hero_position)
+        _behind = set(_order_full[_hidx + 1:])
+        _first_act: dict = {}
+        for a in assigned:
+            if a.street == "preflop" and a.position and not a.is_hero:
+                _first_act.setdefault(a.position, a.action)
+        _early_entrants = {
+            p for p, act in _first_act.items()
+            if p in _order_full[:_hidx] and act != _FOLD
+        }
+        rel = sorted((_behind | _early_entrants | set(rel)) - {hero_position})
+
     res.relevant_opponents = rel
 
     # ---- Hard rules ----
@@ -455,9 +491,13 @@ def analyze(
     )
     if hero_opened_pf and not opp_entered and not has_postflop and not res.hero_folded:
         res.rule = "M2"
-        # The relevant opponent is the BB (the last seat that must defend).
-        res.relevant_opponents = ["BB"] if "BB" in (POSITION_ORDERS.get(table_size) or []) else rel
-        res.notes.append("M2 walkover: hero opens, folds through → BB binds")
+        # Every seat still to act behind hero binds the steal spot (a short
+        # BTN/SB behind defines the depth as much as the BB) — matches the HH
+        # ground-truth definition. ``rel`` already holds the GT-aligned
+        # preflop-only set computed above; keep BB in it as the floor case.
+        if not res.relevant_opponents and "BB" in (POSITION_ORDERS.get(table_size) or []):
+            res.relevant_opponents = ["BB"]
+        res.notes.append("M2 walkover: hero opens, folds through → seats behind bind")
         return res
 
     # M1 uncalled-shove ceiling: there exists an all-in that nobody calls/raises
