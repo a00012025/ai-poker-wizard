@@ -105,6 +105,43 @@ seat-read path lands on 2.9 until Phase 2/3.
   abstain. **Validate:** PR curve with/without consensus gating, by decision
   class. Expected 99.5% @ ~40–65% (logic-only operating point).
 
+**Phase 2 STATUS (shipped, `_enumerate_layouts` + consensus orchestrator in
+`_compute_effective_bb`):** built the top-K layout enumerator (both ring-walk
+directions × `_candidate_rings` phantom-trim alternatives, weak confusable-name
+score, score-margin keep), refactored the legacy core into
+`_effective_bb_for_layout(_seat_map=, _disable_floors=)`, and made
+`_compute_effective_bb` a consensus orchestrator. Gates: layout-bucket straddle
+→ abstain (the engine breaks the tie when its relevant bucket matches one
+layout); **engine-vs-legacy bucket consensus** is the primary discriminator (the
+betting engine's decision-local relevant-seat bucket is an INDEPENDENT opinion —
+corpus 76% precise when it agrees vs 52% on disagreement, so a geometry/heuristic
+binding MUST earn engine confirmation or it abstains). Removed dead
+`_seat_stack_for_position`; fixed HU postflop order (`['BB','SB']`).
+
+**Measured hero-active depth-bucket frontier (1,805 cache, was 66.28% @ 86.1%):**
+```
+  conf>=0.0 : 69.95% @ 79.8%
+  conf>=0.9 : 75.07% @ 60.0%
+  conf>=1.0 : 76.44% @ 46.1%
+```
+NOT the 99.5% the plan projected. **Honest root cause (verified on the cache):**
+bucket-consensus over the available inputs cannot exceed ~76% even at 46%
+coverage. Of the 502 wrong emits at the 66% baseline, only **40 are
+layout-DEPENDENT** (geometric direction changes the bucket — what consensus can
+catch); **411 are layout-INDEPENDENT & recoverable** (the right number is in the
+inputs but the binding value — hero's own displayed stack, the
+uniquely-attributed contestant seat, or the panel all-in size — is itself wrong,
+and EVERY hypothesis from those same inputs agrees on the same wrong bucket); 51
+are input-bound. Even the conf=1.0 explicit-all-in tier is only 74.6% precise,
+and 147/158 of its misses have the right number present elsewhere → the all-in
+size/ceiling is misread or mis-attributed. An internally-consistent VALUE error
+with no input redundancy to vote against → **a Phase-3 numeric-reread problem,
+not an attribution one.** Phase 2 still delivers: (a) robust top-K attribution +
+the abstain frontier Phase 4 calibrates on, (b) the engine-consensus
+discriminator (+~5pp at 60% coverage), (c) the carry-over fixes. The 411
+wrong-contestant / wrong-hero-stack residual is handed to Phase 3 (reread hero +
+candidate-seat + shove crops) and Phase 5 (VLM on the residual).
+
 ### Phase 3 — dedicated numeric re-read OCR
 - Extract seat-stack & action-size crops; auto-label from HH
   (`displayed = starting − invested`; action sizes aligned by street/order).
