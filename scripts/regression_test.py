@@ -432,8 +432,12 @@ def test_effbb_multiway_selection():
         o = json.loads(line)
         if "inputs" in o:
             by_id[o["hand_id"]] = o
-    # TM5873208532: multiway, hero 36.2 vs shortest active caller ~29.3 -> bucket 30
-    inp = by_id["TM5873208532"]["inputs"]
+    # TM5867671391: multiway (2 live opponents), min-over-villains binds the
+    # shortest active caller -> 29.9, bucket 30. (Replaced TM5873208532, which
+    # the Phase-4 structural gate now abstains: its independent engine bucket
+    # dissents — an unavoidable collateral of the engine-disagree abstain signal
+    # that is net precision-positive on the cache; see effbb_calibrate.)
+    inp = by_id["TM5867671391"]["inputs"]
     eff, hero_start, conf = _compute_effective_bb(
         inp["columns"], inp["hero_stack"], inp["hero_position"],
         inp["stacks"], inp["named_stacks"])
@@ -672,10 +676,14 @@ def test_effbb_confidence_is_calibrated_monotonic():
     p7, _ = prec_at(0.7)
     p9, _ = prec_at(0.9)
     # Higher floor must not LOWER precision (monotone non-decreasing), and the
-    # top band must be meaningfully more precise than the whole population.
+    # top band must be more precise than the whole population.
+    # NOTE: the Phase-4 structural gate now does most of the precision lifting
+    # (it abstains the low-precision hands INDEPENDENT of conf), so the residual
+    # conf curve is flatter than pre-Phase-4 — the top-band gap is smaller but
+    # still positive and monotone. (The pre-gate frontier is in effbb_calibrate.)
     assert_true(p7 >= p0 - 0.5, f"precision dropped raising floor 0->0.7: {p0:.1f}->{p7:.1f}")
     assert_true(p9 >= p7 - 0.5, f"precision dropped raising floor 0.7->0.9: {p7:.1f}->{p9:.1f}")
-    assert_true(p9 >= p0 + 3.0, f"high-conf band not more precise: all={p0:.1f} conf>=0.9={p9:.1f}")
+    assert_true(p9 >= p0 + 1.0, f"high-conf band not more precise: all={p0:.1f} conf>=0.9={p9:.1f}")
 
 
 @test
@@ -1000,9 +1008,184 @@ def test_phase2_consensus_curve_trades_coverage_for_precision():
 
     p0, c0 = prec_cov(0.0)
     p9, c9 = prec_cov(0.9)
-    assert_true(p9 >= p0 + 3.0,
+    # The Phase-4 structural gate now absorbs most of the precision separation
+    # (it abstains low-precision hands regardless of conf), so the residual conf
+    # band gap is smaller post-gate but still positive + monotone.
+    assert_true(p9 >= p0 + 1.0,
                 f"top band not cleaner: all={p0:.1f}@{c0:.0f}% conf>=0.9={p9:.1f}@{c9:.0f}%")
     assert_true(c9 < c0, "raising the floor must reduce coverage")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — calibrated structural abstain
+# ---------------------------------------------------------------------------
+def _effbb_run(hid, *, gate=True):
+    """Run _compute_effective_bb on a cache hand with the structural gate on/off.
+
+    Imports the parser fresh under the requested OCR_EFFBB_STRUCTURAL_GATE so the
+    module-level gate constant reflects the flag (the constant is read at import).
+    Returns (effective_bb, gt_eff).
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    import importlib
+    prev = os.environ.get("OCR_EFFBB_STRUCTURAL_GATE")
+    os.environ["OCR_EFFBB_STRUCTURAL_GATE"] = "1" if gate else "0"
+    try:
+        import ocr.n8_parser as _P
+        importlib.reload(_P)
+        cache = os.path.join(os.path.dirname(__file__), "..",
+                             "data/effbb_cache/cache.jsonl")
+        o = None
+        for line in open(cache, encoding="utf-8"):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row["hand_id"] == hid:
+                o = row
+                break
+        assert o is not None, f"{hid} not in cache"
+        inp = o["inputs"]
+        eff = _P._compute_effective_bb(
+            inp["columns"], inp["hero_stack"], inp["hero_position"],
+            inp["stacks"], inp["named_stacks"])[0]
+        return eff, o["gt"]["effective_bb"]
+    finally:
+        if prev is None:
+            os.environ.pop("OCR_EFFBB_STRUCTURAL_GATE", None)
+        else:
+            os.environ["OCR_EFFBB_STRUCTURAL_GATE"] = prev
+        import ocr.n8_parser as _P
+        importlib.reload(_P)
+
+
+@test
+def test_phase4_features_surfaced_per_hand():
+    """The Phase-4 abstain features are captured per hand (no re-OCR) and carry
+    the candidate signals the calibration harness fits gates on."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb, _effbb_last_features
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {}
+    for line in open(cache, encoding="utf-8"):
+        if line.strip():
+            r = json.loads(line)
+            rows[r["hand_id"]] = r
+    o = rows["TM5862908042"]; inp = o["inputs"]   # a clean emitting hand
+    _compute_effective_bb(inp["columns"], inp["hero_stack"], inp["hero_position"],
+                          inp["stacks"], inp["named_stacks"])
+    f = _effbb_last_features()
+    for key in ("confidence", "engine_agrees", "engine_disagrees",
+                "binding_geometry_only", "method_straddle",
+                "hero_stack_near_zero", "boundary_dist", "decision_class",
+                "n_relevant_opp", "pot_residual", "n_layouts", "layout_buckets"):
+        assert_in(key, f)
+
+
+@test
+def test_phase4_bucket_boundary_distance():
+    """Boundary-distance fragility signal: a value near a bucket-cell edge is
+    flagged fragile (small), a value at a bucket centre is not."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _bucket_boundary_distance
+    # 27.5 is the 25<->30 cell edge: distance ~0.
+    assert_true(_bucket_boundary_distance(27.6) < 0.02,
+                "near-edge value not flagged fragile")
+    # 30.0 is a bucket centre: comfortably away from its 27.5 / 32.5 edges.
+    assert_true(_bucket_boundary_distance(30.0) > 0.05,
+                "bucket-centre value wrongly flagged fragile")
+
+
+@test
+def test_phase4_gate_abstains_structurally_wrong_hands():
+    """The shipped structural gate ABSTAINS representative internally-consistent
+    wrong emits (the layout-independent value errors consensus is blind to),
+    where the ungated path emitted a confidently-wrong bucket."""
+    # TM5863067607: SB-limper sticker misread (3.9 for ~17.4) — Phase-1 example.
+    eff_off, gt = _effbb_run("TM5863067607", gate=False)
+    from effbb_metrics import bucket_match
+    assert_true(eff_off is not None and not bucket_match(eff_off, gt),
+                f"fixture no longer a wrong emit ungated: {eff_off} vs {gt}")
+    eff_on, _ = _effbb_run("TM5863067607", gate=True)
+    assert_true(eff_on is None, f"gate failed to abstain wrong hand: {eff_on}")
+    # TM5863941899: hero displayed stack is itself an OCR corruption (1.0).
+    eff_on2, _ = _effbb_run("TM5863941899", gate=True)
+    assert_true(eff_on2 is None, f"gate failed to abstain corrupt-hero hand: {eff_on2}")
+
+
+@test
+def test_phase4_gate_keeps_clean_correct_hands():
+    """The shipped structural gate does NOT abstain clean, correct emits — the
+    abstain is targeted, not a blanket coverage cut."""
+    from effbb_metrics import bucket_match
+    for hid in ("TM5862908042", "TM5863067726", "TM5863067671"):
+        eff, gt = _effbb_run(hid, gate=True)
+        assert_true(eff is not None and bucket_match(eff, gt),
+                    f"gate wrongly abstained/missed clean hand {hid}: {eff} vs {gt}")
+
+
+@test
+def test_phase4_gate_lifts_precision_over_baseline():
+    """The shipped structural gate lifts emitted precision over the bare-conf
+    baseline across the hero-active cache, at the cost of coverage (abstaining
+    is cheap downstream). Calibrated 5-fold-CV operating point: ~74% @ ~61%
+    coverage vs the ~71% @ ~78% ungated baseline. 99.5% is NOT reachable on
+    single-frame inputs (documented in the Phase-4 plan); this guards the
+    precision GAIN the gate actually delivers."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    import importlib
+    from effbb_metrics import hero_folded_preflop, bucket_match
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = [json.loads(l) for l in open(cache, encoding="utf-8") if l.strip()]
+
+    def frontier(gate):
+        prev = os.environ.get("OCR_EFFBB_STRUCTURAL_GATE")
+        os.environ["OCR_EFFBB_STRUCTURAL_GATE"] = "1" if gate else "0"
+        try:
+            import ocr.n8_parser as _P
+            importlib.reload(_P)
+            emit = ok = total = 0
+            for o in rows:
+                gt = o.get("gt") or {}
+                ge = gt.get("effective_bb")
+                if ge is None or ge < 1.0 or "inputs" not in o:
+                    continue
+                if hero_folded_preflop(gt) is not False:
+                    continue
+                total += 1
+                inp = o["inputs"]
+                eff = _P._compute_effective_bb(
+                    inp["columns"], inp["hero_stack"], inp["hero_position"],
+                    inp["stacks"], inp["named_stacks"])[0]
+                if eff is not None:
+                    emit += 1
+                    if bucket_match(eff, ge):
+                        ok += 1
+            return (100 * ok / emit if emit else 0.0,
+                    100 * emit / total if total else 0.0)
+        finally:
+            if prev is None:
+                os.environ.pop("OCR_EFFBB_STRUCTURAL_GATE", None)
+            else:
+                os.environ["OCR_EFFBB_STRUCTURAL_GATE"] = prev
+            import ocr.n8_parser as _P
+            importlib.reload(_P)
+
+    p_off, c_off = frontier(False)
+    p_on, c_on = frontier(True)
+    # The gate raises precision by a real margin and trades coverage for it.
+    assert_true(p_on >= p_off + 2.5,
+                f"gate did not lift precision: off={p_off:.1f} on={p_on:.1f}")
+    assert_true(c_on < c_off,
+                f"gate must trade coverage: off={c_off:.1f}% on={c_on:.1f}%")
+    # Guard the calibrated operating point doesn't silently collapse/loosen.
+    assert_true(71.0 <= p_on <= 78.0,
+                f"shipped precision off calibrated band (~74%): {p_on:.1f}%")
+    assert_true(56.0 <= c_on <= 66.0,
+                f"shipped coverage off calibrated band (~61%): {c_on:.1f}%")
 
 
 @test

@@ -39,6 +39,23 @@ _EFFBB_CONF_FLOOR = float(os.getenv("OCR_EFFBB_CONF_FLOOR", "0.7"))
 # Set OCR_EFFBB_ENGINE_OPP=1 to A/B the override back on.
 _ENGINE_OPP_OVERRIDE_DISABLED = not bool(os.getenv("OCR_EFFBB_ENGINE_OPP"))
 
+# Phase 4 — calibrated STRUCTURAL abstain. Beyond the scalar confidence floor,
+# abstain whenever a structural error signal fires (calibrated on the 1,805-hand
+# hero-active cache via scripts/effbb_calibrate.py, 5-fold pooled CV):
+#   * geometry/heuristic binding the betting engine did NOT confirm,
+#   * the engine's independent decision-local bucket DISAGREES with the emit,
+#   * floors-on vs stack-only reconstructions land in different buckets,
+#   * hero shoved / called all-in (displayed ~0) and the engine can't confirm.
+# These isolate the layout-INDEPENDENT value errors the bucket-consensus signal
+# is blind to. Held-out CV: lifts emitted precision 70.9%→76.5% at 48.8% coverage
+# (from 78.2%). 99.5% is provably UNREACHABLE on single-frame inputs (the wrong
+# emits are internally-consistent stack/start-vs-displayed misreads no feature
+# separates; absolute ceiling ~86% @ ~10% cov — see the calibrate harness +
+# docs plan Phase-4). Abstaining is cheap (None → safe generic solver depth), so
+# the precision-maximizing structural gate is ON by default; set
+# OCR_EFFBB_STRUCTURAL_GATE=0 to revert to the bare conf floor (70.9% @ 78.2%).
+_EFFBB_STRUCTURAL_GATE = os.getenv("OCR_EFFBB_STRUCTURAL_GATE", "1") != "0"
+
 # Position orders by table size (must match analyze_hand.py)
 POSITION_ORDERS = {
     9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
@@ -2273,6 +2290,47 @@ def _depth_bucket(bb) -> int | None:
     return min(_DEPTH_BUCKETS, key=lambda d: abs(d - bb))
 
 
+# Bucket cell boundaries (the midpoints between adjacent solver depths, the
+# decision surfaces of _depth_bucket). A value near one of these edges flips its
+# bucket under a tiny OCR error → a Phase-4 abstain risk signal. Edges, high→low:
+# 90, 70, 55, 45, 37.5, 32.5, 27.5, 22.5, 18.5, 15.5, 13, 11, 9.5, 8.5.
+_BUCKET_EDGES = sorted(
+    (_DEPTH_BUCKETS[i] + _DEPTH_BUCKETS[i + 1]) / 2.0
+    for i in range(len(_DEPTH_BUCKETS) - 1)
+)
+
+
+def _bucket_boundary_distance(bb) -> float | None:
+    """Relative distance from ``bb`` to the nearest bucket-cell edge.
+
+    Returns ``abs(bb - nearest_edge) / bb`` (a small value = the emitted depth is
+    fragile: a few-percent OCR error in the binding stack would flip its solver
+    bucket). ``None`` on bad input. Values above the top edge (no upper bound on
+    the 100bb cell) return a large sentinel so deep stacks aren't flagged fragile.
+    """
+    try:
+        bb = float(bb)
+    except (TypeError, ValueError):
+        return None
+    if bb <= 0:
+        return None
+    nearest = min(_BUCKET_EDGES, key=lambda e: abs(e - bb))
+    return abs(bb - nearest) / bb
+
+
+# --- Phase 4: per-hand abstain-feature capture ---------------------------------
+# _compute_effective_bb stashes the abstain-signal features for the LAST hand it
+# scored here, so the calibration harness (scripts/effbb_calibrate.py) can pull
+# them WITHOUT re-OCR. Production reads nothing from this; it is pure debug/calib
+# instrumentation (a single dict, overwritten each call — no memory growth).
+_LAST_EFFBB_FEATURES: dict = {}
+
+
+def _effbb_last_features() -> dict:
+    """Return the abstain-signal features captured for the last scored hand."""
+    return dict(_LAST_EFFBB_FEATURES)
+
+
 def _engine_relevant_bucket(
     columns, hero_position, num_players, named_stacks, hero_start, seat_map,
 ):
@@ -2367,11 +2425,57 @@ def _compute_effective_bb(
     over-compute guard nulls a layout whose investment exceeds the pot bound).
     Returns the legacy 3-tuple ``(effective_bb, hero_starting, confidence)``.
     """
+    # --- Phase 4 feature capture (debug/calibration only; prod ignores it) ---
+    # Accumulate the candidate abstain signals as we compute them, and flush to
+    # the module-level store at every return via _finish(). No GT here.
+    global _LAST_EFFBB_FEATURES
+    feat: dict = {
+        "hero_stack_displayed": hero_stack_displayed,
+        "hero_position": hero_position,
+        "num_players": num_players,
+        "n_layouts": 0,
+        "layout_buckets": [],
+        "layout_straddle": False,
+        "rep_eff": None,
+        "rep_bucket": None,
+        "base_conf": None,
+        "emit_frac": None,
+        "eng_bucket": None,
+        "eng_singleton": None,
+        "engine_agrees": None,
+        "engine_disagrees": None,
+        "engine_eligible": None,
+        "x_agree": None,
+        "boundary_dist": None,
+        "hero_stack_near_zero": (hero_stack_displayed is not None
+                                 and hero_stack_displayed <= 1.5),
+        "decision_class": None,
+        "n_relevant_opp": None,
+        "rule_ceiling": None,
+        "pot_residual": None,
+        "binding_geometry_only": None,
+        "stackonly_buckets": [],
+        "method_straddle": False,
+        "confidence": 0.0,
+        "effective_bb": None,
+    }
+
+    def _finish(eff, hero_start_, conf):
+        global _LAST_EFFBB_FEATURES
+        feat["effective_bb"] = eff
+        feat["confidence"] = conf
+        if eff is not None:
+            feat["boundary_dist"] = _bucket_boundary_distance(eff)
+            feat["rep_bucket"] = _depth_bucket(eff)
+        _LAST_EFFBB_FEATURES = feat
+        return eff, hero_start_, conf
+
     if hero_stack_displayed is None:
-        return None, None, 0.0
+        return _finish(None, None, 0.0)
 
     if num_players is None:
         num_players = _infer_num_players(columns, named_stacks)
+    feat["num_players"] = num_players
 
     import os as _os
     _margin = int(_os.getenv("OCR_EFFBB_LAYOUT_MARGIN", "1"))
@@ -2414,8 +2518,16 @@ def _compute_effective_bb(
         results.append(r1)
         stack_only.append(r2)
 
+    feat["n_layouts"] = len(layouts)
+    feat["layout_buckets"] = sorted(
+        {b for b in (_depth_bucket(eff) for eff, _, _ in results
+                     if eff is not None) if b is not None})
+    feat["stackonly_buckets"] = sorted(
+        {b for b in (_depth_bucket(eff) for eff, _, _ in stack_only
+                     if eff is not None) if b is not None})
+
     if not results:
-        return None, None, 0.0
+        return _finish(None, None, 0.0)
 
     # hero_starting is layout-independent (hero's own seat).
     hero_start = next((hs for _, hs, _ in results if hs is not None), None)
@@ -2425,7 +2537,7 @@ def _compute_effective_bb(
     n_emit = len(emitted)
 
     if not emitted:
-        return None, hero_start, 0.3
+        return _finish(None, hero_start, 0.3)
 
     # Representative value = highest internal-confidence layout (floors on).
     emitted.sort(key=lambda t: -t[1])
@@ -2448,6 +2560,32 @@ def _compute_effective_bb(
     eng_bucket, eng_singleton = _engine_relevant_bucket(
         columns, hero_position, num_players, named_stacks, hero_start,
         rep_seat_map)
+    feat["base_conf"] = base_conf
+    feat["emit_frac"] = emit_frac
+    feat["eng_bucket"] = eng_bucket
+    feat["eng_singleton"] = eng_singleton
+
+    # --- Engine decision class / pot-conservation residual (Phase-4 features) ---
+    # One extra engine read for the calibration features (decision class M1/M2/M3
+    # or standard, relevant-opponent count, M1 ceiling, and the preflop
+    # pot-conservation residual: |inferred contributions − pot header|). Wrapped
+    # so a feature-only failure never affects emission.
+    try:
+        from . import effbb_engine as _eng_f
+        _es, _ep = _engine_streets(columns)
+        _er = _eng_f.analyze(_es, num_players, hero_position, _ep.get("preflop"))
+        if _er is not None:
+            feat["decision_class"] = _er.rule or "standard"
+            feat["n_relevant_opp"] = len(_er.relevant_opponents or [])
+            feat["rule_ceiling"] = _er.rule_ceiling
+            pot_hdr = _ep.get("preflop")
+            if pot_hdr and _er.contribution:
+                recon = sum(_er.contribution.values()) + (_er.ante_total or 0.0)
+                feat["pot_residual"] = abs(recon - pot_hdr) / pot_hdr \
+                    if pot_hdr > 0 else None
+            feat["blinds_ok"] = bool(_er.blinds_ok)
+    except Exception:
+        pass
 
     # --- Layout consensus (geometric seat-direction ambiguity) ---
     # Do the floor-inclusive estimates agree on the depth bucket across all
@@ -2456,6 +2594,7 @@ def _compute_effective_bb(
     # layout — then the engine breaks the tie toward that layout's value.
     layout_buckets = {_depth_bucket(eff) for eff, _, _ in results if eff is not None}
     if len(layout_buckets) != 1 or None in layout_buckets:
+        feat["layout_straddle"] = True
         if eng_bucket is not None and eng_bucket in layout_buckets:
             # Engine resolves the direction: keep the layout whose bucket the
             # engine confirms.
@@ -2466,13 +2605,20 @@ def _compute_effective_bb(
                 rep_eff = tie[0][0]
                 base_conf = max(tie[0][1], 0.9)
             else:
-                return None, hero_start, 0.4
+                return _finish(None, hero_start, 0.4)
         else:
-            return None, hero_start, 0.4
+            return _finish(None, hero_start, 0.4)
 
     rep_bucket = _depth_bucket(rep_eff)
     engine_disagrees = eng_bucket is not None and eng_bucket != rep_bucket
     engine_agrees = eng_bucket is not None and eng_bucket == rep_bucket
+    feat["rep_eff"] = rep_eff
+    feat["engine_disagrees"] = engine_disagrees
+    feat["engine_agrees"] = engine_agrees
+    # method straddle: floors-on vs stack-only disagree on bucket across layouts
+    feat["method_straddle"] = (
+        bool(feat["stackonly_buckets"])
+        and set(feat["layout_buckets"]) != set(feat["stackonly_buckets"]))
 
     # --- Cross-method agreement (panel-shove vs pure-stack) ---
     # NOT a hard gate (corpus evidence: a floor/stack disagreement is right as
@@ -2496,6 +2642,9 @@ def _compute_effective_bb(
     # them (corpus: disagreement is a coin-flip overall, but on the geometry
     # tier it is the strongest abstain signal we have).
     engine_eligible = base_conf <= 0.86
+    feat["x_agree"] = x_agree
+    feat["engine_eligible"] = engine_eligible
+    feat["binding_geometry_only"] = engine_eligible
     if engine_eligible:
         # A geometry/heuristic binding (base_conf <= ~0.85) is only ~28% precise
         # on its own (corpus) — it MUST earn independent betting-logic
@@ -2519,8 +2668,36 @@ def _compute_effective_bb(
     consensus_conf = min(1.0, round(consensus_conf, 3))
 
     if consensus_conf < _EFFBB_CONF_FLOOR:
-        return None, hero_start, consensus_conf
-    return round(rep_eff, 1), hero_start, consensus_conf
+        return _finish(None, hero_start, consensus_conf)
+
+    # --- Phase 4: calibrated structural abstain (precision-maximizing) ---
+    # The conf floor catches AMBIGUITY; these catch internally-consistent VALUE
+    # errors the consensus signal is blind to. Any firing → abstain (cap conf so
+    # downstream sees a None). Calibrated on the 1,805-hand hero-active cache
+    # (scripts/effbb_calibrate.py, 5-fold pooled CV). The broad engine-disagree /
+    # method-straddle signals are SCOPED OFF the strong panel-read bindings
+    # (M1 uncalled-shove ceiling / M2 walkover at base_conf>=0.95) — on those
+    # the engine reads a noisy seat and falsely dissents, so applying them there
+    # is net-negative AND would abstain correct M1/M2 emits. Held-out: lifts
+    # emitted precision ~70.9%→~73-75% at the cost of ~25pp coverage (cheap:
+    # None → safe generic solver depth). 99.5% is NOT reachable on single-frame
+    # inputs (the wrong residual is internally-consistent stack misreads no
+    # feature separates — ceiling ~86% @ ~10% cov; see the plan Phase-4).
+    if _EFFBB_STRUCTURAL_GATE:
+        hero_near_zero = (hero_stack_displayed is not None
+                          and hero_stack_displayed <= 1.5)
+        strong_panel_read = (
+            feat.get("decision_class") in ("M1", "M2") and base_conf >= 0.95)
+        structural_abstain = (
+            (engine_eligible and not engine_agrees)      # geometry binding unconfirmed
+            or (hero_near_zero and not engine_agrees)    # all-in shove unconfirmed
+            or (engine_disagrees and not strong_panel_read)   # independent engine dissents
+            or (feat["method_straddle"] and not strong_panel_read)  # floors↔stack straddle
+        )
+        if structural_abstain:
+            return _finish(None, hero_start, min(consensus_conf, 0.69))
+
+    return _finish(round(rep_eff, 1), hero_start, consensus_conf)
 
 
 def _build_diagnostics(
