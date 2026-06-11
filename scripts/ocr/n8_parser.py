@@ -1758,6 +1758,8 @@ def _effective_bb_for_layout(
             pos = _key_pos.get(k)
             return 1.0 if pos == "BB" else (0.5 if pos == "SB" else 0.0)
 
+        _fold_rows = [(k, e) for k, e in enumerate(entries)
+                      if (e.get("action") or "").lower() == "fold"]
         for key, ea, es, i in order:
             if ea == "all-in" and es and es > 0:
                 actor = (key[0], key[1]) if len(key) >= 2 else key
@@ -1765,6 +1767,48 @@ def _effective_bb_for_layout(
                     continue  # player acted again later — not a real all-in
                 if key[0] == "hero" and _sidx in _false_hero_allin_streets:
                     continue  # hero acted again on a later street — mislabel
+                # Poker-rules legality: an "All-In" that does not exceed what a
+                # player ALREADY committed this street is a call-for-less from
+                # that player's view — a player who covers the jam CANNOT fold
+                # to it. If such a covering player folds right after, the
+                # "All-In" row is a misparsed raise with a garbled size; it
+                # must not become a floor. (TM5878838751: hero Bet 9.0 →
+                # "All-In 1.0" → hero Fold; the 1.0 would bind a 44bb spot.
+                # A third player folding after a genuine short call-allin is
+                # legal — they fold to the original bet — so the folder's own
+                # commitment is what must cover the jam, TM5863942611.)
+                _lvl_run: dict = {}
+                for k2, ea2, es2, i2 in order:
+                    if i2 >= i or k2 == key:
+                        continue
+                    if ea2 in ("raise", "bet", "all-in"):
+                        _lvl_run[k2] = es2
+                    elif ea2 == "call":
+                        _lvl_run[k2] = _lvl_run.get(k2, 0.0) + es2
+
+                def _covering_folder_after(jam_idx, jam_key, jam_size):
+                    for fk, fe in _fold_rows:
+                        if fk <= jam_idx:
+                            continue
+                        f_is_hero = fe.get("type") == "hero"
+                        committed = 0.0
+                        for k2, v2 in _lvl_run.items():
+                            k2_is_hero = k2[0] == "hero"
+                            k2_name = k2[1] if len(k2) >= 2 else None
+                            if f_is_hero and k2_is_hero:
+                                committed = max(committed, v2)
+                            elif (not f_is_hero and not k2_is_hero
+                                  and k2_name and fe.get("player_name")
+                                  and _fuzzy_name_match(k2_name,
+                                                        fe["player_name"])):
+                                committed = max(committed, v2)
+                        if committed >= jam_size - 0.25:
+                            return True
+                    return False
+
+                if es <= (max(_lvl_run.values()) if _lvl_run else 0.0) + 0.25 \
+                        and _covering_folder_after(i, key, es):
+                    continue
                 # Was this shove matched by another player to >= its size?
                 shove = es
                 matched = any(

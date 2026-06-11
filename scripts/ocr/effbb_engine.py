@@ -545,6 +545,24 @@ def _uncalled_shove_ceiling(
     for i, a in enumerate(assigned):
         if a.action != _ALLIN or not a.size or a.position is None:
             continue
+        # Poker-rules legality: a jam that does NOT exceed the street level
+        # another player already committed is covered by the pot — it cannot
+        # end the hand "uncalled", and a later fold "to" it is structurally
+        # impossible. Such a row is a misparsed bet/raise with a garbled size
+        # (TM5878838751: river hero Bet 9.0 → "All-In 1.0" → hero Fold; the
+        # 1.0 is a misread and must not become a ~1bb ceiling on a 44bb spot).
+        run: dict = {}
+        for j in range(0, i):
+            b = assigned[j]
+            if b.street != a.street or b.position in (None, a.position):
+                continue
+            if b.action in (_RAISE, _BET, _ALLIN):
+                run[b.position] = b.size or 0.0
+            elif b.action == _CALL:
+                run[b.position] = run.get(b.position, 0.0) + (b.size or 0.0)
+        level_before = max(run.values()) if run else 0.0
+        if a.size <= level_before + 0.25:
+            continue
         # Anyone after this jam (same street) who calls/raises/jams = matched.
         matched = False
         for j in range(i + 1, n):
