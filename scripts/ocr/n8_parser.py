@@ -2612,6 +2612,9 @@ def _compute_effective_bb(
         "n_relevant_opp": None,
         "rule_ceiling": None,
         "pot_residual": None,
+        "chip_consistent": None,
+        "chip_repair_found": None,
+        "chip_residual": None,
         "binding_geometry_only": None,
         "stackonly_buckets": [],
         "method_straddle": False,
@@ -2743,6 +2746,31 @@ def _compute_effective_bb(
                 feat["pot_residual"] = abs(recon - pot_hdr) / pot_hdr \
                     if pot_hdr > 0 else None
             feat["blinds_ok"] = bool(_er.blinds_ok)
+            # D3 chip-conservation check (independent of the engine bucket — it
+            # consumes the pot header the bucket logic ignores). Feature-only in
+            # this phase: never changes the emitted value (Task B6 gates it).
+            # The equation sum(contributions)+antes == preflop_pot is only valid
+            # when the hand RESOLVED preflop — engine contributions accumulate
+            # across all streets, so a postflop pot would dwarf the preflop
+            # header (same caveat the existing pot_residual carries). Gate to
+            # preflop-only hands so chip_consistent is a real signal, not noise.
+            _preflop_only = not (_ep.get("flop") or _ep.get("turn")
+                                 or _ep.get("river"))
+            if pot_hdr and _er.contribution and _preflop_only:
+                try:
+                    from .chip_solver import check_chips as _check_chips
+                    _chk = _check_chips(
+                        contributions=_er.contribution,
+                        sb=_er.sb, bb=_er.bb, ante_total=_er.ante_total or 0.0,
+                        pot_headers={"preflop": pot_hdr},
+                        candidates={p: [v] for p, v in _er.contribution.items()},
+                    )
+                    feat["chip_consistent"] = _chk.consistent
+                    feat["chip_repair_found"] = _chk.repair is not None
+                    feat["chip_residual"] = (_chk.residuals.get("preflop")
+                                             if _chk.residuals else None)
+                except Exception:
+                    pass
     except Exception:
         pass
 

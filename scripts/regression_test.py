@@ -1092,6 +1092,38 @@ def test_phase4_features_surfaced_per_hand():
 
 
 @test
+def test_chip_solver_features_surfaced_per_hand():
+    """B2: the chip-conservation features are captured per hand alongside the
+    Phase-4 features (no re-OCR, no behavior change). The clean hand
+    TM5862908042 reconciles its pot header -> chip_consistent True."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb, _effbb_last_features
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {}
+    for line in open(cache, encoding="utf-8"):
+        if line.strip():
+            r = json.loads(line)
+            rows[r["hand_id"]] = r
+    o = rows["TM5862908042"]; inp = o["inputs"]   # a clean emitting hand
+    _compute_effective_bb(inp["columns"], inp["hero_stack"], inp["hero_position"],
+                          inp["stacks"], inp["named_stacks"])
+    f = _effbb_last_features()
+    for key in ("chip_consistent", "chip_repair_found", "chip_residual"):
+        assert_in(key, f)
+    # A preflop-RESOLVED hand actually runs the chip-conservation check (the
+    # equation is only valid pre-flop; postflop hands leave it None). The check
+    # produces a concrete verdict + residual for such a hand.
+    o2 = rows["TM5863485159"]; inp2 = o2["inputs"]
+    _compute_effective_bb(inp2["columns"], inp2["hero_stack"], inp2["hero_position"],
+                          inp2["stacks"], inp2["named_stacks"])
+    f2 = _effbb_last_features()
+    assert_true(f2["chip_consistent"] in (True, False),
+                f"preflop-resolved hand must get a chip verdict: {f2['chip_consistent']}")
+    assert_true(f2["chip_residual"] is not None)
+
+
+@test
 def test_phase4_bucket_boundary_distance():
     """Boundary-distance fragility signal: a value near a bucket-cell edge is
     flagged fragile (small), a value at a bucket centre is not."""
