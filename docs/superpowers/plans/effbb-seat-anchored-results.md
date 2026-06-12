@@ -34,22 +34,36 @@ stop-and-report point: **a neural avatar detector is a user decision, not an
 implementer decision.** The classical detector already lifts both seat-reading
 axes, so it is worth shipping as the optional path now.
 
-## Landing (D4b / C5)
+## Full-corpus effbb rebuild (the decisive measurement) — flag stays OFF
 
-`OCR_SEAT_ANCHORED` **defaults OFF**. Flipping it on changes
-`_compute_effective_bb` inputs and therefore requires a full `EFFBB_CAPTURE=1`
-corpus re-parse (~3h) to rebuild `data/effbb_cache/cache.jsonl` before any effbb
-number can be quoted (D4b). That rebuild is the user-gated next step:
+The cleaner seat reads do **not** improve the production effbb metric. A full
+`OCR_SEAT_ANCHORED=1 EFFBB_CAPTURE=1` re-parse of all 7,183 images
+(`data/effbb_cache/cache_anchored.jsonl`, 6,835 hands got anchored reads),
+scored with `effbb_eval.py`:
 
-```bash
-OCR_SEAT_ANCHORED=1 EFFBB_CAPTURE=1 python scripts/effbb_cache.py   # ~3h
-python scripts/effbb_eval.py --cache data/effbb_cache/cache_anchored.jsonl
-```
+| | precision | coverage | correct |
+|---|---|---|---|
+| Baseline OCR | **78.19%** | 70.4% | 993/1270 |
+| Anchored OCR | 77.05% | 71.0% | 987/1281 |
+| Δ | **−1.14pp** | +0.6pp | −6 |
 
-The flag flips to ON by default only if that rebuild shows the effbb frontier
-improving on BOTH precision and coverage (C5). Until then it lands OFF — zero
-behavior change, zero regression — with the seat-reading scorecard above as the
-evidence that the cleaner reads are worth validating.
+Per the C5 gate (flip ON only if BOTH precision and coverage improve),
+`OCR_SEAT_ANCHORED` **stays OFF** — zero behavior change in production.
+
+**Why better reads don't move effbb (the key finding).** A fault analysis of the
+277 hero-active errors shows **198 (71%) had the correct effective-stack value
+already readable on screen** — 85 selection (wrong seat bound; the right value
+was a visible stack in 85/85) + 113 near (adjacent bucket; value present in
+113/113). The limiter is the **selection / bucketing LOGIC, not seat-read
+recall**, so cleaner reads cannot lift the frontier and can even perturb the
+layout-consensus inputs slightly (the −1.14pp). The achievable headroom lives in
+logic: fixing selection alone is a +6.7pp ceiling (84.9%), selection + boundary
+a +15.6pp ceiling (93.8%) — all on the existing OCR, no re-parse.
+
+The seat-reading scorecard above still stands (the anchored reads ARE cleaner on
+the value axis); it simply isn't the binding constraint for effbb. The module
+lands as the optional, tested path; re-evaluate it only after the selection
+logic is fixed, when read quality may start to matter at the margin.
 
 ## What shipped
 
