@@ -313,6 +313,67 @@ def _preflop_allin_effective_bb(hand: dict, hero_position: str, position_order: 
     return best
 
 
+def _build_hero_spot_depths(hand: dict, *, is_icm: bool, is_cash: bool,
+                            num_players: int | None = None) -> dict | None:
+    """D1 per-hero-decision-node solver depths (chip-EV only).
+
+    Maps a parsed ``hand`` to ``node_depth.resolve_preflop_nodes`` and returns
+    ::
+
+        {"nodes": [<entry>, ...],          # every hero preflop decision node
+         "open":   <entry>,                # first open node (if any)
+         "facing": <entry>}                # first facing node (if any)
+
+    where each ``<entry>`` is ``{"node", "depth", "bucket", "eff", "caveat"}``
+    and ``depth`` is the API depth string (``"30.125"`` for MTT, the cash depth
+    for cash).  Returns ``None`` when the resolver opts out — ICM hands, an
+    unknown hero seat, or hero never voluntarily acts (D1c).
+    """
+    if is_icm:
+        return None
+    n = num_players or hand.get("players_at_table") or hand.get("num_players")
+    if not n:
+        return None
+    pos_order = _get_position_order(n)
+    hero_pos = hand.get("hero_position")
+    if hero_pos not in pos_order:
+        return None
+    hero_start = hand.get("hero_starting_stack") or hand.get("effective_bb")
+    stacks = {}
+    ps = hand.get("player_stacks")
+    if ps and len(ps) == len(pos_order):
+        stacks = {pos_order[i]: ps[i]
+                  for i in range(len(pos_order)) if ps[i]}
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions=hand.get("preflop_actions", ""),
+        hero_position=hero_pos, position_order=pos_order,
+        hero_start=hero_start, stacks=stacks, is_icm=is_icm,
+    )
+    if not nodes:
+        return None
+
+    def _depth_str(eff: float, bucket: int) -> str:
+        if is_cash:
+            return f"{nearest_cash_depth(eff):.3f}"
+        return f"{bucket}.125"
+
+    out: dict = {"nodes": []}
+    for nd in nodes:
+        entry = {
+            "node": nd["node"],
+            "depth": _depth_str(nd["eff"], nd["depth_bucket"]),
+            "bucket": nd["depth_bucket"], "eff": nd["eff"],
+            "caveat": nd.get("caveat"),
+        }
+        out["nodes"].append(entry)
+        if nd["node"] == "open" and "open" not in out:
+            out["open"] = entry
+        elif nd["node"].startswith("facing") and "facing" not in out:
+            out["facing"] = entry
+    return out
+
+
 STREET_NAMES = ["flop", "turn", "river"]
 
 # Action display names for explanatory messages
@@ -1218,6 +1279,16 @@ def _run_analysis(hand: dict) -> dict:
     else:
         target_players = num_players
 
+    # D1: per-hero-decision-node solver depths, computed from the UN-padded
+    # hand (physical seating) so the open-node max-live-cover and facing-node
+    # jam depths align with player_stacks. Padding only prepends folds, which
+    # leaves the hero decision-node sequence (open, facing, ...) invariant, so
+    # this result is consumed safely after padding below. None for ICM / when
+    # the resolver opts out — callers fall through to existing behavior.
+    node_depths = _build_hero_spot_depths(
+        hand, is_icm=is_icm, is_cash=is_cash, num_players=num_players,
+    )
+
     hero_preflop_idx_override = None
     # Un-padded line kept for the GTOW deep-link resolver, which pads to the
     # 8-max tree itself from players_at_table. Feeding it the padded preflop +
@@ -1409,7 +1480,24 @@ def _run_analysis(hand: dict) -> dict:
     preflop_depth = original_depth if multiway_note else depth
     pf_parts = preflop_actions.split("-")
     hero_idx = hero_preflop_idx
-    if not is_icm and not allin_effective:
+    # D1: a preflop all-in that reopens to hero no longer drags the OPEN node to
+    # jam depth. The global `allin_effective` override still caps the hand-wide
+    # `depth`/`effective_bb` (so the FACING node + header read the jam stack), but
+    # the open decision is its own node played at the hero/cover depth. Example:
+    # CO opens 30bb, SB jams 17bb — the open is a 30bb decision, the call a 17bb
+    # one. (Non-multiway only; multiway keeps its own depth machinery.)
+    if (not is_icm and allin_effective and node_depths
+            and not multiway_note and node_depths.get("open")):
+        open_depth = float(node_depths["open"]["depth"])
+        if open_depth != preflop_depth:
+            try:
+                renorm = _normalize_preflop_actions(
+                    hand["preflop_actions"], gametype, open_depth)
+                preflop_before = _preflop_before_index(renorm, hero_preflop_idx)
+            except Exception:
+                pass  # fall back to original preflop_before
+            preflop_depth = open_depth
+    elif not is_icm and not allin_effective:
         hero_stack_bb = hand.get("hero_starting_stack")
         if not hero_stack_bb and hand.get("player_stacks"):
             stacks = hand["player_stacks"]
@@ -1429,6 +1517,17 @@ def _run_analysis(hand: dict) -> dict:
                 except Exception:
                     pass  # fall back to original preflop_before
                 preflop_depth = hero_depth
+
+    # D1a: range-mismatch caveats for facing nodes whose solver depth bucket
+    # differs from the preceding node's. Consumed in order as facing spots are
+    # built below. Empty when the resolver opted out (ICM / no stacks / no jam).
+    _facing_caveats = []
+    if node_depths and not multiway_note:
+        _facing_caveats = [
+            e.get("caveat") for e in node_depths["nodes"]
+            if e["node"].startswith("facing")
+        ]
+    _facing_caveat_i = 0
 
     # Multiway (real-structure branch only): query the REAL pre-flop node
     # (cold-callers preserved) for hero's range, not the HU-collapsed line.
@@ -1523,11 +1622,15 @@ def _run_analysis(hand: dict) -> dict:
                     "solver_hero_pos": solver_hero_pos,
                     "action_desc": f"  → 實際行動: {hero_pos} {code}（solver code: {code}）",
                     "taken_code": code,
+                    "depth_caveat": (_facing_caveats[_facing_caveat_i]
+                                     if _facing_caveat_i < len(_facing_caveats)
+                                     else None),
                     "hu_fallback_params": dict(
                         gametype=gametype, depth=depth, stacks=icm_stacks,
                         preflop_actions=hu_fallback_n,
                     ) if hu_fallback_n else None,
                 })
+                _facing_caveat_i += 1
 
             prefix_parts.append(code)
             if code == "F":
@@ -1566,7 +1669,11 @@ def _run_analysis(hand: dict) -> dict:
                     ),
                     "solver_hero_pos": solver_hero_pos,
                     "action_desc": None,
+                    "depth_caveat": (_facing_caveats[_facing_caveat_i]
+                                     if _facing_caveat_i < len(_facing_caveats)
+                                     else None),
                 })
+                _facing_caveat_i += 1
 
     board = ""
     flop_acts = ""
@@ -2641,6 +2748,11 @@ def _run_analysis(hand: dict) -> dict:
             if paren_idx > 0:
                 raw_hdr = raw_hdr[:paren_idx].rstrip()
             compact.append(f"\n─── {raw_hdr} ───")
+
+            # D1a: range-mismatch caveat when this node's solver depth bucket
+            # differs from the preceding hero decision (per-node depth analysis).
+            if spot.get("depth_caveat"):
+                compact.append(spot["depth_caveat"])
 
             # Hand type label (postflop) — skip when no hero hand
             if not no_hero_hand:

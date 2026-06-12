@@ -13517,6 +13517,55 @@ def test_hh_node_effectives_open_vs_facing():
     assert_eq(facing["eff"], 17.0)
 
 
+@test
+def test_analyze_per_node_depths_split():
+    """The open spot queries the deep tree; the facing-all-in spot queries the
+    jam-depth tree with a range-mismatch caveat — replacing the old global
+    allin_effective override that dragged the WHOLE hand to jam depth."""
+    from analyze_hand import _build_hero_spot_depths   # new pure helper
+    hand = {
+        "effective_bb": 30.0, "hero_starting_stack": 30.0,
+        "hero_position": "CO", "players_at_table": 6,
+        "preflop_actions": "F-F-R2.0-F-AI17.0-F-C",
+        "player_stacks": [42.0, 25.0, 30.0, 30.0, 17.0, 51.0],
+    }
+    spots = _build_hero_spot_depths(hand, is_icm=False, is_cash=False)
+    assert_eq(spots["open"]["depth"], "30.125")
+    assert_eq(spots["facing"]["depth"], "17.125")
+    assert_true(spots["facing"]["caveat"] is not None)
+
+
+@test
+def test_analyze_open_node_keeps_deep_depth_under_allin_override():
+    """D1d: an all-in that reopens to hero no longer drags the OPEN node to jam
+    depth. Hero UTG opens (39bb stack), an early seat jams 19.9bb: the open spot
+    queries the deep (40bb) tree, the facing spot the 20bb jam tree, and the
+    facing section carries a range-mismatch caveat naming both depths."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "6s6c",
+        "effective_bb": 37.8,
+        "hero_position": "UTG",
+        "player_stacks": [17.9, 30.8, 6.4, 10.9, 9.1, 25.7, 71.9, 37.3],
+        "preflop_actions": "R2-F-F-AI19.9-F-F-F-F",
+        "players_at_table": 8,
+        "hero_starting_stack": 39.3,
+    })
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    # open node now plays the deep tree (hero's own stack), NOT the 20bb jam
+    assert_eq(preflop_spots[0]["params"]["depth"], 40.125)
+    # facing node still queries the jam-depth tree
+    assert_eq(preflop_spots[1]["params"]["depth"], 20.125)
+    # facing spot carries the range-mismatch caveat naming both depths
+    assert_true(preflop_spots[1].get("depth_caveat"),
+                f"expected caveat, got {preflop_spots[1].get('depth_caveat')}")
+    assert_in("20bb", preflop_spots[1]["depth_caveat"])
+    assert_in("40bb", preflop_spots[1]["depth_caveat"])
+    # and it reaches the user-facing compact output
+    assert_in("此節點以 20bb 樹查詢", result["text_compact"])
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
