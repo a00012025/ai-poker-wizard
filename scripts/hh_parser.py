@@ -51,6 +51,55 @@ def _split_hands(text: str) -> list[str]:
     return hands
 
 
+def node_effectives(*, positions, pos_to_chips, preflop_actions_ordered,
+                    hero_position, bb_size):
+    """Per-hero-decision-node effective stacks (D1 semantics), exact from HH.
+
+    open node   : min(hero, max stack of opponents live at hero's first action)
+    facing node : min(hero, the facing aggressor's total commitment); for an
+                  AI code the size IS the total (HH 'raises X to Y' all-in).
+    Returns a list of {node, eff, depth} dicts (eff in bb, 1 decimal).
+    """
+    from gto_api import nearest_depth
+    hero = pos_to_chips.get(hero_position)
+    if not hero or not bb_size:
+        return []
+    folded = set()
+    hero_acted = False
+    pending = None  # (code, pos)
+    nodes = []
+    for pos, code in preflop_actions_ordered:
+        if pos == hero_position:
+            if not hero_acted and code != "F":
+                live = [pos_to_chips[p] for i, p in enumerate(positions)
+                        if p != hero_position and p not in folded
+                        and pos_to_chips.get(p)]
+                eff = min(hero, max(live)) / bb_size if live else hero / bb_size
+                nodes.append({"node": "open", "eff": round(eff, 1),
+                              "depth": int(nearest_depth(eff))})
+            elif hero_acted and pending is not None:
+                a_code, a_pos = pending
+                if a_code.startswith("AI") and len(a_code) > 2:
+                    total_bb = float(a_code[2:])
+                else:
+                    total_bb = (pos_to_chips.get(a_pos) or 0) / bb_size
+                if total_bb > 0:
+                    eff = min(hero / bb_size, total_bb)
+                    nodes.append({
+                        "node": ("facing_allin" if a_code.startswith("AI")
+                                 else "facing_raise"),
+                        "eff": round(eff, 1), "depth": int(nearest_depth(eff)),
+                    })
+                pending = None
+            hero_acted = True
+        else:
+            if code == "F":
+                folded.add(pos)
+            elif hero_acted and (code.startswith("R") or code.startswith("AI")):
+                pending = (code, pos)
+    return nodes
+
+
 def parse_hand(text: str, include_folds: bool = False) -> dict | None:
     """Parse a single hand history block into analyze_hand_full() input dict.
 
@@ -369,6 +418,13 @@ def parse_hand(text: str, include_folds: bool = False) -> dict | None:
         "avg_stack_chips": round(avg_stack_chips, 1),
         "hero_chips": hero_chips,
     }
+
+    # D2: per-hero-decision-node effective stacks (exact from HH chips)
+    result["node_effective_bb"] = node_effectives(
+        positions=positions, pos_to_chips=pos_to_chips,
+        preflop_actions_ordered=preflop_actions_ordered,
+        hero_position=hero_position, bb_size=bb_size,
+    )
 
     if streets:
         result["streets"] = streets

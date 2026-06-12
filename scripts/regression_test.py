@@ -13495,6 +13495,28 @@ def test_node_depth_icm_returns_none():
     assert_true(nodes is None, "ICM must opt out of per-node depths")
 
 
+@test
+def test_hh_node_effectives_open_vs_facing():
+    """D2: hh_parser.node_effectives derives per-node effectives from exact HH
+    chips. Build a synthetic HH where hero CO (9000 chips, bb=300 -> 30bb)
+    opens, BTN (9000) folds, SB (5100 -> 17bb) jams, hero calls: open node
+    30bb, facing node 17bb."""
+    from hh_parser import node_effectives
+    nodes = node_effectives(
+        positions=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        pos_to_chips={"UTG": 12000, "HJ": 8000, "CO": 9000, "BTN": 9000,
+                      "SB": 5100, "BB": 15000},
+        preflop_actions_ordered=[("UTG", "F"), ("HJ", "F"), ("CO", "R2.0"),
+                                 ("BTN", "F"), ("SB", "AI17.0"), ("BB", "F"),
+                                 ("CO", "C")],
+        hero_position="CO", bb_size=300,
+    )
+    assert_eq(nodes[0]["node"], "open")
+    assert_eq(nodes[0]["eff"], 30.0)
+    facing = [n for n in nodes if n["node"].startswith("facing")][0]
+    assert_eq(facing["eff"], 17.0)
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
