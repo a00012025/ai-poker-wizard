@@ -1094,6 +1094,27 @@ def parse_table(
     hero_cards, hero_card_conf, hero_card_details, hero_ensemble_used = \
         _find_hero_cards(table_region, full_image=full_image, divider_y=divider_y)
     all_stacks_named = _find_all_stacks(table_region)
+    # D4 (Phase C): avatar-anchored seat reading. Default OFF — flipping it on
+    # changes _compute_effective_bb inputs and requires a full EFFBB_CAPTURE
+    # corpus re-parse before quoting effbb numbers (D4b). When on, REPLACE the
+    # scan-everything named_stacks with the anchored reads iff >=2 avatars were
+    # found; else fall back to the legacy scan and flag it in diagnostics.
+    seat_anchored_fallback = False
+    if os.getenv("OCR_SEAT_ANCHORED") == "1":
+        try:
+            from .seat_detector import detect_avatars
+            from .seat_reader import read_seats
+            avatars = detect_avatars(table_region, None)
+            if len(avatars) >= 2:
+                anchored = read_seats(table_region, avatars)
+                if anchored:
+                    all_stacks_named = anchored
+                else:
+                    seat_anchored_fallback = True
+            else:
+                seat_anchored_fallback = True
+        except Exception:
+            seat_anchored_fallback = True
     hero_stack = _find_hero_stack(table_region)
 
     # Flat list of stack values for backward compatibility
@@ -1113,6 +1134,7 @@ def parse_table(
         "dealer_button": dealer_button,
         "dealer_button_seat": dealer_button_seat,
         "dealer_button_conf": dealer_button_conf,
+        "seat_anchored_fallback": seat_anchored_fallback,
     }
 
 

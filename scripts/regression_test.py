@@ -13647,6 +13647,60 @@ def test_chip_solver_ambiguous_repair_returns_none():
     assert_true(not res.consistent and res.repair is None)
 
 
+# ── Phase C: avatar-anchored seat reading (ocr/seat_detector + seat_reader) ──
+
+@test
+def test_seat_detector_excludes_board_zone():
+    """C2: avatar candidates inside the central board-card zone are dropped —
+    no seat sits there. Ring discs survive; a central disc does not."""
+    import numpy as np
+    import cv2
+    from ocr.seat_detector import detect_avatars
+    img = np.zeros((499, 640, 3), dtype=np.uint8)
+    # ring avatars (corners of the oval) + one bogus disc dead-center (board)
+    ring = [(90, 120), (550, 120), (90, 380), (550, 380)]
+    for (x, y) in ring:
+        cv2.circle(img, (x, y), 22, (200, 200, 200), -1)
+    cv2.circle(img, (320, 250), 22, (200, 200, 200), -1)  # board-zone decoy
+    avs = detect_avatars(img, None)
+    assert_true(len(avs) >= 3, f"should find ring avatars, got {len(avs)}")
+    for a in avs:
+        assert_true("cx" in a and "cy" in a and "r" in a and "conf" in a)
+        in_board = abs(a["cx"] - 320) < 0.34 * 640 and abs(a["cy"] - 249.5) < 0.16 * 499
+        assert_true(not in_board, f"board-zone disc not excluded: {a}")
+
+
+@test
+def test_seat_reader_anchors_stack_and_rejects_phantom():
+    """C3/D4: read_seats claims the 'XX.X BB' under each avatar and drops BB
+    text not near any avatar (pot/timeline phantoms). Rows carry anchor_conf."""
+    import numpy as np
+    from ocr import ocr_utils
+    from ocr import seat_reader
+    table = np.zeros((499, 640, 3), dtype=np.uint8)
+    avatars = [{"cx": 100.0, "cy": 120.0, "r": 22.0, "conf": 0.8}]
+
+    def _fake_ocr(_img):
+        # a seat stack directly below the avatar + a phantom pot value centre-table
+        return [
+            {"text": "23.4 BB", "center_x": 100.0, "center_y": 168.0},
+            {"text": "PlayerX", "center_x": 100.0, "center_y": 96.0},
+            {"text": "120 BB", "center_x": 320.0, "center_y": 250.0},  # pot phantom
+        ]
+    orig = ocr_utils.ocr_full_image
+    ocr_utils.ocr_full_image = _fake_ocr
+    try:
+        rows = seat_reader.read_seats(table, avatars)
+    finally:
+        ocr_utils.ocr_full_image = orig
+    assert_eq(len(rows), 1)
+    assert_true(abs(rows[0]["stack"] - 23.4) < 0.01, f"row={rows[0]}")
+    assert_eq(rows[0]["name"], "PlayerX")
+    assert_in("anchor_conf", rows[0])
+    # the centre-table 120 BB pot value is NOT emitted as a seat
+    assert_true(all(abs(r["stack"] - 120.0) > 0.5 for r in rows))
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
