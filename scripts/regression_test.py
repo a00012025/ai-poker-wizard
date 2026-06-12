@@ -13566,6 +13566,55 @@ def test_analyze_open_node_keeps_deep_depth_under_allin_override():
     assert_in("此節點以 20bb 樹查詢", result["text_compact"])
 
 
+# ── Phase B: chip constraint solver (ocr/chip_solver.py) ──
+
+@test
+def test_chip_solver_consistent_hand():
+    """Pot headers that match the engine contributions -> consistent, ~0 residuals.
+    6-max, blinds 0.5/1.0, no ante: UTG opens to 2.0, BB calls (1.0 more) ->
+    flop pot = 2.0 + 2.0 + 0.5(SB fold) = 4.5."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 2.0, "BB": 2.0, "SB": 0.5},
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 4.5},
+    )
+    assert_true(res.consistent, f"residuals={res.residuals}")
+    assert_true(abs(res.residuals["flop"]) < 0.01)
+    assert_true(res.repair is None)
+
+
+@test
+def test_chip_solver_single_field_repair():
+    """A garbled call size (1.0 read for 10.0) leaves a 9.0 residual that
+    exactly ONE field change explains -> repair names that field; nothing is
+    auto-applied (D3a)."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 11.0, "BB": 2.0, "SB": 0.5},   # BB call misread
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 22.5},                          # truth: BB called 11
+        candidates={"BB": [2.0]},   # repairable fields: BB's contribution
+    )
+    assert_true(not res.consistent)
+    assert_true(res.repair is not None and res.repair["field"] == "BB",
+                f"repair={res.repair}")
+    assert_true(abs(res.repair["to"] - 11.0) < 0.01)
+
+
+@test
+def test_chip_solver_ambiguous_repair_returns_none():
+    """Two fields could each explain the residual -> repair=None (never guess)."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 2.0, "BB": 2.0},
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 9.5},          # 5.0 unexplained
+        candidates={"UTG": [2.0], "BB": [2.0]},
+    )
+    assert_true(not res.consistent and res.repair is None)
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
