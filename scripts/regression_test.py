@@ -13417,6 +13417,84 @@ def test_effbb_classify_fault():
                              gt_max=78.0), "near")
 
 
+# ── Phase A: per-node depth resolution (node_depth.py) ──
+
+@test
+def test_node_depth_open_uses_max_live_cover():
+    """D1: the open node plays vs the deepest live opponent, not the shortest
+    seat behind. CO 30bb opens, BTN 30bb behind, SB 17bb behind -> open node
+    is 30bb; the 17bb stack does NOT shallow the open."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        # position -> starting stack where known (None = unknown)
+        stacks={"UTG": 42.0, "HJ": 25.0, "CO": 30.0, "BTN": 30.0,
+                "SB": 17.0, "BB": 51.0},
+        is_icm=False,
+    )
+    open_node = nodes[0]
+    assert_eq(open_node["node"], "open")
+    assert_eq(open_node["eff"], 30.0)
+    assert_eq(open_node["depth_bucket"], 30)
+
+
+@test
+def test_node_depth_facing_allin_uses_jammer_commitment():
+    """D1: the facing-all-in node queries min(hero, jam total). SB jams 17
+    over hero CO's 30bb open -> facing node is 17bb with a range-mismatch
+    caveat naming both depths."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        stacks={"CO": 30.0, "BTN": 30.0, "SB": 17.0},
+        is_icm=False,
+    )
+    facing = [n for n in nodes if n["node"] == "facing_allin"]
+    assert_eq(len(facing), 1)
+    assert_eq(facing[0]["eff"], 17.0)
+    assert_eq(facing[0]["depth_bucket"], 17)
+    assert_true(facing[0]["caveat"] is not None
+                and "17" in facing[0]["caveat"] and "30" in facing[0]["caveat"],
+                f"caveat must name both depths: {facing[0]['caveat']}")
+
+
+@test
+def test_node_depth_same_bucket_no_caveat():
+    """No caveat when consecutive nodes land in the SAME depth bucket —
+    don't spam the user with a meaningless warning."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI29.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        stacks={"CO": 30.0, "SB": 29.0},
+        is_icm=False,
+    )
+    facing = [n for n in nodes if n["node"] == "facing_allin"][0]
+    assert_eq(facing["depth_bucket"], 30)
+    assert_true(facing["caveat"] is None, "same-bucket node must carry no caveat")
+
+
+@test
+def test_node_depth_icm_returns_none():
+    """D1c: ICM hands keep the single find_icm_params depth — resolver opts out."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0, stacks={}, is_icm=True,
+    )
+    assert_true(nodes is None, "ICM must opt out of per-node depths")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
