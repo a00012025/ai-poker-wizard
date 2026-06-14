@@ -1092,6 +1092,38 @@ def test_phase4_features_surfaced_per_hand():
 
 
 @test
+def test_chip_solver_features_surfaced_per_hand():
+    """B2: the chip-conservation features are captured per hand alongside the
+    Phase-4 features (no re-OCR, no behavior change). The clean hand
+    TM5862908042 reconciles its pot header -> chip_consistent True."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ocr"))
+    from ocr.n8_parser import _compute_effective_bb, _effbb_last_features
+    cache = os.path.join(os.path.dirname(__file__), "..", "data/effbb_cache/cache.jsonl")
+    rows = {}
+    for line in open(cache, encoding="utf-8"):
+        if line.strip():
+            r = json.loads(line)
+            rows[r["hand_id"]] = r
+    o = rows["TM5862908042"]; inp = o["inputs"]   # a clean emitting hand
+    _compute_effective_bb(inp["columns"], inp["hero_stack"], inp["hero_position"],
+                          inp["stacks"], inp["named_stacks"])
+    f = _effbb_last_features()
+    for key in ("chip_consistent", "chip_repair_found", "chip_residual"):
+        assert_in(key, f)
+    # A preflop-RESOLVED hand actually runs the chip-conservation check (the
+    # equation is only valid pre-flop; postflop hands leave it None). The check
+    # produces a concrete verdict + residual for such a hand.
+    o2 = rows["TM5863485159"]; inp2 = o2["inputs"]
+    _compute_effective_bb(inp2["columns"], inp2["hero_stack"], inp2["hero_position"],
+                          inp2["stacks"], inp2["named_stacks"])
+    f2 = _effbb_last_features()
+    assert_true(f2["chip_consistent"] in (True, False),
+                f"preflop-resolved hand must get a chip verdict: {f2['chip_consistent']}")
+    assert_true(f2["chip_residual"] is not None)
+
+
+@test
 def test_phase4_bucket_boundary_distance():
     """Boundary-distance fragility signal: a value near a bucket-cell edge is
     flagged fragile (small), a value at a bucket centre is not."""
@@ -13415,6 +13447,258 @@ def test_effbb_classify_fault():
     # adjacent-bucket near miss
     assert_eq(classify_fault(p_eff=40.0, gt_eff=37.1, hero_start=45.0,
                              gt_max=78.0), "near")
+
+
+# ── Phase A: per-node depth resolution (node_depth.py) ──
+
+@test
+def test_node_depth_open_uses_max_live_cover():
+    """D1: the open node plays vs the deepest live opponent, not the shortest
+    seat behind. CO 30bb opens, BTN 30bb behind, SB 17bb behind -> open node
+    is 30bb; the 17bb stack does NOT shallow the open."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        # position -> starting stack where known (None = unknown)
+        stacks={"UTG": 42.0, "HJ": 25.0, "CO": 30.0, "BTN": 30.0,
+                "SB": 17.0, "BB": 51.0},
+        is_icm=False,
+    )
+    open_node = nodes[0]
+    assert_eq(open_node["node"], "open")
+    assert_eq(open_node["eff"], 30.0)
+    assert_eq(open_node["depth_bucket"], 30)
+
+
+@test
+def test_node_depth_facing_allin_uses_jammer_commitment():
+    """D1: the facing-all-in node queries min(hero, jam total). SB jams 17
+    over hero CO's 30bb open -> facing node is 17bb with a range-mismatch
+    caveat naming both depths."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        stacks={"CO": 30.0, "BTN": 30.0, "SB": 17.0},
+        is_icm=False,
+    )
+    facing = [n for n in nodes if n["node"] == "facing_allin"]
+    assert_eq(len(facing), 1)
+    assert_eq(facing[0]["eff"], 17.0)
+    assert_eq(facing[0]["depth_bucket"], 17)
+    assert_true(facing[0]["caveat"] is not None
+                and "17" in facing[0]["caveat"] and "30" in facing[0]["caveat"],
+                f"caveat must name both depths: {facing[0]['caveat']}")
+
+
+@test
+def test_node_depth_same_bucket_no_caveat():
+    """No caveat when consecutive nodes land in the SAME depth bucket —
+    don't spam the user with a meaningless warning."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI29.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0,
+        stacks={"CO": 30.0, "SB": 29.0},
+        is_icm=False,
+    )
+    facing = [n for n in nodes if n["node"] == "facing_allin"][0]
+    assert_eq(facing["depth_bucket"], 30)
+    assert_true(facing["caveat"] is None, "same-bucket node must carry no caveat")
+
+
+@test
+def test_node_depth_icm_returns_none():
+    """D1c: ICM hands keep the single find_icm_params depth — resolver opts out."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-R2.0-F-AI17.0-F-C",
+        hero_position="CO",
+        position_order=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=30.0, stacks={}, is_icm=True,
+    )
+    assert_true(nodes is None, "ICM must opt out of per-node depths")
+
+
+@test
+def test_hh_node_effectives_open_vs_facing():
+    """D2: hh_parser.node_effectives derives per-node effectives from exact HH
+    chips. Build a synthetic HH where hero CO (9000 chips, bb=300 -> 30bb)
+    opens, BTN (9000) folds, SB (5100 -> 17bb) jams, hero calls: open node
+    30bb, facing node 17bb."""
+    from hh_parser import node_effectives
+    nodes = node_effectives(
+        positions=["UTG", "HJ", "CO", "BTN", "SB", "BB"],
+        pos_to_chips={"UTG": 12000, "HJ": 8000, "CO": 9000, "BTN": 9000,
+                      "SB": 5100, "BB": 15000},
+        preflop_actions_ordered=[("UTG", "F"), ("HJ", "F"), ("CO", "R2.0"),
+                                 ("BTN", "F"), ("SB", "AI17.0"), ("BB", "F"),
+                                 ("CO", "C")],
+        hero_position="CO", bb_size=300,
+    )
+    assert_eq(nodes[0]["node"], "open")
+    assert_eq(nodes[0]["eff"], 30.0)
+    facing = [n for n in nodes if n["node"].startswith("facing")][0]
+    assert_eq(facing["eff"], 17.0)
+
+
+@test
+def test_analyze_per_node_depths_split():
+    """The open spot queries the deep tree; the facing-all-in spot queries the
+    jam-depth tree with a range-mismatch caveat — replacing the old global
+    allin_effective override that dragged the WHOLE hand to jam depth."""
+    from analyze_hand import _build_hero_spot_depths   # new pure helper
+    hand = {
+        "effective_bb": 30.0, "hero_starting_stack": 30.0,
+        "hero_position": "CO", "players_at_table": 6,
+        "preflop_actions": "F-F-R2.0-F-AI17.0-F-C",
+        "player_stacks": [42.0, 25.0, 30.0, 30.0, 17.0, 51.0],
+    }
+    spots = _build_hero_spot_depths(hand, is_icm=False, is_cash=False)
+    assert_eq(spots["open"]["depth"], "30.125")
+    assert_eq(spots["facing"]["depth"], "17.125")
+    assert_true(spots["facing"]["caveat"] is not None)
+
+
+@test
+def test_analyze_open_node_keeps_deep_depth_under_allin_override():
+    """D1d: an all-in that reopens to hero no longer drags the OPEN node to jam
+    depth. Hero UTG opens (39bb stack), an early seat jams 19.9bb: the open spot
+    queries the deep (40bb) tree, the facing spot the 20bb jam tree, and the
+    facing section carries a range-mismatch caveat naming both depths."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "6s6c",
+        "effective_bb": 37.8,
+        "hero_position": "UTG",
+        "player_stacks": [17.9, 30.8, 6.4, 10.9, 9.1, 25.7, 71.9, 37.3],
+        "preflop_actions": "R2-F-F-AI19.9-F-F-F-F",
+        "players_at_table": 8,
+        "hero_starting_stack": 39.3,
+    })
+    preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
+    # open node now plays the deep tree (hero's own stack), NOT the 20bb jam
+    assert_eq(preflop_spots[0]["params"]["depth"], 40.125)
+    # facing node still queries the jam-depth tree
+    assert_eq(preflop_spots[1]["params"]["depth"], 20.125)
+    # facing spot carries the range-mismatch caveat naming both depths
+    assert_true(preflop_spots[1].get("depth_caveat"),
+                f"expected caveat, got {preflop_spots[1].get('depth_caveat')}")
+    assert_in("20bb", preflop_spots[1]["depth_caveat"])
+    assert_in("40bb", preflop_spots[1]["depth_caveat"])
+    # and it reaches the user-facing compact output
+    assert_in("此節點以 20bb 樹查詢", result["text_compact"])
+
+
+# ── Phase B: chip constraint solver (ocr/chip_solver.py) ──
+
+@test
+def test_chip_solver_consistent_hand():
+    """Pot headers that match the engine contributions -> consistent, ~0 residuals.
+    6-max, blinds 0.5/1.0, no ante: UTG opens to 2.0, BB calls (1.0 more) ->
+    flop pot = 2.0 + 2.0 + 0.5(SB fold) = 4.5."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 2.0, "BB": 2.0, "SB": 0.5},
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 4.5},
+    )
+    assert_true(res.consistent, f"residuals={res.residuals}")
+    assert_true(abs(res.residuals["flop"]) < 0.01)
+    assert_true(res.repair is None)
+
+
+@test
+def test_chip_solver_single_field_repair():
+    """A garbled call size (1.0 read for 10.0) leaves a 9.0 residual that
+    exactly ONE field change explains -> repair names that field; nothing is
+    auto-applied (D3a)."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 11.0, "BB": 2.0, "SB": 0.5},   # BB call misread
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 22.5},                          # truth: BB called 11
+        candidates={"BB": [2.0]},   # repairable fields: BB's contribution
+    )
+    assert_true(not res.consistent)
+    assert_true(res.repair is not None and res.repair["field"] == "BB",
+                f"repair={res.repair}")
+    assert_true(abs(res.repair["to"] - 11.0) < 0.01)
+
+
+@test
+def test_chip_solver_ambiguous_repair_returns_none():
+    """Two fields could each explain the residual -> repair=None (never guess)."""
+    from ocr.chip_solver import check_chips
+    res = check_chips(
+        contributions={"UTG": 2.0, "BB": 2.0},
+        sb=0.5, bb=1.0, ante_total=0.0,
+        pot_headers={"flop": 9.5},          # 5.0 unexplained
+        candidates={"UTG": [2.0], "BB": [2.0]},
+    )
+    assert_true(not res.consistent and res.repair is None)
+
+
+# ── Phase C: avatar-anchored seat reading (ocr/seat_detector + seat_reader) ──
+
+@test
+def test_seat_detector_excludes_board_zone():
+    """C2: avatar candidates inside the central board-card zone are dropped —
+    no seat sits there. Ring discs survive; a central disc does not."""
+    import numpy as np
+    import cv2
+    from ocr.seat_detector import detect_avatars
+    img = np.zeros((499, 640, 3), dtype=np.uint8)
+    # ring avatars (corners of the oval) + one bogus disc dead-center (board)
+    ring = [(90, 120), (550, 120), (90, 380), (550, 380)]
+    for (x, y) in ring:
+        cv2.circle(img, (x, y), 22, (200, 200, 200), -1)
+    cv2.circle(img, (320, 250), 22, (200, 200, 200), -1)  # board-zone decoy
+    avs = detect_avatars(img, None)
+    assert_true(len(avs) >= 3, f"should find ring avatars, got {len(avs)}")
+    for a in avs:
+        assert_true("cx" in a and "cy" in a and "r" in a and "conf" in a)
+        in_board = abs(a["cx"] - 320) < 0.34 * 640 and abs(a["cy"] - 249.5) < 0.16 * 499
+        assert_true(not in_board, f"board-zone disc not excluded: {a}")
+
+
+@test
+def test_seat_reader_anchors_stack_and_rejects_phantom():
+    """C3/D4: read_seats claims the 'XX.X BB' under each avatar and drops BB
+    text not near any avatar (pot/timeline phantoms). Rows carry anchor_conf."""
+    import numpy as np
+    from ocr import ocr_utils
+    from ocr import seat_reader
+    table = np.zeros((499, 640, 3), dtype=np.uint8)
+    avatars = [{"cx": 100.0, "cy": 120.0, "r": 22.0, "conf": 0.8}]
+
+    def _fake_ocr(_img):
+        # a seat stack directly below the avatar + a phantom pot value centre-table
+        return [
+            {"text": "23.4 BB", "center_x": 100.0, "center_y": 168.0},
+            {"text": "PlayerX", "center_x": 100.0, "center_y": 96.0},
+            {"text": "120 BB", "center_x": 320.0, "center_y": 250.0},  # pot phantom
+        ]
+    orig = ocr_utils.ocr_full_image
+    ocr_utils.ocr_full_image = _fake_ocr
+    try:
+        rows = seat_reader.read_seats(table, avatars)
+    finally:
+        ocr_utils.ocr_full_image = orig
+    assert_eq(len(rows), 1)
+    assert_true(abs(rows[0]["stack"] - 23.4) < 0.01, f"row={rows[0]}")
+    assert_eq(rows[0]["name"], "PlayerX")
+    assert_in("anchor_conf", rows[0])
+    # the centre-table 120 BB pot value is NOT emitted as a seat
+    assert_true(all(abs(r["stack"] - 120.0) > 0.5 for r in rows))
 
 
 if __name__ == "__main__":
