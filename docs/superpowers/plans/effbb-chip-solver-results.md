@@ -49,3 +49,12 @@ Phase B lands reusable, tested infrastructure (the `chip_solver` module + its
 features) with **no behavior change and no regression**. This is the
 plan-anticipated outcome of a gate that the corpus does not (yet) license —
 exactly the discipline that killed 3 of 6 levers in Phase 6.
+
+## Follow-up: chip-solver as a *repair* (also negative)
+
+A post-PR investigation took D3's "use the constraint to correct uncertain
+numbers" idea all the way to a **per-street** conservation repair (fixing the
+granularity caveat above), and net it −72 (upward-only −21): the pot headers are
+too OCR-noisy for the residual to localize the wrong contribution. Full write-up
+of all eight attempts and why the effbb frontier is **input-bound** (not
+logic-bound): [effbb-push-past-78-results.md](effbb-push-past-78-results.md).
