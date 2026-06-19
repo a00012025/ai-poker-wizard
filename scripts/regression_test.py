@@ -295,6 +295,68 @@ def test_dup_allin_badge_on_bet_promotes_to_allin():
     assert_eq(cleaned[0]["size"], 15.5, "bet size must survive")
 
 
+def _allin_badge_region(above_color):
+    """Build a synthetic column region with a red All-In badge.
+
+    The badge occupies rows [120:140]; the band the visual disambiguator
+    reads (rows [98:116], just above the badge) is painted ``above_color``
+    (BGR). Returns (region, group) ready for ``_classify_group``.
+    """
+    import numpy as np
+
+    region = np.zeros((260, 160, 3), dtype=np.uint8)
+    # Red All-In badge sticker (BGR) so _detect_entry_type reads "opponent".
+    region[120:140, 60:140] = (40, 40, 200)
+    # The sticker the badge sits on, read in the band above the badge.
+    region[96:117, :] = above_color
+    group = [{
+        "text": "All-In", "center_x": 90, "center_y": 130,
+        "x_min": 73, "y_min": 120, "x_max": 121, "y_max": 140,
+    }]
+    return region, group
+
+
+@test
+def test_classify_group_keeps_opponent_allin_badge_over_white_sticker():
+    """OCR: a bare All-In badge on villain's raise stays opponent (H3577).
+
+    N8 stamps a red "All-In" badge on the *opponent's* raise sticker when
+    villain shoves. The badge OCRs as its own nameless/sizeless entry that
+    the HSV detector tags "opponent" (red ≠ yellow). The H2842 rule flipped
+    every such bare badge to hero, fabricating a phantom hero shove (sized
+    from the following call as villain_raise + call = 22.4 + 14.4 = 36.8)
+    and pushing hero's real call onto the opponent. Reading the white
+    sticker above the badge vetoes the flip so the badge folds onto
+    villain's raise and hero's call survives.
+    """
+    from ocr.panel_parser import _classify_group
+
+    # White (low-sat, high-value) sticker above => opponent's raise.
+    region, group = _allin_badge_region(above_color=(220, 220, 220))
+    entry = _classify_group(group, region)
+    assert_eq(entry["action"], "All-In", "still an All-In entry")
+    assert_eq(entry["type"], "opponent",
+              "badge over white opponent sticker must stay opponent")
+
+
+@test
+def test_classify_group_flips_bare_hero_allin_with_no_sticker_above():
+    """OCR: a centered bare hero All-In with no sticker above flips to hero.
+
+    Preserves H2842 — hero's own centered red All-In sticker has no white
+    (or yellow) sticker rendered directly above it, so the visual read is
+    inconclusive and the flip-to-hero default still applies.
+    """
+    from ocr.panel_parser import _classify_group
+
+    # Dark band above (no opponent sticker) => inconclusive => flip to hero.
+    region, group = _allin_badge_region(above_color=(0, 0, 0))
+    entry = _classify_group(group, region)
+    assert_eq(entry["action"], "All-In", "still an All-In entry")
+    assert_eq(entry["type"], "hero",
+              "a solo centered hero all-in must still flip to hero")
+
+
 # ── Calling a villain all-in == committing (PR: fix/allin-call-deviation) ──
 # H3459: SB shoves the turn ("Bet 17.1 / All-In"), hero calls.  The solver
 # models a deeper 35bb world where 17.1 is just a big bet (Fold/Call/All-in),

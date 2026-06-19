@@ -953,9 +953,34 @@ def _classify_group(group: list[dict], column_region: np.ndarray) -> dict | None
     # Regression: H2842 — hero went all-in on the flop after a 3-bet line;
     # the red sticker was solo with no badge but was tagged opponent and
     # then dropped from the hero spot list.
+    #
+    # BUT a bare red All-In badge can also be painted on the *opponent's*
+    # raise/bet sticker (N8 stamps it when villain shoves), and that badge
+    # likewise has no position/name/size. Flipping it to hero fabricates a
+    # phantom hero shove (later sized via the call) and pushes hero's real
+    # call onto the opponent. Read the rendered color above the badge: a
+    # confident white read means it sits on the opponent's sticker — keep it
+    # opponent so the same-side dedup folds it onto that raise (H3577 —
+    # villain shoves, hero calls). Only a high-confidence opponent read vetoes
+    # the flip; otherwise default to hero so H2842 is preserved.
     if action == "All-In" and entry_type == "opponent":
         if not position and not player_name and size is None:
-            entry_type = "hero"
+            owner, conf = None, 0.0
+            if group and all(
+                all(k in t for k in ("x_min", "y_min", "x_max", "y_max"))
+                for t in group
+            ):
+                _bbox = (
+                    min(t["x_min"] for t in group),
+                    min(t["y_min"] for t in group),
+                    max(t["x_max"] for t in group),
+                    max(t["y_max"] for t in group),
+                )
+                owner, conf, _ = _infer_allin_badge_owner(
+                    {"_bbox": _bbox}, column_region
+                )
+            if not (owner == "opponent" and conf >= _ALLIN_VISUAL_HIGH_CONF):
+                entry_type = "hero"
 
     result = {
         "type": entry_type,
