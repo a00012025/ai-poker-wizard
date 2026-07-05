@@ -63,8 +63,14 @@ def _attach_chart(facts: "Facts", sol: dict | None, position: str | None) -> Non
     tool loop that normally queues the chart, so the caller never had an image
     to send. Recording it here lets the session manager draw the acting
     position's strategy grid alongside the grounded prose.
+
+    The grid colours each hand by that position's per-action frequencies, which
+    the solver only populates for the node's ACTING player. Attaching a chart
+    for a non-acting position (e.g. the villain at hero's decision node) yields
+    an all-grey grid — every cell has no strategy — so we refuse it here and
+    the caller simply sends no chart (H3639: BB Turn chart came back blank).
     """
-    if sol is not None and position:
+    if sol is not None and position and position == _acting_position(sol):
         facts.meta["chart"] = {"position": position, "solution": sol}
 
 
@@ -570,20 +576,93 @@ def fetch_hand_strength(ctx: Ctx) -> Facts | None:
     return facts
 
 
+# Chinese/word pot-fraction phrases → pot ratio, for hypothetical hero bets.
+_POT_FRACTION_PHRASES: list[tuple[tuple[str, ...], float]] = [
+    (("四分之一", "1/4", "quarter"), 0.25),
+    (("三分之一", "1/3", "third"), 1 / 3),
+    (("半池", "半個底池", "半个底池", "一半底池", "half pot", "half-pot", "1/2"), 0.5),
+    (("三分之二", "2/3"), 2 / 3),
+    (("四分之三", "3/4"), 0.75),
+    (("超池", "overbet", "over-bet", "過池", "过池"), 1.25),
+    (("滿池", "满池", "整池", "一個底池", "一个底池", "pot size", "pot-size", "全池"), 1.0),
+]
+
+
+def _hero_bet_pot_ratio_from_question(q: str) -> float | None:
+    """Pot ratio of the hero bet the question posits ('半池' → 0.5, '75%' → .75).
+
+    Returns None when the question names no size, so the caller can decline to
+    invent a hypothetical bet rather than guess one.
+    """
+    if not q:
+        return None
+    m = _RE_POT_RATIO.search(q)
+    if m:
+        return int(m.group(1)) / 100.0
+    ql = q.lower()
+    for phrases, ratio in _POT_FRACTION_PHRASES:
+        if any(p in q or p in ql for p in phrases):
+            return ratio
+    return None
+
+
+def _closest_bet_code(sol: dict, target_ratio: float, tol: float = 0.15) -> str | None:
+    """Hero bet code at ``sol`` whose pot ratio is closest to ``target_ratio``.
+
+    Only bet/raise actions (code 'R*'/'RAI') are considered — never check/call —
+    so a hypothetical 'if I had bet' resolves to a real sizing node. Returns
+    None when the nearest size is farther than ``tol`` (off-tree), so we never
+    snap a half-pot ask onto, say, a pot-size node.
+    """
+    best = None
+    for asol in sol.get("action_solutions") or []:
+        act = asol.get("action") or {}
+        code = act.get("code") or ""
+        if not code.startswith("R"):
+            continue
+        bp = _to_float(act.get("betsize_by_pot"))
+        if bp is None:
+            continue
+        d = abs(bp - target_ratio)
+        if best is None or d < best[0]:
+            best = (d, code)
+    if best is None or best[0] > tol:
+        return None
+    return best[1]
+
+
 def _resolve_villain_response_node(ctx: Ctx) -> dict | None:
-    """Node where villain faces hero's bet (villain is the actor)."""
+    """Node where villain faces hero's bet (villain is the actor).
+
+    Handles two cases:
+      * hero actually bet the street  → replay hero's real bet code.
+      * hero checked but the question asks about the villain's response to a
+        HYPOTHETICAL hero bet ('面對我的半池下注他會怎麼跟') → synthesise hero's
+        bet at the size named in the question, snapped to a real sizing node.
+    """
     spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
-    if not spot:
+    if not spot or not sol:
         return None
-    taken = spot.get("taken_code") or ""
-    if not taken.startswith("R"):
-        return None
-    p = dict(spot["params"])
     skey = {"flop": "flop_actions", "turn": "turn_actions",
             "river": "river_actions"}.get(spot["street"])
     if not skey:
         return None
-    p[skey] = (p.get(skey, "") + "-" + taken).lstrip("-")
+
+    taken = spot.get("taken_code") or ""
+    if taken.startswith("R"):
+        hero_bet_code = taken
+    else:
+        # Hero didn't bet this street; only build a hypothetical node if the
+        # question actually names a size — otherwise decline (don't guess).
+        ratio = _hero_bet_pot_ratio_from_question(ctx.question)
+        if ratio is None:
+            return None
+        hero_bet_code = _closest_bet_code(sol, ratio)
+        if not hero_bet_code:
+            return None
+
+    p = dict(spot["params"])
+    p[skey] = (p.get(skey, "") + "-" + hero_bet_code).lstrip("-")
     try:
         return get_spot_solution(**p)
     except Exception as e:
@@ -955,12 +1034,44 @@ _INTENT_PROMPT = (
 )
 
 
+def _deterministic_intent(q: str) -> str | None:
+    """Rules that beat the LLM classifier for unambiguous phrasings.
+
+    "villain's calling/folding range facing MY bet" is a fold_equity question
+    (the villain's response to hero's bet), not villain_range (the villain's own
+    betting range). The LLM mislabels it as villain_range because '跟注範圍'
+    reads like a range lookup — which then dumps the villain's whole range at
+    hero's decision node instead of the response node, and charts a non-acting
+    position (blank grid). H3639.
+    """
+    if not q:
+        return None
+    ql = q.lower()
+    faces_my_bet = (
+        ("面對我" in q or "面对我" in q or "面對你" in q or "面对你" in q
+         or "facing my" in ql or "facing your" in ql)
+        and ("下注" in q or "bet" in ql or "加注" in q or "cbet" in ql
+             or "c-bet" in ql or "開火" in q or "開槍" in q)
+    )
+    response = (
+        any(w in q for w in ("跟注", "會跟", "会跟", "棄牌", "弃牌", "會棄",
+                             "反應", "反应", "防守", "防禦", "續跟", "續打"))
+        or any(w in ql for w in ("call", "fold", "defend", "respond"))
+    )
+    if faces_my_bet and response:
+        return "fold_equity"
+    return None
+
+
 def classify_intent(question: str, hand_context: dict) -> str:
     if _CLASSIFIER is not None:
         return _CLASSIFIER(question, hand_context)
     q = question or ""
     if "gtowizard.com" in q or "gto wizard" in q.lower():
         return "node_url"
+    forced = _deterministic_intent(q)
+    if forced:
+        return forced
     try:
         from google import genai
         from google.genai import types
