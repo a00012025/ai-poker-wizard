@@ -190,6 +190,74 @@ def _deeplink_hand(context: dict) -> dict:
     return hand
 
 
+def _resolved_from_spot(spot: dict) -> dict | None:
+    """Resolver-shaped dict from a hero_spot's already-snapped params.
+
+    ``analyze_hand_full`` snaps every action to its GTOW code while walking the
+    hand and stores the exact line it queried the solver with in
+    ``spot['params']`` — a node the API demonstrably returned data for.
+    Reusing it makes the deep-link exact and API-free, instead of re-snapping
+    via ``next_actions`` (which needs a live token; on failure that path falls
+    back to raw ``'B'``/``'X'`` tokens GTOW can't parse, yielding a "something
+    went wrong" page — H3639).
+
+    Returns None if the spot has no usable params (e.g. a context rehydrated
+    from the DB without them), so the caller can fall back to the resolver.
+    """
+    p = spot.get("params") or {}
+    preflop = p.get("preflop_actions") or ""
+    depth = p.get("depth")
+    if not preflop or depth is None:
+        return None
+
+    flop = p.get("flop_actions") or ""
+    turn = p.get("turn_actions") or ""
+    river = p.get("river_actions") or ""
+
+    def _count(s: str) -> int:
+        return len([t for t in s.split("-") if t]) if s else 0
+
+    return {
+        "preflop_actions": preflop,
+        "flop_actions": flop,
+        "turn_actions": turn,
+        "river_actions": river,
+        "history_spot": _count(preflop) + _count(flop) + _count(turn) + _count(river),
+        "depth": depth,
+        "gametype": p.get("gametype") or "MTTGeneral",
+    }
+
+
+def _url_from_spot(context: dict, spot: dict) -> str | None:
+    """Build a /solutions URL straight from a hero_spot's resolved params.
+
+    The board is re-derived canonically (flop rank-descending) from the hand so
+    the ordering matches GTOW, but the action codes come verbatim from the spot
+    — no API call. Returns None if the spot lacks params.
+    """
+    resolved = _resolved_from_spot(spot)
+    if resolved is None:
+        return None
+    try:
+        board = canonical_board_through_street(_deeplink_hand(context), spot.get("street", ""))
+        return build_solution_url(resolved, board)
+    except Exception as e:  # noqa: BLE001 — fall back to the resolver path
+        _log.debug("spot-params URL build failed at %s: %s", spot.get("street"), e)
+        return None
+
+
+def _solution_bearing_spots(context: dict) -> list[dict]:
+    """Hero spots that actually have solver data, in play order."""
+    hero_spots = context.get("hero_spots") or []
+    solutions = context.get("solutions") or []
+    out = []
+    for i, spot in enumerate(hero_spots):
+        sol = solutions[i] if i < len(solutions) else None
+        if sol and "action_solutions" in sol:
+            out.append(spot)
+    return out
+
+
 def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
     """Build a /solutions URL for hero's last decision node in the hand.
 
@@ -210,6 +278,16 @@ def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
     if not decisions:
         return None
 
+    # Prefer the already-resolved codes on each hero_spot (exact + API-free).
+    # decisions and solution-bearing spots are both derived by filtering
+    # solution-bearing spots in play order, so they align 1:1.
+    spots = _solution_bearing_spots(context)
+    for spot in reversed(spots):
+        url = _url_from_spot(context, spot)
+        if url:
+            return url
+
+    # Fallback: re-resolve via the next_actions API (needs a live token).
     for street, action_index in reversed(decisions):
         try:
             resolved = resolver(hand, street, action_index)
@@ -242,6 +320,18 @@ def build_node_url_for_street(context: dict, street: str,
         resolver = resolve_actions_for_deviation
 
     hand = _deeplink_hand(context)
+
+    # Prefer the already-resolved codes on hero's first solution-bearing spot
+    # for this street (exact + API-free).
+    for spot in _solution_bearing_spots(context):
+        if spot.get("street") != street:
+            continue
+        url = _url_from_spot(context, spot)
+        if url:
+            return url
+        break  # spot lacked params — fall through to the resolver below
+
+    # Fallback: re-resolve via the next_actions API (needs a live token).
     for s, action_index in enumerate_hero_decisions(context):
         if s != street:
             continue
