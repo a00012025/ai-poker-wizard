@@ -12636,6 +12636,146 @@ def test_coach_facts_verifier():
     assert_in("AQo", bad.violations)
 
 
+# ── H3639: villain calling-range facing hero's (hypothetical) bet ──────────
+
+@test
+def test_coach_facts_hero_bet_size_from_question():
+    """coach_facts: parse the hero bet size a follow-up posits (半池 → 0.5)."""
+    import coach_facts as cf
+    assert_eq(cf._hero_bet_pot_ratio_from_question("面對我的半池下注他會跟嗎"), 0.5)
+    assert_eq(cf._hero_bet_pot_ratio_from_question("如果我下 75% 底池"), 0.75)
+    assert_eq(cf._hero_bet_pot_ratio_from_question("我下三分之一"), 1 / 3)
+    assert_true(cf._hero_bet_pot_ratio_from_question("超池下注") > 1.0, "overbet > pot")
+    assert_true(cf._hero_bet_pot_ratio_from_question("他的範圍是什麼") is None,
+                "no size named → None")
+
+
+@test
+def test_coach_facts_deterministic_intent_reroutes_calling_range():
+    """coach_facts: 'his calling range facing MY bet' → fold_equity, not villain_range."""
+    import coach_facts as cf
+    assert_eq(cf._deterministic_intent("BB 面對我的半池下注，他的跟注範圍是什麼？"),
+              "fold_equity")
+    assert_eq(cf._deterministic_intent("facing my turn bet what does he call"),
+              "fold_equity")
+    # A pure villain-aggression range question must NOT be forced.
+    assert_true(cf._deterministic_intent("BB 河牌領投的範圍有哪些牌？") is None,
+                "villain's own bet range is not fold_equity")
+    assert_true(cf._deterministic_intent("我這手牌多強？") is None)
+
+
+@test
+def test_coach_facts_closest_bet_code():
+    """coach_facts: snap a requested pot ratio to a real bet code; off-tree → None."""
+    import coach_facts as cf
+    sol = {"action_solutions": [
+        {"action": {"code": "X"}},
+        {"action": {"code": "R2.1", "betsize_by_pot": 0.25}},
+        {"action": {"code": "R4.15", "betsize_by_pot": 0.5}},
+        {"action": {"code": "R8.3", "betsize_by_pot": 1.0}},
+    ]}
+    assert_eq(cf._closest_bet_code(sol, 0.5), "R4.15")
+    assert_eq(cf._closest_bet_code(sol, 0.25), "R2.1")
+    # 0.6 target snaps to the 0.5 node (within tol); a far target is off-tree.
+    assert_eq(cf._closest_bet_code(sol, 0.6), "R4.15")
+    assert_true(cf._closest_bet_code(sol, 3.0) is None, "no bet within tolerance")
+
+
+@test
+def test_coach_facts_attach_chart_rejects_nonactor():
+    """coach_facts: never chart a position that isn't the node's actor (blank grid)."""
+    import coach_facts as cf
+    sol = {"game": {"active_position": "BB"}, "players_info": []}
+    f1 = cf.Facts(intent="x", title="t")
+    cf._attach_chart(f1, sol, "LJ")          # LJ is not acting → refused
+    assert_true("chart" not in f1.meta, "non-actor chart refused")
+    f2 = cf.Facts(intent="x", title="t")
+    cf._attach_chart(f2, sol, "BB")          # BB acts → attached
+    assert_eq(f2.meta.get("chart", {}).get("position"), "BB")
+
+
+@test
+def test_coach_facts_villain_calling_range_hypothetical_node():
+    """coach_facts: hero checked the turn; 'calling range facing my half-pot bet'
+    fetches the hypothetical hero-bet node (turn_actions X-R4.15), reads the
+    villain's fold/call split, and charts the villain (who acts there). H3639.
+    """
+    import coach_facts as cf
+
+    hctx = {
+        "hero_position": "LJ",
+        "hero_hand": "Ac8c",
+        "hand": {"hero_hand": "Ac8c"},
+        "hero_spots": [{
+            "street": "turn",
+            "taken_code": "X",                       # hero CHECKED the turn
+            "params": {
+                "gametype": "MTTGeneral", "depth": 20.125,
+                "preflop_actions": "F-F-R2-F-F-F-F-C", "board": "9c9s5cKs",
+                "flop_actions": "X-R1.4-C", "turn_actions": "X", "river_actions": "",
+            },
+        }],
+        "solutions": [{
+            "game": {"active_position": "LJ", "board": "9s9c5cKs",
+                     "current_street": {"type": "turn"}},
+            "action_solutions": [
+                {"action": {"code": "X"}, "total_frequency": 0.15},
+                {"action": {"code": "R2.1", "betsize_by_pot": 0.25}, "total_frequency": 0.37},
+                {"action": {"code": "R4.15", "betsize_by_pot": 0.5}, "total_frequency": 0.47},
+            ],
+            "players_info": [
+                {"player": {"position": "LJ"}, "range": [0.5] * 1326},
+                {"player": {"position": "BB"}, "range": [0.5] * 1326},
+            ],
+        }],
+    }
+
+    captured = {}
+
+    def fake_sol(**p):
+        captured.update(p)
+        return {
+            "game": {"active_position": "BB", "board": "9s9c5cKs",
+                     "current_street": {"type": "turn"}},
+            "players_info": [
+                {"player": {"position": "BB"}, "range": [0.5] * 1326,
+                 "hand_categories": [
+                     {"index": 0, "name": "top_pair", "total_frequency": 0.30,
+                      "actions_total_frequencies": {"C": 0.9, "F": 0.1}},
+                     {"index": 1, "name": "ace_high", "total_frequency": 0.20,
+                      "actions_total_frequencies": {"F": 0.8, "C": 0.2}},
+                 ],
+                 "simple_hand_counters": {}},
+                {"player": {"position": "LJ"}, "range": [0.5] * 1326},
+            ],
+            "action_solutions": [
+                {"action": {"code": "F"}, "total_frequency": 0.35, "strategy": [0.0] * 1326},
+                {"action": {"code": "C"}, "total_frequency": 0.55, "strategy": [0.0] * 1326},
+                {"action": {"code": "R8"}, "total_frequency": 0.10, "strategy": [0.0] * 1326},
+            ],
+        }
+
+    orig = cf.get_spot_solution
+    cf.get_spot_solution = fake_sol
+    try:
+        facts = cf.fetch_fold_equity(cf.Ctx(
+            question="BB 在 Turn check 後，面對我的半池下注，他的跟注範圍是什麼？",
+            hand_context=hctx))
+    finally:
+        cf.get_spot_solution = orig
+
+    # Fetched the hypothetical hero-bet node, not hero's check node.
+    assert_eq(captured.get("turn_actions"), "X-R4.15", "half-pot hero bet appended")
+    assert_true(facts is not None, "fold_equity facts produced")
+    assert_eq(facts.intent, "fold_equity")
+    assert_true(any("跟注" in ln or "棄牌" in ln for ln in facts.lines),
+                "shows the villain's call/fold split")
+    # Chart is for the villain, who acts at the response node → will render.
+    chart = facts.meta.get("chart")
+    assert_true(chart is not None and chart["position"] == "BB",
+                "villain chart attached at the response node")
+
+
 @test
 def test_coach_facts_verifier_board():
     """coach_facts: verifier whitelists board cards + hero hand + board pairs."""
@@ -12985,14 +13125,17 @@ def test_ensure_hand_context_noop_without_token_or_db():
 
 @test
 def test_attach_chart_only_when_solution_and_position():
-    """coach_facts._attach_chart records (solution, position) for grid render."""
+    """coach_facts._attach_chart records (solution, position) only for the ACTOR."""
     import coach_facts as cf
     f = cf.Facts(intent="why_action", title="t")
     cf._attach_chart(f, None, "CO")
     assert_true("chart" not in f.meta, "no chart without a solution")
-    cf._attach_chart(f, {"game": {}}, None)
+    cf._attach_chart(f, {"game": {"active_position": "CO"}}, None)
     assert_true("chart" not in f.meta, "no chart without a position")
-    sol = {"game": {}}
+    # position must be the node's acting player, else the grid is blank (H3639)
+    cf._attach_chart(f, {"game": {"active_position": "BB"}}, "CO")
+    assert_true("chart" not in f.meta, "non-acting position refused")
+    sol = {"game": {"active_position": "CO"}}
     cf._attach_chart(f, sol, "CO")
     assert_eq(f.meta["chart"]["position"], "CO", "position recorded")
     assert_true(f.meta["chart"]["solution"] is sol, "solution recorded")
@@ -13017,11 +13160,16 @@ def test_coach_facts_fetchers_attach_chart_meta():
                 "sizing chart points at the node solution")
 
     vr = cf._fetch_villain_range_from(hero, hctx)
-    assert_true(vr and vr.meta.get("chart"), "villain_range carries chart meta")
-    assert_true(vr.meta["chart"]["position"], "villain_range charts a position")
+    assert_true(vr is not None, "villain_range still produces facts")
+    # The villain isn't the actor at hero's node, so a strategy grid would be
+    # blank — it must NOT be attached (H3639: the BB Turn chart came back empty).
+    assert_true(not vr.meta.get("chart"),
+                "villain_range does not attach a non-actor chart")
 
     fe = cf._fetch_fold_equity_from(villain, hctx)
     assert_true(fe and fe.meta.get("chart"), "fold_equity carries chart meta")
+    assert_eq(fe.meta["chart"]["position"], cf._acting_position(villain),
+              "fold_equity charts the acting villain")
 
 
 @test
