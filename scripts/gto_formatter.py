@@ -169,22 +169,45 @@ def _format_combo_breakdown(combo_strats: list[dict], spot_solution: dict) -> li
 
 
 def normalize_hand_name(hand: str) -> str:
-    """Convert specific combo (Qs6d) to simplified name (Q6o).
+    """Convert specific combo/class input to a canonical 169 hand name.
 
-    GTO Wizard uses simplified names: 66, AKs, Q6o.
-    LLM may output specific combos: 6h6s, AhKh, Qs6d.
+    GTO Wizard keys preflop strategy by the standard high-rank-first 169
+    classes: ``66``, ``AKs``, ``Q6o``.  Users and parsers sometimes provide
+    low-rank-first classes (``45o``) or specific combos (``Qs6d``); both must
+    resolve to the same canonical key before looking up solver rows.
     """
     if not hand:
         return ""
+
+    ranks = set(_RANK_ORDER)
+
     if len(hand) <= 3:
-        # Fix case: "Kk" → "KK", "Aks" → "AKs"
+        # Fix case: "Kk" → "KK", "Aks" → "AKs", and canonicalize
+        # low-rank-first non-pairs such as "45o" → "54o".
         if len(hand) == 2:
-            return hand[0].upper() + hand[1].upper()
+            r1, r2 = hand[0].upper(), hand[1].upper()
+            if r1 in ranks and r2 in ranks:
+                if r1 == r2:
+                    return r1 + r2
+                if _RANK_ORDER.index(r1) > _RANK_ORDER.index(r2):
+                    r1, r2 = r2, r1
+                return r1 + r2
+            return r1 + r2
         if len(hand) == 3:
-            return hand[0].upper() + hand[1].upper() + hand[2].lower()
+            r1, r2, suffix = hand[0].upper(), hand[1].upper(), hand[2].lower()
+            if r1 in ranks and r2 in ranks and suffix in ("s", "o"):
+                if r1 == r2:
+                    return r1 + r2
+                if _RANK_ORDER.index(r1) > _RANK_ORDER.index(r2):
+                    r1, r2 = r2, r1
+                return r1 + r2 + suffix
+            return r1 + r2 + suffix
         return hand
+
     if len(hand) == 4:
-        r1, s1, r2, s2 = hand[0], hand[1], hand[2], hand[3]
+        r1, s1, r2, s2 = hand[0].upper(), hand[1].lower(), hand[2].upper(), hand[3].lower()
+        if r1 not in ranks or r2 not in ranks:
+            return hand
         # Higher rank first
         if _RANK_ORDER.index(r1) > _RANK_ORDER.index(r2):
             r1, s1, r2, s2 = r2, s2, r1, s1

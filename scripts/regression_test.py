@@ -2829,7 +2829,77 @@ def test_formatter_normalize_hand_name():
     assert_eq(normalize_hand_name("6h6s"), "66")
     assert_eq(normalize_hand_name("AhKh"), "AKs")
     assert_eq(normalize_hand_name("AKs"), "AKs")
+    assert_eq(normalize_hand_name("KAs"), "AKs")
+    assert_eq(normalize_hand_name("45o"), "54o")
+    assert_eq(normalize_hand_name("54o"), "54o")
+    assert_eq(normalize_hand_name("45s"), "54s")
     assert_eq(normalize_hand_name("66"), "66")
+
+
+@test
+def test_formatter_low_rank_first_class_uses_canonical_solver_row():
+    """Formatter: low-rank-first classes like 45o must look up 54o.
+
+    Regression for H3638: the parser/user supplied "45o", while GTO Wizard's
+    169-class keys use "54o".  The old lookup missed the hand row, printed
+    "range 中沒有 45o", and let coaching incorrectly call preflop a fold.
+    """
+    from gto_formatter import format_full_spot, format_spot_compact
+
+    sol = {
+        "game": {
+            "active_position": "BB",
+            "board": "",
+            "current_street": {"type": "preflop"},
+            "pot": 4.5,
+            "bet_display_name": "RAISE",
+        },
+        "action_solutions": [
+            {
+                "action": {"code": "F"},
+                "total_frequency": 0.2,
+                "total_combos": 265,
+                "strategy": [0.0] * 169,
+            },
+            {
+                "action": {"code": "C", "betsize": 2.0},
+                "total_frequency": 0.7,
+                "total_combos": 928,
+                "strategy": [0.0] * 169,
+            },
+            {
+                "action": {"code": "RAI", "allin": True, "betsize": 17.0},
+                "total_frequency": 0.1,
+                "total_combos": 133,
+                "strategy": [0.0] * 169,
+            },
+        ],
+        "players_info": [
+            {
+                "player": {"position": "BB"},
+                "range": [1.0] * 169,
+                "simple_hand_counters": {
+                    "54o": {
+                        "total_combos_available": 12,
+                        "total_combos": 12,
+                        "total_frequency": 1.0,
+                        "hand_ev": 0.1,
+                        "hand_eq": 0.32,
+                        "actions_total_frequencies": {"C": 1.0},
+                        "actions_ev": {"C": 0.1},
+                    }
+                },
+            }
+        ],
+    }
+
+    full = format_full_spot(sol, "45o", "BB")
+    compact = format_spot_compact(sol, "45o", "BB")
+
+    assert_in("【BB 54o】", full)
+    assert_in("Call: 100.0%", full)
+    assert_not_in("range 中沒有", full)
+    assert_eq(compact, "GTO: Call 100%")
 
 
 # ── ICM Tests ──
