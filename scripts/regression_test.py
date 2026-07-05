@@ -2902,6 +2902,97 @@ def test_formatter_low_rank_first_class_uses_canonical_solver_row():
     assert_eq(compact, "GTO: Call 100%")
 
 
+@test
+def test_formatter_low_range_exact_combo_not_aggregated():
+    """Formatter: hero's exact combo below the 0.5% display range must still
+    drive the full-text verdict, not the same-class aggregate.
+
+    Regression for H3639: hero holds Ac8c (nut flush) on 9c9s5cKs2c and jams
+    the river.  Ac8c reaches this node only ~0.09% of the time (it usually bets
+    the turn), so _get_combo_strategies filtered it out and the full text fell
+    back to the aggregate A8s ("Fold 94.5%") — which averages in the three
+    non-flush ace-high combos.  The coach then contradicted the compact's
+    correct "All-in 99% ✅".  The full text must show 【LJ Ac8c（A8s）】 All-in,
+    matching the compact.
+    """
+    from gto_formatter import (
+        format_full_spot,
+        format_spot_compact,
+        combo_index_for_hand,
+    )
+
+    board = "9c9s5cKs2c"
+    board_cards = {"9c", "9s", "5c", "Ks", "2c"}
+    ac8c = combo_index_for_hand("Ac8c")   # 1152 — the nut flush combo
+    ad8d = combo_index_for_hand("Ad8d")   # non-flush ace-high
+    ah8h = combo_index_for_hand("Ah8h")   # non-flush ace-high
+
+    def arr(mapping):
+        a = [0.0] * 1326
+        for i, v in mapping.items():
+            a[i] = v
+        return a
+
+    # Range: Ac8c survives rarely (0.001 < 0.005 display cutoff); the two
+    # non-flush combos are the bulk of the same-class range.
+    range_arr = arr({ac8c: 0.001, ad8d: 0.044, ah8h: 0.044})
+    # Strategy: the nut flush jams, the ace-high junk folds.
+    fold_strat = arr({ac8c: 0.01, ad8d: 0.95, ah8h: 0.95})
+    jam_strat = arr({ac8c: 0.99, ad8d: 0.04, ah8h: 0.04})
+    hand_evs = arr({ac8c: 16.9, ad8d: -0.01, ah8h: -0.01})
+
+    sol = {
+        "game": {
+            "active_position": "LJ",
+            "board": board,
+            "current_street": {"type": "river"},
+            "pot": 11.3,
+            "bet_display_name": "RAISE",
+        },
+        "action_solutions": [
+            {"action": {"code": "F"}, "total_frequency": 0.257,
+             "total_combos": 9, "strategy": fold_strat},
+            {"action": {"code": "RAI", "allin": True, "betsize": 16.6},
+             "total_frequency": 0.167, "total_combos": 6, "strategy": jam_strat},
+        ],
+        "players_info": [
+            {
+                "player": {"position": "LJ"},
+                "range": range_arr,
+                "hand_evs": hand_evs,
+                "simple_hand_counters": {
+                    # Aggregate A8s: dominated by the folding junk combos.
+                    "A8s": {
+                        "total_combos_available": 4,
+                        "total_combos": 0.1,
+                        "total_frequency": 0.023,
+                        "hand_ev": 0.17,
+                        "hand_eq": 0.079,
+                        "actions_total_frequencies": {"F": 0.945, "RAI": 0.053},
+                        "actions_total_combos": {"F": 0.1, "RAI": 0.0},
+                        "actions_ev": {"F": 0.0, "RAI": -0.12},
+                    }
+                },
+            }
+        ],
+    }
+
+    # board cards must not be misclassified as blockers of the wrong hand
+    assert not ({c for c in board_cards} & {"Ac", "8c"})
+
+    full = format_full_spot(sol, "Ac8c", "LJ")
+    compact = format_spot_compact(sol, "Ac8c", "LJ", combo_idx=ac8c)
+
+    # Full text shows hero's exact combo and its jam verdict — NOT the
+    # aggregate fold.
+    assert_in("【LJ Ac8c（A8s）】", full)
+    assert_in("All-in 99%", full)
+    assert_not_in("【LJ A8s】", full)
+    assert_not_in("Fold: 94", full)
+    # And it agrees with the compact.
+    assert_eq(compact, "GTO: All-in 99%")
+
+
 # ── ICM Tests ──
 
 @test

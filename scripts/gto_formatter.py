@@ -109,6 +109,60 @@ def _get_combo_strategies(spot_solution: dict, hand_name: str, position: str) ->
     return results or None
 
 
+def _get_single_combo_strategy(
+    spot_solution: dict, target_combos: list[str], position: str
+) -> dict | None:
+    """Build one exact combo's strategy straight from the 1326 arrays.
+
+    ``_get_combo_strategies`` drops combos whose range at the node is below the
+    0.5% display threshold.  That hides hero's *actual* combo when it survives
+    to a node only rarely — e.g. the nut flush reaching the river after a
+    checked turn (range ~0.09%).  The coach must still see that exact-combo
+    verdict rather than the same-class aggregate, which averages in the
+    non-flush suits and can invert the advice (aggregate "Fold 95%" vs the nut
+    flush's "All-in").  Presence is gated the same way the compact line is
+    (range > ~0, not the 0.5% display cutoff).  Returns None if the combo is
+    board-blocked or has no range at this node.
+    """
+    if "action_solutions" not in spot_solution:
+        return None
+    action_solutions = spot_solution["action_solutions"]
+    if not action_solutions or "strategy" not in action_solutions[0]:
+        return None
+    player_info = None
+    for pi in spot_solution["players_info"]:
+        if pi["player"]["position"] == position:
+            player_info = pi
+            break
+    if not player_info or "range" not in player_info:
+        return None
+    range_arr = player_info["range"]
+    if len(range_arr) != 1326:
+        return None
+    ev_arr = player_info.get("hand_evs", [])
+    board_cards = _get_board_cards(spot_solution["game"]["board"])
+
+    for idx, (c1, c2) in enumerate(_COMBO_INDEX):
+        if (c1 + c2) not in target_combos and (c2 + c1) not in target_combos:
+            continue
+        if c1 in board_cards or c2 in board_cards:
+            return None
+        if range_arr[idx] < 1e-12:
+            return None
+        actions = {}
+        for asol in action_solutions:
+            freq = asol["strategy"][idx]
+            if freq > 0.005:
+                actions[asol["action"]["code"]] = freq
+        return {
+            "combo": c1 + c2,
+            "range": range_arr[idx],
+            "ev": ev_arr[idx] if idx < len(ev_arr) else 0,
+            "actions": actions,
+        }
+    return None
+
+
 def _has_significant_suit_diff(combo_strats: list[dict]) -> bool:
     """Check if combo strategies differ enough to be worth reporting.
 
@@ -284,15 +338,24 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
     combo_strats = _get_combo_strategies(spot_solution, hand_name, position)
 
     # If specific combo requested, show that combo's strategy first
-    if is_specific_combo and combo_strats:
+    if is_specific_combo:
         # Normalize combo string to match format in combo_strats (e.g. "Ah8h")
         r1, s1, r2, s2 = original_hand[0].upper(), original_hand[1].lower(), original_hand[2].upper(), original_hand[3].lower()
         target_combos = [f"{r1}{s1}{r2}{s2}", f"{r2}{s2}{r1}{s1}"]
         target_cs = None
-        for cs in combo_strats:
+        for cs in (combo_strats or []):
             if cs["combo"] in target_combos:
                 target_cs = cs
                 break
+
+        # Hero's exact combo can survive to a node with range < 0.5% (e.g. the
+        # nut flush reaching the river after a checked turn), which
+        # _get_combo_strategies filters out.  Pull it straight from the 1326
+        # arrays so the coach sees hero's real verdict — matching the compact
+        # line — instead of the same-class aggregate that averages in the
+        # non-flush suits and can invert the advice.
+        if target_cs is None:
+            target_cs = _get_single_combo_strategy(spot_solution, target_combos, position)
 
         if target_cs:
             action_order = [asol["action"]["code"] for asol in spot_solution["action_solutions"]]
@@ -305,12 +368,11 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
                 label = _action_label(code, spot_solution)
                 parts.append(f"{label} {freq*100:.0f}%")
             lines.append(f"  策略: {', '.join(parts)}（EV {target_cs['ev']:.2f}bb）")
-            # Show all other combos for comparison
-            lines.append(f"  {hand_name} 其他花色:")
-            lines.extend(_format_combo_breakdown(
-                [cs for cs in combo_strats if cs["combo"] not in target_combos],
-                spot_solution,
-            ))
+            # Show all other combos for comparison (only those with displayable range)
+            other = [cs for cs in (combo_strats or []) if cs["combo"] not in target_combos]
+            if other:
+                lines.append(f"  {hand_name} 其他花色:")
+                lines.extend(_format_combo_breakdown(other, spot_solution))
             return "\n".join(lines)
 
     # Standard aggregated output
