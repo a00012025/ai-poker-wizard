@@ -9032,6 +9032,90 @@ def test_build_last_node_none_when_no_decisions():
     assert_true(build_last_node_url({"hand": {}, "hero_spots": [], "solutions": []}) is None)
 
 
+def _h3639_spot_context():
+    """H3639 context with each hero_spot carrying analyze_hand's snapped codes."""
+    return {
+        "hand": {"streets": [{"board": "9c9s5c"}, {"card": "Ks"}, {"card": "2c"}]},
+        "hero_spots": [
+            {"street": "preflop", "params": {
+                "preflop_actions": "F-F", "depth": 20.125, "gametype": "MTTGeneral"}},
+            {"street": "flop", "params": {
+                "preflop_actions": "F-F-R2-F-F-F-F-C", "board": "9c9s5c",
+                "flop_actions": "X", "turn_actions": "", "river_actions": "",
+                "depth": 20.125, "gametype": "MTTGeneral"}},
+            {"street": "turn", "params": {
+                "preflop_actions": "F-F-R2-F-F-F-F-C", "board": "9c9s5cKs",
+                "flop_actions": "X-R1.4-C", "turn_actions": "X", "river_actions": "",
+                "depth": 20.125, "gametype": "MTTGeneral"}},
+            {"street": "river", "params": {
+                "preflop_actions": "F-F-R2-F-F-F-F-C", "board": "9c9s5cKs2c",
+                "flop_actions": "X-R1.4-C", "turn_actions": "X-X", "river_actions": "R3",
+                "depth": 20.125, "gametype": "MTTGeneral"}},
+        ],
+        "solutions": [{"action_solutions": []}] * 4,
+    }
+
+
+@test
+def test_build_last_node_url_uses_resolved_spot_params_h3639():
+    """build_last_node_url: sources snapped codes from spot params, not the API.
+
+    Regression for H3639: with an expired GTOW token the resolver's
+    next_actions calls failed and the deep-link fell back to raw 'B'/'X' tokens
+    (flop_actions=X-B-C, river_actions=B) that GTOW can't parse → "something
+    went wrong". analyze_hand already snapped every action to its GTOW code and
+    stored the line on each hero_spot; reuse it so the link is exact and needs
+    no live token. The resolver must NOT be called when params are present.
+    """
+    def boom(*a, **k):
+        raise AssertionError("resolver must not run when spot params exist")
+
+    url = build_last_node_url(_h3639_spot_context(), _resolver=boom)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["preflop_actions"], ["F-F-R2-F-F-F-F-C"])
+    assert_eq(qs["flop_actions"], ["X-R1.4-C"])   # not raw X-B-C
+    assert_eq(qs["turn_actions"], ["X-X"])
+    assert_eq(qs["river_actions"], ["R3"])        # not raw B
+    assert_eq(qs["board"], ["9s9c5cKs2c"])        # canonical flop order
+    assert_eq(qs["history_spot"], ["14"])         # hero's river decision node
+
+
+@test
+def test_build_node_url_for_street_uses_resolved_spot_params():
+    """build_node_url_for_street: turn link uses the turn spot's snapped codes."""
+    from gtow_solution_url import build_node_url_for_street
+
+    def boom(*a, **k):
+        raise AssertionError("resolver must not run when spot params exist")
+
+    url = build_node_url_for_street(_h3639_spot_context(), "turn", _resolver=boom)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["flop_actions"], ["X-R1.4-C"])
+    assert_eq(qs["turn_actions"], ["X"])          # hero's turn decision node
+    assert_true("river_actions" not in qs)
+    assert_eq(qs["board"], ["9s9c5cKs"])          # flop + turn, canonical
+
+
+@test
+def test_build_last_node_url_falls_back_to_resolver_without_params():
+    """build_last_node_url: spots lacking params still resolve via the API path."""
+    ctx = {
+        "hand": {"streets": [{"board": "7d8h2h"}]},
+        "hero_spots": [{"street": "flop"}],   # no params → resolver fallback
+        "solutions": [{"action_solutions": []}],
+    }
+
+    def stub(_hand, _street, _idx):
+        return {"preflop_actions": "R2.3-C", "flop_actions": "X-X",
+                "turn_actions": "", "river_actions": "", "history_spot": 4,
+                "depth": 40.0, "gametype": "MTTGeneral"}
+
+    url = build_last_node_url(ctx, _resolver=stub)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["flop_actions"], ["X-X"])
+    assert_eq(qs["board"], ["8h7d2h"])
+
+
 def _split_flow_session(fake_ctx, fake_hand):
     """Build a GeminiSessionManager wired for send_message split-flow tests.
 
