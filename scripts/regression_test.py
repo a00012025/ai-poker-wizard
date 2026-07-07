@@ -14314,6 +14314,118 @@ def test_depth_band_boundaries():
     assert_eq(depth_band(40.0), "40plus")
 
 
+# ── Phase 1 Ledger: ingest raw paths ──
+
+@test
+def test_ingest_raw_paths():
+    from ledger_ingest import raw_paths
+    ld, dp = raw_paths("abc-123", "2026-05-30T21:03:23Z")
+    assert_true(str(dp).endswith("data/gtow_raw/detail/2026-05/abc-123.json.gz"))
+    assert_true(str(ld).endswith("data/gtow_raw/list/2026-05.jsonl.gz"))
+
+
+# ── Phase 1 Ledger: session clustering ──
+
+@test
+def test_session_clustering():
+    from datetime import datetime, timedelta, timezone
+    from ledger_sessions import cluster_sessions
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    mk = lambda i, mins, t: {"gtow_hand_id": f"h{i}",
+                             "played_at": t0 + timedelta(minutes=mins),
+                             "tournament_id": t}
+    hands = [mk(1, 0, "A"), mk(2, 5, "B"), mk(3, 10, "A"),   # session 1: A+B overlap
+             mk(4, 200, "C"), mk(5, 210, "C")]               # gap 190min -> session 2
+    ss = cluster_sessions(hands)
+    assert_eq(len(ss), 2)
+    assert_eq(ss[0]["hands_count"], 3)
+    assert_eq(ss[0]["max_concurrent_tables"], 2)
+    assert_eq(sorted(ss[0]["tournaments"]), ["A", "B"])
+    assert_eq(ss[1]["max_concurrent_tables"], 1)
+
+
+# ── Phase 1 Ledger: diagnostics ──
+
+def _dec(family="facing_cbet_oop", band="15_25", loss=0.0, week_day="2026-06-01",
+         texture="wet", excluded=False):
+    from datetime import datetime
+    return {"family": family, "depth_band": band, "ev_loss_bb": loss,
+            "texture": texture, "excluded": excluded,
+            "played_at": datetime.fromisoformat(week_day + "T12:00:00+00:00")}
+
+
+@test
+def test_leak_board_ev_ranking_and_min_n():
+    from ledger_diagnostics import leak_board
+    decs = ([_dec(loss=1.0)] * 30                                   # 30bb over n=30
+            + [_dec(family="open_raise", band="40plus", loss=5.0)] * 3   # big but n<25
+            + [_dec(family="probe", loss=0.0)] * 40)
+    out = leak_board(decs, min_n=25)
+    ranked = out["cells"]
+    assert_eq(ranked[0]["family"], "facing_cbet_oop")
+    assert_eq(ranked[0]["n"], 30)
+    assert_eq(round(ranked[0]["per100"], 2), round(30 / 30 * 100, 2))
+    assert_true(all(c["family"] != "open_raise" for c in ranked))
+    assert_true(any(c["family"] == "open_raise" for c in out["insufficient"]))
+
+
+@test
+def test_classify_leak_boundary_vs_knowledge():
+    from ledger_diagnostics import classify_leak
+    conc = [_dec(band="le15", loss=1.0)] * 12 + [_dec(band="40plus", loss=0.1)] * 12
+    t, desc = classify_leak(conc)
+    assert_eq(t, "boundary")
+    assert_in("le15", desc)
+    spread = ([_dec(band="le15", loss=0.5)] * 12 + [_dec(band="15_25", loss=0.5)] * 12
+              + [_dec(band="40plus", loss=0.5)] * 12)
+    t2, _ = classify_leak(spread)
+    assert_eq(t2, "knowledge")
+
+
+@test
+def test_weekly_series_tz_bucketing():
+    from ledger_diagnostics import weekly_series
+    # 2026-06-07 15:59 UTC = 06-07 23:59 Taipei (Sunday, W23); 16:01 UTC = 06-08 Taipei (Monday, W24)
+    from datetime import datetime, timezone
+    d1 = dict(_dec(loss=2.0), played_at=datetime(2026, 6, 7, 15, 59, tzinfo=timezone.utc))
+    d2 = dict(_dec(loss=0.0), played_at=datetime(2026, 6, 7, 16, 1, tzinfo=timezone.utc))
+    out = weekly_series([d1, d2])
+    assert_eq([w["week"] for w in out], ["2026-W23", "2026-W24"])
+    assert_eq(out[0]["n"], 1)
+
+
+# ── Phase 1 Ledger: scorecard ──
+
+@test
+def test_scorecard_data_and_html():
+    from scorecard import compute_scorecard_data, render_scorecard_html
+    decs = [_dec(loss=1.0)] * 30 + [_dec(family="probe", loss=0.0)] * 40
+    hands = [{"gtow_hand_id": "h1", "played_at": decs[0]["played_at"],
+              "total_ev_loss_bb": 22.7, "hero_hand": "Qh8c", "position": "SB",
+              "boards": "Kh6h4hQs8s", "tournament_name": "Test $5",
+              "winloss_bb": -10.8, "session_id": 1}]
+    data = compute_scorecard_data(decs, hands, [], prev_focus=None,
+                                  window_label="2026-W28")
+    assert_true(data["headline"])
+    assert_eq(data["leak_board"]["cells"][0]["family"], "facing_cbet_oop")
+    assert_true(data["focus"]["families"])
+    assert_true(data["focus"]["families"][0]["prescriptions"][0]["url"]
+                .startswith("https://app.gtowizard.com/"))
+    html = render_scorecard_html(data)
+    assert_in("facing_cbet_oop", html)
+    assert_in("<svg", html)
+    assert_in("誠實層", html)
+    assert_true("<script src" not in html)   # self-contained
+
+
+@test
+def test_analyze_table_url_shape():
+    from scorecard import analyze_table_url
+    url = analyze_table_url("2026-05-30", "2026-05-30")
+    assert_in("app.gtowizard.com/analyze/v4/hands/table?filters=", url)
+    assert_in("preselectGamemode=TOURNAMENT", url)
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
