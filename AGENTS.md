@@ -3,6 +3,10 @@
 This file is the shared repo-local agent guidance for both Codex and Claude Code.
 `CLAUDE.md` should point to this file so both surfaces read the same project instructions.
 
+## North Star（最高對齊文件）
+
+**`docs/NORTH_STAR.md` 是本專案的終態願景與憲法。** 規劃任何新 feature 前先讀它（至少 §2 北極星指標、§3 四層迴圈、§7 不變量、§13 對齊檢查清單、§14 開發者備忘錄）。所有提案必須通過 §13 的 gate；與不變量衝突時改提案、不改憲法。一句話版本：本專案的終態是「一人職業戰隊」— GTO Wizard 是健身房與器材，本系統是疊加其上的教練層（反饋、訓練、優化、評估的迴圈管理），北極星指標是「真實對局的 EV loss / 100 決策（EV 加權、信心過濾、按 spot family 分解、可歸因地下降）」。
+
 ## Project Structure
 
 ```
