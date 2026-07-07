@@ -14199,6 +14199,29 @@ def test_analyze_api_backoff_then_success():
 
 
 @test
+def test_analyze_api_hand_detail_soft_404_returns_none():
+    """A single not-ready hand (404 'upload taking longer') must not crash the
+    sweep — hand_detail returns None so the caller skips + retries later."""
+    import gtow_analyze_api as gapi
+    def fake_request(method, url, **kw):
+        class R:
+            status_code = 404
+            def json(self): return {}
+            content = b'{"code":"NOT_FOUND","detail":"Hand upload is taking longer"}'
+        return R()
+    assert_eq(gapi.hand_detail("deadbeef", request_fn=fake_request), None)
+    # 403 (forbidden config) and 204 (no solution) are soft too
+    for code in (403, 204):
+        def fk(method, url, _c=code, **kw):
+            class R:
+                status_code = _c
+                def json(self): return {}
+                content = b"{}"
+            return R()
+        assert_eq(gapi.hand_detail("x", request_fn=fk), None)
+
+
+@test
 def test_analyze_api_client_id_persisted():
     import gtow_analyze_api as gapi, os, uuid as _uuid
     p = "/tmp/_test_gtow_client_id"

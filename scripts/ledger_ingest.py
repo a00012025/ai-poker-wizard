@@ -126,7 +126,7 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
     rows = await conn.fetch(
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
         "WHERE NOT detail_fetched ORDER BY played_at")
-    fetched = ndec = 0
+    fetched = ndec = skipped_nodata = 0
     for r in rows:
         if limit and fetched >= limit:
             break
@@ -135,6 +135,11 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
         _, dp = raw_paths(hid, played)
         dp.parent.mkdir(parents=True, exist_ok=True)
         det = gapi.hand_detail(hid)
+        if det is None:
+            # no retrievable analysis yet (upload still processing / forbidden /
+            # no solution) — leave detail_fetched=false so a later run retries.
+            skipped_nodata += 1
+            continue
         with gzip.open(dp, "wt") as f:
             json.dump(det, f)
         lp, _ = raw_paths(hid, played)
@@ -150,6 +155,9 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
         ndec += len(decs)
         if fetched % 100 == 0:
             print(f"  detail sweep: {fetched}/{len(rows)}", flush=True)
+    if skipped_nodata:
+        print(f"  detail sweep: skipped {skipped_nodata} hands with no retrievable "
+              f"analysis yet (will retry next run)", flush=True)
     return fetched, ndec
 
 

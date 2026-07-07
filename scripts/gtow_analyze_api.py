@@ -72,8 +72,15 @@ def _throttle(_sleep=time.sleep):
     _last_request_ts = time.monotonic()
 
 
-def _request(method: str, url: str, request_fn=None, _sleep=time.sleep, **kw):
-    """Central request with throttle/backoff/401-retry. request_fn injectable for tests."""
+def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
+             soft_statuses=(), **kw):
+    """Central request with throttle/backoff/401-retry. request_fn injectable for tests.
+
+    soft_statuses: HTTP codes that mean "no data / not ready for this resource"
+    rather than a fatal error — return None so the caller can skip and retry
+    later (e.g. a single hand whose GTOW upload is still processing -> 404,
+    204 no-solution, 403 forbidden config). Everything else >= 400 raises.
+    """
     fn = request_fn or requests.request
     reminted = False
     for attempt in range(_MAX_RETRIES + 1):
@@ -88,6 +95,8 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep, **kw):
         if r.status_code in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES:
             _sleep(_backoff_delay(attempt))
             continue
+        if r.status_code in soft_statuses:
+            return None
         if r.status_code >= 400:
             raise RuntimeError(f"GTOW Analyze API {r.status_code} for {url}: {r.content[:300]!r}")
         return r.json()
@@ -123,6 +132,9 @@ def iter_all_hands(since_iso: str, until_iso: str | None = None,
             return
 
 
-def hand_detail(gtow_hand_id: str, request_fn=None) -> dict:
+def hand_detail(gtow_hand_id: str, request_fn=None) -> dict | None:
+    """Return the hand detail dict, or None if the hand has no retrievable
+    analysis yet (204 no-solution / 403 forbidden / 404 upload still
+    processing). Callers should skip None hands and let a later run retry."""
     return _request("GET", f"{API_BASE}/v4/hand-history/hands/{gtow_hand_id}/",
-                    request_fn=request_fn)
+                    request_fn=request_fn, soft_statuses=(204, 403, 404))
