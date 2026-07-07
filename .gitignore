@@ -63,3 +63,8 @@ data/cards/
 .claude/scheduled_tasks.lock
 data/effbb_cache/
 scripts/_tmp*.py
+
+# Phase 1 ledger
+data/gtow_raw/
+data/scorecards/
+.gtow_client_id
