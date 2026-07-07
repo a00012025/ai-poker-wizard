@@ -14156,6 +14156,60 @@ def test_seat_reader_anchors_stack_and_rejects_phantom():
     assert_true(all(abs(r["stack"] - 120.0) > 0.5 for r in rows))
 
 
+# ── Phase 1 Ledger: GTOW Analyze API client ──
+
+@test
+def test_analyze_api_pagination():
+    """iter_all_hands pages until offset >= total using injected transport."""
+    import gtow_analyze_api as gapi
+    pages = [
+        {"items": [{"hand_id": "a"}, {"hand_id": "b"}], "total": 3, "limit": 2, "offset": 0},
+        {"items": [{"hand_id": "c"}], "total": 3, "limit": 2, "offset": 2},
+    ]
+    calls = []
+    def fake_request(method, url, **kw):
+        calls.append(kw["json"]["pagination"]["offset"])
+        class R:
+            status_code = 200
+            def json(self): return pages[len(calls) - 1]
+            content = b"{}"
+        return R()
+    rows = list(gapi.iter_all_hands("2026-02-28T16:00:00.000Z", page_size=2,
+                                    request_fn=fake_request))
+    assert_eq([r["hand_id"] for r in rows], ["a", "b", "c"])
+    assert_eq(calls, [0, 2])
+
+
+@test
+def test_analyze_api_backoff_then_success():
+    """429 twice then 200 -> returns parsed json; delays follow _backoff_delay."""
+    import gtow_analyze_api as gapi
+    assert_eq(gapi._backoff_delay(0), 2)
+    assert_eq(gapi._backoff_delay(3), 16)
+    seq = [429, 429, 200]
+    def fake_request(method, url, **kw):
+        class R:
+            status_code = seq.pop(0)
+            def json(self): return {"items": [], "total": 0}
+            content = b"{}"
+        return R()
+    out = gapi.list_hands("2026-02-28T16:00:00.000Z", request_fn=fake_request,
+                          _sleep=lambda s: None)
+    assert_eq(out["total"], 0)
+
+
+@test
+def test_analyze_api_client_id_persisted():
+    import gtow_analyze_api as gapi, os, uuid as _uuid
+    p = "/tmp/_test_gtow_client_id"
+    if os.path.exists(p): os.remove(p)
+    a = gapi.get_client_id(path=p)
+    b = gapi.get_client_id(path=p)
+    assert_eq(a, b)
+    _uuid.UUID(a)  # raises if not a uuid
+    os.remove(p)
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
