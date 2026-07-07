@@ -1,0 +1,259 @@
+{
+ "eef0b07b-23b6-4fe0-bcc6-41d83629583c": {
+  "hand_id": "eef0b07b-23b6-4fe0-bcc6-41d83629583c",
+  "original_hand_id": null,
+  "tournament_id": "286947986",
+  "tournament_name": "Saturday Session: Starting Five $5 Hold'em No Limit",
+  "tournament_buyin": 5.0,
+  "small_blind": 300.0,
+  "big_blind": 600.0,
+  "total_pot": 22.188,
+  "file_id": null,
+  "file_original_name": "GG20260530-1235 - Saturday Session Starting Five 5.txt",
+  "played_at": "2026-05-30T21:03:23Z",
+  "site": "GGPoker",
+  "pot_type": "SRP",
+  "player_nickname": null,
+  "player_is_hero": null,
+  "player_position": "SB",
+  "player_relative_position": null,
+  "hero_hand": "Qh8c",
+  "player_won_without_showdown": null,
+  "player_won_at_showdown": null,
+  "board_flop_connectedness": "oesd_possible",
+  "board_flop_pairedness": "not_paired",
+  "game_table": "8",
+  "game_rake": null,
+  "game_opening": null,
+  "game_sizing": null,
+  "game_three_betting": null,
+  "game_format": "MTT",
+  "game_variant": null,
+  "solution_status": "OK",
+  "color_hex": null,
+  "note": null,
+  "actions": [
+   [
+    "F",
+    "F",
+    "F",
+    "F",
+    "F",
+    "R2.5",
+    "C"
+   ],
+   [
+    "R1.5",
+    "C"
+   ],
+   [
+    "X",
+    "R6.657",
+    "C"
+   ],
+   [
+    "X",
+    "R16.642",
+    "F"
+   ]
+  ],
+  "blinds": [
+   300.0,
+   600.0
+  ],
+  "total_ev_loss": 22.6626541335449,
+  "total_ev_loss_as_pot": 0.581764962996917,
+  "player_winloss": -10.782,
+  "avg_frequency_difference": 0.17859631776809692,
+  "avg_gto_score": 0.5789909023055534,
+  "boards": [
+   "Kh6h4hQs8s"
+  ],
+  "correctnesses": [
+   "UNSOLVED",
+   "UNSOLVED",
+   "UNSOLVED",
+   "UNSOLVED",
+   "UNSOLVED",
+   "UNSOLVED",
+   "BEST_MOVE",
+   "CORRECT_MOVE",
+   "BEST_MOVE",
+   "BEST_MOVE",
+   "BEST_MOVE",
+   "BLUNDER"
+  ],
+  "sequence_numbers": [
+   6,
+   8,
+   10,
+   12,
+   13,
+   15,
+   6,
+   8,
+   10,
+   12,
+   13,
+   15
+  ],
+  "hand_correctness": "BLUNDER",
+  "total_players": 7,
+  "source": null,
+  "preflop_game_depth": 35.125,
+  "has_access_to_gamemode": true,
+  "particular_action_ev_loss": null,
+  "actions_with_correctness_preflop": [
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "R2.5",
+    "correctness": "BEST_MOVE"
+   },
+   {
+    "action_code": "C",
+    "correctness": null
+   }
+  ],
+  "actions_with_correctness_flop": [
+   {
+    "action_code": "B",
+    "correctness": "CORRECT_MOVE"
+   },
+   {
+    "action_code": "C",
+    "correctness": null
+   }
+  ],
+  "actions_with_correctness_turn": [
+   {
+    "action_code": "X",
+    "correctness": "BEST_MOVE"
+   },
+   {
+    "action_code": "B",
+    "correctness": null
+   },
+   {
+    "action_code": "C",
+    "correctness": "BEST_MOVE"
+   }
+  ],
+  "actions_with_correctness_river": [
+   {
+    "action_code": "X",
+    "correctness": "BEST_MOVE"
+   },
+   {
+    "action_code": "B",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": "BLUNDER"
+   }
+  ]
+ },
+ "bed8860a-442b-4478-a9b4-8acfd52b6143": {
+  "hand_id": "bed8860a-442b-4478-a9b4-8acfd52b6143",
+  "original_hand_id": null,
+  "tournament_id": "266819112",
+  "tournament_name": "Daily Hyper $5 Hold'em No Limit",
+  "tournament_buyin": 5.0,
+  "small_blind": 225.0,
+  "big_blind": 450.0,
+  "total_pot": 1.578,
+  "file_id": null,
+  "file_original_name": "GG20260301-0220 - Daily Hyper 5.txt",
+  "played_at": "2026-03-01T10:20:49Z",
+  "site": "GGPoker",
+  "pot_type": "Preflop",
+  "player_nickname": null,
+  "player_is_hero": null,
+  "player_position": "SB",
+  "player_relative_position": null,
+  "hero_hand": "5c3d",
+  "player_won_without_showdown": null,
+  "player_won_at_showdown": null,
+  "board_flop_connectedness": "",
+  "board_flop_pairedness": "",
+  "game_table": "8",
+  "game_rake": null,
+  "game_opening": null,
+  "game_sizing": null,
+  "game_three_betting": null,
+  "game_format": "MTT",
+  "game_variant": null,
+  "solution_status": "OK",
+  "color_hex": null,
+  "note": null,
+  "actions": [
+   [
+    "F",
+    "F",
+    "F"
+   ]
+  ],
+  "blinds": [
+   225.0,
+   450.0
+  ],
+  "total_ev_loss": 0.0,
+  "total_ev_loss_as_pot": 0.0,
+  "player_winloss": -0.644,
+  "avg_frequency_difference": 0.0,
+  "avg_gto_score": 1.0,
+  "boards": [
+   ""
+  ],
+  "correctnesses": [
+   "UNSOLVED",
+   "BEST_MOVE"
+  ],
+  "sequence_numbers": [
+   6,
+   6
+  ],
+  "hand_correctness": "BEST_MOVE",
+  "total_players": 4,
+  "source": null,
+  "preflop_game_depth": 22.222,
+  "has_access_to_gamemode": true,
+  "particular_action_ev_loss": null,
+  "actions_with_correctness_preflop": [
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": null
+   },
+   {
+    "action_code": "F",
+    "correctness": "BEST_MOVE"
+   }
+  ],
+  "actions_with_correctness_flop": null,
+  "actions_with_correctness_turn": null,
+  "actions_with_correctness_river": null
+ }
+}

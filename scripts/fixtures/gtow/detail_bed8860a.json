@@ -1,0 +1,714 @@
+{
+ "id": "bed8860a-442b-4478-a9b4-8acfd52b6143",
+ "date_played": "2026-03-01T10:20:49Z",
+ "site": "GGPoker",
+ "variant": "NL Hold'em",
+ "game_variant": "NLHOLDEM",
+ "format": "MTT",
+ "total_pot": "1.578",
+ "blinds": {
+  "currency": "CHIPS",
+  "small_blind": "225",
+  "big_blind": "450",
+  "ante": "65",
+  "straddle": "0"
+ },
+ "players": [
+  {
+   "hand": null,
+   "amount_net_won": "0",
+   "position": "CO",
+   "showdown_winnings": "0",
+   "non_showdown_winnings": "-0.1444444444444444444444444444",
+   "stack": "26.589",
+   "is_hero": false,
+   "is_winner": false,
+   "is_opponent": false,
+   "name": "50083dff",
+   "color_hex": null,
+   "note": null
+  },
+  {
+   "hand": null,
+   "amount_net_won": "0",
+   "position": "BTN",
+   "showdown_winnings": "0",
+   "non_showdown_winnings": "-0.1444444444444444444444444444",
+   "stack": "80.007",
+   "is_hero": false,
+   "is_winner": false,
+   "is_opponent": false,
+   "name": "de7801c6",
+   "color_hex": null,
+   "note": null
+  },
+  {
+   "hand": "5c3d",
+   "amount_net_won": "0",
+   "position": "SB",
+   "showdown_winnings": "0",
+   "non_showdown_winnings": "-0.6444444444444444444444444444",
+   "stack": "22.222",
+   "is_hero": true,
+   "is_winner": false,
+   "is_opponent": false,
+   "name": "Hero",
+   "color_hex": null,
+   "note": null
+  },
+  {
+   "hand": null,
+   "amount_net_won": "1.578",
+   "position": "BB",
+   "showdown_winnings": "0",
+   "non_showdown_winnings": "0.9333333333333333333333333333",
+   "stack": "22.222",
+   "is_hero": false,
+   "is_winner": true,
+   "is_opponent": false,
+   "name": "25a75ae9",
+   "color_hex": null,
+   "note": null
+  }
+ ],
+ "players_dealt": 4,
+ "boards": [
+  ""
+ ],
+ "game_analysis": {
+  "warning_status": "OK",
+  "approximation_reason": null,
+  "live_solved_from_street": "RIVER",
+  "live_solved_depth": "22.222",
+  "game_points": [
+   {
+    "gametype": "MTTGeneral",
+    "depth": "20.125",
+    "stacks": [],
+    "real_game_action": {
+     "code": "F",
+     "position": "CO",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": false,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "solved_game_action": {
+     "code": "F",
+     "position": "CO",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": false,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "real_game": {
+     "players": [
+      {
+       "relative_postflop_position": "OOP",
+       "hand": "5c3d",
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": true,
+       "is_active": false,
+       "stack": "22.222",
+       "current_stack": "21.578",
+       "chips_on_table": "0.500",
+       "bounty": null,
+       "profile": null,
+       "position": "SB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "OOP",
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "22.222",
+       "current_stack": "21.078",
+       "chips_on_table": "1.000",
+       "bounty": null,
+       "profile": null,
+       "position": "BB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "OOP",
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": true,
+       "stack": "26.589",
+       "current_stack": "26.445",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "CO",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "IP",
+       "hand": null,
+       "is_dealer": true,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "80.007",
+       "current_stack": "79.863",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "BTN",
+       "bounty_in_bb": null
+      }
+     ],
+     "current_street": {
+      "type": "PREFLOP",
+      "start_pot": "2.076",
+      "end_pot": "2.076"
+     },
+     "pot": "2.076",
+     "pot_odds": "0.325",
+     "active_position": "CO",
+     "board": "",
+     "bet_display_name": "RAISE"
+    },
+    "analysis_solved": {
+     "available_actions": [
+      {
+       "action": {
+        "code": "F",
+        "position": "CO",
+        "type": "FOLD",
+        "betsize": "0",
+        "allin": false,
+        "is_hand_end": false,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "FOLD",
+        "simple_group": "FOLD",
+        "advanced_group": "FOLD",
+        "betsize_by_pot": null,
+        "next_position": null
+       },
+       "frequency": null,
+       "frequency_difference": "0.0",
+       "correctness": null,
+       "ev": null,
+       "ev_loss": null,
+       "ev_loss_as_pot": null,
+       "gto_score": null,
+       "selected": true
+      }
+     ],
+     "hand_eq": "0.0"
+    },
+    "has_solution": false,
+    "solved_action_sequence": {
+     "preflop_actions": [
+      "F",
+      "F",
+      "F",
+      "F"
+     ],
+     "flop_actions": [],
+     "turn_actions": [],
+     "river_actions": []
+    },
+    "warning": null
+   },
+   {
+    "gametype": "MTTGeneral",
+    "depth": "20.125",
+    "stacks": [],
+    "real_game_action": {
+     "code": "F",
+     "position": "BTN",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": false,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "solved_game_action": {
+     "code": "F",
+     "position": "BTN",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": false,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "real_game": {
+     "players": [
+      {
+       "relative_postflop_position": "OOP",
+       "hand": "5c3d",
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": true,
+       "is_active": false,
+       "stack": "22.222",
+       "current_stack": "21.578",
+       "chips_on_table": "0.500",
+       "bounty": null,
+       "profile": null,
+       "position": "SB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "OOP",
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "22.222",
+       "current_stack": "21.078",
+       "chips_on_table": "1.000",
+       "bounty": null,
+       "profile": null,
+       "position": "BB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": null,
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": true,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "26.589",
+       "current_stack": "26.445",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "CO",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "IP",
+       "hand": null,
+       "is_dealer": true,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": true,
+       "stack": "80.007",
+       "current_stack": "79.863",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "BTN",
+       "bounty_in_bb": null
+      }
+     ],
+     "current_street": {
+      "type": "PREFLOP",
+      "start_pot": "2.076",
+      "end_pot": "2.076"
+     },
+     "pot": "2.076",
+     "pot_odds": "0.325",
+     "active_position": "BTN",
+     "board": "",
+     "bet_display_name": "RAISE"
+    },
+    "analysis_solved": {
+     "available_actions": [
+      {
+       "action": {
+        "code": "F",
+        "position": "BTN",
+        "type": "FOLD",
+        "betsize": "0",
+        "allin": false,
+        "is_hand_end": false,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "FOLD",
+        "simple_group": "FOLD",
+        "advanced_group": "FOLD",
+        "betsize_by_pot": null,
+        "next_position": null
+       },
+       "frequency": null,
+       "frequency_difference": "0.0",
+       "correctness": null,
+       "ev": null,
+       "ev_loss": null,
+       "ev_loss_as_pot": null,
+       "gto_score": null,
+       "selected": true
+      }
+     ],
+     "hand_eq": "0.0"
+    },
+    "has_solution": false,
+    "solved_action_sequence": {
+     "preflop_actions": [
+      "F",
+      "F",
+      "F",
+      "F",
+      "F"
+     ],
+     "flop_actions": [],
+     "turn_actions": [],
+     "river_actions": []
+    },
+    "warning": null
+   },
+   {
+    "gametype": "MTTGeneral",
+    "depth": "20.125",
+    "stacks": [],
+    "real_game_action": {
+     "code": "F",
+     "position": "SB",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": true,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "solved_game_action": {
+     "code": "F",
+     "position": "SB",
+     "type": "FOLD",
+     "betsize": "0",
+     "allin": false,
+     "is_hand_end": true,
+     "is_showdown": false,
+     "next_street": false,
+     "display_name": "FOLD",
+     "simple_group": "FOLD",
+     "advanced_group": "FOLD",
+     "betsize_by_pot": null,
+     "next_position": null
+    },
+    "real_game": {
+     "players": [
+      {
+       "relative_postflop_position": "OOP",
+       "hand": "5c3d",
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": true,
+       "is_active": true,
+       "stack": "22.222",
+       "current_stack": "21.578",
+       "chips_on_table": "0.500",
+       "bounty": null,
+       "profile": null,
+       "position": "SB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": "IP",
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": false,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "22.222",
+       "current_stack": "21.078",
+       "chips_on_table": "1.000",
+       "bounty": null,
+       "profile": null,
+       "position": "BB",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": null,
+       "hand": null,
+       "is_dealer": false,
+       "is_folded": true,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "26.589",
+       "current_stack": "26.445",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "CO",
+       "bounty_in_bb": null
+      },
+      {
+       "relative_postflop_position": null,
+       "hand": null,
+       "is_dealer": true,
+       "is_folded": true,
+       "is_hero": false,
+       "is_active": false,
+       "stack": "80.007",
+       "current_stack": "79.863",
+       "chips_on_table": "0",
+       "bounty": null,
+       "profile": null,
+       "position": "BTN",
+       "bounty_in_bb": null
+      }
+     ],
+     "current_street": {
+      "type": "PREFLOP",
+      "start_pot": "2.076",
+      "end_pot": "2.076"
+     },
+     "pot": "2.076",
+     "pot_odds": "0.194",
+     "active_position": "SB",
+     "board": "",
+     "bet_display_name": "RAISE"
+    },
+    "analysis_solved": {
+     "available_actions": [
+      {
+       "action": {
+        "code": "F",
+        "position": "SB",
+        "type": "FOLD",
+        "betsize": "0",
+        "allin": false,
+        "is_hand_end": true,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "FOLD",
+        "simple_group": "FOLD",
+        "advanced_group": "FOLD",
+        "betsize_by_pot": null,
+        "next_position": null
+       },
+       "frequency": "1.0",
+       "frequency_difference": "0.0",
+       "correctness": "BEST_MOVE",
+       "ev": "0.0",
+       "ev_loss": "0.0",
+       "ev_loss_as_pot": "0.0",
+       "gto_score": "1.0",
+       "selected": true
+      },
+      {
+       "action": {
+        "code": "C",
+        "position": "SB",
+        "type": "CALL",
+        "betsize": "1.000",
+        "allin": false,
+        "is_hand_end": false,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "CALL",
+        "simple_group": "CALL",
+        "advanced_group": "CALL",
+        "betsize_by_pot": null,
+        "next_position": null
+       },
+       "frequency": "0.0",
+       "frequency_difference": "1.0",
+       "correctness": "WRONG_MOVE",
+       "ev": "-0.002",
+       "ev_loss": "0.002",
+       "ev_loss_as_pot": "0.0008",
+       "gto_score": "-0.05",
+       "selected": false
+      },
+      {
+       "action": {
+        "code": "R3",
+        "position": "SB",
+        "type": "RAISE",
+        "betsize": "3",
+        "allin": false,
+        "is_hand_end": false,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "RAISE",
+        "simple_group": "RAISE",
+        "advanced_group": "BET_SMALL",
+        "betsize_by_pot": "0.6345177664974619289340101523",
+        "next_position": null
+       },
+       "frequency": "0.0",
+       "frequency_difference": "1.0",
+       "correctness": "WRONG_MOVE",
+       "ev": "-0.059",
+       "ev_loss": "0.059",
+       "ev_loss_as_pot": "0.0236",
+       "gto_score": "-0.472",
+       "selected": false
+      },
+      {
+       "action": {
+        "code": "RAI",
+        "position": "SB",
+        "type": "RAISE",
+        "betsize": "19.981",
+        "allin": true,
+        "is_hand_end": false,
+        "is_showdown": false,
+        "next_street": false,
+        "display_name": "ALLIN",
+        "simple_group": "RAISE",
+        "advanced_group": "BET_OVERBET",
+        "betsize_by_pot": "6.021890862944162436548223350",
+        "next_position": null
+       },
+       "frequency": "0.0",
+       "frequency_difference": "1.0",
+       "correctness": "BLUNDER",
+       "ev": "-0.291",
+       "ev_loss": "0.291",
+       "ev_loss_as_pot": "0.11639999999999999",
+       "gto_score": "-1.0",
+       "selected": false
+      }
+     ],
+     "hand_eq": "0.0"
+    },
+    "has_solution": true,
+    "solved_action_sequence": {
+     "preflop_actions": [
+      "F",
+      "F",
+      "F",
+      "F",
+      "F",
+      "F"
+     ],
+     "flop_actions": [],
+     "turn_actions": [],
+     "river_actions": []
+    },
+    "warning": null
+   }
+  ],
+  "showdown": {
+   "players": [
+    {
+     "relative_postflop_position": null,
+     "hand": "5c3d",
+     "is_dealer": false,
+     "is_folded": true,
+     "is_hero": true,
+     "is_active": false,
+     "stack": "22.222",
+     "current_stack": "21.578",
+     "chips_on_table": "0",
+     "bounty": null,
+     "profile": null,
+     "position": "SB",
+     "bounty_in_bb": null
+    },
+    {
+     "relative_postflop_position": "OOP",
+     "hand": null,
+     "is_dealer": false,
+     "is_folded": false,
+     "is_hero": false,
+     "is_active": true,
+     "stack": "22.222",
+     "current_stack": "21.078",
+     "chips_on_table": "0",
+     "bounty": null,
+     "profile": null,
+     "position": "BB",
+     "bounty_in_bb": null
+    },
+    {
+     "relative_postflop_position": null,
+     "hand": null,
+     "is_dealer": false,
+     "is_folded": true,
+     "is_hero": false,
+     "is_active": false,
+     "stack": "26.589",
+     "current_stack": "26.445",
+     "chips_on_table": "0",
+     "bounty": null,
+     "profile": null,
+     "position": "CO",
+     "bounty_in_bb": null
+    },
+    {
+     "relative_postflop_position": null,
+     "hand": null,
+     "is_dealer": true,
+     "is_folded": true,
+     "is_hero": false,
+     "is_active": false,
+     "stack": "80.007",
+     "current_stack": "79.863",
+     "chips_on_table": "0",
+     "bounty": null,
+     "profile": null,
+     "position": "BTN",
+     "bounty_in_bb": null
+    }
+   ],
+   "current_street": {
+    "type": "PREFLOP",
+    "start_pot": "2.076",
+    "end_pot": "2.076"
+   },
+   "pot": "2.076",
+   "pot_odds": null,
+   "active_position": "BB",
+   "board": "",
+   "bet_display_name": "RAISE"
+  },
+  "solved_streets": [
+   {
+    "street": "PREFLOP",
+    "is_live_solved": false,
+    "is_current_street": true,
+    "solved_depth": null,
+    "start_pot": "2.652",
+    "end_pot": "2.652"
+   }
+  ],
+  "real_streets": [
+   {
+    "street": "PREFLOP",
+    "is_live_solved": false,
+    "is_current_street": true,
+    "solved_depth": null,
+    "start_pot": "2.076",
+    "end_pot": "2.076"
+   }
+  ]
+ }
+}
