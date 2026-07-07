@@ -14210,6 +14210,110 @@ def test_analyze_api_client_id_persisted():
     os.remove(p)
 
 
+# ── Phase 1 Ledger: distiller ──
+
+def _load_fix(name):
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent / "fixtures" / "gtow" / name).read_text())
+
+
+@test
+def test_distill_river_blunder_hand():
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    det = _load_fix("detail_eef0b07b.json")
+    hand, decs = distill_hand(lr, det)
+
+    assert_eq(hand["gtow_hand_id"], "eef0b07b-23b6-4fe0-bcc6-41d83629583c")
+    assert_eq(hand["position"], "SB")
+    assert_eq(round(hand["total_ev_loss_bb"], 4), 22.6627)
+    assert_eq(hand["hand_correctness"], "BLUNDER")
+
+    assert_eq(len(decs), 6)
+    assert_eq([d["street"] for d in decs],
+              ["preflop", "flop", "turn", "turn", "river", "river"])
+    assert_eq([d["decision_idx"] for d in decs], [0, 0, 0, 1, 0, 1])
+
+    pre = decs[0]
+    assert_eq(pre["family"], "open_raise")
+    assert_eq(pre["correctness"], "BEST_MOVE")
+    assert_eq(pre["ev_loss_bb"], 0.0)
+    assert_eq(pre["depth_band"], "25_40")
+
+    flop = decs[1]
+    assert_eq(flop["family"], "cbet_oop")
+    assert_eq(flop["texture"], "monotone")     # Kh6h4h
+    assert_eq(flop["correctness"], "CORRECT_MOVE")
+
+    riv = decs[5]
+    assert_eq(riv["family"], "check_raise")    # checked, now facing a bet
+    assert_eq(riv["taken_code"], "F")
+    assert_eq(riv["best_code"], "C")
+    assert_eq(riv["correctness"], "BLUNDER")
+    assert_eq(round(riv["ev_loss_bb"], 4), 22.6627)
+    assert_eq(round(riv["hand_eq"], 4), 0.7069)
+    assert_true(riv["facing"].startswith("vs_R"), riv["facing"])
+    assert_true("chipev_grading" in riv["approx_flags"])
+    assert_eq(riv["excluded"], False)
+
+    # fidelity property: per-decision losses sum to hand total
+    assert_eq(round(sum(d["ev_loss_bb"] for d in decs), 4),
+              round(hand["total_ev_loss_bb"], 4))
+
+
+@test
+def test_distill_preflop_fold_hand():
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["bed8860a-442b-4478-a9b4-8acfd52b6143"]
+    det = _load_fix("detail_bed8860a.json")
+    hand, decs = distill_hand(lr, det)
+    assert_eq(len(decs), 1)
+    assert_eq(decs[0]["street"], "preflop")
+    assert_eq(decs[0]["taken_code"], "F")
+    assert_eq(decs[0]["correctness"], "BEST_MOVE")
+    assert_eq(decs[0]["family"], "open_raise")
+    assert_eq(decs[0]["depth_band"], "15_25")
+    assert_eq(hand["total_ev_loss_bb"], 0.0)
+
+
+@test
+def test_distill_honesty_rules():
+    """Synthetic mutations of the fixture exercise every honesty rule (pure fn)."""
+    import copy
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = copy.deepcopy(rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"])
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+
+    det["game_analysis"]["warning_status"] = "SOMETHING_ODD"
+    _, decs = distill_hand(lr, det)
+    assert_true(all(d["excluded"] for d in decs))
+    assert_true(all(any(f.startswith("warning:") for f in d["approx_flags"]) for d in decs))
+
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+    det["game_analysis"]["approximation_reason"] = "NEAREST_DEPTH"
+    _, decs = distill_hand(lr, det)
+    assert_true(all(any(f.startswith("approx:") for f in d["approx_flags"]) for d in decs))
+    assert_true(not any(d["excluded"] for d in decs))  # approx flags don't exclude
+
+    lr2 = copy.deepcopy(lr); lr2["solution_status"] = "NO_SOLUTION"
+    _, decs = distill_hand(lr2, _load_fix("detail_eef0b07b.json"))
+    assert_true(all(d["excluded"] for d in decs))
+
+
+@test
+def test_depth_band_boundaries():
+    from ledger_distill import depth_band
+    assert_eq(depth_band(9.9), "le15")
+    assert_eq(depth_band(15.0), "15_25")
+    assert_eq(depth_band(24.99), "15_25")
+    assert_eq(depth_band(25.0), "25_40")
+    assert_eq(depth_band(40.0), "40plus")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
