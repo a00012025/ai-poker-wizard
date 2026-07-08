@@ -14449,6 +14449,22 @@ def test_analyze_table_url_shape():
     assert_in("preselectGamemode=TOURNAMENT", url)
 
 
+@test
+def test_cell_top_hands_filters_family_and_band():
+    """Per-leak-line evidence: filter hands to the cell's family AND depth_band,
+    ranked by loss, with a review link attached."""
+    from scorecard import _cell_top_hands
+    decs = [dict(_dec(loss=1.0, band="25_40"), gtow_hand_id="h1"),
+            dict(_dec(loss=1.0, band="15_25"), gtow_hand_id="h2"),   # wrong band
+            dict(_dec(family="probe", loss=1.0, band="25_40"), gtow_hand_id="h3")]  # wrong family
+    hands = [{"gtow_hand_id": f"h{i}", "played_at": decs[0]["played_at"],
+              "total_ev_loss_bb": float(i)} for i in (1, 2, 3)]
+    cell = {"family": "facing_cbet_oop", "depth_band": "25_40"}
+    top = _cell_top_hands(cell, decs, hands, k=2)
+    assert_eq([h["gtow_hand_id"] for h in top], ["h1"])
+    assert_true(top[0]["review_url"].startswith("https://app.gtowizard.com/"))
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)

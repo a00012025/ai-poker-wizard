@@ -67,6 +67,24 @@ def _family_top_hands(cell, decisions, hands, k=3):
     return diag.most_expensive_hands(fam_hands, k)
 
 
+def _cell_top_hands(cell, decisions, hands, k=2):
+    """Most expensive hands for a specific (family, depth_band) leak cell,
+    with a GTOW Analyze review link attached — the refutable per-line evidence."""
+    ids = {d.get("gtow_hand_id") for d in decisions
+           if d["family"] == cell["family"] and d.get("depth_band") == cell["depth_band"]
+           and (d["ev_loss_bb"] or 0) > 0}
+    fam_hands = [dict(h, review_url=_hand_review_url(h))
+                 for h in hands if h["gtow_hand_id"] in ids]
+    return diag.most_expensive_hands(fam_hands, k)
+
+
+def attach_cell_top_hands(cells, decisions, hands, top_cells=5, k=2):
+    inc = [d for d in decisions if not d.get("excluded")]
+    for c in cells[:top_cells]:
+        c["top_hands"] = _cell_top_hands(c, inc, hands, k)
+    return cells
+
+
 def _readback(prev_focus, decisions):
     if not prev_focus:
         return None
@@ -332,6 +350,7 @@ async def _run(mode: str):
         if mode == "preview":
             data = compute_scorecard_data(decisions, hands, sessions,
                                           prev_focus=None, window_label="preview-all-history")
+            attach_cell_top_hands(data["leak_board"]["cells"], decisions, hands)
             (outdir / "preview.html").write_text(render_scorecard_html(data))
             (outdir / "preview_data.json").write_text(json.dumps(data, default=str, ensure_ascii=False, indent=1))
             (outdir / "preview_summary.md").write_text(_preview_summary_md(data))
@@ -349,6 +368,7 @@ async def _run(mode: str):
                        else prev["families"]} if prev else None)
         data = compute_scorecard_data(decisions, hands, sessions,
                                       prev_focus=prev_focus, window_label=week_label)
+        attach_cell_top_hands(data["leak_board"]["cells"], decisions, hands)
         html = render_scorecard_html(data)
         (outdir / f"{week_label}.html").write_text(html)
         # record per100 into each focus family so next week can read back
