@@ -14477,6 +14477,31 @@ def test_build_drill_url_pins_position():
 
 
 @test
+def test_ledger_service_summary_sql():
+    from ledger_service import _summary_sql, _top_spots_sql
+    sql, args = _summary_sql(None, None, None)
+    assert_in("NOT excluded", sql); assert_in("NOT discarded", sql); assert_eq(args, [])
+    sql, args = _summary_sql("vs3bet", "MP", 30)
+    assert_in("spot_category = $1", sql); assert_in("hero_cat = $2", sql)
+    assert_in("make_interval(days => $3)", sql); assert_eq(args, ["vs3bet", "MP", 30])
+    tsql, targs = _top_spots_sql("vs3bet", None, None, 10)
+    assert_in("GROUP BY spot_leaf", tsql); assert_in("ORDER BY sum(ev_loss_bb) DESC", tsql)
+    assert_eq(targs, ["vs3bet", 10])
+
+
+@test
+def test_ledger_tool_declarations_wired():
+    """The two ledger tools are declared and dispatched in gemini_session."""
+    import inspect
+    import gemini_session as gs
+    assert_eq(gs.QUERY_LEDGER_SUMMARY_DECLARATION.name, "query_ledger_summary")
+    assert_eq(gs.QUERY_LEDGER_HANDS_DECLARATION.name, "query_ledger_hands")
+    src = inspect.getsource(gs.GeminiSessionManager)
+    assert_in("query_ledger_summary", src)
+    assert_in("_execute_ledger_tool", src)
+
+
+@test
 def test_analyze_table_url_shape():
     from scorecard import analyze_table_url
     url = analyze_table_url("2026-05-30", "2026-05-30")

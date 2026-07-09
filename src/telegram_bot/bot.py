@@ -1242,6 +1242,33 @@ class PokerWizardBot:
             self.log.error(f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True)
             await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
 
+    async def ingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /ingest — owner-only: pull newly uploaded GTOW Analyze hands now."""
+        user_id = update.effective_user.id
+        if not self.admin_chat_id or user_id != self.admin_chat_id:
+            return
+        self.log.info(f"[{self._user_label(update)}] /ingest")
+        msg = await update.message.reply_text("⏳ 攝取中…")
+        import asyncio
+        import sys as _sys
+        from pathlib import Path as _Path
+        root = _Path(__file__).resolve().parent.parent.parent
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                _sys.executable, "scripts/ledger_ingest.py", "--incremental",
+                cwd=str(root), stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            summary = next((l for l in out.decode(errors="replace").splitlines()
+                            if l.startswith("INGEST")), "INGEST（無輸出）")
+            bf = await asyncio.create_subprocess_exec(
+                _sys.executable, "scripts/backfill_spots.py", cwd=str(root),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await bf.communicate()
+            await msg.edit_text(f"✅ {summary}")
+        except Exception as e:
+            await msg.edit_text(f"⚠️ 攝取失敗：{e}")
+
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report — admin-only analytics report."""
         user_id = update.effective_user.id
@@ -1319,6 +1346,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("settoken", self.settoken_command))
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(CommandHandler("report", self.report_command))
+        self.application.add_handler(CommandHandler("ingest", self.ingest_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))

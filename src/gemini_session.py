@@ -840,6 +840,38 @@ GET_PROGRESS_DECLARATION = types.FunctionDeclaration(
     ),
 )
 
+QUERY_LEDGER_SUMMARY_DECLARATION = types.FunctionDeclaration(
+    name="query_ledger_summary",
+    description=(
+        "查詢全量帳本（GTOW Analyzer 評分的線上 MTT 決策，action-line 分類）的 "
+        "EV loss 聚合。可按 spot 大類（RFI/vsOpen/vsRaiseCall/vs3bet/vsCold3bet/"
+        "vs4bet/vsSqueeze/flop/turn/river）或 hero 位置類（EP/MP/LP/SB/BB）或天數過濾。"
+        "回傳 EV loss/100 決策、總損失、樣本數 n、excluded 數與 top spot。"
+        "使用者問『我哪裡漏 EV / 某類 spot 表現如何 / 我 3bet pot 打得怎樣』時用這個。"
+    ),
+    parameters=types.Schema(type=types.Type.OBJECT, properties={
+        "category": types.Schema(type=types.Type.STRING,
+            description="spot 大類，如 vs3bet、flop、vsRaiseCall"),
+        "hero_cat": types.Schema(type=types.Type.STRING,
+            description="hero 位置類：EP/MP/LP/SB/BB"),
+        "days": types.Schema(type=types.Type.INTEGER, description="回看天數，省略=全期"),
+    }, required=[]),
+)
+
+QUERY_LEDGER_HANDS_DECLARATION = types.FunctionDeclaration(
+    name="query_ledger_hands",
+    description=(
+        "列出帳本中符合條件的具體手牌（EV loss 排序），附 GTOW Analyze 復盤連結。"
+        "使用者要看『哪幾手 / 最貴的手 / 某類 spot 的實例』時用這個。"
+    ),
+    parameters=types.Schema(type=types.Type.OBJECT, properties={
+        "category": types.Schema(type=types.Type.STRING, description="spot 大類"),
+        "min_ev_loss": types.Schema(type=types.Type.NUMBER, description="bb 門檻，預設 0.5"),
+        "days": types.Schema(type=types.Type.INTEGER, description="預設 90"),
+        "limit": types.Schema(type=types.Type.INTEGER, description="預設 5，最大 10"),
+    }, required=[]),
+)
+
 
 class GeminiSessionManager:
     def __init__(self, db=None):
@@ -3241,6 +3273,8 @@ class GeminiSessionManager:
                 QUERY_MY_STATS_DECLARATION,
                 GET_TRAINING_PLAN_DECLARATION,
                 GET_PROGRESS_DECLARATION,
+                QUERY_LEDGER_SUMMARY_DECLARATION,
+                QUERY_LEDGER_HANDS_DECLARATION,
             ])
         tool = types.Tool(function_declarations=declarations)
 
@@ -3374,6 +3408,9 @@ class GeminiSessionManager:
                 elif fn_name in ("query_my_leaks", "query_my_stats", "get_training_plan", "get_progress"):
                     await _status("查詢偏離數據...")
                     tool_result = await self._execute_leak_tool(chat_id, fn_name, args, user_id)
+                elif fn_name in ("query_ledger_summary", "query_ledger_hands"):
+                    await _status("查詢帳本...")
+                    tool_result = await self._execute_ledger_tool(fn_name, args)
                 else:
                     # GTO API tools — need status + token
                     pos = args.get("position", "")
@@ -3570,6 +3607,41 @@ class GeminiSessionManager:
         if not hand:
             return f"找不到 Hand ID '{hand_id}' 的手牌記錄。"
         return json.dumps(hand, ensure_ascii=False)
+
+    async def _execute_ledger_tool(self, fn_name: str, args: dict) -> str:
+        """Execute the action-line ledger follow-up tools. Grounded, always with n."""
+        if not self.db or not self.db.pool:
+            return "暫時無法查詢帳本，請稍後再試"
+        from ledger_service import query_ledger_summary, query_ledger_hands
+        if fn_name == "query_ledger_summary":
+            days = int(args["days"]) if args.get("days") else None
+            s = await query_ledger_summary(self.db.pool, category=args.get("category"),
+                                           hero_cat=args.get("hero_cat"), days=days)
+            if not s["n"]:
+                return "帳本裡沒有符合條件的決策資料。"
+            scope = f"（最近 {days} 天）" if days else "（全期）"
+            lines = [f"📒 帳本 EV loss{scope}：{s['per100']:.2f} bb/100 決策 · "
+                     f"總損失 {s['total_bb']:.1f}bb · n={s['n']} · excluded {s['excluded_n']}"]
+            if s["top_spots"]:
+                lines.append("\ntop 漏 EV 的 spot（EV 排序，帶 n）：")
+                for i, t in enumerate(s["top_spots"][:5], 1):
+                    lines.append(f"{i}. `{t['spot']}` -{t['total_bb']:.1f}bb "
+                                 f"（{t['per100']:.2f}bb/100, n={t['n']}）")
+            return "\n".join(lines)
+        # query_ledger_hands
+        hands = await query_ledger_hands(
+            self.db.pool, category=args.get("category"),
+            min_ev_loss=float(args.get("min_ev_loss", 0.5)),
+            days=int(args["days"]) if args.get("days") else 90,
+            limit=int(args.get("limit", 5)))
+        if not hands:
+            return "帳本裡沒有符合條件的手牌。"
+        lines = ["📒 符合的手牌（EV loss 排序）："]
+        for h in hands:
+            lines.append(f"· {h['played_at']} {h['hero_hand']} {h['position'] or ''} "
+                         f"{h['boards'] or ''} — `{h['spot']}` -{h['ev_loss_bb']:.2f}bb "
+                         f"（{h['correctness']}）· [Analyze]({h['review_url']})")
+        return "\n".join(lines)
 
     async def _execute_leak_tool(self, chat_id: int, fn_name: str,
                                   args: dict, user_id: int | None) -> str:

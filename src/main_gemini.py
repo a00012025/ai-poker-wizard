@@ -38,6 +38,70 @@ async def _weekly_report_job(context):
         logger.error(f"Weekly report job failed: {e}")
 
 
+async def _run_script(*script_args) -> tuple[int, str]:
+    """Run a repo script as a subprocess from the repo root; return (rc, tail)."""
+    import asyncio
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, *script_args,
+        cwd=str(Path(__file__).resolve().parent.parent),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    out, _ = await proc.communicate()
+    return proc.returncode, out.decode(errors="replace")[-3000:]
+
+
+async def _daily_ledger_ingest_job(context):
+    """Daily 05:00 Taipei: incremental ingest (30d re-sweep) + sessions + verify."""
+    from ledger_service import resolve_owner_chat_id
+    try:
+        rc, out = await _run_script("scripts/ledger_ingest.py", "--incremental")
+        logger.info(f"Daily ingest rc={rc}: {out.splitlines()[-1] if out.strip() else ''}")
+        await _run_script("scripts/backfill_spots.py")
+        await _run_script("scripts/ledger_sessions.py", "--rebuild")
+        rc_v, out_v = await _run_script("scripts/ledger_ingest.py", "--verify")
+        if rc_v == 2 and db.pool:
+            owner = await resolve_owner_chat_id(db.pool)
+            if owner:
+                await context.bot.send_message(owner, f"⚠️ Ledger 對數不符\n{out_v.strip()}")
+    except Exception as e:
+        logger.error(f"Daily ledger ingest job failed: {e}")
+
+
+async def _weekly_scorecard_job(context):
+    """Sunday 21:00 Taipei: build training-plan scorecard + push to owner."""
+    import json
+    from ledger_service import resolve_owner_chat_id
+    try:
+        rc, out = await _run_script("scripts/scorecard.py", "--weekly")
+        if rc != 0:
+            logger.error(f"Scorecard failed: {out}"); return
+        if not db.pool:
+            return
+        owner = await resolve_owner_chat_id(db.pool)
+        if not owner:
+            logger.warning("Scorecard: no owner chat id"); return
+        async with db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
+        data = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else row["data_json"]
+        focus = data.get("focus", [])
+        blocks = [f"📊 週訓練計畫 {row['week']}", data.get("headline", "")]
+        for f in focus:
+            blocks.append(f"\n🎯 {f['desc']}（{f['per100']:.2f}bb/100, n={f['n']}）\n"
+                          f"{f['retrieval']}")
+            if f.get("drill_url"):
+                blocks.append(f"→ 練習：{f['drill_url']}")
+        await context.bot.send_message(owner, "\n".join(blocks), disable_web_page_preview=True)
+        path = Path(__file__).resolve().parent.parent / "data/scorecards" / f"{row['week']}.html"
+        if path.exists():
+            with open(path, "rb") as fh:
+                await context.bot.send_document(owner, document=fh,
+                                                filename=f"training-plan-{row['week']}.html")
+        async with db.pool.acquire() as conn:
+            await conn.execute("UPDATE scorecards SET pushed_at=NOW() WHERE week=$1", row["week"])
+    except Exception as e:
+        logger.error(f"Weekly scorecard job failed: {e}")
+
+
 async def post_init(application):
     """Called after Application.initialize() — connect DB + preload OCR."""
     dsn = os.getenv("SUPABASE_CONN")
@@ -73,6 +137,17 @@ async def post_init(application):
             name="weekly_leak_report",
         )
         logger.info("Weekly leak report job scheduled (Sunday 10:00 AM Taipei)")
+
+        # Phase 1 ledger loop: daily incremental ingest + Sunday training-plan push.
+        application.job_queue.run_daily(
+            _daily_ledger_ingest_job,
+            time=dt_time(hour=5, minute=0, tzinfo=TZ_TAIPEI),
+            days=tuple(range(7)), name="daily_ledger_ingest")
+        application.job_queue.run_daily(
+            _weekly_scorecard_job,
+            time=dt_time(hour=21, minute=0, tzinfo=TZ_TAIPEI),
+            days=(0,), name="weekly_scorecard")
+        logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) jobs scheduled")
 
 
 async def post_shutdown(application):
