@@ -8,6 +8,31 @@
 
 **Tech Stack:** Python 3.11+、requests（API）、asyncpg（Supabase）、python-telegram-bot v20+（現有 bot）、標準庫 HTML/SVG 渲染（零新依賴）。
 
+---
+
+## v2 更新（2026-07-09）：action-line taxonomy + Version A 最小訓練閉環
+
+> 執行到 Task 10 預覽 gate 後，選手驗收時要求把粗分類升級成**行動線（action-line）spot**，並把閉環收成 Version A。以下是相對原計畫的定案變更；原計畫的 taxonomy / 記分卡章節以此節為準。
+
+**Taxonomy（`scripts/spot_taxonomy.py`）**：每個 hero 決策節點（preflop→river）分類成階層行動線：
+- Preflop 8 大類：`RFI`（依精確位置）、`vsOpen`（精確 hero × opener 位置類 EP/MP/LP/SB/BB）、`vsRaiseCall`、`vsSqueeze`、`vs3bet`、`vsCold3bet`（未開池面對 3bet）、`vs4bet`、`vsCold4bet`（hero 位置類 × IP/OOP）。
+- Postflop：`pot_type × hero_cat × villain_cat × IP/OOP × facing`（flop）；turn/river 再按前街行動線切分。
+- **limp 相關 spot 全捨棄**（GTOW limp 範圍與真實族群差太多，評分不可靠）；postflop limp/iso pot 保留但帶 `limp_origin` 注記。
+- 每手多標籤：有效籌碼帶（large/medium/short）、board suit（monotone/two_tone/rainbow）、GTOW connectedness、paired。
+- 覆蓋率：37,044 個 spot 分類，只有 4 個 other（5bet+）；1,610 limp 捨棄。
+
+**GTOW Trainer drill 精準參數（Option Z，live 逆向 2026-07-09，見 skill `gtow-trainer-drill`）**：`fh_hero` / `fh_opponent`（逗號=任一位置）/ `fh_rel_positions`（IP/OOP）/ `fh_actions`（vsSRP=vsOpen、StartOfHand=From start…）/ `fh_start_spot` / `depth_list`（多深度）。`gtow_trainer_url.build_drill_url` 據此產出精準連結。
+
+**Version A 閉環**：診斷（action-line avg-EV-loss 榜）→ 處方（1–2 焦點 spot + 精準**多深度** drill 連結；預設不鎖 stack，只有某 band n≥25 且 avg ≥ 下一 band 1.5× 才鎖）→ **retrieval-first** 提問（先作答再看 GTO）→ 隔週該 spot 真實 EV-loss 回讀。訊號用真實對局 delta（慢訊號）；Trainer practiced-hands 回收（快訊號）留 Phase 2。
+
+**新增/改寫的 scripts**：`spot_taxonomy.py`、`backfill_spots.py`（從 raw 重跑 taxonomy 到 `ledger_decisions`，無 API）、`spot_leaderboard.py`（avg-EV-loss 榜 + drill + stack-band 分析）、`ledger_service.py`（owner 解析 + 2 個 LLM 追問工具）、`scorecard.py`（改寫成訓練計畫）；migration `20260709000000_add_ledger_spot_columns.sql`。
+
+**gate 決策**：榜單依 **avg EV loss/決策** 排序、n≥50；stack-band 鎖定用 1.5× 規則；drill 預設全深度。選手已驗收 top-5 榜單（符合直覺，3bet pot 為已知弱點）。
+
+原計畫 Task 0–13 骨架仍成立（攝取管線、誠實層、TG 佈線、測試策略、驗收標準）；Task 8/9（診斷/記分卡）的 family 版本被本節的 action-line 版本取代。
+
+---
+
 ## Global Constraints
 
 - **開發流程**：全程在 worktree `~/ai-poker-wizard-phase1-ledger`（branch `feat/phase1-ledger`）工作；每個 task 至少一個 commit；最後發 PR。絕不直接改 main。
