@@ -125,6 +125,26 @@ CAT_POSITIONS: dict[str, list[str]] = {
     "SB": ["SB"], "BB": ["BB"],
 }
 
+# MTT ChipEV trainer depth ladder (verified from a live drill URL 2026-07-09).
+MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40)
+# Stack bands (user's deep/mid/short) mapped onto the ladder. "deep" (>50bb) is
+# rare in MTT ChipEV and snaps to the deepest available.
+DEPTH_BAND_DEPTHS: dict[str, list[int]] = {
+    "short": [10, 12, 14, 17, 20],   # <=20bb
+    "medium": [25, 30, 35, 40],      # 20-50bb
+    "large": [40],                    # >50bb -> deepest available
+}
+
+
+def _depth_params(depth_bb: float, depths: list[int] | None):
+    """Return (depth, depth_list) strings. depths=None -> single snapped depth;
+    a list -> multi-depth drill (spans all listed stacks)."""
+    if depths:
+        rep = depths[len(depths) // 2]
+        return _format_depth(rep), ",".join(_format_depth(d) for d in depths)
+    d = _format_depth(snap_depth(depth_bb))
+    return d, d
+
 
 def build_drill_url(
     category: str,
@@ -134,6 +154,7 @@ def build_drill_url(
     opponent_positions: list[str] | None = None,
     rel_position: str | None = None,
     pot_type: str | None = None,
+    depths: list[int] | None = None,
     gametype: str = "MTTGeneral",
 ) -> str:
     """Build a PRECISE GTOW trainer deep-link that pins the action-line spot.
@@ -142,6 +163,8 @@ def build_drill_url(
     hero_positions: concrete GTOW positions (e.g. ["BTN"] or ["UTG","UTG+1"]).
     opponent_positions: villain positions, or None for "any".
     rel_position: "IP"/"OOP" or None. pot_type: for postflop fh_actions.
+    depths: list of bb to span (multi-depth training); None -> single snapped
+        depth_bb. Pass MTT_DEPTHS for "all stack depths".
 
     Raises SpotNotSupportedError if the category/pot_type has no GTOW shortcut.
     """
@@ -161,10 +184,10 @@ def build_drill_url(
             raise SpotNotSupportedError(f"postflop pot_type {pot_type!r} has no GTOW shortcut")
         start_spot = street  # trainer starts from the requested street
 
-    depth_str = _format_depth(snap_depth(depth_bb))
+    depth_str, depth_list_str = _depth_params(depth_bb, depths)
     params: list[tuple[str, str]] = [
         ("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]),
-        ("gametype", gametype), ("depth", depth_str), ("depth_list", depth_str),
+        ("gametype", gametype), ("depth", depth_str), ("depth_list", depth_list_str),
     ]
     for k, v in _TRAINER_UI_DEFAULTS.items():
         if k in ("solution_type", "dialogs"):
