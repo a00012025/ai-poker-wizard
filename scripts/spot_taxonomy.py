@@ -316,6 +316,7 @@ def walk_spots(list_row: dict, detail: dict):
     last_aggr = {"flop": None, "turn": None, "river": None}
     active = _active_from_gps(gps)
     preflop_aggr = None
+    hero_count = {"preflop": 0, "flop": 0, "turn": 0, "river": 0}
 
     for gp in gps:
         rga = gp.get("real_game_action") or {}
@@ -340,8 +341,11 @@ def walk_spots(list_row: dict, detail: dict):
                 keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
                 spot = {"street": "preflop", "category": cls["category"],
                         "l1": cls["l1"], "l2": cls["l2"], "leaf": cls["l2"] or cls["l1"],
-                        "keys": keys, "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
-                        "note": cls["note"], "discarded": cls["category"] == "discarded"}
+                        "keys": keys, "hero_cat": pos_cat(hero),
+                        "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
+                        "ip_oop": None, "facing": None, "pot_type": None,
+                        "note": cls["note"], "discarded": cls["category"] == "discarded",
+                        "limp_origin": False}
             else:
                 facing = street_facing(street_acts[street])
                 # villain: last aggressor if facing a bet/raise; else sole other active
@@ -363,9 +367,12 @@ def walk_spots(list_row: dict, detail: dict):
                         "discarded": False, "limp_origin": cls["pot_type"] in ("limp", "iso")}
 
             spot.update({"gtow_hand_id": list_row.get("hand_id"), "hero_pos": hero,
+                         "decision_idx": hero_count[street],
+                         "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
                          "ev_loss_bb": ev_loss, "correctness": corr,
                          "excluded": excluded, "tags": dict(tags),
                          "played_at": list_row.get("played_at")})
+            hero_count[street] += 1
             yield spot
 
         # advance running state AFTER emitting (so "before" excludes current)

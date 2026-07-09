@@ -14442,6 +14442,32 @@ def test_scorecard_data_and_html():
 
 
 @test
+def test_build_drill_url_pins_position():
+    """Precise drill URL pins fh_hero/fh_opponent/fh_rel_positions/fh_actions
+    (params verified live 2026-07-09; see skill gtow-trainer-drill)."""
+    from gtow_trainer_url import build_drill_url, SpotNotSupportedError
+    # preflop vsOpen: exact hero + opener category positions
+    u = build_drill_url("vsOpen", "preflop", 20, ["BTN"], opponent_positions=["UTG", "UTG+1"])
+    assert_in("fh_actions=vsSRP", u)
+    assert_in("fh_hero=BTN", u)
+    assert_in("fh_opponent=UTG%2CUTG%2B1", u)
+    assert_in("fh_start_spot=preflop", u)
+    # postflop SRP with IP
+    u2 = build_drill_url("flop", "flop", 30, ["BB"], opponent_positions=["SB"],
+                         rel_position="IP", pot_type="SRP")
+    assert_in("fh_actions=SRP", u2)
+    assert_in("fh_hero=BB", u2)
+    assert_in("fh_rel_positions=IP", u2)
+    assert_in("fh_start_spot=flop", u2)
+    # unmapped category raises
+    try:
+        build_drill_url("bogus", "preflop", 20, ["BTN"])
+        assert_true(False, "should have raised")
+    except SpotNotSupportedError:
+        pass
+
+
+@test
 def test_analyze_table_url_shape():
     from scorecard import analyze_table_url
     url = analyze_table_url("2026-05-30", "2026-05-30")
