@@ -64,6 +64,7 @@ _POT_TYPE_TO_FH_ACTIONS_FLOP: dict[str, str] = {
     "3bet":     "3bet",
     "4bet":     "3bet",
     "squeezed": "Squeeze",
+    "squeeze":  "Squeeze",
     "limp":     "limp",
     "iso":      "iso",
 }
@@ -103,6 +104,105 @@ _VALID_STREETS = ("preflop", "flop", "turn", "river")
 
 class SpotNotSupportedError(ValueError):
     """Raised when a spot_category / pot_type cannot be mapped to a GTOW shortcut."""
+
+
+# ── Action-line taxonomy → GTOW drill params (verified 2026-07-09 via CDP,
+#    see skill gtow-trainer-drill). fh_hero/fh_opponent/fh_rel_positions pin the
+#    exact spot; comma-separated positions mean "any of". ──
+_CAT_TO_FH_ACTIONS: dict[str, str] = {
+    "RFI": "RFI",
+    "vsOpen": "vsSRP",
+    "vsRaiseCall": "vsRaiseCall",
+    "vsSqueeze": "vsSqueeze",
+    "vs3bet": "vs3bet",
+    "vsCold3bet": "vs3bet",     # GTOW has no cold-3bet drill; nearest is vs3bet
+    "vs4bet": "vs4bet",
+    "vsCold4bet": "vs4bet",     # GTOW has no cold-4bet drill; nearest is vs4bet
+}
+
+CAT_POSITIONS: dict[str, list[str]] = {
+    "EP": ["UTG", "UTG+1"], "MP": ["LJ", "HJ"], "LP": ["CO", "BTN"],
+    "SB": ["SB"], "BB": ["BB"],
+}
+
+# MTT ChipEV trainer depth ladder (verified from a live drill URL 2026-07-09).
+MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40)
+# Stack bands (user's deep/mid/short) mapped onto the ladder. "deep" (>50bb) is
+# rare in MTT ChipEV and snaps to the deepest available.
+DEPTH_BAND_DEPTHS: dict[str, list[int]] = {
+    "short": [10, 12, 14, 17, 20],   # <=20bb
+    "medium": [25, 30, 35, 40],      # 20-50bb
+    "large": [40],                    # >50bb -> deepest available
+}
+
+
+def _depth_params(depth_bb: float, depths: list[int] | None):
+    """Return (depth, depth_list) strings. depths=None -> single snapped depth;
+    a list -> multi-depth drill (spans all listed stacks)."""
+    if depths:
+        rep = depths[len(depths) // 2]
+        return _format_depth(rep), ",".join(_format_depth(d) for d in depths)
+    d = _format_depth(snap_depth(depth_bb))
+    return d, d
+
+
+def build_drill_url(
+    category: str,
+    street: str,
+    depth_bb: float,
+    hero_positions: list[str],
+    opponent_positions: list[str] | None = None,
+    rel_position: str | None = None,
+    pot_type: str | None = None,
+    depths: list[int] | None = None,
+    gametype: str = "MTTGeneral",
+) -> str:
+    """Build a PRECISE GTOW trainer deep-link that pins the action-line spot.
+
+    category: action-line spot_category (RFI/vsOpen/.../flop/turn/river).
+    hero_positions: concrete GTOW positions (e.g. ["BTN"] or ["UTG","UTG+1"]).
+    opponent_positions: villain positions, or None for "any".
+    rel_position: "IP"/"OOP" or None. pot_type: for postflop fh_actions.
+    depths: list of bb to span (multi-depth training); None -> single snapped
+        depth_bb. Pass MTT_DEPTHS for "all stack depths".
+
+    Raises SpotNotSupportedError if the category/pot_type has no GTOW shortcut.
+    """
+    if street not in _VALID_STREETS:
+        raise ValueError(f"street must be one of {_VALID_STREETS}, got {street!r}")
+
+    if street == "preflop":
+        fh_actions = _CAT_TO_FH_ACTIONS.get(category)
+        if fh_actions is None:
+            raise SpotNotSupportedError(f"preflop category {category!r} has no GTOW shortcut")
+        start_spot = "preflop"
+    else:
+        if pot_type is None:
+            raise SpotNotSupportedError(f"postflop street {street!r} requires pot_type")
+        fh_actions = _POT_TYPE_TO_FH_ACTIONS_FLOP.get(pot_type)
+        if fh_actions is None:
+            raise SpotNotSupportedError(f"postflop pot_type {pot_type!r} has no GTOW shortcut")
+        start_spot = street  # trainer starts from the requested street
+
+    depth_str, depth_list_str = _depth_params(depth_bb, depths)
+    params: list[tuple[str, str]] = [
+        ("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]),
+        ("gametype", gametype), ("depth", depth_str), ("depth_list", depth_list_str),
+    ]
+    for k, v in _TRAINER_UI_DEFAULTS.items():
+        if k in ("solution_type", "dialogs"):
+            continue
+        params.append((k, v))
+    params.append(("fh_start_spot", start_spot))
+    params.append(("fh_actions", fh_actions))
+    if hero_positions:
+        params.append(("fh_hero", ",".join(hero_positions)))
+    if opponent_positions:
+        params.append(("fh_opponent", ",".join(opponent_positions)))
+    if rel_position in ("IP", "OOP"):
+        params.append(("fh_rel_positions", rel_position))
+    params.append(("dialogs", _TRAINER_UI_DEFAULTS["dialogs"]))
+    return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
 
 
 def snap_depth(effective_bb: float) -> int:

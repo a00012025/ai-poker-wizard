@@ -31,6 +31,19 @@ scripts/
   backfill_deviations.py — One-time backfill of deviations from existing hand_histories
   e2e_test.py          — CLI E2E test (no Telegram needed)
   regression_test.py   — Regression test suite
+  # Phase 1 ledger (GTOW Analyze full ingestion + Version A training loop)
+  gtow_analyze_api.py  — GTOW Analyze API client (hand list+detail; throttle/backoff; 404/403/204 soft-skip)
+  ledger_ingest.py     — Idempotent resumable ingest (--backfill/--incremental/--verify) → raw archive + ledger_hands/decisions
+  ledger_distill.py    — Pure distiller: raw detail → ledger_decisions rows + honesty flags
+  spot_taxonomy.py     — Action-line spot classifier (preflop RFI/vsOpen/vs3bet/vsCold3bet/…; postflop pot_type×pos×IP-OOP×facing)
+  backfill_spots.py    — Re-distill taxonomy from archived raw onto ledger_decisions (no API)
+  ledger_sessions.py   — Session reconstruction (gap>60min clustering + concurrency)
+  ledger_diagnostics.py — EV-weighted weekly series (legacy family leak-board kept)
+  spot_leaderboard.py  — Action-line avg-EV-loss leaderboard + precise multi-depth GTOW Trainer drill links + stack-band analysis
+  scorecard.py         — Weekly training plan (focus spot + retrieval-first + drill link + next-cycle EV-loss readback); --preview/--weekly
+  gtow_trainer_url.py  — GTOW Trainer deep-link builder; build_drill_url pins fh_hero/fh_opponent/fh_rel_positions/fh_actions/depth_list
+  ledger_service.py    — Owner resolution + grounded LLM ledger tools (query_ledger_summary/hands)
+  ledger_fidelity_check.py — 20 random lossy hands: ledger vs live API per-decision EV loss
 ```
 
 ## Key Architecture

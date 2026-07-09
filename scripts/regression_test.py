@@ -14156,6 +14156,409 @@ def test_seat_reader_anchors_stack_and_rejects_phantom():
     assert_true(all(abs(r["stack"] - 120.0) > 0.5 for r in rows))
 
 
+# ── Phase 1 Ledger: GTOW Analyze API client ──
+
+@test
+def test_analyze_api_pagination():
+    """iter_all_hands pages until offset >= total using injected transport."""
+    import gtow_analyze_api as gapi
+    pages = [
+        {"items": [{"hand_id": "a"}, {"hand_id": "b"}], "total": 3, "limit": 2, "offset": 0},
+        {"items": [{"hand_id": "c"}], "total": 3, "limit": 2, "offset": 2},
+    ]
+    calls = []
+    def fake_request(method, url, **kw):
+        calls.append(kw["json"]["pagination"]["offset"])
+        class R:
+            status_code = 200
+            def json(self): return pages[len(calls) - 1]
+            content = b"{}"
+        return R()
+    rows = list(gapi.iter_all_hands("2026-02-28T16:00:00.000Z", page_size=2,
+                                    request_fn=fake_request))
+    assert_eq([r["hand_id"] for r in rows], ["a", "b", "c"])
+    assert_eq(calls, [0, 2])
+
+
+@test
+def test_analyze_api_backoff_then_success():
+    """429 twice then 200 -> returns parsed json; delays follow _backoff_delay."""
+    import gtow_analyze_api as gapi
+    assert_eq(gapi._backoff_delay(0), 2)
+    assert_eq(gapi._backoff_delay(3), 16)
+    seq = [429, 429, 200]
+    def fake_request(method, url, **kw):
+        class R:
+            status_code = seq.pop(0)
+            def json(self): return {"items": [], "total": 0}
+            content = b"{}"
+        return R()
+    out = gapi.list_hands("2026-02-28T16:00:00.000Z", request_fn=fake_request,
+                          _sleep=lambda s: None)
+    assert_eq(out["total"], 0)
+
+
+@test
+def test_analyze_api_hand_detail_soft_404_returns_none():
+    """A single not-ready hand (404 'upload taking longer') must not crash the
+    sweep — hand_detail returns None so the caller skips + retries later."""
+    import gtow_analyze_api as gapi
+    def fake_request(method, url, **kw):
+        class R:
+            status_code = 404
+            def json(self): return {}
+            content = b'{"code":"NOT_FOUND","detail":"Hand upload is taking longer"}'
+        return R()
+    assert_eq(gapi.hand_detail("deadbeef", request_fn=fake_request), None)
+    # 403 (forbidden config) and 204 (no solution) are soft too
+    for code in (403, 204):
+        def fk(method, url, _c=code, **kw):
+            class R:
+                status_code = _c
+                def json(self): return {}
+                content = b"{}"
+            return R()
+        assert_eq(gapi.hand_detail("x", request_fn=fk), None)
+
+
+@test
+def test_analyze_api_client_id_persisted():
+    import gtow_analyze_api as gapi, os, uuid as _uuid
+    p = "/tmp/_test_gtow_client_id"
+    if os.path.exists(p): os.remove(p)
+    a = gapi.get_client_id(path=p)
+    b = gapi.get_client_id(path=p)
+    assert_eq(a, b)
+    _uuid.UUID(a)  # raises if not a uuid
+    os.remove(p)
+
+
+# ── Phase 1 Ledger: distiller ──
+
+def _load_fix(name):
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent / "fixtures" / "gtow" / name).read_text())
+
+
+@test
+def test_distill_river_blunder_hand():
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    det = _load_fix("detail_eef0b07b.json")
+    hand, decs = distill_hand(lr, det)
+
+    assert_eq(hand["gtow_hand_id"], "eef0b07b-23b6-4fe0-bcc6-41d83629583c")
+    assert_eq(hand["position"], "SB")
+    assert_eq(round(hand["total_ev_loss_bb"], 4), 22.6627)
+    assert_eq(hand["hand_correctness"], "BLUNDER")
+
+    assert_eq(len(decs), 6)
+    assert_eq([d["street"] for d in decs],
+              ["preflop", "flop", "turn", "turn", "river", "river"])
+    assert_eq([d["decision_idx"] for d in decs], [0, 0, 0, 1, 0, 1])
+
+    pre = decs[0]
+    assert_eq(pre["family"], "open_raise")
+    assert_eq(pre["correctness"], "BEST_MOVE")
+    assert_eq(pre["ev_loss_bb"], 0.0)
+    assert_eq(pre["depth_band"], "25_40")
+
+    flop = decs[1]
+    assert_eq(flop["family"], "cbet_oop")
+    assert_eq(flop["texture"], "monotone")     # Kh6h4h
+    assert_eq(flop["correctness"], "CORRECT_MOVE")
+
+    riv = decs[5]
+    assert_eq(riv["family"], "check_raise")    # checked, now facing a bet
+    assert_eq(riv["taken_code"], "F")
+    assert_eq(riv["best_code"], "C")
+    assert_eq(riv["correctness"], "BLUNDER")
+    assert_eq(round(riv["ev_loss_bb"], 4), 22.6627)
+    assert_eq(round(riv["hand_eq"], 4), 0.7069)
+    assert_true(riv["facing"].startswith("vs_R"), riv["facing"])
+    assert_true("chipev_grading" in riv["approx_flags"])
+    assert_eq(riv["excluded"], False)
+
+    # fidelity property: per-decision losses sum to hand total
+    assert_eq(round(sum(d["ev_loss_bb"] for d in decs), 4),
+              round(hand["total_ev_loss_bb"], 4))
+
+
+@test
+def test_distill_preflop_fold_hand():
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["bed8860a-442b-4478-a9b4-8acfd52b6143"]
+    det = _load_fix("detail_bed8860a.json")
+    hand, decs = distill_hand(lr, det)
+    assert_eq(len(decs), 1)
+    assert_eq(decs[0]["street"], "preflop")
+    assert_eq(decs[0]["taken_code"], "F")
+    assert_eq(decs[0]["correctness"], "BEST_MOVE")
+    assert_eq(decs[0]["family"], "open_raise")
+    assert_eq(decs[0]["depth_band"], "15_25")
+    assert_eq(hand["total_ev_loss_bb"], 0.0)
+
+
+@test
+def test_distill_honesty_rules():
+    """Synthetic mutations of the fixture exercise every honesty rule (pure fn)."""
+    import copy
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = copy.deepcopy(rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"])
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+
+    det["game_analysis"]["warning_status"] = "SOMETHING_ODD"
+    _, decs = distill_hand(lr, det)
+    assert_true(all(d["excluded"] for d in decs))
+    assert_true(all(any(f.startswith("warning:") for f in d["approx_flags"]) for d in decs))
+
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+    det["game_analysis"]["approximation_reason"] = "NEAREST_DEPTH"
+    _, decs = distill_hand(lr, det)
+    assert_true(all(any(f.startswith("approx:") for f in d["approx_flags"]) for d in decs))
+    assert_true(not any(d["excluded"] for d in decs))  # approx flags don't exclude
+
+    lr2 = copy.deepcopy(lr); lr2["solution_status"] = "NO_SOLUTION"
+    _, decs = distill_hand(lr2, _load_fix("detail_eef0b07b.json"))
+    assert_true(all(d["excluded"] for d in decs))
+
+
+@test
+def test_depth_band_boundaries():
+    from ledger_distill import depth_band
+    assert_eq(depth_band(9.9), "le15")
+    assert_eq(depth_band(15.0), "15_25")
+    assert_eq(depth_band(24.99), "15_25")
+    assert_eq(depth_band(25.0), "25_40")
+    assert_eq(depth_band(40.0), "40plus")
+
+
+# ── Phase 1 Ledger: ingest raw paths ──
+
+@test
+def test_ingest_raw_paths():
+    from ledger_ingest import raw_paths
+    ld, dp = raw_paths("abc-123", "2026-05-30T21:03:23Z")
+    assert_true(str(dp).endswith("data/gtow_raw/detail/2026-05/abc-123.json.gz"))
+    assert_true(str(ld).endswith("data/gtow_raw/list/2026-05.jsonl.gz"))
+
+
+# ── Phase 1 Ledger: session clustering ──
+
+@test
+def test_session_clustering():
+    from datetime import datetime, timedelta, timezone
+    from ledger_sessions import cluster_sessions
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    mk = lambda i, mins, t: {"gtow_hand_id": f"h{i}",
+                             "played_at": t0 + timedelta(minutes=mins),
+                             "tournament_id": t}
+    hands = [mk(1, 0, "A"), mk(2, 5, "B"), mk(3, 10, "A"),   # session 1: A+B overlap
+             mk(4, 200, "C"), mk(5, 210, "C")]               # gap 190min -> session 2
+    ss = cluster_sessions(hands)
+    assert_eq(len(ss), 2)
+    assert_eq(ss[0]["hands_count"], 3)
+    assert_eq(ss[0]["max_concurrent_tables"], 2)
+    assert_eq(sorted(ss[0]["tournaments"]), ["A", "B"])
+    assert_eq(ss[1]["max_concurrent_tables"], 1)
+
+
+# ── Phase 1 Ledger: diagnostics ──
+
+def _dec(family="facing_cbet_oop", band="15_25", loss=0.0, week_day="2026-06-01",
+         texture="wet", excluded=False):
+    from datetime import datetime
+    return {"family": family, "depth_band": band, "ev_loss_bb": loss,
+            "texture": texture, "excluded": excluded,
+            "played_at": datetime.fromisoformat(week_day + "T12:00:00+00:00")}
+
+
+@test
+def test_leak_board_ev_ranking_and_min_n():
+    from ledger_diagnostics import leak_board
+    decs = ([_dec(loss=1.0)] * 30                                   # 30bb over n=30
+            + [_dec(family="open_raise", band="40plus", loss=5.0)] * 3   # big but n<25
+            + [_dec(family="probe", loss=0.0)] * 40)
+    out = leak_board(decs, min_n=25)
+    ranked = out["cells"]
+    assert_eq(ranked[0]["family"], "facing_cbet_oop")
+    assert_eq(ranked[0]["n"], 30)
+    assert_eq(round(ranked[0]["per100"], 2), round(30 / 30 * 100, 2))
+    assert_true(all(c["family"] != "open_raise" for c in ranked))
+    assert_true(any(c["family"] == "open_raise" for c in out["insufficient"]))
+
+
+@test
+def test_classify_leak_boundary_vs_knowledge():
+    from ledger_diagnostics import classify_leak
+    conc = [_dec(band="le15", loss=1.0)] * 12 + [_dec(band="40plus", loss=0.1)] * 12
+    t, desc = classify_leak(conc)
+    assert_eq(t, "boundary")
+    assert_in("le15", desc)
+    spread = ([_dec(band="le15", loss=0.5)] * 12 + [_dec(band="15_25", loss=0.5)] * 12
+              + [_dec(band="40plus", loss=0.5)] * 12)
+    t2, _ = classify_leak(spread)
+    assert_eq(t2, "knowledge")
+
+
+@test
+def test_weekly_series_tz_bucketing():
+    from ledger_diagnostics import weekly_series
+    # 2026-06-07 15:59 UTC = 06-07 23:59 Taipei (Sunday, W23); 16:01 UTC = 06-08 Taipei (Monday, W24)
+    from datetime import datetime, timezone
+    d1 = dict(_dec(loss=2.0), played_at=datetime(2026, 6, 7, 15, 59, tzinfo=timezone.utc))
+    d2 = dict(_dec(loss=0.0), played_at=datetime(2026, 6, 7, 16, 1, tzinfo=timezone.utc))
+    out = weekly_series([d1, d2])
+    assert_eq([w["week"] for w in out], ["2026-W23", "2026-W24"])
+    assert_eq(out[0]["n"], 1)
+
+
+# ── Phase 1 Ledger: scorecard ──
+
+@test
+def test_training_plan_focus_and_readback():
+    """Scorecard v2 = training plan: focus spot + precise drill link +
+    self-contained HTML + next-cycle EV-loss readback."""
+    from scorecard import compute_training_plan, render_html, spot_desc_zh
+    row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
+           "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
+    assert_in("3bet", spot_desc_zh(row))
+    spots = [{"row": row, "url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
+              "samples": [], "bands": [], "restrict": None}]
+    weekly = [{"week": "2026-W27", "n": 100, "per100": 2.5, "total_bb": 2.5},
+              {"week": "2026-W28", "n": 120, "per100": 2.0, "total_bb": 2.4}]
+    honesty = {"excluded_n": 5, "discarded_n": 3, "chipev_share": 1.0, "total": 100}
+    data = compute_training_plan("2026-W28", weekly, spots, [], None, honesty)
+    assert_true(data["headline"])
+    assert_eq(round(data["delta"], 2), -0.50)
+    assert_eq(data["focus"][0]["spot_leaf"], "MP_vs3bet_IP")
+    assert_true(data["focus"][0]["drill_url"].startswith("https://app.gtowizard.com/"))
+    html = render_html(data)
+    assert_in("MP_vs3bet_IP", html)
+    assert_in("<svg", html)
+    assert_true("<script src" not in html)
+    rb = compute_training_plan("2026-W29", weekly, spots, [],
+                               [{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}], honesty)
+    assert_eq(rb["readback"][0]["spot_leaf"], "MP_vs3bet_IP")
+    assert_eq(round(rb["readback"][0]["current_per100"], 1), 13.5)
+
+
+@test
+def test_build_drill_url_pins_position():
+    """Precise drill URL pins fh_hero/fh_opponent/fh_rel_positions/fh_actions
+    (params verified live 2026-07-09; see skill gtow-trainer-drill)."""
+    from gtow_trainer_url import build_drill_url, SpotNotSupportedError
+    # preflop vsOpen: exact hero + opener category positions
+    u = build_drill_url("vsOpen", "preflop", 20, ["BTN"], opponent_positions=["UTG", "UTG+1"])
+    assert_in("fh_actions=vsSRP", u)
+    assert_in("fh_hero=BTN", u)
+    assert_in("fh_opponent=UTG%2CUTG%2B1", u)
+    assert_in("fh_start_spot=preflop", u)
+    # postflop SRP with IP
+    u2 = build_drill_url("flop", "flop", 30, ["BB"], opponent_positions=["SB"],
+                         rel_position="IP", pot_type="SRP")
+    assert_in("fh_actions=SRP", u2)
+    assert_in("fh_hero=BB", u2)
+    assert_in("fh_rel_positions=IP", u2)
+    assert_in("fh_start_spot=flop", u2)
+    # unmapped category raises
+    try:
+        build_drill_url("bogus", "preflop", 20, ["BTN"])
+        assert_true(False, "should have raised")
+    except SpotNotSupportedError:
+        pass
+
+
+@test
+def test_ledger_service_summary_sql():
+    from ledger_service import _summary_sql, _top_spots_sql
+    sql, args = _summary_sql(None, None, None)
+    assert_in("NOT excluded", sql); assert_in("NOT discarded", sql); assert_eq(args, [])
+    sql, args = _summary_sql("vs3bet", "MP", 30)
+    assert_in("spot_category = $1", sql); assert_in("hero_cat = $2", sql)
+    assert_in("make_interval(days => $3)", sql); assert_eq(args, ["vs3bet", "MP", 30])
+    tsql, targs = _top_spots_sql("vs3bet", None, None, 10)
+    assert_in("GROUP BY spot_leaf", tsql); assert_in("ORDER BY sum(ev_loss_bb) DESC", tsql)
+    assert_eq(targs, ["vs3bet", 10])
+
+
+@test
+def test_ledger_tool_declarations_wired():
+    """The two ledger tools are declared and dispatched in gemini_session."""
+    import inspect
+    import gemini_session as gs
+    assert_eq(gs.QUERY_LEDGER_SUMMARY_DECLARATION.name, "query_ledger_summary")
+    assert_eq(gs.QUERY_LEDGER_HANDS_DECLARATION.name, "query_ledger_hands")
+    src = inspect.getsource(gs.GeminiSessionManager)
+    assert_in("query_ledger_summary", src)
+    assert_in("_execute_ledger_tool", src)
+
+
+@test
+def test_analyze_table_url_shape():
+    from scorecard import analyze_table_url
+    url = analyze_table_url("2026-05-30", "2026-05-30")
+    assert_in("app.gtowizard.com/analyze/v4/hands/table?filters=", url)
+    assert_in("preselectGamemode=TOURNAMENT", url)
+
+
+@test
+def test_spot_taxonomy_preflop_lines():
+    from spot_taxonomy import classify_preflop, pos_cat, ip_oop, board_suit, eff_stack_cat
+    # RFI: folded to hero (exact position)
+    r = classify_preflop("BTN", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","F")], 8)
+    assert_eq(r["category"], "RFI"); assert_eq(r["l1"], "BTN_RFI")
+    # vsOpen: single open, hero faces it; opener seat -> category L2
+    r = classify_preflop("BTN", [("UTG","F"),("LJ","F"),("HJ","R2.5")], 8)
+    assert_eq(r["category"], "vsOpen"); assert_eq(r["l1"], "BTN_vsOpen")
+    assert_eq(r["l2"], "BTN_vsOpen_MP")           # HJ opener -> MP
+    # vsRaiseCall: open + caller before hero
+    r = classify_preflop("BTN", [("HJ","R2.5"),("CO","C")], 8)
+    assert_eq(r["category"], "vsRaiseCall"); assert_eq(r["l1"], "BTN_vsRaiseCall".replace("BTN","LP"))
+    # vs3bet: hero opened, faces a 3bet (hero cat + IP/OOP)
+    r = classify_preflop("CO", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","R2.5"),("BTN","F"),
+                                ("SB","R9"),("BB","F")], 8)
+    assert_eq(r["category"], "vs3bet"); assert_eq(r["l1"], "LP_vs3bet")
+    assert_eq(r["l2"], "LP_vs3bet_IP")            # CO is IP vs SB postflop
+    # vsCold3bet: hero cold (did not open), faces a 3bet
+    r = classify_preflop("BB", [("CO","R2.5"),("BTN","R8"),("SB","F")], 8)
+    assert_eq(r["category"], "vsCold3bet"); assert_eq(r["l1"], "BB_vsCold3bet")
+    # limp-involved decisions are discarded (limp ranges unreliable)
+    r = classify_preflop("BB", [("SB","C")], 8)
+    assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:faced_limp")
+    r = classify_preflop("SB", [("HJ","F"),("CO","F"),("BTN","F"),("SB","C"),("BB","R3")], 8)
+    assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:hero_limped")
+    # helpers
+    assert_eq(pos_cat("UTG+2"), "EP"); assert_eq(pos_cat("HJ"), "MP")
+    assert_eq(ip_oop("BTN", "SB", 8), "IP"); assert_eq(ip_oop("SB", "BTN", 8), "OOP")
+    assert_eq(board_suit("Kh6h4h"), "monotone"); assert_eq(board_suit("Kh6s4h"), "two_tone")
+    assert_eq(eff_stack_cat(60), "large"); assert_eq(eff_stack_cat(30), "medium")
+    assert_eq(eff_stack_cat(12), "short")
+
+
+@test
+def test_spot_taxonomy_walk_fixture():
+    import json
+    from pathlib import Path
+    from spot_taxonomy import walk_spots
+    FIX = Path(__file__).resolve().parent / "fixtures" / "gtow"
+    rows = json.loads((FIX / "list_rows.json").read_text())
+    hid = "eef0b07b-23b6-4fe0-bcc6-41d83629583c"
+    det = json.loads((FIX / "detail_eef0b07b.json").read_text())
+    spots = list(walk_spots(rows[hid], det))
+    assert_eq(len(spots), 6)
+    assert_eq(spots[0]["leaf"], "SB_RFI")
+    assert_eq(spots[1]["leaf"], "flop:SRP:SBvBB:OOP:first_to_act")
+    riv = spots[-1]
+    assert_eq(riv["leaf"], "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet")
+    assert_eq(round(riv["ev_loss_bb"], 3), 22.663)
+    assert_eq(riv["tags"]["board_suit"], "monotone")
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
