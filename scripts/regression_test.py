@@ -14450,6 +14450,54 @@ def test_analyze_table_url_shape():
 
 
 @test
+def test_spot_taxonomy_preflop_lines():
+    from spot_taxonomy import classify_preflop, pos_cat, ip_oop, board_suit, eff_stack_cat
+    # RFI: folded to hero (exact position)
+    r = classify_preflop("BTN", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","F")], 8)
+    assert_eq(r["category"], "RFI"); assert_eq(r["l1"], "BTN_RFI")
+    # vsOpen: single open, hero faces it; opener seat -> category L2
+    r = classify_preflop("BTN", [("UTG","F"),("LJ","F"),("HJ","R2.5")], 8)
+    assert_eq(r["category"], "vsOpen"); assert_eq(r["l1"], "BTN_vsOpen")
+    assert_eq(r["l2"], "BTN_vsOpen_MP")           # HJ opener -> MP
+    # vsRaiseCall: open + caller before hero
+    r = classify_preflop("BTN", [("HJ","R2.5"),("CO","C")], 8)
+    assert_eq(r["category"], "vsRaiseCall"); assert_eq(r["l1"], "BTN_vsRaiseCall".replace("BTN","LP"))
+    # vs3bet: hero opened, faces a 3bet (hero cat + IP/OOP)
+    r = classify_preflop("CO", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","R2.5"),("BTN","F"),
+                                ("SB","R9"),("BB","F")], 8)
+    assert_eq(r["category"], "vs3bet"); assert_eq(r["l1"], "LP_vs3bet")
+    assert_eq(r["l2"], "LP_vs3bet_IP")            # CO is IP vs SB postflop
+    # vsLimp only SB->BB
+    r = classify_preflop("BB", [("SB","C")], 8)
+    assert_eq(r["category"], "vsLimp"); assert_eq(r["l1"], "BB_vsLimp")
+    # helpers
+    assert_eq(pos_cat("UTG+2"), "EP"); assert_eq(pos_cat("HJ"), "MP")
+    assert_eq(ip_oop("BTN", "SB", 8), "IP"); assert_eq(ip_oop("SB", "BTN", 8), "OOP")
+    assert_eq(board_suit("Kh6h4h"), "monotone"); assert_eq(board_suit("Kh6s4h"), "two_tone")
+    assert_eq(eff_stack_cat(60), "large"); assert_eq(eff_stack_cat(30), "medium")
+    assert_eq(eff_stack_cat(12), "short")
+
+
+@test
+def test_spot_taxonomy_walk_fixture():
+    import json
+    from pathlib import Path
+    from spot_taxonomy import walk_spots
+    FIX = Path(__file__).resolve().parent / "fixtures" / "gtow"
+    rows = json.loads((FIX / "list_rows.json").read_text())
+    hid = "eef0b07b-23b6-4fe0-bcc6-41d83629583c"
+    det = json.loads((FIX / "detail_eef0b07b.json").read_text())
+    spots = list(walk_spots(rows[hid], det))
+    assert_eq(len(spots), 6)
+    assert_eq(spots[0]["leaf"], "SB_RFI")
+    assert_eq(spots[1]["leaf"], "flop:SRP:SBvBB:OOP:first_to_act")
+    riv = spots[-1]
+    assert_eq(riv["leaf"], "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet")
+    assert_eq(round(riv["ev_loss_bb"], 3), 22.663)
+    assert_eq(riv["tags"]["board_suit"], "monotone")
+
+
+@test
 def test_cell_top_hands_filters_family_and_band():
     """Per-leak-line evidence: filter hands to the cell's family AND depth_band,
     ranked by loss, with a review link attached."""
