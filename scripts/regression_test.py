@@ -14467,9 +14467,14 @@ def test_spot_taxonomy_preflop_lines():
                                 ("SB","R9"),("BB","F")], 8)
     assert_eq(r["category"], "vs3bet"); assert_eq(r["l1"], "LP_vs3bet")
     assert_eq(r["l2"], "LP_vs3bet_IP")            # CO is IP vs SB postflop
-    # vsLimp only SB->BB
+    # vsCold3bet: hero cold (did not open), faces a 3bet
+    r = classify_preflop("BB", [("CO","R2.5"),("BTN","R8"),("SB","F")], 8)
+    assert_eq(r["category"], "vsCold3bet"); assert_eq(r["l1"], "BB_vsCold3bet")
+    # limp-involved decisions are discarded (limp ranges unreliable)
     r = classify_preflop("BB", [("SB","C")], 8)
-    assert_eq(r["category"], "vsLimp"); assert_eq(r["l1"], "BB_vsLimp")
+    assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:faced_limp")
+    r = classify_preflop("SB", [("HJ","F"),("CO","F"),("BTN","F"),("SB","C"),("BB","R3")], 8)
+    assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:hero_limped")
     # helpers
     assert_eq(pos_cat("UTG+2"), "EP"); assert_eq(pos_cat("HJ"), "MP")
     assert_eq(ip_oop("BTN", "SB", 8), "IP"); assert_eq(ip_oop("SB", "BTN", 8), "OOP")

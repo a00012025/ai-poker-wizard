@@ -51,8 +51,9 @@ def main():
     cat = defaultdict(lambda: {"n": 0, "ev": 0.0, "n_inc": 0, "ev_inc": 0.0})
     other = Counter()
     other_ev = defaultdict(float)
+    discarded = Counter()
     tag_dist = {k: Counter() for k in ("eff_stack", "board_suit", "board_conn", "board_paired")}
-    n_spots = n_hands = n_excluded = n_missing_list = 0
+    n_spots = n_hands = n_excluded = n_missing_list = n_discarded = n_limp_origin = 0
 
     files = glob.glob(str(RAW / "detail" / "*" / "*.json.gz"))
     print(f"detail files: {len(files)}")
@@ -67,6 +68,12 @@ def main():
         n_hands += 1
         for s in walk_spots(lr, det):
             n_spots += 1
+            if s.get("discarded"):
+                n_discarded += 1
+                discarded[s.get("note") or s["leaf"]] += 1
+                continue
+            if s.get("limp_origin"):
+                n_limp_origin += 1
             ev, inc = s["ev_loss_bb"], not s["excluded"]
             if not inc:
                 n_excluded += 1
@@ -82,15 +89,16 @@ def main():
         if (i + 1) % 5000 == 0:
             print(f"  processed {i+1}/{len(files)} files, {n_spots} spots", flush=True)
 
-    report = _render_md(n_hands, n_spots, n_excluded, n_missing_list,
-                        cat, tree, leaf, other, other_ev, tag_dist)
+    report = _render_md(n_hands, n_spots, n_excluded, n_missing_list, n_discarded,
+                        n_limp_origin, cat, tree, leaf, other, other_ev, discarded, tag_dist)
     (OUT / "spot_stats.md").write_text(report)
     (OUT / "spot_stats.html").write_text(_render_html(report))
     print(report[:2000])
     print(f"\n[full report] {OUT/'spot_stats.md'}  +  {OUT/'spot_stats.html'}")
 
 
-PREFLOP_CATS = ["RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vs4bet", "vsLimp", "vsIso"]
+PREFLOP_CATS = ["RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vsCold3bet",
+                "vs4bet", "vsCold4bet"]
 
 
 def _row(name, a):
@@ -98,17 +106,30 @@ def _row(name, a):
             f"{(a['ev_inc']/a['n_inc']*100 if a['n_inc'] else 0):.2f} |")
 
 
-def _render_md(n_hands, n_spots, n_excluded, n_missing, cat, tree, leaf, other, other_ev, tag_dist):
-    L = ["# Spot 分類統計（action-line taxonomy v1）", ""]
+def _render_md(n_hands, n_spots, n_excluded, n_missing, n_discarded, n_limp_origin,
+               cat, tree, leaf, other, other_ev, discarded, tag_dist):
+    scored = n_spots - n_discarded
+    L = ["# Spot 分類統計（action-line taxonomy v2）", ""]
     L.append(f"- 分析手數：**{n_hands}**（含 detail 的手）")
     L.append(f"- 決策 spot 總數：**{n_spots}**（一手多 spot，故 > 手數）")
+    L.append(f"- **捨棄（limp 相關，GTOW 範圍不可靠，不評量）：{n_discarded}**"
+             f"（占 {n_discarded/max(n_spots,1)*100:.1f}%）")
+    L.append(f"- 進入分類的 spot：**{scored}**")
     L.append(f"- excluded（unsolved/warning，不進 EV 統計但仍分類）：{n_excluded}")
     other_total = sum(other.values())
-    L.append(f"- **無法歸入八大 preflop line 或標為 other 的 spot：{other_total}**"
-             f"（占 {other_total/max(n_spots,1)*100:.1f}%）")
+    L.append(f"- 標為 other（罕見結構，如 5bet+）：{other_total}"
+             f"（占 scored {other_total/max(scored,1)*100:.1f}%）")
+    L.append(f"- postflop limp/iso pot（保留但帶 limp_origin 注記）：{n_limp_origin}")
     if n_missing:
         L.append(f"- detail 找不到對應 list row（略過）：{n_missing}")
     L.append("")
+    if discarded:
+        L.append("### 捨棄明細（limp）")
+        L.append("| 情況 | spots |")
+        L.append("|---|---|")
+        for note, n in discarded.most_common():
+            L.append(f"| {escape(str(note))} | {n} |")
+        L.append("")
 
     L.append("## 大類分佈（category）")
     L.append("| category | spots | 計入EV | 總EVloss(bb) | bb/100 |")
@@ -126,7 +147,8 @@ def _render_md(n_hands, n_spots, n_excluded, n_missing, cat, tree, leaf, other, 
     for k in sorted([k for k in tree if k.endswith("_RFI")], key=lambda k: -tree[k]["ev_inc"]):
         L.append(_row(k, tree[k]))
     L.append("")
-    for topcat in ["vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vs4bet", "vsLimp", "vsIso"]:
+    for topcat in ["vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vsCold3bet",
+                   "vs4bet", "vsCold4bet"]:
         l1s = sorted([k for k in tree if k.endswith("_" + topcat) or ("_" + topcat + "_") in k],
                      key=lambda k: -tree[k]["ev_inc"])
         l1_only = [k for k in l1s if k.endswith("_" + topcat)]

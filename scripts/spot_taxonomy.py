@@ -5,14 +5,19 @@ Every hero decision node (preflop -> river) is classified into a hierarchical
 action line so per-spot EV loss can be aggregated at each level of the tree.
 
 Preflop top-level lines (mirror GTOW drill "Preflop action"):
-  RFI, vsOpen, vsRaiseCall, vsSqueeze, vs3bet, vs4bet, vsLimp, vsIso
+  RFI, vsOpen, vsRaiseCall, vsSqueeze, vs3bet, vsCold3bet, vs4bet, vsCold4bet
   - RFI: by EXACT hero position (UTG_RFI ... SB_RFI); no villain.
   - vsOpen: L1 = exact hero pos (BTN_vsOpen); L2 = opener position CATEGORY
             (BTN_vsOpen_EP). Opener seat collapses to EP/MP/LP/SB/BB.
   - vs3bet/vs4bet/vsRaiseCall/vsSqueeze: rarer -> L1 = hero pos CATEGORY
             (EP_vs3bet); L2 = hero IP/OOP vs the villain (EP_vs3bet_IP).
-  - vsLimp: SB limped, hero BB (BB_vsLimp).
-  - vsIso: hero SB limped, faces BB raise/all-in (SB_vsIso).
+  - vsCold3bet: hero did NOT open but faces a 3bet (cold-caller/blind).
+  - vsCold4bet: hero opened (or cold), a 3bet then 4bet, hero faces the 4bet.
+
+  DISCARDED (not scored): any limp-involved preflop decision (hero limped, or
+  faced a limp). GTOW's limp ranges diverge sharply from real population ranges,
+  so the grade is unreliable (user decision). Postflop limp/iso pots are kept
+  but carry a limp_origin flag with the same caveat.
 
 Postflop (flop/turn/river) dimensions (always present):
   pot_type (SRP/3bet/4bet/squeeze/limp/iso) x hero_pos_cat x villain_pos_cat
@@ -140,21 +145,18 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
 
     hc = pos_cat(hero)
 
-    # hero already limped and now faces a raise
-    if hero_limped and raise_count >= 1:
-        if hero == "SB" and last_raiser == "BB":
-            return {"category": "vsIso", "l1": "SB_vsIso", "l2": None,
-                    "villain": last_raiser, "note": ""}
-        return {"category": "other", "l1": "other:limp_then_raised", "l2": None,
-                "villain": last_raiser, "note": "hero limped then faced a non-BB raise"}
+    # Limp-involved preflop decisions are DISCARDED: GTOW's limp ranges diverge
+    # sharply from real population ranges, so the grade is unreliable (user
+    # decision B). This covers hero-limped-then-raised (old vsIso) and any
+    # faced-limp (old vsLimp SB->BB + all others).
+    if hero_limped:
+        return {"category": "discarded", "l1": "discarded:hero_limped", "l2": None,
+                "villain": last_raiser, "note": "hero limped (limp ranges unreliable)"}
 
     if raise_count == 0:
         if limpers:
-            if hero == "BB" and limpers == ["SB"]:
-                return {"category": "vsLimp", "l1": "BB_vsLimp", "l2": None,
-                        "villain": "SB", "note": ""}
-            return {"category": "other", "l1": "other:limped_pot", "l2": None,
-                    "villain": None, "note": f"faced limp(s) {limpers}"}
+            return {"category": "discarded", "l1": "discarded:faced_limp", "l2": None,
+                    "villain": None, "note": "faced a limp (limp ranges unreliable)"}
         # folded to hero -> RFI (exact hero position, 9max collapsed)
         return {"category": "RFI", "l1": f"{normalize_pos(hero)}_RFI", "l2": None,
                 "villain": None, "note": ""}
@@ -181,16 +183,20 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
             return {"category": "vs3bet", "l1": f"{hc}_vs3bet",
                     "l2": f"{hc}_vs3bet_{ip_oop(hero, three_bettor, npl)}",
                     "villain": three_bettor, "note": ""}
-        return {"category": "other", "l1": "other:cold_vs3bet", "l2": None,
-                "villain": three_bettor, "note": "hero faces 3bet without having opened"}
+        # hero did not open but faces a 3bet (cold-caller or blind) -> vsCold3bet
+        return {"category": "vsCold3bet", "l1": f"{hc}_vsCold3bet",
+                "l2": f"{hc}_vsCold3bet_{ip_oop(hero, three_bettor, npl)}",
+                "villain": three_bettor, "note": ""}
 
     if raise_count == 3:
         if hero_raised and hero_raise_level == 2:      # hero 3bet, faces 4bet
             return {"category": "vs4bet", "l1": f"{hc}_vs4bet",
                     "l2": f"{hc}_vs4bet_{ip_oop(hero, last_raiser, npl)}",
                     "villain": last_raiser, "note": ""}
-        return {"category": "other", "l1": "other:cold_vs4bet", "l2": None,
-                "villain": last_raiser, "note": "hero faces 4bet without being the 3bettor"}
+        # hero opened or is cold, a 3bet then 4bet came, hero faces the 4bet -> vsCold4bet
+        return {"category": "vsCold4bet", "l1": f"{hc}_vsCold4bet",
+                "l2": f"{hc}_vsCold4bet_{ip_oop(hero, last_raiser, npl)}",
+                "villain": last_raiser, "note": ""}
 
     return {"category": "other", "l1": "other:5bet_plus", "l2": None,
             "villain": last_raiser, "note": f"raise_count={raise_count}"}
@@ -335,7 +341,7 @@ def walk_spots(list_row: dict, detail: dict):
                 spot = {"street": "preflop", "category": cls["category"],
                         "l1": cls["l1"], "l2": cls["l2"], "leaf": cls["l2"] or cls["l1"],
                         "keys": keys, "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
-                        "note": cls["note"]}
+                        "note": cls["note"], "discarded": cls["category"] == "discarded"}
             else:
                 facing = street_facing(street_acts[street])
                 # villain: last aggressor if facing a bet/raise; else sole other active
@@ -351,7 +357,10 @@ def walk_spots(list_row: dict, detail: dict):
                         "leaf": cls["leaf"], "keys": cls["keys"],
                         "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
                         "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
-                        "facing": facing, "note": ""}
+                        "facing": facing, "note": "",
+                        # postflop limp/iso pots reach the flop via a limp; kept for
+                        # now but flagged (grades carry the same limp-range caveat).
+                        "discarded": False, "limp_origin": cls["pot_type"] in ("limp", "iso")}
 
             spot.update({"gtow_hand_id": list_row.get("hand_id"), "hero_pos": hero,
                          "ev_loss_bb": ev_loss, "correctness": corr,
