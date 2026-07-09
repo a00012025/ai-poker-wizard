@@ -339,11 +339,14 @@ def walk_spots(list_row: dict, detail: dict):
                 keys = [cls["l1"]] if cls["l2"] is None else [cls["l1"], cls["l2"]]
                 # top-level category node for rollup
                 keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
+                l2 = cls["l2"]
+                pre_ip = "IP" if l2 and l2.endswith("_IP") else (
+                    "OOP" if l2 and l2.endswith("_OOP") else None)
                 spot = {"street": "preflop", "category": cls["category"],
-                        "l1": cls["l1"], "l2": cls["l2"], "leaf": cls["l2"] or cls["l1"],
+                        "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
                         "keys": keys, "hero_cat": pos_cat(hero),
                         "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
-                        "ip_oop": None, "facing": None, "pot_type": None,
+                        "ip_oop": pre_ip, "facing": None, "pot_type": None,
                         "note": cls["note"], "discarded": cls["category"] == "discarded",
                         "limp_origin": False}
             else:

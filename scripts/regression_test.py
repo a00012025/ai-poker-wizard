@@ -14420,25 +14420,34 @@ def test_weekly_series_tz_bucketing():
 # ── Phase 1 Ledger: scorecard ──
 
 @test
-def test_scorecard_data_and_html():
-    from scorecard import compute_scorecard_data, render_scorecard_html
-    decs = [_dec(loss=1.0)] * 30 + [_dec(family="probe", loss=0.0)] * 40
-    hands = [{"gtow_hand_id": "h1", "played_at": decs[0]["played_at"],
-              "total_ev_loss_bb": 22.7, "hero_hand": "Qh8c", "position": "SB",
-              "boards": "Kh6h4hQs8s", "tournament_name": "Test $5",
-              "winloss_bb": -10.8, "session_id": 1}]
-    data = compute_scorecard_data(decs, hands, [], prev_focus=None,
-                                  window_label="2026-W28")
+def test_training_plan_and_retrieval_first():
+    """Scorecard v2 = training plan: focus spot + retrieval-first prompt +
+    precise drill link + self-contained HTML + readback."""
+    from scorecard import (compute_training_plan, render_html, retrieval_prompt,
+                           spot_desc_zh)
+    row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
+           "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
+    assert_in("先自問", retrieval_prompt(row))
+    assert_in("3bet", spot_desc_zh(row))
+    spots = [{"row": row, "url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
+              "samples": [], "bands": [], "restrict": None}]
+    weekly = [{"week": "2026-W27", "n": 100, "per100": 2.5, "total_bb": 2.5},
+              {"week": "2026-W28", "n": 120, "per100": 2.0, "total_bb": 2.4}]
+    honesty = {"excluded_n": 5, "discarded_n": 3, "chipev_share": 1.0, "total": 100}
+    data = compute_training_plan("2026-W28", weekly, spots, [], None, honesty)
     assert_true(data["headline"])
-    assert_eq(data["leak_board"]["cells"][0]["family"], "facing_cbet_oop")
-    assert_true(data["focus"]["families"])
-    assert_true(data["focus"]["families"][0]["prescriptions"][0]["url"]
-                .startswith("https://app.gtowizard.com/"))
-    html = render_scorecard_html(data)
-    assert_in("facing_cbet_oop", html)
+    assert_eq(round(data["delta"], 2), -0.50)
+    assert_eq(data["focus"][0]["spot_leaf"], "MP_vs3bet_IP")
+    assert_true(data["focus"][0]["drill_url"].startswith("https://app.gtowizard.com/"))
+    html = render_html(data)
+    assert_in("MP_vs3bet_IP", html)
+    assert_in("先自問", html)
     assert_in("<svg", html)
-    assert_in("誠實層", html)
-    assert_true("<script src" not in html)   # self-contained
+    assert_true("<script src" not in html)
+    rb = compute_training_plan("2026-W29", weekly, spots, [],
+                               [{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}], honesty)
+    assert_eq(rb["readback"][0]["spot_leaf"], "MP_vs3bet_IP")
+    assert_eq(round(rb["readback"][0]["current_per100"], 1), 13.5)
 
 
 @test
@@ -14526,22 +14535,6 @@ def test_spot_taxonomy_walk_fixture():
     assert_eq(riv["leaf"], "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet")
     assert_eq(round(riv["ev_loss_bb"], 3), 22.663)
     assert_eq(riv["tags"]["board_suit"], "monotone")
-
-
-@test
-def test_cell_top_hands_filters_family_and_band():
-    """Per-leak-line evidence: filter hands to the cell's family AND depth_band,
-    ranked by loss, with a review link attached."""
-    from scorecard import _cell_top_hands
-    decs = [dict(_dec(loss=1.0, band="25_40"), gtow_hand_id="h1"),
-            dict(_dec(loss=1.0, band="15_25"), gtow_hand_id="h2"),   # wrong band
-            dict(_dec(family="probe", loss=1.0, band="25_40"), gtow_hand_id="h3")]  # wrong family
-    hands = [{"gtow_hand_id": f"h{i}", "played_at": decs[0]["played_at"],
-              "total_ev_loss_bb": float(i)} for i in (1, 2, 3)]
-    cell = {"family": "facing_cbet_oop", "depth_band": "25_40"}
-    top = _cell_top_hands(cell, decs, hands, k=2)
-    assert_eq([h["gtow_hand_id"] for h in top], ["h1"])
-    assert_true(top[0]["review_url"].startswith("https://app.gtowizard.com/"))
 
 
 if __name__ == "__main__":

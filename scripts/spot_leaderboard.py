@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from dotenv import load_dotenv
@@ -21,7 +25,19 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 from gtow_trainer_url import (build_drill_url, CAT_POSITIONS, SpotNotSupportedError,
                               MTT_DEPTHS, DEPTH_BAND_DEPTHS)
-from scorecard import analyze_table_url
+
+TPE = ZoneInfo("Asia/Taipei")
+
+
+def analyze_table_url(day_start_taipei: str, day_end_taipei: str) -> str:
+    """GTOW Analyze table filtered to a Taipei day range (fallback review link)."""
+    start = datetime.fromisoformat(day_start_taipei).replace(tzinfo=TPE)
+    end = datetime.fromisoformat(day_end_taipei).replace(tzinfo=TPE) + timedelta(days=1)
+    fmt = lambda d: d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    filters = json.dumps({"played_at__range": [fmt(start), fmt(end)]})
+    return (f"https://app.gtowizard.com/analyze/v4/hands/table"
+            f"?filters={quote(filters)}&preselectGamemode=TOURNAMENT")
+
 
 BAND_MID = {"le15": 12, "15_25": 20, "25_40": 32, "40plus": 50}
 BAND_ZH = {"short": "短籌(≤20)", "medium": "中籌(20-50)", "large": "深籌(>50)"}
