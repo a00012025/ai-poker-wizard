@@ -86,8 +86,7 @@ async def _weekly_scorecard_job(context):
         focus = data.get("focus", [])
         blocks = [f"📊 週訓練計畫 {row['week']}", data.get("headline", "")]
         for f in focus:
-            blocks.append(f"\n🎯 {f['desc']}（{f['per100']:.2f}bb/100, n={f['n']}）\n"
-                          f"{f['retrieval']}")
+            blocks.append(f"\n🎯 {f['desc']}（{f['per100']:.2f}bb/100, n={f['n']}）")
             if f.get("drill_url"):
                 blocks.append(f"→ 練習：{f['drill_url']}")
         await context.bot.send_message(owner, "\n".join(blocks), disable_web_page_preview=True)

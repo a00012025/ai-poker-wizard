@@ -23,7 +23,7 @@
 
 **GTOW Trainer drill 精準參數（Option Z，live 逆向 2026-07-09，見 skill `gtow-trainer-drill`）**：`fh_hero` / `fh_opponent`（逗號=任一位置）/ `fh_rel_positions`（IP/OOP）/ `fh_actions`（vsSRP=vsOpen、StartOfHand=From start…）/ `fh_start_spot` / `depth_list`（多深度）。`gtow_trainer_url.build_drill_url` 據此產出精準連結。
 
-**Version A 閉環**：診斷（action-line avg-EV-loss 榜）→ 處方（1–2 焦點 spot + 精準**多深度** drill 連結；預設不鎖 stack，只有某 band n≥25 且 avg ≥ 下一 band 1.5× 才鎖）→ **retrieval-first** 提問（先作答再看 GTO）→ 隔週該 spot 真實 EV-loss 回讀。訊號用真實對局 delta（慢訊號）；Trainer practiced-hands 回收（快訊號）留 Phase 2。
+**Version A 閉環**：診斷（action-line avg-EV-loss 榜）→ 處方（1–2 焦點 spot + 精準**多深度** drill 連結；預設不鎖 stack，只有某 band n≥25 且 avg ≥ 下一 band 1.5× 才鎖）→ 選手去 GTOW Trainer 練那個 spot（drill 本身即 retrieval：先出手才顯示 GTO）→ 隔週該 spot 真實 EV-loss 回讀。訊號用真實對局 delta（慢訊號）；Trainer practiced-hands 回收（快訊號）與我方作答批改（Dojo）留 Phase 2。
 
 **新增/改寫的 scripts**：`spot_taxonomy.py`、`backfill_spots.py`（從 raw 重跑 taxonomy 到 `ledger_decisions`，無 API）、`spot_leaderboard.py`（avg-EV-loss 榜 + drill + stack-band 分析）、`ledger_service.py`（owner 解析 + 2 個 LLM 追問工具）、`scorecard.py`（改寫成訓練計畫）；migration `20260709000000_add_ledger_spot_columns.sql`。
 

@@ -6,7 +6,7 @@
 - **攝取層**：`gtow_analyze_api.py`（list+detail，節流/退避/分頁；404/403/204 軟跳過）、`ledger_ingest.py`（backfill/incremental/verify，冪等可續傳）→ 本地 raw 檔案庫 `data/gtow_raw/`（不變量 9）。
 - **Decision Ledger**：`ledger_hands` / `ledger_decisions` / `ledger_sessions` / `coach_focus` / `scorecards`。每筆決策帶 grader、`approx_flags`、`excluded`、`confidence`（誠實層）。
 - **Action-line taxonomy**（`spot_taxonomy.py`）：每個 hero 決策節點分類成階層行動線（見 plan v2 節）；`backfill_spots.py` 從 raw 重跑到 `ledger_decisions`（無 API）。limp spot 捨棄。
-- **診斷 + 處方**：`spot_leaderboard.py`（avg-EV-loss 榜 + 精準多深度 GTOW Trainer drill + stack-band 分析）、`scorecard.py`（訓練計畫：焦點 spot + retrieval-first + 隔週回讀）。
+- **診斷 + 處方**：`spot_leaderboard.py`（avg-EV-loss 榜 + 精準多深度 GTOW Trainer drill + stack-band 分析）、`scorecard.py`（訓練計畫：焦點 spot + 精準 drill 連結 + 隔週回讀）。
 - **GTOW Trainer 精準連結**：逆向出 `fh_hero/fh_opponent/fh_rel_positions/fh_actions/fh_start_spot/depth_list`（skill `gtow-trainer-drill`），`gtow_trainer_url.build_drill_url`。
 - **TG**：`/ingest`（owner）、每日 05:00 攝取 job、週日 21:00 訓練計畫推播；2 個 grounded LLM 追問工具（`query_ledger_summary/hands`）。
 
@@ -16,7 +16,7 @@
 - [x] 20 手保真對數：0/20 mismatch。
 - [x] Action-line 榜：avg-EV-loss，帶 n；top-5（n≥50）已由選手驗收（符合直覺，3bet pot 為已知弱點）。
 - [x] 精準 drill 連結：live 驗證落點正確（hero/opponent/IP-OOP/多深度）。
-- [x] 訓練計畫記分卡：焦點 spot + retrieval-first + drill + 回讀機制。
+- [x] 訓練計畫記分卡：焦點 spot + 精準 drill 連結 + 回讀機制。
 - [x] TG 佈線 + LLM 追問工具（直測 DB 通過）。
 - [ ] 連續 2 週自動推播 / 每日 7 天無漏 / 隔週回讀 delta：**需真實時間累積**（機制已就緒，cron 常駐後自然累積）。
 

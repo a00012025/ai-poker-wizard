@@ -14420,14 +14420,12 @@ def test_weekly_series_tz_bucketing():
 # ── Phase 1 Ledger: scorecard ──
 
 @test
-def test_training_plan_and_retrieval_first():
-    """Scorecard v2 = training plan: focus spot + retrieval-first prompt +
-    precise drill link + self-contained HTML + readback."""
-    from scorecard import (compute_training_plan, render_html, retrieval_prompt,
-                           spot_desc_zh)
+def test_training_plan_focus_and_readback():
+    """Scorecard v2 = training plan: focus spot + precise drill link +
+    self-contained HTML + next-cycle EV-loss readback."""
+    from scorecard import compute_training_plan, render_html, spot_desc_zh
     row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
-    assert_in("先自問", retrieval_prompt(row))
     assert_in("3bet", spot_desc_zh(row))
     spots = [{"row": row, "url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
               "samples": [], "bands": [], "restrict": None}]
@@ -14441,7 +14439,6 @@ def test_training_plan_and_retrieval_first():
     assert_true(data["focus"][0]["drill_url"].startswith("https://app.gtowizard.com/"))
     html = render_html(data)
     assert_in("MP_vs3bet_IP", html)
-    assert_in("先自問", html)
     assert_in("<svg", html)
     assert_true("<script src" not in html)
     rb = compute_training_plan("2026-W29", weekly, spots, [],

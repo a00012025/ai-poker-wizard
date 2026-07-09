@@ -29,7 +29,7 @@ python scripts/ledger_fidelity_check.py          # 期望 mismatches: 0/20
 python scripts/scorecard.py --weekly             # 寫 scorecards + coach_focus，輸出 data/scorecards/<week>.html
 python scripts/spot_leaderboard.py --min-n 50 --top 5   # 看焦點榜 + drill 連結
 ```
-預期：TG 收到「📊 週訓練計畫」摘要 + 每個焦點 spot 的 **retrieval-first 提問**（先自問…）+ 精準多深度 drill 連結 + HTML 附件。
+預期：TG 收到「📊 週訓練計畫」摘要 + 每個焦點 spot（描述 + 精準多深度 drill 連結）+ HTML 附件。drill 本身即 retrieval 練習（GTOW Trainer 先出手才顯示 GTO）。
 驗收：點 drill 連結 → GTOW Trainer 落在描述的那個 spot（hero/opponent 位置、動作、IP/OOP、多深度 badge 正確）。
 
 ## 5. 隔週回讀

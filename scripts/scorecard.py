@@ -2,8 +2,8 @@
 """Weekly scorecard = training plan (action-line taxonomy, Version A loop).
 
 Diagnose (action-line leak board by avg EV loss) -> prescribe 1-2 focus spots
-with precise multi-depth GTOW Trainer drill links -> retrieval-first prompt
-(answer before you see GTO) -> next-cycle EV-loss readback on the treated spot.
+with precise multi-depth GTOW Trainer drill links (the drill itself is the
+retrieval practice) -> next-cycle EV-loss readback on the treated spot.
 
 --preview   full-history window, no DB writes; emits data/scorecards/preview.*
 --weekly    current ISO week, writes scorecards + coach_focus + readback backfill
@@ -41,7 +41,7 @@ FACING_ZH = {"first_to_act": "首動", "vs_bet": "面對下注", "vs_check": "�
              "vs_raise": "面對加注"}
 
 
-# ── human-readable spot description + retrieval-first prompt (pure) ─────────
+# ── human-readable spot description (pure) ─────────────────────────────────
 def spot_desc_zh(row: dict) -> str:
     cat = row["spot_category"]
     hc, vc, rel = row.get("hero_cat"), row.get("villain_cat"), row.get("ip_oop")
@@ -57,14 +57,6 @@ def spot_desc_zh(row: dict) -> str:
     if cat in ("vs3bet", "vsCold3bet", "vs4bet", "vsCold4bet", "vsSqueeze"):
         return f"{hc} {CAT_ZH[cat]}（對手 {vc}，你 {rel or '?'}）"
     return f"{hc} {CAT_ZH.get(cat, cat)}（對手 {vc}）"
-
-
-def retrieval_prompt(row: dict) -> str:
-    desc = spot_desc_zh(row)
-    q = ("你的預設策略是什麼？各動作（下注/過牌/加注/跟注/棄牌）大概什麼頻率？"
-         if row["spot_category"] in ("flop", "turn", "river")
-         else "你的預設策略是什麼？各動作頻率大概多少？")
-    return f"🧠 先自問：{desc}——{q} 想好再點下面的 drill 對答案。"
 
 
 # ── SVG sparkline ──────────────────────────────────────────────────────────
@@ -94,8 +86,7 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
             "spot_leaf": r["spot_leaf"], "spot_category": r["spot_category"],
             "desc": spot_desc_zh(r), "per100": r["avg_ev"] * 100, "n": r["n"],
             "hero_cat": r.get("hero_cat"), "villain_cat": r.get("villain_cat"),
-            "ip_oop": r.get("ip_oop"),
-            "retrieval": retrieval_prompt(r), "drill_url": it["url"],
+            "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
             "restrict": it.get("restrict"),
             "samples": [dict(s) for s in it.get("samples", [])],
         })
@@ -137,7 +128,6 @@ border-bottom:1px solid #e2e8f0;padding-bottom:4px}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;
 padding:5px 8px;border-bottom:1px solid #edf2f7}th{color:#718096}
 .card{border:1px solid #e2e8f0;border-radius:6px;padding:12px;margin:8px 0}
-.q{background:#fffbea;border:1px solid #f6e05e;border-radius:6px;padding:8px 10px;margin:6px 0}
 .btn{display:inline-block;padding:5px 12px;background:#2b6cb0;color:#fff;border-radius:4px;
 text-decoration:none;font-size:12px;margin:4px 0}a{color:#2b6cb0}.note{color:#a0aec0;font-size:12px}
 """
@@ -168,7 +158,7 @@ def render_html(d: dict) -> str:
             for s in f.get("samples", []))
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
                        f'<div class="sub">{f["per100"]:.2f} bb/100 · n={f["n"]} · <code>{escape(f["spot_leaf"])}</code></div>'
-                       f'<div class="q">{escape(f["retrieval"])}</div>{drill}{band}{samples}</div>')
+                       f'{drill}{band}{samples}</div>')
     rb = ""
     if d.get("readback"):
         for r in d["readback"]:
@@ -207,7 +197,6 @@ def preview_summary_md(d: dict) -> str:
     for f in d["focus"]:
         L.append(f"### {f['desc']}  `{f['spot_leaf']}`")
         L.append(f"- {f['per100']:.2f} bb/100 · n={f['n']}")
-        L.append(f"- {f['retrieval']}")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
         L.append("")
