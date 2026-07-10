@@ -67,6 +67,28 @@ def assert_true(cond, msg=""):
 
 
 @test
+def test_board_unknown_suits_are_canonicalized_before_api():
+    """Text parses must not leak unknown board suits like 5x to GTOW.
+
+    Regression for a 422 on:
+      board=5c7c9c5x after user wrote "579r ... turn 5".
+    """
+    from analyze_hand import _canonicalize_board_streets
+
+    streets, notes = _canonicalize_board_streets([
+        {"board": "579r", "actions": []},
+        {"card": "5x", "actions": []},
+    ])
+
+    assert_eq(streets[0]["board"], "5c7d9h", "579r becomes legal rainbow flop")
+    assert_eq(streets[1]["card"], "5s", "bare/unknown paired turn gets legal unused suit")
+    full_board = streets[0]["board"] + streets[1]["card"]
+    assert_not_in("x", full_board.lower(), "GTOW board params must never contain x")
+    assert_in("579r → 5c7d9h", "; ".join(notes))
+    assert_in("5x → 5s", "; ".join(notes))
+
+
+@test
 def test_postflop_allin_resolution_preserves_sized_hero_backjam():
     """OCR: a sized hero all-in must not be collapsed onto villain's raise.
 

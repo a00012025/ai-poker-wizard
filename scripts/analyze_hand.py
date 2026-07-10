@@ -1133,6 +1133,148 @@ def _fix_collapsed_streets(streets: list) -> list:
     return result
 
 
+_RANK_CHARS = set("23456789TJQKA")
+_SUIT_CHARS = set("cdhs")
+_SUIT_SYMBOLS = str.maketrans({
+    "♣": "c", "♧": "c",
+    "♦": "d", "♢": "d",
+    "♥": "h", "♡": "h",
+    "♠": "s", "♤": "s",
+})
+
+
+def _canonicalize_board_streets(streets: list) -> tuple[list, list[str]]:
+    """Replace rank-only/``x`` board cards with legal concrete suits.
+
+    GTO Wizard requires exact cards in ``[2-9TJQKA][cdhs]`` form.  Text parses
+    often contain texture shorthand (``579r``) or unknown suits (``5x``), which
+    otherwise reaches the API as an invalid board (422).  When suits are
+    omitted, choose a deterministic legal representative: rainbow for bare
+    flops, then prefer unused suits on turn/river while never duplicating an
+    exact card already on board.
+    """
+    if not streets:
+        return streets, []
+
+    used_cards: set[str] = set()
+    used_suits: set[str] = set()
+    notes: list[str] = []
+    out: list[dict] = []
+
+    def _clean(raw: str) -> str:
+        s = str(raw or "").translate(_SUIT_SYMBOLS)
+        s = re.sub(r"10", "T", s, flags=re.IGNORECASE)
+        # Keep only compact card/texture characters.  Drop spaces, commas,
+        # brackets, and UI punctuation the LLM may have copied from text.
+        return "".join(ch for ch in s if ch.upper() in _RANK_CHARS or ch.lower() in _SUIT_CHARS or ch.lower() in {"x", "?", "r", "m"})
+
+    def _choose_suit(rank: str, preferred: str | None = None) -> str:
+        prefs: list[str] = []
+        if preferred in _SUIT_CHARS:
+            prefs.append(preferred)
+        # Prefer preserving rainbow/no-flush texture when possible.
+        prefs.extend([s for s in "cdhs" if s not in used_suits])
+        prefs.extend(list("cdhs"))
+        for suit in prefs:
+            if f"{rank}{suit}" not in used_cards:
+                return suit
+        # Impossible in a real deck (all four suits already used for this rank);
+        # still return a syntactically valid card instead of leaking "x".
+        return "c"
+
+    def _parse_field(raw: str, expected_cards: int, *, is_flop: bool) -> str:
+        cleaned = _clean(raw)
+        if not cleaned:
+            return ""
+
+        parsed: list[tuple[str, str | None, bool]] = []
+        texture = cleaned.lower()
+        i = 0
+        while i < len(cleaned) and len(parsed) < expected_cards:
+            ch = cleaned[i]
+            rank = ch.upper()
+            if rank not in _RANK_CHARS:
+                i += 1
+                continue
+            suit = None
+            had_unknown = False
+            if i + 1 < len(cleaned):
+                nxt = cleaned[i + 1].lower()
+                if nxt in _SUIT_CHARS:
+                    suit = nxt
+                    i += 2
+                elif nxt in {"x", "?"}:
+                    had_unknown = True
+                    i += 2
+                else:
+                    i += 1
+            else:
+                i += 1
+            parsed.append((rank, suit, had_unknown))
+
+        # ``579r``/``579`` should become a concrete rainbow flop.  If the LLM
+        # already supplied exact suits, keep them.
+        flop_defaults = ["c", "d", "h"]
+        if is_flop and "m" in texture and all(s is None for _, s, _ in parsed):
+            flop_defaults = ["c", "c", "c"]
+
+        cards: list[str] = []
+        approximated = cleaned != str(raw or "").translate(_SUIT_SYMBOLS).replace("10", "T")
+        for idx, (rank, suit, had_unknown) in enumerate(parsed):
+            chosen = suit
+            if chosen not in _SUIT_CHARS or f"{rank}{chosen}" in used_cards:
+                preferred = flop_defaults[idx] if is_flop and idx < len(flop_defaults) else None
+                chosen = _choose_suit(rank, preferred)
+                approximated = True
+            if had_unknown or suit is None:
+                approximated = True
+            card = f"{rank}{chosen}"
+            cards.append(card)
+            used_cards.add(card)
+            used_suits.add(chosen)
+
+        if approximated and cards:
+            notes.append(f"{raw} → {''.join(cards)}")
+        return "".join(cards)
+
+    for idx, street in enumerate(streets):
+        s = dict(street)
+        if idx == 0:
+            key = "board" if "board" in s else ("cards" if "cards" in s else "card")
+            raw = s.get(key, "")
+            fixed = _parse_field(raw, 3, is_flop=True)
+            if fixed:
+                s["board"] = fixed
+                if key != "board":
+                    s.pop(key, None)
+        else:
+            key = "card" if "card" in s else "cards"
+            raw = s.get(key, "")
+            fixed = _parse_field(raw, 1, is_flop=False)
+            if fixed:
+                s["card"] = fixed
+                if key != "card":
+                    s.pop(key, None)
+        out.append(s)
+
+    return out, notes
+
+
+def _canonicalize_hand_board_cards(hand: dict) -> tuple[dict, list, list[str]]:
+    """Return a copy of ``hand`` with postflop board cards solver-valid."""
+    streets = hand.get("streets") or hand.get("postflop_actions", [])
+    if not streets:
+        return hand, streets, []
+    streets = _fix_collapsed_streets(streets)
+    streets, notes = _canonicalize_board_streets(streets)
+    new_hand = dict(hand)
+    if "postflop_actions" in hand and "streets" not in hand:
+        new_hand["postflop_actions"] = streets
+    else:
+        new_hand["streets"] = streets
+    return new_hand, streets, notes
+
+
 def _rederive_postflop_codes(
     params: dict,
     flop_board: str, turn_board: str, river_board: str,
@@ -1223,11 +1365,7 @@ def _run_analysis(hand: dict) -> dict:
     no_hero_hand = hand.get("no_hero_hand", False)
     # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
     hero_combo_idx = combo_index_for_hand(hero_hand_raw)
-    streets = hand.get("streets") or hand.get("postflop_actions", [])
-
-    # Fix malformed streets: if first street has 4+ card board, split into flop + turn
-    # (LLM sometimes collapses check-check flop into the turn entry)
-    streets = _fix_collapsed_streets(streets)
+    hand, streets, board_approx_notes = _canonicalize_hand_board_cards(hand)
 
     # Determine position order based on number of players
     # Prefer players_at_table (explicitly set) over len(player_stacks)
@@ -2614,6 +2752,8 @@ def _run_analysis(hand: dict) -> dict:
         results.append(gto_line_note)
     if offrange_note:
         results.append(offrange_note)
+    if board_approx_notes:
+        results.append(f"⚠ Board 花色未完整指定，已用合法代表牌面近似: {'; '.join(board_approx_notes)}")
     if raw_preflop != preflop_actions:
         # Generate detailed approximation notes for each corrected action
         raw_parts = raw_preflop.split("-")
@@ -2736,6 +2876,8 @@ def _run_analysis(hand: dict) -> dict:
         compact.append(gto_line_note)
     if offrange_note:
         compact.append(offrange_note)
+    if board_approx_notes:
+        compact.append(f"⚠ Board 花色近似: {'; '.join(board_approx_notes)}")
 
     for i, (spot, sol) in enumerate(zip(hero_spots, solutions)):
         display_sol = None if i in offrange_no_solver_idxs else sol
@@ -3008,7 +3150,8 @@ def analyze_hand_full(hand: dict) -> dict:
     # hard-invalid parse must NOT silently fall through to "（無 solver 數據）"
     # — attach a structured report the bot turns into a user warning, and log
     # loudly so a parse bug is distinguishable from a genuinely off-tree spot.
-    validation = _build_validation(hand)
+    validation_hand, _, _ = _canonicalize_hand_board_cards(hand)
+    validation = _build_validation(validation_hand)
 
     result = _run_analysis(hand)
     result["validation"] = validation
