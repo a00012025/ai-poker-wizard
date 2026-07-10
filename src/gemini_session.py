@@ -79,7 +79,10 @@ PARSE_PROMPT = """\
   當有人 re-raise 後，之前 call 過的人會再次行動。這些動作接在 N 個位置後面，按原始行動順序排列。
   例：UTG+1 raise 2bb, LJ call, CO call, SB raise 10bb, UTG+1 fold, LJ fold, CO call
   → F-R2-C-F-C-F-R10-F-F-F-C（8個位置 + UTG+1 fold + LJ fold + CO call）
-- Board 格式：Js6h5s（rank+suit: c/d/h/s）。如果用戶只說 "J65 two spade" 你要推斷出 Js6s5x 之類的（花色不確定的用最合理的猜測）
+- Board 格式：Js6h5s（rank+suit: c/d/h/s）。絕對不要輸出 x 或 ? 作為花色；GTOW 只接受 c/d/h/s。
+  如果用戶只說 "579r" / "J65 rainbow"，用合法 rainbow 代表牌面（如 5c7d9h / Jc6d5h）。
+  如果用戶只說 "J65 two spade"，用合法 two-tone 代表牌面（如 Js6s5d）。
+  turn/river 只給 rank 時，補一個未在牌面重複的合法花色（例如 flop 5c7d9h、turn 5 → card "5s"）。
 - 翻牌後行動順序（重要！）：SB 永遠先行動，然後 BB，然後其他位置按順序，BTN 最後。
   BvB 例子：SB bet, BB call → [{"position":"SB","action":"R2","size":2},{"position":"BB","action":"C"}]（SB 先行動，不要在前面加 BB check！）
 - Postflop actions 只列出實際發生的動作，不要自己推測或補上未提及的 check

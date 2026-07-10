@@ -67,11 +67,8 @@ Hero A6s 牌型: Ace high
   BET 6.5（37% pot）: 2.1%（0 combos）
   All-in 17.350: 52.6%（7 combos）
 
-【UTG A6s】
-  Range 頻率: 0.0%（0.0/4 combos）
-  EV: 1.92bb | Equity: 18.7%
-  策略:
-    All-in: 100.0%（0.0 combos）
+【UTG Ac6c（A6s）】
+  策略: All-in 100%（EV 1.92bb）
   → 實際行動: UTG R27.6 27.6bb（solver code: RAI）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s
