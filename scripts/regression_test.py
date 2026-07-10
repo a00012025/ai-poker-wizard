@@ -13797,11 +13797,13 @@ KNOWN_VALIDATOR_FLAGS = {
     # ACT_AFTER_FOLD — a live player's action mislabeled onto a folded seat:
     "H2492", "H2496", "H2543", "H2548", "H2549", "H2630", "H2838",
     # DUP_CARD — the same card parsed into hero's hand and the board (impossible):
-    "H2534", "H2551", "H2615", "H2626", "H2686", "H2849",
+    "H2534", "H2551", "H2615", "H2626", "H2686", "H2849", "H3542",
+    # ILLEGAL_CHECK — parser emitted a check while facing an outstanding bet:
+    "H3544",
     # ORPHAN_CALL — a Call with no preceding bet on that street:
-    "H2554", "H2565", "H2764", "H3485",
+    "H2554", "H2565", "H2764", "H3485", "H3592",
     # PREFLOP_LEN — a pre-flop seat dropped from the action line:
-    "H2527", "H2651", "H2835", "H3494",
+    "H2527", "H2651", "H2835", "H3494", "H3623",
 }
 
 

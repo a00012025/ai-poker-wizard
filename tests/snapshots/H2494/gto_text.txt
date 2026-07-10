@@ -66,14 +66,9 @@ Hero ATs 牌型: Ace high
   BET 8.5（80% pot）: 22.1%（7 combos）
   BET 16（151% pot）: 0.3%（0 combos）
 
-【HJ ATs】
-  Range 頻率: 3.3%（0.1/4 combos）
-  EV: 0.79bb | Equity: 4.7%
-  策略:
-    Bet 8.5（80% pot）: 98.2%（0.1 combos） EV 0.79bb
-    Bet 16（151% pot）: 1.4%（0.0 combos） EV 0.78bb
-    Bet 6（57% pot）: 0.4%（0.0 combos） EV 0.76bb
-  花色差異:
+【HJ AcTc（ATs）】
+  策略: Bet 6（57% pot） 64%, Bet 8.5（80% pot） 35%, Bet 16（151% pot） 1%（EV 0.60bb）
+  ATs 其他花色:
     AhTh: Bet 6（57% pot） 1%, Bet 8.5（80% pot） 98%, Bet 16（151% pot） 1%（EV 0.8bb）
     AsTs: Bet 8.5（80% pot） 98%, Bet 16（151% pot） 1%（EV 0.8bb）
   → 實際行動: HJ R6.2 6.2bb（solver code: R6）
