@@ -14447,7 +14447,8 @@ def test_weekly_series_tz_bucketing():
 def test_training_plan_focus_and_readback():
     """Scorecard v2 = training plan: focus spot + precise drill link +
     self-contained HTML + next-cycle EV-loss readback."""
-    from scorecard import compute_training_plan, render_html, spot_desc_zh
+    from scorecard import (compute_training_plan, render_html, spot_desc_zh,
+                           weekly_tg_html)
     row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
     assert_in("3bet", spot_desc_zh(row))
@@ -14469,6 +14470,15 @@ def test_training_plan_focus_and_readback():
                                [{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}], honesty)
     assert_eq(rb["readback"][0]["spot_leaf"], "MP_vs3bet_IP")
     assert_eq(round(rb["readback"][0]["current_per100"], 1), 13.5)
+    # end-user weekly TG message: hyperlinked drill, no jargon, honest caveats
+    data["leaderboard"] = [dict(row, drill_url=spots[0]["url"], restrict=None)]
+    msg = weekly_tg_html("2026-W28", data)
+    assert_in("本週該練的地方", msg)
+    assert_in('<a href="https://app.gtowizard.com/', msg)  # hyperlink, url hidden
+    assert_true("北極星" not in msg and "迴圈" not in msg)   # no jargon
+    assert_in("chipEV", msg)                                 # honesty caveat
+    assert_in("limp", msg)
+    assert_true("http" not in msg.split("<a href=")[0])      # no bare url before link
 
 
 @test
