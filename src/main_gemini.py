@@ -83,13 +83,11 @@ async def _weekly_scorecard_job(context):
             row = await conn.fetchrow(
                 "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
         data = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else row["data_json"]
-        focus = data.get("focus", [])
-        blocks = [f"📊 週訓練計畫 {row['week']}", data.get("headline", "")]
-        for f in focus:
-            blocks.append(f"\n🎯 {f['desc']}（{f['per100']:.2f}bb/100, n={f['n']}）")
-            if f.get("drill_url"):
-                blocks.append(f"→ 練習：{f['drill_url']}")
-        await context.bot.send_message(owner, "\n".join(blocks), disable_web_page_preview=True)
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from scorecard import weekly_tg_html
+        msg = weekly_tg_html(row["week"], data)
+        await context.bot.send_message(
+            owner, msg, parse_mode="HTML", disable_web_page_preview=True)
         path = Path(__file__).resolve().parent.parent / "data/scorecards" / f"{row['week']}.html"
         if path.exists():
             with open(path, "rb") as fh:

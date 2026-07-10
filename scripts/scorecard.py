@@ -190,6 +190,69 @@ def render_html(d: dict) -> str:
 </body></html>"""
 
 
+def weekly_tg_html(week: str, d: dict) -> str:
+    """End-user weekly coaching message for Telegram (HTML parse_mode).
+
+    Concise, no jargon (no "北極星"/"迴圈"), drill links as hyperlinks. Tells the
+    player: what to drill, where they're leaking, the goal, and the honest data
+    caveats (chipEV/ICM, dropped limps, coverage).
+    """
+    per100 = d.get("per100", 0.0)
+    delta = d.get("delta", 0.0)
+    if delta < -1e-9:
+        trend = f"比上週少漏了 {abs(delta):.2f} 👍"
+    elif delta > 1e-9:
+        trend = f"比上週多漏了 {delta:.2f}"
+    else:
+        trend = "跟上週差不多"
+
+    L = [f"🃏 <b>本週該練的地方</b>（{escape(week)}）", ""]
+    L.append(f"這週你每 100 個決策平均漏掉 <b>{per100:.2f} bb</b>，{trend}。")
+
+    focus = d.get("focus", [])
+    if focus:
+        L.append("")
+        L.append("<b>最該補的洞：</b>")
+        for i, f in enumerate(focus, 1):
+            band = ""
+            if f.get("restrict"):
+                bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
+                band = f"（{bz}特別弱，連結已鎖這個籌碼帶）"
+            L.append(f"{i}. {escape(f['desc'])} — 漏 {f['per100']:.1f} bb/100，{f['n']} 手{band}")
+            if f.get("drill_url"):
+                url = escape(f["drill_url"], quote=True)
+                L.append(f'   👉 <a href="{url}">進 GTOW Trainer 練這個</a>')
+
+    focus_leafs = {f["spot_leaf"] for f in focus}
+    others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
+    if others:
+        parts = [f"{spot_desc_zh(r)} {r['avg_ev'] * 100:.1f}" for r in others]
+        L.append("")
+        L.append("其他也在漏的（bb/100）：" + "、".join(escape(p) for p in parts))
+
+    for r in (d.get("readback") or []):
+        if r.get("current_per100") is not None and r.get("prescribed_per100") is not None:
+            dv = r["current_per100"] - r["prescribed_per100"]
+            arrow = "↓ 有進步" if dv < -1e-9 else ("↑ 還在漏" if dv > 1e-9 else "持平")
+            L.append("")
+            L.append(f"上週練的那個 spot：{r['prescribed_per100']:.1f} → "
+                     f"{r['current_per100']:.1f} bb/100 {arrow}"
+                     f"（{escape(r['note'])}）")
+
+    L.append("")
+    L.append("🎯 <b>目標</b>：把上面幾個 spot 練到接近 GTO，整體漏損往 &lt;2 bb/100 收。")
+
+    hon = d.get("honesty", {})
+    L.append("")
+    L.append("⚠️ <b>老實說，這份數據有幾個誤差跟缺口：</b>")
+    L.append(f"• 翻牌後全部用 chipEV 評分（占 {hon.get('chipev_share', 0) * 100:.0f}%），"
+             "泡沫、單桌決賽的手會有 ICM 誤差，之後才會校正。")
+    L.append(f"• 你的 limp 手（約 {hon.get('discarded_n', 0)} 個決策）直接沒算進去——"
+             "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
+    L.append("• 只看得到你有上傳 GTOW Analyzer 的手，沒上傳的不在裡面。")
+    return "\n".join(L)
+
+
 def preview_summary_md(d: dict) -> str:
     L = [f"# 訓練計畫預覽（{d['window']}）", "",
          f"## 主指標", f"- EV loss/100 決策：**{d['per100']:.2f} bb**（週變化 {d['delta']:+.2f}）",
