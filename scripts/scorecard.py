@@ -193,9 +193,10 @@ def render_html(d: dict) -> str:
 def weekly_tg_html(week: str, d: dict) -> str:
     """End-user weekly coaching message for Telegram (HTML parse_mode).
 
-    Concise, no jargon (no "北極星"/"迴圈"), drill links as hyperlinks. Tells the
-    player: what to drill, where they're leaking, the goal, and the honest data
-    caveats (chipEV/ICM, dropped limps, coverage).
+    Concise, no jargon (no "北極星"/"迴圈"). Tells the player: what to drill,
+    where they're leaking, the goal, and the honest data caveats (chipEV/ICM,
+    dropped limps, coverage). Drill links are NOT embedded — they ride as URL
+    buttons (weekly_tg_payload) under the message.
     """
     per100 = d.get("per100", 0.0)
     delta = d.get("delta", 0.0)
@@ -217,11 +218,20 @@ def weekly_tg_html(week: str, d: dict) -> str:
             band = ""
             if f.get("restrict"):
                 bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
-                band = f"（{bz}特別弱，連結已鎖這個籌碼帶）"
+                band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
             L.append(f"{i}. {escape(f['desc'])} — 漏 {f['per100']:.1f} bb/100，{f['n']} 手{band}")
-            if f.get("drill_url"):
-                url = escape(f["drill_url"], quote=True)
-                L.append(f'   👉 <a href="{url}">進 GTOW Trainer 練這個</a>')
+
+    dq = d.get("drill_queue") or []
+    if dq:
+        lb_leafs = {r["spot_leaf"] for r in d.get("leaderboard", [])}
+        L.append("")
+        L.append("<b>📥 現場手牌的練習佇列：</b>")
+        for q in dq:
+            lbl = q.get("label") or q.get("spot_leaf") or "?"
+            cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
+            ev = q.get("total_ev_loss_bb") or 0
+            L.append(f"• {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手現場牌，"
+                     f"累計漏 {ev:.1f}bb{cross}")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -249,8 +259,25 @@ def weekly_tg_html(week: str, d: dict) -> str:
              "泡沫、單桌決賽的手會有 ICM 誤差，之後才會校正。")
     L.append(f"• 你的 limp 手（約 {hon.get('discarded_n', 0)} 個決策）直接沒算進去——"
              "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
-    L.append("• 只看得到你有上傳 GTOW Analyzer 的手，沒上傳的不在裡面。")
+    L.append("• 只看得到你有上傳 GTOW Analyzer 的手 + 用 /live 記的現場手，其他不在裡面。")
     return "\n".join(L)
+
+
+def weekly_tg_payload(week: str, d: dict) -> dict:
+    """Weekly TG message + inline URL buttons: {"html": str, "buttons": rows}.
+
+    Buttons (one row each): 🎯 focus-spot drills, then 📥 live-queue drills.
+    Rendered by the bot as InlineKeyboardButton(url=...) — no raw links in text.
+    """
+    buttons: list[list[dict]] = []
+    for i, f in enumerate(d.get("focus", []), 1):
+        if f.get("drill_url"):
+            buttons.append([{"text": f"🎯 練 {i}：{f['desc'][:28]}", "url": f["drill_url"]}])
+    for q in (d.get("drill_queue") or [])[:3]:
+        if q.get("drill_url"):
+            lbl = (q.get("label") or q.get("spot_leaf") or "?")[:28]
+            buttons.append([{"text": f"📥 佇列：{lbl}", "url": q["drill_url"]}])
+    return {"html": weekly_tg_html(week, d), "buttons": buttons}
 
 
 def preview_summary_md(d: dict) -> str:
@@ -276,29 +303,45 @@ def preview_summary_md(d: dict) -> str:
 
 
 # ── async fetch + build + CLI ──────────────────────────────────────────────
+# All stats queries are source='online' only (§5.2 source isolation): live
+# hands are selectively recorded — their averages are biased by design and
+# surface in their own queue section instead.
 WEEKLY_SQL = """
 SELECT to_char((played_at AT TIME ZONE 'Asia/Taipei'), 'IYYY-"W"IW') week,
        count(*) n, avg(ev_loss_bb)*100 per100, sum(ev_loss_bb) total_bb
 FROM ledger_decisions
-WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL
+WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
 GROUP BY 1 ORDER BY 1
 """
 TOP_HANDS_SQL = """
 SELECT gtow_hand_id, played_at, hero_hand, position, boards, total_ev_loss_bb
-FROM ledger_hands WHERE total_ev_loss_bb > 0 ORDER BY total_ev_loss_bb DESC LIMIT 3
+FROM ledger_hands WHERE total_ev_loss_bb > 0 AND source='online'
+ORDER BY total_ev_loss_bb DESC LIMIT 3
+"""
+QUEUE_SQL = """
+SELECT id, spot_leaf, spot_category, drill_url, n_sources, total_ev_loss_bb, source
+FROM drill_queue WHERE status='pending'
+ORDER BY total_ev_loss_bb DESC NULLS LAST LIMIT 5
 """
 
 
 async def _honesty(conn) -> dict:
-    tot = await conn.fetchval("SELECT count(*) FROM ledger_decisions")
-    exc = await conn.fetchval("SELECT count(*) FROM ledger_decisions WHERE excluded")
-    dis = await conn.fetchval("SELECT count(*) FROM ledger_decisions WHERE discarded")
-    inc = await conn.fetchval("SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded")
+    src = "source='online'"
+    tot = await conn.fetchval(f"SELECT count(*) FROM ledger_decisions WHERE {src}")
+    exc = await conn.fetchval(f"SELECT count(*) FROM ledger_decisions WHERE excluded AND {src}")
+    dis = await conn.fetchval(f"SELECT count(*) FROM ledger_decisions WHERE discarded AND {src}")
+    inc = await conn.fetchval(
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded AND {src}")
     chip = await conn.fetchval(
-        "SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
-        "AND approx_flags::text LIKE '%chipev_grading%'")
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
+        f"AND approx_flags::text LIKE '%chipev_grading%' AND {src}")
     return {"excluded_n": exc, "discarded_n": dis,
             "chipev_share": (chip / inc) if inc else 0.0, "total": tot}
+
+
+async def fetch_drill_queue(conn) -> list[dict]:
+    """Pending practice-queue lines (live flow deviations) for the weekly plan."""
+    return [dict(r) for r in await conn.fetch(QUEUE_SQL)]
 
 
 async def build(conn, window_label, prev_focus, min_n=50, top=8):
@@ -306,7 +349,9 @@ async def build(conn, window_label, prev_focus, min_n=50, top=8):
     spots = await lb.leaderboard(conn, min_n=min_n, top=top)
     top_hands = [dict(r) for r in await conn.fetch(TOP_HANDS_SQL)]
     honesty = await _honesty(conn)
-    return compute_training_plan(window_label, weekly, spots, top_hands, prev_focus, honesty)
+    data = compute_training_plan(window_label, weekly, spots, top_hands, prev_focus, honesty)
+    data["drill_queue"] = await fetch_drill_queue(conn)
+    return data
 
 
 async def _run(mode: str, min_n: int):
@@ -350,7 +395,15 @@ async def _run(mode: str, min_n: int):
         if prev and data.get("readback"):
             await conn.execute("UPDATE coach_focus SET readback=$2 WHERE week=$1",
                                prev["week"], json.dumps(data["readback"], default=str))
-        print(f"WEEKLY week={week} per100={data['per100']:.2f}")
+        dq_ids = [q["id"] for q in (data.get("drill_queue") or [])]
+        if dq_ids:
+            # surfaced in this week's plan -> prescribed (still visible in /queue
+            # until the player marks them cleared)
+            await conn.execute(
+                "UPDATE drill_queue SET status='prescribed', prescribed_week=$1 "
+                "WHERE id = ANY($2) AND status='pending'", week, dq_ids)
+        print(f"WEEKLY week={week} per100={data['per100']:.2f} "
+              f"queue={len(dq_ids)}")
         return 0
     finally:
         await conn.close()

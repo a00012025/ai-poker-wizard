@@ -400,13 +400,19 @@ def _normalize_preflop_action(code: str, gametype: str, depth: float,
     return code
 
 
-def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
+def check_hand(hand: dict, icm_params: dict | None = None,
+               emit_ungraded: bool = False) -> list[dict]:
     """Check a single hand for GTO deviations.
 
     Args:
         hand: parsed hand dict from hh_parser
         icm_params: optional ICM params dict with gametype, depth, stacks
                     (from icm_modes.find_icm_params). None = chip EV only.
+        emit_ungraded: also emit stub dicts {"street", "ungraded": True,
+                    "reason": "offrange"|"no_solution"} for hero decisions the
+                    solver could not grade. Keeps per-street node ordering
+                    aligned for callers that zip decisions positionally
+                    (live flow); default False preserves legacy output.
 
     Returns list of deviation dicts, each containing:
         street, hero_action, hero_freq, gto_action, gto_freq, actions_detail
@@ -519,6 +525,12 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                 "hero_ev": hand_ev,
                 **ev_entry,
             })
+        elif emit_ungraded:
+            deviations.append({"street": "preflop", "ungraded": True,
+                               "reason": "offrange"})
+    elif emit_ungraded:
+        deviations.append({"street": "preflop", "ungraded": True,
+                           "reason": "no_solution"})
 
     # ── Preflop: hero's second decision (if facing re-raise) ──
     # Check if someone raised after hero
@@ -600,6 +612,12 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                         "hero_ev": hand_ev2,
                         **ev_entry2,
                     })
+                elif emit_ungraded:
+                    deviations.append({"street": "preflop", "ungraded": True,
+                                       "reason": "offrange"})
+            elif emit_ungraded:
+                deviations.append({"street": "preflop", "ungraded": True,
+                                   "reason": "no_solution"})
 
     # ── Postflop streets ──
     if not streets:
@@ -718,6 +736,12 @@ def check_hand(hand: dict, icm_params: dict | None = None) -> list[dict]:
                             "hero_ev": hand_ev_post,
                             **ev_entry_post,
                         })
+                    elif emit_ungraded:
+                        deviations.append({"street": street_name, "ungraded": True,
+                                           "reason": "offrange"})
+                elif emit_ungraded:
+                    deviations.append({"street": street_name, "ungraded": True,
+                                       "reason": "no_solution"})
 
             # Advance action strings
             if action_type in ("X", "C", "F"):

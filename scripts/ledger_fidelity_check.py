@@ -19,7 +19,8 @@ async def main():
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     hands = await conn.fetch(
         "SELECT gtow_hand_id, played_at, total_ev_loss_bb FROM ledger_hands "
-        "WHERE total_ev_loss_bb > 0.1 AND detail_fetched ORDER BY random() LIMIT 20")
+        "WHERE total_ev_loss_bb > 0.1 AND detail_fetched AND source='online' "
+        "ORDER BY random() LIMIT 20")
     lines, mismatches = [], 0
     for h in hands:
         det = hand_detail(h["gtow_hand_id"])

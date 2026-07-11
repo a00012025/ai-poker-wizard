@@ -54,7 +54,7 @@ SELECT spot_leaf, spot_category,
        mode() WITHIN GROUP (ORDER BY depth_band) depth_band,
        mode() WITHIN GROUP (ORDER BY street)     street
 FROM ledger_decisions
-WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL
+WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
 GROUP BY spot_leaf, spot_category
 HAVING count(*) >= $1
 ORDER BY avg(ev_loss_bb) DESC
@@ -65,7 +65,7 @@ SAMPLE_SQL = """
 SELECT d.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards, h.total_ev_loss_bb,
        d.ev_loss_bb, d.correctness
 FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
-WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded
+WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='online'
 ORDER BY d.ev_loss_bb DESC LIMIT 2
 """
 
@@ -73,6 +73,7 @@ BAND_SQL = """
 SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
 FROM ledger_decisions
 WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
+  AND source='online'
 GROUP BY eff_stack
 """
 

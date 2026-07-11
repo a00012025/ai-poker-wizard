@@ -398,3 +398,158 @@ def walk_spots(list_row: dict, detail: dict):
                 last_aggr[street] = pos
         if code == "F" and pos in active:
             active.discard(pos)
+
+
+# ── walker: text-parsed hand JSON -> classified hero-decision spots ──────────
+# Live flow (scripts/live_flow.py): same taxonomy over analyze_hand_full-style
+# input (hero_position / preflop_actions / streets), where no GTOW detail
+# exists. Output shape mirrors walk_spots so both sources aggregate together.
+
+def _parsed_code(action: str) -> str:
+    """Normalize a parsed action token (R2 / AI10 / X / C / F) to walker codes."""
+    a = (action or "").strip()
+    if not a:
+        return ""
+    u = a.upper()
+    if u.startswith("AI"):
+        return "AI"
+    if u.startswith("R") or u.startswith("B"):
+        return "R" + u[1:] if len(u) > 1 else "R2"
+    return u  # X / C / F
+
+
+def _preflop_seat_tokens(tokens: list[str], npl: int) -> list[tuple[str, str]]:
+    """Attribute preflop tokens to seats: round 1 = seat order; continuation
+    tokens cycle through round-1 non-folders in seat order (same approximation
+    as hh_deviation_check's continuation attribution, so grading and taxonomy
+    stay aligned on the same decision nodes)."""
+    order = _PREFLOP_ORDER[npl]
+    out: list[tuple[str, str]] = []
+    for i, tok in enumerate(tokens[:npl]):
+        out.append((order[i], _parsed_code(tok)))
+    active = [order[i] for i in range(min(npl, len(tokens))) if tokens[i] not in ("F", "")]
+    ci = 0
+    for tok in tokens[npl:]:
+        if not active:
+            break
+        if ci >= len(active):
+            ci = 0
+        out.append((active[ci], _parsed_code(tok)))
+        ci += 1
+    return out
+
+
+def walk_spots_from_parsed(hand: dict):
+    """Yield one classified spot dict per hero decision in a text-parsed hand.
+
+    Same keys as walk_spots' spots minus the GTOW-only fields (no ev_loss/
+    correctness — the caller grades separately) plus `acts_before` (the raw
+    street actions before hero, for spot_categorizer legacy family).
+    """
+    from spot_categorizer import compute_pot_type_from_preflop
+
+    hero = hand.get("hero_position", "")
+    npl = hand.get("players_at_table") or hand.get("num_players") or 8
+    if npl not in _PREFLOP_ORDER:
+        npl = 8
+    order = _PREFLOP_ORDER[npl]
+    if hero not in order:
+        return
+    tokens = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
+    depth = float(hand.get("effective_bb") or 0)
+    streets = hand.get("streets") or []
+    flop3 = None
+    if streets:
+        b = streets[0].get("board") or streets[0].get("cards") or ""
+        flop3 = b if len(b) >= 6 else None
+
+    tags = {
+        "eff_stack": eff_stack_cat(depth),
+        "depth_band": depth_band(depth),
+        "board_suit": board_suit(flop3),
+        "board_conn": None,
+        "board_paired": None,
+    }
+    pot_type_hand = compute_pot_type_from_preflop(hand.get("preflop_actions") or "", npl)
+    if pot_type_hand == "unopened" and any(t == "C" for t in tokens):
+        pot_type_hand = "limp"      # fully-limped pot: GTOW list rows say 'limp'
+    seat_tokens = _preflop_seat_tokens(tokens, npl)
+    hero_count = {"preflop": 0, "flop": 0, "turn": 0, "river": 0}
+
+    # ── preflop hero decisions ──
+    before: list[tuple[str, str]] = []
+    for pos, code in seat_tokens:
+        if pos == hero:
+            cls = classify_preflop(hero, list(before), npl)
+            keys = [cls["l1"]] if cls["l2"] is None else [cls["l1"], cls["l2"]]
+            keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
+            l2 = cls["l2"]
+            pre_ip = "IP" if l2 and l2.endswith("_IP") else (
+                "OOP" if l2 and l2.endswith("_OOP") else None)
+            yield {"street": "preflop", "category": cls["category"],
+                   "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
+                   "keys": keys, "hero_cat": pos_cat(hero),
+                   "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
+                   "ip_oop": pre_ip, "facing": None, "pot_type": None,
+                   "note": cls["note"], "discarded": cls["category"] == "discarded",
+                   "limp_origin": False, "hero_pos": hero,
+                   "decision_idx": hero_count["preflop"],
+                   "flop_seq": None, "turn_seq": None,
+                   "acts_before": [], "hero_action_raw": code, "hero_size": None,
+                   "tags": dict(tags)}
+            hero_count["preflop"] += 1
+        before.append((pos, code))
+
+    # ── postflop ──
+    folded = set()
+    last: dict[str, str] = {}
+    preflop_aggr = None
+    for pos, code in seat_tokens:
+        last[pos] = code
+        if _is_raise(code):
+            preflop_aggr = pos
+    active = {p for p, c in last.items() if c != "F"}
+
+    street_acts = {"flop": [], "turn": [], "river": []}
+    street_seqs = {"flop": None, "turn": None, "river": None}
+    last_aggr = {"flop": None, "turn": None, "river": None}
+    street_names = ["flop", "turn", "river"]
+
+    for si, st in enumerate(streets[:3]):
+        sname = street_names[si]
+        for act in st.get("actions") or []:
+            pos = act.get("position", "")
+            code = _parsed_code(act.get("action", ""))
+            if pos == hero:
+                facing = street_facing(street_acts[sname])
+                villain = None
+                if facing in ("vs_bet", "vs_raise"):
+                    villain = last_aggr[sname]
+                if villain is None:
+                    others = [p for p in active if p != hero]
+                    villain = others[0] if len(others) == 1 else (
+                        preflop_aggr if preflop_aggr and preflop_aggr != hero else "multi")
+                cls = classify_postflop(sname, pot_type_hand, hero, villain, npl,
+                                        facing, street_seqs["flop"], street_seqs["turn"])
+                yield {"street": sname, "category": sname, "l1": None, "l2": None,
+                       "leaf": cls["leaf"], "keys": cls["keys"],
+                       "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
+                       "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
+                       "facing": facing, "note": "",
+                       "discarded": False,
+                       "limp_origin": cls["pot_type"] in ("limp", "iso"),
+                       "hero_pos": hero, "decision_idx": hero_count[sname],
+                       "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
+                       "acts_before": [{"position": p, "action": c}
+                                       for p, c in street_acts[sname]],
+                       "hero_action_raw": act.get("action", ""),
+                       "hero_size": act.get("size"),
+                       "tags": dict(tags)}
+                hero_count[sname] += 1
+            street_acts[sname].append((pos, code))
+            street_seqs[sname] = street_seq(street_acts[sname])
+            if _is_raise(code):
+                last_aggr[sname] = pos
+            if code == "F":
+                folded.add(pos)
+                active.discard(pos)
