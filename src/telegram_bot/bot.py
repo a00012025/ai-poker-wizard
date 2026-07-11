@@ -36,6 +36,19 @@ MAX_MESSAGE_LENGTH = 4096
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 
 
+def _estimate_live_batch_minutes(hand_count: int) -> tuple[int, int]:
+    """Return a conservative ETA range for /live batch solver grading.
+
+    Observed throughput is roughly 6-12 hands/minute for typical live
+    shorthand batches, so 12 hands should read as about 1-2 minutes rather
+    than the old per-hand minute estimate.
+    """
+    n = max(1, hand_count)
+    low = max(1, (n + 11) // 12)
+    high = max(2, (n + 5) // 6)
+    return low, high
+
+
 def _setup_logger() -> logging.Logger:
     _LOG_DIR.mkdir(exist_ok=True)
     logger = logging.getLogger("poker_bot")
@@ -1321,8 +1334,9 @@ class PokerWizardBot:
             await update.message.reply_text(
                 "沒有偵測到手牌 — 每手要以「Eff <有效籌碼>」開頭。")
             return
+        eta_low, eta_high = _estimate_live_batch_minutes(n)
         msg = await update.message.reply_text(
-            f"🃏 收到 {n} 手，解析評分中…（每手要打數次 solver，約 {max(1, n // 3)}-{max(2, n)} 分鐘）")
+            f"🃏 收到 {n} 手，解析評分中…（約 {eta_low}-{eta_high} 分鐘，依 solver 速度浮動）")
         root = Path(__file__).resolve().parent.parent.parent
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write(text)
