@@ -44,6 +44,7 @@ scripts/
   gtow_trainer_url.py  — GTOW Trainer deep-link builder; build_drill_url pins fh_hero/fh_opponent/fh_rel_positions/fh_actions/depth_list
   ledger_service.py    — Owner resolution + grounded LLM ledger tools (query_ledger_summary/hands)
   ledger_fidelity_check.py — 20 random lossy hands: ledger vs live API per-decision EV loss
+  live_flow.py         — 線下流 v1: shorthand live-hand batch → Gemini parse (+LIVE_HINT) → repair_hu_pot/find_ghost → check_hand(emit_ungraded) 評分 → ledger(source='live', grader='own_pipeline') + drill_queue；render_tg_html/report_buttons 給 bot 用
 ```
 
 ## Key Architecture
@@ -53,6 +54,8 @@ scripts/
 - **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
 - **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
 - **Leak Detection**: Deviations extracted after each analysis (fire-and-forget), stored in `deviations` table. LLM has 4 leak tools: `query_my_leaks`, `query_my_stats`, `get_training_plan`, `get_progress`
+- **Live flow (線下流 v1)**: `/live` (owner-only) imports live-hand shorthand batches → per-decision solver grading → `ledger_hands/decisions` with `source='live'` + `drill_queue` (deviated action lines ≥0.1bb). `/queue` lists pending/prescribed lines with 🎯 drill URL buttons + ✔ cleared; `/plan` resends the weekly plan. Weekly scorecard drains the queue (pending→prescribed) and sends drill links as URL buttons.
+- **Source isolation (§5.2)**: ALL stats/aggregation queries on ledger tables must filter `source='online'` — live hands are selectively recorded (biased sample) and only ever surface via the queue/線下 sections. `ledger_hands.source` exists since migration 20260711.
 
 ## Leak Detection & Coaching Memory
 

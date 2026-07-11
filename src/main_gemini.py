@@ -84,10 +84,17 @@ async def _weekly_scorecard_job(context):
                 "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
         data = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else row["data_json"]
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-        from scorecard import weekly_tg_html
-        msg = weekly_tg_html(row["week"], data)
+        from scorecard import weekly_tg_payload
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        payload = weekly_tg_payload(row["week"], data)
+        markup = None
+        if payload["buttons"]:
+            markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(b["text"], url=b["url"]) for b in r]
+                 for r in payload["buttons"]])
         await context.bot.send_message(
-            owner, msg, parse_mode="HTML", disable_web_page_preview=True)
+            owner, payload["html"], parse_mode="HTML",
+            disable_web_page_preview=True, reply_markup=markup)
         path = Path(__file__).resolve().parent.parent / "data/scorecards" / f"{row['week']}.html"
         if path.exists():
             with open(path, "rb") as fh:
@@ -145,6 +152,31 @@ async def post_init(application):
             time=dt_time(hour=21, minute=0, tzinfo=TZ_TAIPEI),
             days=(0,), name="weekly_scorecard")
         logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) jobs scheduled")
+
+    # Command menu ("/"): public users get the basics; the owner additionally
+    # sees the training-loop commands (live import / practice queue / plan).
+    try:
+        from telegram import BotCommand, BotCommandScopeChat
+        base = [
+            BotCommand("help", "使用說明"),
+            BotCommand("clear", "清除對話上下文"),
+            BotCommand("settoken", "設定 GTO Wizard token"),
+        ]
+        await application.bot.set_my_commands(base)
+        owner = os.getenv("ADMIN_CHAT_ID")
+        if owner:
+            await application.bot.set_my_commands(
+                base + [
+                    BotCommand("live", "導入現場手牌（批次評分入帳）"),
+                    BotCommand("queue", "練習佇列"),
+                    BotCommand("plan", "本週訓練計畫"),
+                    BotCommand("ingest", "手動攝取 GTOW Analyze"),
+                    BotCommand("report", "使用量報告"),
+                ],
+                scope=BotCommandScopeChat(chat_id=int(owner)))
+        logger.info("Bot command menu registered")
+    except Exception as e:
+        logger.warning(f"set_my_commands failed: {e}")
 
 
 async def post_shutdown(application):

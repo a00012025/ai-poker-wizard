@@ -14448,7 +14448,7 @@ def test_training_plan_focus_and_readback():
     """Scorecard v2 = training plan: focus spot + precise drill link +
     self-contained HTML + next-cycle EV-loss readback."""
     from scorecard import (compute_training_plan, render_html, spot_desc_zh,
-                           weekly_tg_html)
+                           weekly_tg_html, weekly_tg_payload)
     row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
     assert_in("3bet", spot_desc_zh(row))
@@ -14470,15 +14470,30 @@ def test_training_plan_focus_and_readback():
                                [{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}], honesty)
     assert_eq(rb["readback"][0]["spot_leaf"], "MP_vs3bet_IP")
     assert_eq(round(rb["readback"][0]["current_per100"], 1), 13.5)
-    # end-user weekly TG message: hyperlinked drill, no jargon, honest caveats
+    # end-user weekly TG message: drill links ride as URL BUTTONS (not in the
+    # text), no jargon, honest caveats, live practice queue section
     data["leaderboard"] = [dict(row, drill_url=spots[0]["url"], restrict=None)]
+    data["drill_queue"] = [
+        {"id": 1, "spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
+         "label": "MP 被 3bet（對手 SB，你 IP）",
+         "drill_url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
+         "n_sources": 2, "total_ev_loss_bb": 2.4},
+    ]
     msg = weekly_tg_html("2026-W28", data)
     assert_in("本週該練的地方", msg)
-    assert_in('<a href="https://app.gtowizard.com/', msg)  # hyperlink, url hidden
+    assert_true("http" not in msg, "no raw/embedded links — drills are buttons now")
     assert_true("北極星" not in msg and "迴圈" not in msg)   # no jargon
     assert_in("chipEV", msg)                                 # honesty caveat
     assert_in("limp", msg)
-    assert_true("http" not in msg.split("<a href=")[0])      # no bare url before link
+    assert_in("練習佇列", msg)                                # live queue section
+    assert_in("線上同一個情境也在漏", msg)                    # cross-source flag
+    payload = weekly_tg_payload("2026-W28", data)
+    assert_eq(payload["html"], msg)
+    urls = [b["url"] for r in payload["buttons"] for b in r]
+    assert_true(urls and all(u.startswith("https://app.gtowizard.com/") for u in urls))
+    texts = [b["text"] for r in payload["buttons"] for b in r]
+    assert_true(any(t.startswith("🎯") for t in texts))      # focus drill button
+    assert_true(any(t.startswith("📥") for t in texts))      # queue drill button
 
 
 @test
@@ -14598,6 +14613,202 @@ def test_spot_taxonomy_walk_fixture():
     assert_eq(riv["leaf"], "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet")
     assert_eq(round(riv["ev_loss_bb"], 3), 22.663)
     assert_eq(riv["tags"]["board_suit"], "monotone")
+
+
+# ── 線下流 (live flow) ──
+
+_LIVE_HAND1 = {   # Qd7d BB defends vs UTG+1 open 50bb; flop x-x; turn b3 c; river x b7 f
+    "players_at_table": 8, "effective_bb": 50,
+    "hero_position": "BB", "hero_hand": "Qd7d",
+    "preflop_actions": "F-R2-F-F-F-F-F-C",
+    "streets": [
+        {"board": "Jd5d5h", "actions": [
+            {"position": "BB", "action": "X"}, {"position": "UTG+1", "action": "X"}]},
+        {"card": "2s", "actions": [
+            {"position": "BB", "action": "R3", "size": 3}, {"position": "UTG+1", "action": "C"}]},
+        {"card": "9h", "actions": [
+            {"position": "BB", "action": "X"}, {"position": "UTG+1", "action": "R7", "size": 7},
+            {"position": "BB", "action": "F"}]},
+    ],
+}
+
+
+@test
+def test_live_split_batch():
+    """Shorthand batches split on lines starting with 'Eff' — including the
+    no-space form 'Eff17' (no word boundary between f and 1)."""
+    from live_flow import split_batch
+    text = ("Eff 50bb u+1 open hero bb Qd7d call\nJd5d5h x x\n2s b3 c\n\n"
+            "Eff17 Hero co raise QhQd bb call\nAh9h5d x b1.5 c\n\n"
+            "eff 20bb Hero +1 open AcQh bb call\nAd7dKs x b1.5 call")
+    blocks = split_batch(text)
+    assert_eq(len(blocks), 3)
+    assert_true(blocks[0].startswith("Eff 50bb") and blocks[0].endswith("2s b3 c"))
+    assert_true(blocks[1].startswith("Eff17"))
+    assert_true(blocks[2].startswith("eff 20bb"))
+
+
+@test
+def test_live_walk_spots_from_parsed():
+    """Text-parsed hands classify onto the SAME leaves as the online walker
+    (cross-source aggregation), incl. the fully-limped pot -> 'limp'."""
+    from spot_taxonomy import walk_spots_from_parsed
+    spots = list(walk_spots_from_parsed(_LIVE_HAND1))
+    assert_eq([s["leaf"] for s in spots], [
+        "BB_vsOpen_EP",
+        "flop:SRP:BBvEP:OOP:first_to_act",
+        "turn:SRP:BBvEP:OOP:[x-x]:first_to_act",
+        "river:SRP:BBvEP:OOP:[x-x|b-c]:first_to_act",
+        "river:SRP:BBvEP:OOP:[x-x|b-c]:vs_bet",
+    ])
+    assert_eq(spots[2]["hero_action_raw"], "R3")
+    assert_eq(spots[2]["hero_size"], 3)
+    assert_eq(spots[0]["tags"]["depth_band"], "40plus")
+    # SB completes, BB checks -> limp pot leaf (matches GTOW 'limp' pot type)
+    limp = {"players_at_table": 8, "effective_bb": 50, "hero_position": "SB",
+            "hero_hand": "76o", "preflop_actions": "F-F-F-F-F-F-C-X",
+            "streets": [{"board": "Qc7d2h", "actions": [
+                {"position": "SB", "action": "X"}, {"position": "BB", "action": "X"}]}]}
+    ls = list(walk_spots_from_parsed(limp))
+    assert_eq(ls[1]["leaf"], "flop:limp:SBvBB:OOP:first_to_act")
+    assert_true(ls[1]["limp_origin"])
+
+
+@test
+def test_live_repair_hu_pot_and_ghost():
+    """Deterministic parse repairs: phantom checks on folded seats stripped,
+    ghost caller folded + missing continuation call appended, HU street
+    positions reassigned by alternation; find_ghost flags what repair can't fix."""
+    from live_flow import repair_hu_pot, find_ghost
+    # hand-5 failure shape: '+1 raise, hero CO 3bets, +1 calls' parsed as a BTN
+    # cold-call + phantom SB/BB checks postflop
+    bad = {"players_at_table": 8, "effective_bb": 30, "hero_position": "CO",
+           "hero_hand": "A9o", "preflop_actions": "F-R2-F-F-R5.5-C-F-F",
+           "streets": [
+               {"board": "Jc9d7h", "actions": [
+                   {"position": "SB", "action": "X"}, {"position": "BB", "action": "X"},
+                   {"position": "UTG+1", "action": "X"}, {"position": "CO", "action": "X"}]},
+               {"card": "5c", "actions": [
+                   {"position": "SB", "action": "X"},
+                   {"position": "UTG+1", "action": "X"},
+                   {"position": "CO", "action": "R4", "size": 4},
+                   {"position": "UTG+1", "action": "C"}]},
+           ]}
+    fixed = repair_hu_pot(bad)
+    assert_eq(fixed["preflop_actions"], "F-R2-F-F-R5.5-F-F-F-C")  # ghost BTN folded, UTG+1 cont-call added
+    assert_eq([(a["position"], a["action"]) for a in fixed["streets"][0]["actions"]],
+              [("UTG+1", "X"), ("CO", "X")])                       # phantoms stripped + alternation
+    assert_true(find_ghost(fixed) is None)
+    # a live raiser absent postflop that repair can't re-seat -> ghost flagged
+    ghost = {"players_at_table": 8, "effective_bb": 30, "hero_position": "CO",
+             "hero_hand": "A9o", "preflop_actions": "F-R2-F-F-R5.5-F-F-C",
+             "streets": [{"board": "Jc9d7h", "actions": [
+                 {"position": "BB", "action": "X"}, {"position": "CO", "action": "X"}]}]}
+    assert_eq(find_ghost(ghost), "UTG+1")
+
+
+@test
+def test_live_queue_selection_and_report():
+    """Queue: only scored non-limp deviations >= 0.1bb, grouped per leaf;
+    report: 'Hand N' labels (never 手N), callbacks + drill URL buttons,
+    off-range nodes surfaced, honesty caveat present."""
+    from live_flow import (select_queue_items, render_tg_html, report_buttons,
+                           severity, QUEUE_EV_MIN)
+    assert_eq(severity(None), "❓"); assert_eq(severity(0.05), "✅")
+    assert_eq(severity(0.15), "⚠️"); assert_eq(severity(0.5), "❌")
+    base = {"spot_category": "turn", "hero_cat": "BB", "villain_cat": "EP",
+            "ip_oop": "OOP", "position": "BB", "eff_stack": "medium",
+            "pot_type": "SRP", "street": "turn", "excluded": False,
+            "discarded": False, "limp_origin": False,
+            "spot_leaf": "turn:SRP:BBvEP:OOP:[x-x]:first_to_act"}
+    rows = [
+        dict(base, gtow_hand_id="live:d:1", ev_loss_bb=0.14),
+        dict(base, gtow_hand_id="live:d:2", ev_loss_bb=0.30),        # same leaf -> merged
+        dict(base, gtow_hand_id="live:d:3", ev_loss_bb=0.05),        # below threshold
+        dict(base, gtow_hand_id="live:d:4", ev_loss_bb=0.50, limp_origin=True),  # limp -> out
+        dict(base, gtow_hand_id="live:d:5", ev_loss_bb=None, excluded=True),     # ungraded -> out
+    ]
+    items = select_queue_items(rows)
+    assert_eq(len(items), 1)
+    assert_eq(items[0]["spot_leaf"], base["spot_leaf"])
+    assert_eq(len(items[0]["source_hands"]), 2)
+    assert_eq(round(items[0]["total_ev_loss_bb"], 2), 0.44)
+    assert_true(items[0]["drill_url"] and "fh_hero=BB" in items[0]["drill_url"])
+    assert_true(items[0]["label"])
+    result = {
+        "date": "2026-07-10",
+        "totals": {"hands": 2, "decisions": 6, "graded": 4, "mistakes": 1,
+                   "parse_failed": 0},
+        "hands": [
+            {"idx": 1, "ok": True, "hand_id": "live:2026-07-10:aaa",
+             "echo": "BB Qd7d 50bb",
+             "decisions": [
+                 {"street": "turn", "idx": 0, "leaf": base["spot_leaf"],
+                  "ev_loss": 0.14, "severity": "⚠️", "taken": "R3.35", "best": "R12.2",
+                  "taken_label": "Bet 3.35bb", "best_label": "Bet 12.2bb",
+                  "gto_freq": 0.5, "ungraded_reason": None,
+                  "discarded": False, "limp_origin": False},
+                 {"street": "river", "idx": 0, "leaf": "river:...", "ev_loss": None,
+                  "severity": "❓", "taken": "X", "best": None, "taken_label": None,
+                  "best_label": None, "gto_freq": None, "ungraded_reason": "offrange",
+                  "discarded": False, "limp_origin": False}]},
+            {"idx": 2, "ok": False, "error": "parse_inconsistent",
+             "validation_hard": ["UTG+1 preflop 未棄牌但翻牌後從未行動"],
+             "decisions": []},
+        ],
+        "queue": items,
+    }
+    html = render_tg_html(result)
+    assert_in("Hand 1", html)
+    assert_true("手1" not in html and "手 1" not in html)
+    assert_in("未評分", html)                 # off-range surfaced, not hidden
+    assert_in("chipEV", html)                 # honesty caveat
+    assert_in("Hand 2", html)                 # failed hand surfaced for correction
+    btns = report_buttons(result)
+    flat = [b for r in btns for b in r]
+    assert_eq(flat[0]["text"], "Hand 1 詳細")
+    assert_eq(flat[0]["callback_data"], "lvd:live:2026-07-10:aaa")
+    assert_true(any(b.get("url", "").startswith("https://app.gtowizard.com/")
+                    for b in flat))
+    assert_true(QUEUE_EV_MIN == 0.10)
+
+
+@test
+def test_live_ledger_row_shapes():
+    """Live decision rows carry source/grader/honesty + the same taxonomy
+    columns online rows have (cross-source leaf equality is the contract)."""
+    from live_flow import build_hand_rows
+    from datetime import datetime, timezone
+    devmap = {("preflop", 0): {"street": "preflop", "hero_action": "C",
+                               "gto_action": "C", "hero_freq": 0.9, "gto_freq": 0.9,
+                               "hero_action_label": "Call", "gto_action_label": "Call",
+                               "all_freqs": {"C": 0.9}, "ev_loss": 0.0},
+              ("turn", 0): {"street": "turn", "hero_action": "R3.35",
+                            "gto_action": "R12.2", "hero_freq": 0.1, "gto_freq": 0.5,
+                            "hero_action_label": "Bet 3.35bb",
+                            "gto_action_label": "Bet 12.2bb",
+                            "all_freqs": {}, "ev_loss": 0.14},
+              ("river", 0): {"street": "river", "ungraded": True, "reason": "offrange"}}
+    ts = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+    hand_row, decs = build_hand_rows(_LIVE_HAND1, "live:2026-07-10:abc", ts,
+                                     "raw text", devmap)
+    assert_eq(hand_row["source"], "live")
+    assert_eq(hand_row["intent_tag"], "uncertain")
+    assert_eq(hand_row["boards"], "Jd5d5h2s9h")
+    assert_eq(round(hand_row["total_ev_loss_bb"], 2), 0.14)
+    by_key = {(d["street"], d["decision_idx"]): d for d in decs}
+    t = by_key[("turn", 0)]
+    assert_eq(t["source"], "live"); assert_eq(t["grader"], "own_pipeline")
+    assert_eq(t["spot_leaf"], "turn:SRP:BBvEP:OOP:[x-x]:first_to_act")
+    assert_in("chipev_grading", t["approx_flags"])
+    assert_in("live_phase_unknown", t["approx_flags"])
+    assert_true(not t["excluded"])
+    r0 = by_key[("river", 0)]
+    assert_true(r0["excluded"])                       # ungraded -> out of stats
+    assert_in("unsolved:offrange", r0["approx_flags"])
+    r1 = by_key[("river", 1)]                         # no dev at all
+    assert_true(r1["excluded"])
+    assert_in("unsolved:not_graded", r1["approx_flags"])
 
 
 if __name__ == "__main__":

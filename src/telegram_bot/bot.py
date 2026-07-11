@@ -81,6 +81,8 @@ class PokerWizardBot:
         self.admin_chat_id = int(os.getenv("ADMIN_CHAT_ID", "0")) or None
         # Per-user lock to serialize messages from the same user
         self._user_locks: dict[int, asyncio.Lock] = {}
+        # chats whose NEXT text message is a /live hand batch
+        self._live_pending: set[int] = set()
 
     def _user_lock(self, chat_id: int) -> asyncio.Lock:
         """Get or create a per-user lock to serialize message handling."""
@@ -353,6 +355,12 @@ class PokerWizardBot:
         label = self._user_label(update)
 
         self.log.info(f"[{label}] Message: {user_text[:300]}")
+
+        # /live capture mode: this message is the live-hand batch
+        if chat_id in self._live_pending:
+            self._live_pending.discard(chat_id)
+            await self._process_live_batch(update, user_text)
+            return
 
         if self.db:
             try:
@@ -1269,6 +1277,209 @@ class PokerWizardBot:
         except Exception as e:
             await msg.edit_text(f"⚠️ 攝取失敗：{e}")
 
+    # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
+
+    @staticmethod
+    def _rows_to_markup(rows: list[list[dict]]) -> InlineKeyboardMarkup | None:
+        """[[{"text", "url"|"callback_data"}]] -> InlineKeyboardMarkup."""
+        kb = [[InlineKeyboardButton(b["text"], url=b.get("url"),
+                                    callback_data=b.get("callback_data"))
+               for b in row] for row in rows]
+        return InlineKeyboardMarkup(kb) if kb else None
+
+    def _is_owner(self, update: Update) -> bool:
+        return bool(self.admin_chat_id
+                    and update.effective_user.id == self.admin_chat_id)
+
+    async def live_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/live — owner-only: import a live-hand shorthand batch into the ledger."""
+        if not self._is_owner(update):
+            return
+        self.log.info(f"[{self._user_label(update)}] /live")
+        parts = (update.message.text or "").split(None, 1)
+        payload = parts[1] if len(parts) > 1 else ""
+        if payload.strip():
+            async with self._user_lock(update.effective_chat.id):
+                await self._process_live_batch(update, payload)
+        else:
+            self._live_pending.add(update.effective_chat.id)
+            await update.message.reply_text(
+                "貼上現場手牌（下一則訊息）。每手以「Eff <有效籌碼>」開頭，"
+                "一則訊息可貼多手；街與街換行，例如：\n\n"
+                "Eff 25bb co raise hero bb call As2s\n"
+                "AhQhJh x b1.2 c\n2h x b1.5 f")
+
+    async def _process_live_batch(self, update: Update, text: str):
+        """Run scripts/live_flow.py on the batch, reply with the deviation
+        report + [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
+        import json as _json
+        from live_flow import split_batch, render_tg_html, report_buttons
+        label = self._user_label(update)
+        n = len(split_batch(text))
+        if n == 0:
+            await update.message.reply_text(
+                "沒有偵測到手牌 — 每手要以「Eff <有效籌碼>」開頭。")
+            return
+        msg = await update.message.reply_text(
+            f"🃏 收到 {n} 手，解析評分中…（每手要打數次 solver，約 {max(1, n // 3)}-{max(2, n)} 分鐘）")
+        root = Path(__file__).resolve().parent.parent.parent
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(text)
+            tmp_in = f.name
+        tmp_out = tmp_in + ".json"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "scripts/live_flow.py", "--file", tmp_in,
+                "--json-out", tmp_out, cwd=str(root),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            if proc.returncode != 0 or not Path(tmp_out).exists():
+                tail = out.decode(errors="replace")[-500:]
+                await msg.edit_text(f"⚠️ 匯入失敗：\n{tail}")
+                return
+            result = _json.loads(Path(tmp_out).read_text())
+            html = render_tg_html(result)
+            markup = self._rows_to_markup(report_buttons(result))
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=markup)
+            self.log.info(f"[{label}] /live done: {result['totals']}")
+        except Exception as e:
+            self.log.error(f"[{label}] /live failed: {e}", exc_info=True)
+            try:
+                await msg.edit_text(f"⚠️ 匯入失敗：{e}")
+            except Exception:
+                pass
+        finally:
+            for p in (tmp_in, tmp_out):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    async def queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/queue — owner-only: pending/prescribed practice queue with buttons."""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("Database not connected.")
+            return
+        rows = await self.db.pool.fetch(
+            "SELECT id, spot_leaf, label, drill_url, status, n_sources, total_ev_loss_bb "
+            "FROM drill_queue WHERE status IN ('pending','prescribed') "
+            "ORDER BY total_ev_loss_bb DESC NULLS LAST LIMIT 8")
+        if not rows:
+            await update.message.reply_text("📥 練習佇列是空的 — 沒有待練的行動線。")
+            return
+        from html import escape as _esc
+        L = [f"📥 <b>練習佇列</b>（{len(rows)} 條行動線）", ""]
+        buttons: list[list[dict]] = []
+        for i, r in enumerate(rows, 1):
+            lbl = r["label"] or r["spot_leaf"]
+            st = "（本週課表內）" if r["status"] == "prescribed" else ""
+            ev = r["total_ev_loss_bb"] or 0
+            L.append(f"{i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
+            row_btns = []
+            if r["drill_url"]:
+                row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
+            row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
+            buttons.append(row_btns)
+        await update.message.reply_text(
+            "\n".join(L), parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons))
+
+    async def plan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/plan — owner-only: resend the latest weekly training plan."""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("Database not connected.")
+            return
+        import json as _json
+        row = await self.db.pool.fetchrow(
+            "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
+        if not row:
+            await update.message.reply_text("還沒有訓練計畫 — 週日 21:00 會自動產生。")
+            return
+        from scorecard import weekly_tg_payload
+        data = (_json.loads(row["data_json"])
+                if isinstance(row["data_json"], str) else row["data_json"])
+        payload = weekly_tg_payload(row["week"], data)
+        await update.message.reply_text(
+            payload["html"], parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(payload["buttons"]))
+
+    async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """lvd:<hand_id> — deep-dive a live hand via the normal coach path;
+        qcl:<queue_id> — mark a practice-queue line cleared."""
+        query = update.callback_query
+        data = query.data or ""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+
+        if data.startswith("qcl:"):
+            await query.answer("✔ 已標記為已練")
+            if self.db and self.db.pool:
+                await self.db.pool.execute(
+                    "UPDATE drill_queue SET status='cleared' WHERE id=$1", int(data[4:]))
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await context.bot.send_message(chat_id, "✔ 已清掉，用 /queue 看剩下的。")
+            return
+
+        await query.answer()
+        hand_id = data[4:]                          # lvd:<hand_id>
+        raw = None
+        if self.db and self.db.pool:
+            raw = await self.db.pool.fetchval(
+                "SELECT raw_text FROM ledger_hands WHERE gtow_hand_id=$1", hand_id)
+        if not raw:
+            await context.bot.send_message(chat_id, "找不到這手的原始記錄。")
+            return
+        label = f"live-detail-{chat_id}"
+        self.log.info(f"[{label}] deep dive {hand_id}")
+        await context.bot.send_message(chat_id, f"💬 深入分析：\n{raw}")
+        raw_status = await context.bot.send_message(chat_id, "🔍 分析中...")
+        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
+
+        async def _on_status(m: str):
+            await status_msg.edit_text(f"⏳ {m}")
+
+        refresh_token = await self._get_user_refresh_token(user_id)
+        try:
+            response = await self.session_manager.send_message(
+                chat_id, raw, on_status=_on_status,
+                user_id=user_id, refresh_token=refresh_token)
+            await status_msg.delete()
+            if response and response.strip():
+                response, markup = self._finalize_followups(
+                    chat_id, response, include_gto_link=True)
+                formatted = _format_for_telegram(response)
+                chunks = [c for c in _split_message(formatted) if c.strip()]
+                for i, chunk in enumerate(chunks):
+                    chunk_markup = markup if i == len(chunks) - 1 else None
+                    try:
+                        await context.bot.send_message(
+                            chat_id, chunk, parse_mode='Markdown',
+                            reply_markup=chunk_markup)
+                    except Exception:
+                        await context.bot.send_message(
+                            chat_id, _strip_markdown(chunk), reply_markup=chunk_markup)
+            await self._send_pending_range_images(update, chat_id, label)
+        except Exception as e:
+            self.log.error(f"[{label}] Error: {e}", exc_info=True)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(chat_id, "抱歉，深入分析時出錯了。")
+
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report — admin-only analytics report."""
         user_id = update.effective_user.id
@@ -1347,9 +1558,15 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(CommandHandler("report", self.report_command))
         self.application.add_handler(CommandHandler("ingest", self.ingest_command))
+        self.application.add_handler(CommandHandler("live", self.live_command))
+        self.application.add_handler(CommandHandler("queue", self.queue_command))
+        self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        # pattern handlers must precede the generic follow-up handler
+        self.application.add_handler(
+            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application

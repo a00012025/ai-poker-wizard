@@ -25,8 +25,12 @@ async def resolve_owner_chat_id(pool) -> int | None:
 
 
 def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
-    """Pure WHERE-builder for the summary aggregate. Returns (sql, args)."""
-    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL"]
+    """Pure WHERE-builder for the summary aggregate. Returns (sql, args).
+
+    source='online' only (§5.2): live hands are selectively recorded, so their
+    averages are biased — they must never blend into the summary stats."""
+    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
+             "source='online'"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -40,7 +44,8 @@ def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
 
 
 def _top_spots_sql(category: str | None, hero_cat: str | None, days: int | None, limit: int):
-    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL"]
+    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
+             "source='online'"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")

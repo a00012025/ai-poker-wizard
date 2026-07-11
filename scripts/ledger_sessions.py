@@ -49,8 +49,11 @@ async def rebuild():
     load_dotenv(ROOT / ".env")
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     try:
+        # online-only: live hands carry a synthetic capture timestamp, not a
+        # real play time — clustering them would fabricate sessions.
         rows = await conn.fetch(
-            "SELECT gtow_hand_id, played_at, tournament_id FROM ledger_hands ORDER BY played_at")
+            "SELECT gtow_hand_id, played_at, tournament_id FROM ledger_hands "
+            "WHERE source='online' ORDER BY played_at")
         sessions = cluster_sessions([dict(r) for r in rows])
         async with conn.transaction():
             await conn.execute("UPDATE ledger_hands SET session_id=NULL")

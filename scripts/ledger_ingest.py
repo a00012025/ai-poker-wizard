@@ -125,7 +125,7 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
 async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
     rows = await conn.fetch(
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
-        "WHERE NOT detail_fetched ORDER BY played_at")
+        "WHERE NOT detail_fetched AND source='online' ORDER BY played_at")
     fetched = ndec = skipped_nodata = 0
     for r in rows:
         if limit and fetched >= limit:
@@ -172,7 +172,8 @@ def _find_list_row(list_path: Path, hand_id: str) -> dict:
 
 async def verify(conn) -> int:
     api_total = gapi.list_hands(EPOCH_SINCE, limit=1)["total"]
-    db_total = await conn.fetchval("SELECT count(*) FROM ledger_hands")
+    db_total = await conn.fetchval(
+        "SELECT count(*) FROM ledger_hands WHERE source='online'")
     if api_total == db_total:
         print(f"VERIFY OK api={api_total} db={db_total}")
         return 0
