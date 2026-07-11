@@ -14649,6 +14649,51 @@ def test_live_split_batch():
 
 
 @test
+def test_live_split_batch_header_variants():
+    """A new hand also starts on 'Hero …' / a seat ('UTG …', '+1 …'), not just
+    'Eff' — and result/annotation lines ('Hero wins', 'lose to TT', '7/3') are
+    dropped, never swallowed as a fake street. Streets always lead with a board
+    card so they stay attached."""
+    from live_flow import split_batch, _is_noise, _is_header
+    text = (
+        "Eff 15bb utg raise hero btn call ajo\n"      # hand: Eff header
+        "Hero co all in aqo 16bb\n"                    # hand: Hero header (was a fake street)
+        "UTG 10bb fold K9s\n"                          # hand: seat header
+        "+1 open hero co has 10bb fold A6s\n"          # hand: +1 header
+        "7/3\n"                                         # noise: no letters
+        "Hero lj all in A6o 10bb\n"                    # hand
+        "Eff 30bb Lj raise hj call hero bb call 6s5d\n"  # hand w/ streets
+        "6c4c3 x lj bet 4bb hero raise 9bb lj call\n"  # street (board-led)
+        "Ad pot 25bb, x lj bet 10bb hero call\n"       # street (board-led, has 'bb')
+        "Jh x x\n"
+        "Hero wins\n"                                   # result: dropped
+        "Hero 50bb Lj open 44 bb call\n"               # NEXT hand (Hero header)
+        "4hQh2 bet 2.5 bb raise 8bb hero call")        # street
+    blocks = split_batch(text)
+    firsts = [b.splitlines()[0] for b in blocks]
+    assert_eq(len(blocks), 7)
+    assert_true(firsts[1].startswith("Hero co all in"))
+    assert_true(firsts[2].startswith("UTG 10bb"))
+    assert_true(firsts[3].startswith("+1 open"))
+    assert_true(firsts[4].startswith("Hero lj all in"))
+    # the multi-street hand keeps its 4 board-led streets, drops the result line
+    multi = blocks[5]
+    assert_eq(len(multi.splitlines()), 4)
+    assert_true("Hero wins" not in multi and "7/3" not in multi)
+    assert_true(blocks[6].startswith("Hero 50bb"))
+    # predicate units
+    assert_true(_is_noise("7/3") and _is_noise("Hero wins") and _is_noise("lose to TT"))
+    assert_true(not _is_noise("Hero lj all in A6o 10bb"))
+    assert_true(_is_header("Hero co all in aqo 16bb") and _is_header("+1 open ..."))
+    assert_true(not _is_header("Ad pot 25bb, x lj bet 10bb hero call"))  # board-led street
+    # Chinese "有效" effective-stack header, spaced and glued
+    assert_true(_is_header("有效 40bb hero co open KK") and _is_header("有效40bb hero co open KK"))
+    zh = split_batch("有效 40bb hero co open KK bb call\nKc2c6h x x\n有效25bb hero sb 3b AA")
+    assert_eq(len(zh), 2)
+    assert_true(zh[1].startswith("有效25bb"))
+
+
+@test
 def test_live_walk_spots_from_parsed():
     """Text-parsed hands classify onto the SAME leaves as the online walker
     (cross-source aggregation), incl. the fully-limped pot -> 'limp'."""

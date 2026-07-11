@@ -58,18 +58,57 @@ LIVE_DEC_COLS = [
 
 
 # ── batch splitting ──────────────────────────────────────────────────────────
-# (?=[\s\d]) not \b: "Eff17" has no word boundary between f and 1
-_HAND_START = re.compile(r"^\s*eff(?=[\s\d])", re.IGNORECASE)
+# A new hand begins on a "header" line; every other content line is a street of
+# the current hand. In this shorthand a street ALWAYS leads with the new board
+# card(s) (e.g. "Q93 …", "5 …", "Kh …"), while a new hand leads with a stack
+# marker ("Eff …"), "Hero …", or a seat ("UTG …", "+1 …") — so the first token
+# discriminates them cleanly. Result/annotation lines are dropped.
+_POS_TOKENS = {
+    "utg", "utg+1", "utg+2", "utg1", "utg2", "lj", "hj", "co", "btn", "bu",
+    "sb", "bb", "mp", "ep", "+1", "+2",
+}
+_HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero"} | _POS_TOKENS
+# a whole line that is only a hand result / annotation — never a decision
+_RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
+                        r"(\s+to\s+.+)?$", re.IGNORECASE)
+
+
+def _first_token(line: str) -> str:
+    m = re.match(r"\s*(\S+)", line)
+    return m.group(1).strip(",.;:").lower() if m else ""
+
+
+def _is_noise(line: str) -> bool:
+    """Blank, a result marker, or a token with no letters (e.g. '7/3')."""
+    s = line.strip()
+    if not s or _RESULT_RE.match(s):
+        return True
+    return not re.search(r"[A-Za-z]", s)
+
+
+def _is_header(line: str) -> bool:
+    tok = _first_token(line)
+    # exact seat/keyword, or a glued stack form: "Eff17"/"eff50bb"/"有效50bb"
+    return (tok in _HEADER_FIRST or bool(re.match(r"eff\d", tok))
+            or tok.startswith("有效"))
 
 
 def split_batch(text: str) -> list[str]:
-    """Split a pasted batch into hand blocks. A line starting with 'Eff'
-    begins a new hand; following lines (streets) attach to it."""
+    """Split a pasted batch into hand blocks.
+
+    A header line (leads with Eff / Hero / a seat) starts a new hand; any other
+    content line is a street of the current hand; result/noise lines are
+    dropped. Handles batches where only the first hand says "Eff" and later
+    hands lead with "Hero …" / a seat, plus quick preflop-only notes stacked
+    back to back.
+    """
     blocks: list[list[str]] = []
     for line in text.splitlines():
-        if _HAND_START.match(line):
+        if _is_noise(line):
+            continue
+        if _is_header(line) or not blocks:
             blocks.append([line.rstrip()])
-        elif line.strip() and blocks:
+        else:
             blocks[-1].append(line.rstrip())
     return ["\n".join(b) for b in blocks]
 
