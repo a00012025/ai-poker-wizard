@@ -67,10 +67,10 @@ _POS_TOKENS = {
     "utg", "utg+1", "utg+2", "utg1", "utg2", "lj", "hj", "co", "btn", "bu",
     "sb", "bb", "mp", "ep", "+1", "+2",
 }
-_HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero"} | _POS_TOKENS
+_HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOKENS
 # a whole line that is only a hand result / annotation — never a decision
 _RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
-                        r"(\s+to\s+.+)?$", re.IGNORECASE)
+                        r"(\s+(to\s+)?\S.*)?$", re.IGNORECASE)
 
 
 def _first_token(line: str) -> str:
@@ -162,6 +162,12 @@ def _bb_number(tok: str) -> str | None:
     if re.match(r"^\d+(?:\.\d+)?$", t):
         return t
     return None
+
+
+def _bb_number_with_unit(tok: str) -> str | None:
+    t = _clean_word(tok)
+    m = re.match(r"^(\d+(?:\.\d+)?)bb$", t)
+    return m.group(1) if m else None
 
 
 def _canon_hand_token(tok: str) -> str | None:
@@ -380,13 +386,13 @@ def _raw_hero_action_from_header(block: str, hero_pos: str) -> str | None:
                     if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
                         size = _bb_number(toks[m + 1])
                         break
-                    cand = _bb_number(toks[m])
+                    cand = _bb_number_with_unit(toks[m])
                     if cand is not None:
                         size = cand
                         break
                 if size:
                     return "R" + size
-                if t == "open":
+                if t in {"raise", "open", "r"}:
                     return "R2"
         return None
     return None
@@ -414,13 +420,13 @@ def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | N
                 if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
                     size = _bb_number(toks[m + 1])
                     break
-                cand = _bb_number(toks[m])
+                cand = _bb_number_with_unit(toks[m])
                 if cand is not None:
                     size = cand
                     break
             if size:
                 return "R" + size
-            if t == "open":
+            if t in {"raise", "open", "r"}:
                 return "R2"
     return None
 
@@ -457,6 +463,94 @@ def repair_preflop_literals_from_block(block: str, hand: dict) -> dict:
         if len(dup) == 1:
             r1[dup[0]] = "F"
     hand["preflop_actions"] = "-".join(r1 + parts[npl:])
+    return hand
+
+
+def _raw_first_round_from_header(block: str, npl: int) -> list[str] | None:
+    from hh_parser import POSITION_ORDERS
+    order = POSITION_ORDERS.get(npl)
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if not order or not lines:
+        return None
+    toks = re.split(r"\s+", lines[0])
+    r1 = ["F"] * npl
+    found = False
+    i = 0
+    while i < len(toks):
+        pos = None
+        start = i + 1
+        if _clean_word(toks[i]) == "hero" and i + 1 < len(toks) and _norm_pos(toks[i + 1]):
+            pos = _norm_pos(toks[i + 1])
+            start = i + 2
+        else:
+            pos = _norm_pos(toks[i])
+        if pos in order:
+            code = _action_code_from_tokens(toks, start)
+            if code:
+                r1[order.index(pos)] = code
+                found = True
+        i += 1
+    return r1 if found else None
+
+
+def repair_single_raise_first_round_from_block(block: str, hand: dict) -> dict:
+    """Rebuild a short first round for one-raise multiway shorthand.
+
+    Example: ``LJ raise CO call BTN call hero SB call BB call`` can come back
+    as 7 tokens (missing one seat).  Since every first-round actor is named in
+    the raw header and there is only one raise, reconstruct the 8-seat round.
+    """
+    npl = hand.get("players_at_table") or 8
+    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
+    if len(parts) > npl:
+        return hand
+    raw = _raw_first_round_from_header(block, npl)
+    if not raw:
+        return hand
+    if sum(1 for p in raw if p.upper().startswith(("R", "AI"))) == 1:
+        hand["preflop_actions"] = "-".join(raw + parts[npl:])
+    return hand
+
+
+def repair_short_preflop_round(hand: dict) -> dict:
+    """Pad missing first-round folds before a clear continuation action.
+
+    Gemini sometimes emits ``F-F-F-R2-F-R5-C`` for "HJ opens, BTN 3bets,
+    hero calls" on an 8-max table: SB/BB folds are missing, so the final C is
+    actually HJ's continuation action.  Insert the absent blind folds before
+    that trailing continuation.
+    """
+    npl = hand.get("players_at_table") or 8
+    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
+    if len(parts) >= npl or len(parts) < 2:
+        return hand
+    aggs = [p for p in parts[:-1] if p.upper().startswith(("R", "AI"))]
+    if len(aggs) >= 2 and parts[-1] in {"C", "F"}:
+        missing = npl - (len(parts) - 1)
+        if 0 < missing <= 3:
+            hand["preflop_actions"] = "-".join(parts[:-1] + ["F"] * missing + [parts[-1]])
+    return hand
+
+
+def repair_impossible_facing_checks(hand: dict) -> dict:
+    """Drop impossible postflop checks after a bet/raise is already pending.
+
+    Live shorthand often omits inactive multiway players after the aggressor
+    bets. Gemini sometimes fills those seats with phantom checks, which are
+    illegal while facing a bet and make validation fail. Removing only these
+    impossible checks is deterministic and conservative.
+    """
+    for st in hand.get("streets") or []:
+        fixed = []
+        facing_bet = False
+        for a in st.get("actions") or []:
+            act = a.get("action") or ""
+            if act == "X" and facing_bet:
+                continue
+            fixed.append(a)
+            if act.startswith(("R", "AI")):
+                facing_bet = True
+        st["actions"] = fixed
     return hand
 
 
@@ -542,7 +636,12 @@ def parse_block(block: str, client=None, model: str | None = None,
             if hand and hand.get("hero_position") and hand.get("preflop_actions") \
                     and hand.get("hero_hand"):
                 hand = repair_card_literals_from_block(block, hand)
-                return repair_preflop_literals_from_block(block, hand) if hand else None
+                if not hand:
+                    return None
+                hand = repair_preflop_literals_from_block(block, hand)
+                hand = repair_single_raise_first_round_from_block(block, hand)
+                hand = repair_short_preflop_round(hand)
+                return repair_impossible_facing_checks(hand)
             return fallback
         except Exception:
             if attempt == 2:

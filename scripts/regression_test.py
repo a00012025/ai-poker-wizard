@@ -14669,11 +14669,13 @@ def test_live_split_batch_header_variants():
         "Ad pot 25bb, x lj bet 10bb hero call\n"       # street (board-led, has 'bb')
         "Jh x x\n"
         "Hero wins\n"                                   # result: dropped
+        "Wins Q2\n"                                      # result: dropped even with shown hand
+        "Icm 25% lj 22bb fold k4s\n"                    # hand: ICM header
         "Hero 50bb Lj open 44 bb call\n"               # NEXT hand (Hero header)
         "4hQh2 bet 2.5 bb raise 8bb hero call")        # street
     blocks = split_batch(text)
     firsts = [b.splitlines()[0] for b in blocks]
-    assert_eq(len(blocks), 9)
+    assert_eq(len(blocks), 10)
     assert_true(firsts[1].startswith("Hero co all in"))
     assert_true(firsts[2].startswith("UTG 10bb"))
     assert_true(firsts[3].startswith("Utg8 10bb"))
@@ -14684,12 +14686,14 @@ def test_live_split_batch_header_variants():
     multi = blocks[7]
     assert_eq(len(multi.splitlines()), 4)
     assert_true("Hero wins" not in multi and "7/3" not in multi)
-    assert_true(blocks[8].startswith("Hero 50bb"))
+    assert_true(blocks[8].startswith("Icm 25%"))
+    assert_true(blocks[9].startswith("Hero 50bb"))
     # predicate units
-    assert_true(_is_noise("7/3") and _is_noise("Hero wins") and _is_noise("lose to TT"))
+    assert_true(_is_noise("7/3") and _is_noise("Hero wins") and _is_noise("Wins Q2") and _is_noise("lose to TT"))
     assert_true(_is_noise("> Should double barrel small") and _is_noise("### TMT 前哨 Day 2"))
     assert_true(not _is_noise("Hero lj all in A6o 10bb"))
     assert_true(_is_header("Hero co all in aqo 16bb") and _is_header("+1 open ..."))
+    assert_true(_is_header("Icm 25% lj 22bb fold k4s"))
     assert_true(_is_header("Utg8 10bb hero all in a3s") and _is_header("16bb u8 fold qjo"))
     assert_true(not _is_header("Ad pot 25bb, x lj bet 10bb hero call"))  # board-led street
     # Chinese "有效" effective-stack header, spaced and glued
@@ -14787,6 +14791,70 @@ def test_live_simple_preflop_fallback_parses_terse_fold_row():
     assert_eq(hand["effective_bb"], 15.5)
     assert_eq(hand["hero_hand"], "A5o")
     assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-F-F")
+
+
+@test
+def test_live_short_preflop_round_repair_inserts_blind_folds_before_continuation():
+    """8-max 3bet spots may parse as 7 tokens with hero's continuation call
+    immediately after the BTN 3bet. Insert missing SB/BB folds before that C."""
+    from live_flow import repair_short_preflop_round
+    hand = {"players_at_table": 8,
+            "preflop_actions": "F-F-F-R2-F-R5-C"}
+    fixed = repair_short_preflop_round(hand)
+    assert_eq(fixed["preflop_actions"], "F-F-F-R2-F-R5-F-F-C")
+
+
+@test
+def test_live_single_raise_first_round_repair_rebuilds_named_multiway_callers():
+    """One-raise multiway live shorthand names every first-round actor.  If
+    Gemini drops a seat and returns 7 tokens, rebuild from the raw header."""
+    from live_flow import repair_single_raise_first_round_from_block
+    hand = {"players_at_table": 8,
+            "preflop_actions": "F-F-R2-C-C-C-C"}
+    fixed = repair_single_raise_first_round_from_block(
+        "Eff 35bb LJ raise co call btn call hero sb call 5d5c bb call",
+        hand,
+    )
+    assert_eq(fixed["preflop_actions"], "F-F-R2-F-C-C-C-C")
+
+
+@test
+def test_live_first_round_repair_does_not_read_hand_as_raise_size():
+    """Bare hand tokens / annotations after 'raise' are not sizing.  Only
+    'to 5' or '5bb' should size a raise; otherwise default open size is R2."""
+    from live_flow import repair_single_raise_first_round_from_block
+    h1 = repair_single_raise_first_round_from_block(
+        "Eff 65bb +1 raise hero lj call 33 others fold",
+        {"players_at_table": 8, "preflop_actions": "F-R2-C-F-F-F-F-F"},
+    )
+    assert_eq(h1["preflop_actions"], "F-R2-C-F-F-F-F-F")
+    h2 = repair_single_raise_first_round_from_block(
+        "Eff 20bb Hero co raise 44 btn call",
+        {"players_at_table": 8, "preflop_actions": "F-F-F-F-R2-C-F-F"},
+    )
+    assert_eq(h2["preflop_actions"], "F-F-F-F-R2-C-F-F")
+    h3 = repair_single_raise_first_round_from_block(
+        "Eff 25bb Hero u open Ks7s (EV 0) btn call bb call",
+        {"players_at_table": 8, "preflop_actions": "R2-F-F-F-F-C-F-C"},
+    )
+    assert_eq(h3["preflop_actions"], "R2-F-F-F-F-C-F-C")
+
+
+@test
+def test_live_repair_impossible_facing_checks_removes_phantom_multiway_checks():
+    """After BTN bets, BB cannot check.  Such checks are parser hallucinations
+    for unlisted multiway seats and should be stripped before validation."""
+    from live_flow import repair_impossible_facing_checks
+    hand = {"streets": [{"board": "6h7hAs", "actions": [
+        {"position": "BB", "action": "X"},
+        {"position": "UTG", "action": "X"},
+        {"position": "BTN", "action": "R3", "size": 3},
+        {"position": "BB", "action": "X"},
+        {"position": "UTG", "action": "C"},
+    ]}]}
+    fixed = repair_impossible_facing_checks(hand)
+    assert_eq([(a["position"], a["action"]) for a in fixed["streets"][0]["actions"]],
+              [("BB", "X"), ("UTG", "X"), ("BTN", "R3"), ("UTG", "C")])
 
 
 @test
