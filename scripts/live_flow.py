@@ -81,7 +81,7 @@ def _first_token(line: str) -> str:
 def _is_noise(line: str) -> bool:
     """Blank, a result marker, or a token with no letters (e.g. '7/3')."""
     s = line.strip()
-    if not s or _RESULT_RE.match(s):
+    if not s or s.startswith(">") or re.match(r"^#{1,6}\s+", s) or _RESULT_RE.match(s):
         return True
     return not re.search(r"[A-Za-z]", s)
 
@@ -90,7 +90,8 @@ def _is_header(line: str) -> bool:
     tok = _first_token(line)
     # exact seat/keyword, or a glued stack form: "Eff17"/"eff50bb"/"有效50bb"
     return (tok in _HEADER_FIRST or bool(re.match(r"eff\d", tok))
-            or tok.startswith("有效"))
+            or tok.startswith("有效") or bool(re.match(r"(utg|u)\d+$", tok))
+            or bool(re.match(r"\d+(?:\.\d+)?bb$", tok)))
 
 
 def split_batch(text: str) -> list[str]:
@@ -120,9 +121,17 @@ _CARD_RE = re.compile(r"^[2-9TJQKA][cdhs]$", re.IGNORECASE)
 _COMBO_RE = re.compile(
     r"^(?:[2-9TJQKA][cdhs]){2}$|^[2-9TJQKA]{2}[so]?$", re.IGNORECASE)
 _STREET_CARD_TOKEN_RE = re.compile(
-    r"^(?:(?:[2-9TJQKA][cdhs]){1,3}|[2-9TJQKA]{1,3}r?)$",
+    r"^(?:[2-9TJQKA](?:[cdhs])?){1,3}r?$",
     re.IGNORECASE,
 )
+_POS_ALIASES = {
+    "utg": "UTG", "u": "UTG", "utg1": "UTG+1", "utg+1": "UTG+1",
+    "u1": "UTG+1", "u+1": "UTG+1", "+1": "UTG+1",
+    "utg2": "UTG+2", "utg+2": "UTG+2", "u2": "UTG+2",
+    "u+2": "UTG+2", "+2": "UTG+2",
+    "lj": "LJ", "hj": "HJ", "co": "CO", "btn": "BTN", "bu": "BTN",
+    "sb": "SB", "bb": "BB",
+}
 
 
 def _canon_rank(r: str) -> str:
@@ -132,6 +141,27 @@ def _canon_rank(r: str) -> str:
 def _clean_card_token(tok: str) -> str:
     t = tok.strip().strip(",.;:()[]{}").replace("10", "T")
     return re.sub(r"(rainbow|rbw)$", "r", t, flags=re.IGNORECASE)
+
+
+def _clean_word(tok: str) -> str:
+    return tok.strip().strip(",.;:()[]{}").lower()
+
+
+def _norm_pos(tok: str) -> str | None:
+    t = _clean_word(tok)
+    if re.match(r"^(utg|u)\d+$", t):
+        return "UTG+" + t.lstrip("utg").lstrip("u")
+    return _POS_ALIASES.get(t)
+
+
+def _bb_number(tok: str) -> str | None:
+    t = _clean_word(tok)
+    m = re.match(r"^(\d+(?:\.\d+)?)bb$", t)
+    if m:
+        return m.group(1)
+    if re.match(r"^\d+(?:\.\d+)?$", t):
+        return t
+    return None
 
 
 def _canon_hand_token(tok: str) -> str | None:
@@ -226,7 +256,9 @@ def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str,
 
     streets: list[list[tuple[str, str | None]]] = []
     for ln in lines[1:]:
-        specs = _card_specs_from_street_token(_first_token(ln))
+        toks = re.split(r"\s+", ln)
+        card_tok = toks[1] if toks and toks[0].strip(":").lower() in {"flop", "turn", "river"} and len(toks) > 1 else _first_token(ln)
+        specs = _card_specs_from_street_token(card_tok)
         if specs:
             streets.append(specs)
     return hero_hand, streets
@@ -237,7 +269,7 @@ def _split_cards(s: str) -> list[str]:
 
 
 def _pick_suit(rank: str, preferred: str | None, used: set[str]) -> str | None:
-    if preferred in _SUITS:
+    if preferred and preferred in _SUITS:
         c = rank + preferred
         if c not in used:
             return preferred
@@ -304,6 +336,176 @@ def repair_card_literals_from_block(block: str, hand: dict) -> dict | None:
     return repaired
 
 
+def _raw_hero_action_from_header(block: str, hero_pos: str) -> str | None:
+    """Extract an explicit ``hero <pos> <action>`` preflop action from raw text.
+
+    This is deliberately narrow: it only trusts raw notes that name both
+    ``hero`` and the parsed hero position next to it.  It repairs deterministic
+    mis-seating (e.g. ``hero hj raise ... to 5bb`` parsed as CO raising) without
+    trying to replace Gemini's whole action parser.
+    """
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if not lines:
+        return None
+    toks = re.split(r"\s+", lines[0])
+    for i, tok in enumerate(toks):
+        if _clean_word(tok) != "hero" or i + 1 >= len(toks):
+            continue
+        if _norm_pos(toks[i + 1]) != hero_pos:
+            continue
+        j = i + 2
+        # Common live note: "hero hj has 10bb fold".
+        if j < len(toks) and _clean_word(toks[j]) == "has":
+            j += 1
+            if j < len(toks) and _bb_number(toks[j]) is not None:
+                j += 1
+        for k in range(j, min(len(toks), j + 8)):
+            t = _clean_word(toks[k])
+            if t in {"fold", "f"}:
+                return "F"
+            if t in {"call", "c"}:
+                return "C"
+            if t in {"x", "check"}:
+                return "X"
+            if t in {"all", "ai", "jam", "shove"}:
+                size = None
+                if t == "all" and k + 1 < len(toks) and _clean_word(toks[k + 1]) == "in":
+                    size = _bb_number(toks[k + 2]) if k + 2 < len(toks) else None
+                else:
+                    size = _bb_number(toks[k + 1]) if k + 1 < len(toks) else None
+                return "AI" + (size or "")
+            if t in {"raise", "open", "r", "3b", "3bet"}:
+                size = None
+                for m in range(k + 1, min(len(toks), k + 8)):
+                    if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
+                        size = _bb_number(toks[m + 1])
+                        break
+                    cand = _bb_number(toks[m])
+                    if cand is not None:
+                        size = cand
+                        break
+                if size:
+                    return "R" + size
+                if t == "open":
+                    return "R2"
+        return None
+    return None
+
+
+def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
+    for k in range(start, min(len(toks), start + 8)):
+        t = _clean_word(toks[k])
+        if t in {"fold", "f"}:
+            return "F"
+        if t in {"call", "c"}:
+            return "C"
+        if t in {"x", "check"}:
+            return "X"
+        if t in {"all", "ai", "jam", "shove"}:
+            size = default_stack
+            if t == "all" and k + 1 < len(toks) and _clean_word(toks[k + 1]) == "in":
+                size = _bb_number(toks[k + 2]) if k + 2 < len(toks) else size
+            else:
+                size = _bb_number(toks[k + 1]) if k + 1 < len(toks) else size
+            return "AI" + (size or "")
+        if t in {"raise", "open", "r", "3b", "3bet"}:
+            size = None
+            for m in range(k + 1, min(len(toks), k + 8)):
+                if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
+                    size = _bb_number(toks[m + 1])
+                    break
+                cand = _bb_number(toks[m])
+                if cand is not None:
+                    size = cand
+                    break
+            if size:
+                return "R" + size
+            if t == "open":
+                return "R2"
+    return None
+
+
+def repair_preflop_literals_from_block(block: str, hand: dict) -> dict:
+    """Repair narrow raw-vs-parse preflop action mis-seating.
+
+    Example: raw says ``UTG raise hero HJ raise ... to 5bb UTG call`` but
+    Gemini can put the R5 on CO and leave HJ folded.  If raw explicitly names
+    hero's position and action, and parsed first-round hero action is folded,
+    move that action back onto hero and fold the single duplicate aggressive
+    action seat.
+    """
+    from hh_parser import POSITION_ORDERS
+    hero_pos = hand.get("hero_position")
+    raw_code = _raw_hero_action_from_header(block, hero_pos or "")
+    if not hero_pos or not raw_code:
+        return hand
+    npl = hand.get("players_at_table") or 8
+    order = POSITION_ORDERS.get(npl)
+    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
+    if not order or hero_pos not in order or len(parts) < npl:
+        return hand
+    hero_i = order.index(hero_pos)
+    r1 = parts[:npl]
+    if r1[hero_i] == raw_code:
+        return hand
+    # Stay conservative: do not overwrite a non-fold hero action.
+    if r1[hero_i] not in ("F", ""):
+        return hand
+    r1[hero_i] = raw_code
+    if raw_code.startswith(("R", "AI")):
+        dup = [i for i, code in enumerate(r1) if i != hero_i and code == raw_code]
+        if len(dup) == 1:
+            r1[dup[0]] = "F"
+    hand["preflop_actions"] = "-".join(r1 + parts[npl:])
+    return hand
+
+
+def parse_simple_preflop_block(block: str) -> dict | None:
+    """Deterministic fallback for terse one-line preflop-only live notes.
+
+    Example: ``Co 15.5bb fold a5o``.  This is intentionally not a general
+    language parser; it only rescues compact single-decision rows that are
+    already unambiguous enough to grade as a preflop node.
+    """
+    from hh_parser import POSITION_ORDERS
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if len(lines) != 1:
+        return None
+    toks = re.split(r"\s+", lines[0])
+    pos = None
+    start = 0
+    if toks and _clean_word(toks[0]) == "hero" and len(toks) > 1:
+        pos = _norm_pos(toks[1])
+        start = 2
+    elif toks:
+        pos = _norm_pos(toks[0])
+        start = 1
+    if pos is None and toks and _bb_number(toks[0]) is not None and len(toks) > 1:
+        pos = _norm_pos(toks[1])
+        start = 2
+    order = POSITION_ORDERS.get(8)
+    if not pos or not order or pos not in order:
+        return None
+    eff = next((_bb_number(t) for t in toks if _bb_number(t) is not None), None)
+    hero_hand, _street_hints = _extract_literal_hints(block)
+    if not eff or not hero_hand:
+        return None
+    code = _action_code_from_tokens(toks, start, default_stack=eff)
+    if code is None:
+        return None
+    parts = ["F"] * 8
+    if code != "F":
+        parts[order.index(pos)] = code
+    return {
+        "gametype": "MTTGeneral",
+        "players_at_table": 8,
+        "effective_bb": float(eff),
+        "hero_position": pos,
+        "hero_hand": hero_hand,
+        "preflop_actions": "-".join(parts),
+    }
+
+
 LIVE_HINT = (
     "補充：這是現場手牌速記，底池絕大多數是兩人。翻牌後只列實際行動的玩家，"
     "絕對不要替沒被提到的玩家（尤其已棄牌的 SB/BB）補 check。"
@@ -325,6 +527,7 @@ def parse_block(block: str, client=None, model: str | None = None,
     if extra_hint:
         prompt += f"\n\n{extra_hint}"
     prompt += f"\n\n用戶訊息：\n{block}"
+    fallback = parse_simple_preflop_block(block)
     for attempt in (1, 2):
         try:
             resp = client.models.generate_content(
@@ -338,11 +541,12 @@ def parse_block(block: str, client=None, model: str | None = None,
             hand = json.loads(js).get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") \
                     and hand.get("hero_hand"):
-                return repair_card_literals_from_block(block, hand)
-            return None
+                hand = repair_card_literals_from_block(block, hand)
+                return repair_preflop_literals_from_block(block, hand) if hand else None
+            return fallback
         except Exception:
             if attempt == 2:
-                return None
+                return fallback
             time.sleep(1.5)
     return None
 
@@ -394,6 +598,20 @@ def repair_hu_pot(hand: dict) -> dict:
         seat_toks = _preflop_seat_tokens(tokens, npl)
         if last_raise_i >= len(seat_toks):
             return hand
+        # A second common HU shorthand failure: after a 3bet, the parser assigns
+        # the opener's continuation fold/call to the wrong earlier caller.  If
+        # that seat never appears postflop and its last action after the final
+        # raise is a call, fold that ghost; the real HU opponent's missing call
+        # is appended below.
+        last_by_pos: dict[str, tuple[int, str]] = {}
+        for idx, (pos, code) in enumerate(seat_toks):
+            if code:
+                last_by_pos[pos] = (idx, code)
+        for g in {p for p, (_idx, code) in last_by_pos.items() if code != "F"} - actors:
+            idx, code = last_by_pos[g]
+            if idx > last_raise_i and code == "C":
+                tokens[idx] = "F"
+                seat_toks[idx] = (g, "F")
         last_raiser = seat_toks[last_raise_i][0]
         other = next(p for p in actors if p != last_raiser) \
             if last_raiser in actors else None

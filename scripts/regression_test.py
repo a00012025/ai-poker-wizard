@@ -14659,6 +14659,8 @@ def test_live_split_batch_header_variants():
         "Eff 15bb utg raise hero btn call ajo\n"      # hand: Eff header
         "Hero co all in aqo 16bb\n"                    # hand: Hero header (was a fake street)
         "UTG 10bb fold K9s\n"                          # hand: seat header
+        "Utg8 10bb hero all in a3s\n"                  # hand: live note UTG+N shorthand
+        "16bb u8 fold qjo\n"                           # hand: stack-first shorthand
         "+1 open hero co has 10bb fold A6s\n"          # hand: +1 header
         "7/3\n"                                         # noise: no letters
         "Hero lj all in A6o 10bb\n"                    # hand
@@ -14671,20 +14673,24 @@ def test_live_split_batch_header_variants():
         "4hQh2 bet 2.5 bb raise 8bb hero call")        # street
     blocks = split_batch(text)
     firsts = [b.splitlines()[0] for b in blocks]
-    assert_eq(len(blocks), 7)
+    assert_eq(len(blocks), 9)
     assert_true(firsts[1].startswith("Hero co all in"))
     assert_true(firsts[2].startswith("UTG 10bb"))
-    assert_true(firsts[3].startswith("+1 open"))
-    assert_true(firsts[4].startswith("Hero lj all in"))
+    assert_true(firsts[3].startswith("Utg8 10bb"))
+    assert_true(firsts[4].startswith("16bb u8"))
+    assert_true(firsts[5].startswith("+1 open"))
+    assert_true(firsts[6].startswith("Hero lj all in"))
     # the multi-street hand keeps its 4 board-led streets, drops the result line
-    multi = blocks[5]
+    multi = blocks[7]
     assert_eq(len(multi.splitlines()), 4)
     assert_true("Hero wins" not in multi and "7/3" not in multi)
-    assert_true(blocks[6].startswith("Hero 50bb"))
+    assert_true(blocks[8].startswith("Hero 50bb"))
     # predicate units
     assert_true(_is_noise("7/3") and _is_noise("Hero wins") and _is_noise("lose to TT"))
+    assert_true(_is_noise("> Should double barrel small") and _is_noise("### TMT 前哨 Day 2"))
     assert_true(not _is_noise("Hero lj all in A6o 10bb"))
     assert_true(_is_header("Hero co all in aqo 16bb") and _is_header("+1 open ..."))
+    assert_true(_is_header("Utg8 10bb hero all in a3s") and _is_header("16bb u8 fold qjo"))
     assert_true(not _is_header("Ad pot 25bb, x lj bet 10bb hero call"))  # board-led street
     # Chinese "有效" effective-stack header, spaced and glued
     assert_true(_is_header("有效 40bb hero co open KK") and _is_header("有效40bb hero co open KK"))
@@ -14754,6 +14760,36 @@ def test_live_parse_block_applies_card_literal_gate():
 
 
 @test
+def test_live_preflop_literal_repair_moves_explicit_hero_raise():
+    """If raw says 'hero HJ raise ... to 5bb' but Gemini mis-seats that first
+    round raise on CO, move the action back to hero before HU repair/validation."""
+    from live_flow import repair_preflop_literals_from_block
+    bad = {
+        "players_at_table": 8, "effective_bb": 40,
+        "hero_position": "HJ", "hero_hand": "AsKs",
+        "preflop_actions": "R2-F-F-F-R5-F-F-F-C",
+    }
+    fixed = repair_preflop_literals_from_block(
+        "Eff 40bb UTG raise hero hj raise AsKs to 5bb utg call",
+        bad,
+    )
+    assert_eq(fixed["preflop_actions"], "R2-F-F-R5-F-F-F-F-C")
+
+
+@test
+def test_live_simple_preflop_fallback_parses_terse_fold_row():
+    """Single-line live rows like 'Co 15.5bb fold a5o' do not need LLM
+    inference; parse them deterministically if Gemini abstains/fails."""
+    from live_flow import parse_simple_preflop_block
+    hand = parse_simple_preflop_block("Co 15.5bb fold a5o")
+    assert_true(hand is not None)
+    assert_eq(hand["hero_position"], "CO")
+    assert_eq(hand["effective_bb"], 15.5)
+    assert_eq(hand["hero_hand"], "A5o")
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-F-F")
+
+
+@test
 def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
     """Class-only live notes stay class-only (no false exact combo), but exact
     raw duplicates are refused instead of silently reaching the solver."""
@@ -14781,6 +14817,61 @@ def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
         dict(parsed, hero_hand="Qd7d", streets=[{"board": "Qd9h3c", "actions": []}]),
     )
     assert_true(dup is None)
+
+
+@test
+def test_live_card_literal_repair_accepts_street_labels_and_comments():
+    """Owner live notes may include Markdown quote coaching comments and
+    street labels. Comments are ignored; 'Flop 8s3s2d' still locks the board."""
+    from live_flow import repair_card_literals_from_block, split_batch
+    text = ("### TMT 前哨 Day 2\n"
+            "Eff 17bb lj raise hero bb call 54o\n"
+            "Flop 8s3s2d x lj b1.5 hero raise 5 lj c\n"
+            "8d hero all in 10bb Lj fold\n"
+            "> Turn should bet 20%?\n"
+            "Eff20bb Ac8c Lj open bb call\n"
+            "9c9s5c x b1.5 c")
+    blocks = split_batch(text)
+    assert_eq(len(blocks), 2)
+    assert_true(">" not in blocks[0] and "###" not in blocks[0])
+    fixed = repair_card_literals_from_block(blocks[0], {
+        "players_at_table": 8, "effective_bb": 17,
+        "hero_position": "BB", "hero_hand": "65o",
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [{"board": "9c4d2h", "actions": []}, {"card": "7d", "actions": []}],
+    })
+    assert_true(fixed is not None)
+    assert_eq(fixed["hero_hand"], "54o")
+    assert_eq(fixed["streets"][0]["board"], "8s3s2d")
+    assert_eq(fixed["streets"][1]["card"], "8d")
+
+
+@test
+def test_live_card_literal_repair_accepts_mixed_suited_flop_token():
+    """Flops like 6c4c3 / 4hQh2 mix exact-suit cards with a rank-only card.
+    They must still count as the flop literal; otherwise turn/river hints shift
+    and create duplicate-card validation failures."""
+    from live_flow import repair_card_literals_from_block
+    block = ("Eff 30bb Lj raise hj call hero bb call 6s5d\n"
+             "6c4c3 x lj bet 4bb hero raise 9bb lj call\n"
+             "Ad pot 25bb, x lj bet 10bb hero call\n"
+             "Jh x x")
+    parsed = {
+        "players_at_table": 8, "effective_bb": 30,
+        "hero_position": "BB", "hero_hand": "6s5d",
+        "preflop_actions": "F-F-R2-C-F-F-F-C",
+        "streets": [
+            {"card": "Ad", "actions": []},
+            {"card": "Jh", "actions": []},
+            {"card": "Jh", "actions": []},
+        ],
+    }
+    fixed = repair_card_literals_from_block(block, parsed)
+    assert_true(fixed is not None)
+    assert_eq(fixed["streets"][0]["board"][0:4], "6c4c")
+    assert_eq(fixed["streets"][0]["board"][4], "3")
+    assert_eq(fixed["streets"][1]["card"], "Ad")
+    assert_eq(fixed["streets"][2]["card"], "Jh")
 
 
 @test
@@ -14840,6 +14931,30 @@ def test_live_repair_hu_pot_and_ghost():
              "streets": [{"board": "Jc9d7h", "actions": [
                  {"position": "BB", "action": "X"}, {"position": "CO", "action": "X"}]}]}
     assert_eq(find_ghost(ghost), "UTG+1")
+
+
+@test
+def test_live_repair_hu_pot_continuation_ghost_call():
+    """3bet HU shorthand: CO opens, BTN calls, hero SB 3bets, CO folds,
+    BTN calls. Gemini can put the post-3bet call on CO, leaving CO as a
+    postflop ghost and omitting BTN's continuation call. Repair deterministically
+    folds the ghost continuation and appends the real HU caller."""
+    from live_flow import repair_hu_pot, find_ghost
+    bad = {"players_at_table": 8, "effective_bb": 100, "hero_position": "SB",
+           "hero_hand": "Ah6h",
+           "preflop_actions": "F-F-F-F-R2-C-R10-F-C",
+           "streets": [
+               {"board": "Kc2cJs", "actions": [
+                   {"position": "SB", "action": "R2.5", "size": 2.5},
+                   {"position": "BTN", "action": "C"}]},
+               {"card": "7d", "actions": [
+                   {"position": "SB", "action": "X"},
+                   {"position": "BTN", "action": "R7.5", "size": 7.5},
+                   {"position": "SB", "action": "F"}]},
+           ]}
+    fixed = repair_hu_pot(bad)
+    assert_eq(fixed["preflop_actions"], "F-F-F-F-R2-C-R10-F-F-C")
+    assert_true(find_ghost(fixed) is None)
 
 
 @test
