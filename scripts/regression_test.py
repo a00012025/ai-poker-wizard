@@ -14727,18 +14727,60 @@ def test_live_card_literal_repair_locks_raw_ranks():
                 {"position": "BB", "action": "F"}]},
         ],
     }
-    fixed = repair_card_literals_from_block(block, drifted)
+    fixed, notes = repair_card_literals_from_block(block, drifted)
     assert_true(fixed is not None)
     assert_eq(fixed["hero_hand"], "Qd7d")          # exact raw hero combo wins
     assert_eq(fixed["streets"][0]["board"][0::2], "Q93")  # raw rank-only board wins
     assert_eq(fixed["streets"][1]["card"], "2s")  # exact raw turn wins
     assert_eq(fixed["streets"][2]["card"], "9h")  # exact raw river wins
+    # every locked literal is reported so the owner can audit it in the echo
+    assert_true(any(n.startswith("hero_hand Jd7d→Qd7d") for n in notes))
+    assert_true(any(n.startswith("flop Jc9d3h→") for n in notes))
+    assert_true(any(n.startswith("turn 3s→2s") for n in notes))
+    assert_true(any(n.startswith("river 8h→9h") for n in notes))
+
+
+@test
+def test_live_card_literal_gate_refuses_street_count_mismatch():
+    """When raw street lines and parsed streets can't be aligned 1:1, refuse
+    honestly instead of zip-truncating (which would keep drifted cards on the
+    unmatched tail — exactly the corruption the gate exists to prevent)."""
+    from live_flow import repair_card_literals_from_block
+    block = ("Eff 50bb u+1 open hero bb Qd7d call\n"
+             "Q93 x x\n"
+             "2s b3 c\n"
+             "9h x b7 f")
+    base = {"players_at_table": 8, "effective_bb": 50,
+            "hero_position": "BB", "hero_hand": "Qd7d",
+            "preflop_actions": "F-R2-F-F-F-F-F-C"}
+    # Gemini merged/dropped a street: 3 raw street lines vs 2 parsed streets
+    short = dict(base, streets=[{"board": "Qc9d3h", "actions": []},
+                                {"card": "2s", "actions": []}])
+    fixed, notes = repair_card_literals_from_block(block, short)
+    assert_true(fixed is None)
+    assert_true(any("條街" in n for n in notes))
+    # preflop-only raw but Gemini fabricated a street -> refuse
+    fab = dict(base, streets=[{"board": "Ah7d2c", "actions": []}])
+    fixed2, _ = repair_card_literals_from_block(
+        "Hero bb 16bb Qd7d fold", fab)
+    assert_true(fixed2 is None)
+    # a malformed 2-card street token gives no hint -> counts mismatch -> refuse
+    typo = dict(base, streets=[{"board": "Qc9d3h", "actions": []}])
+    fixed3, _ = repair_card_literals_from_block(
+        "Eff 50bb u+1 open hero bb Qd7d call\nQ9 x x", typo)
+    assert_true(fixed3 is None)
+    # preflop-only both sides stays accepted, with no repair notes
+    ok, ok_notes = repair_card_literals_from_block(
+        "Hero bb 16bb Qd7d fold", dict(base))
+    assert_true(ok is not None and ok["hero_hand"] == "Qd7d")
+    assert_eq(ok_notes, [])
 
 
 @test
 def test_live_parse_block_applies_card_literal_gate():
-    """Integration: parse_block must apply the literal gate to Gemini output,
-    not just expose a helper that callers might forget to run."""
+    """Integration: parse_block must apply the literal gate to Gemini output —
+    locked literals surface as hand['_repairs']; an impossible raw literal
+    (duplicate card) returns a {'_refused': [...]} sentinel, never a hand."""
     from live_flow import parse_block
 
     class _Resp:
@@ -14758,26 +14800,16 @@ def test_live_parse_block_applies_card_literal_gate():
 
     hand = parse_block("Eff 50bb u+1 open hero bb Qd7d call\nQ93 x x",
                        client=_Client())
-    assert_true(hand is not None)
+    assert_true(hand is not None and not hand.get("_refused"))
     assert_eq(hand["hero_hand"], "Qd7d")
     assert_eq(hand["streets"][0]["board"][0::2], "Q93")
+    assert_true(any(n.startswith("hero_hand") for n in hand["_repairs"]))
 
-
-@test
-def test_live_preflop_literal_repair_moves_explicit_hero_raise():
-    """If raw says 'hero HJ raise ... to 5bb' but Gemini mis-seats that first
-    round raise on CO, move the action back to hero before HU repair/validation."""
-    from live_flow import repair_preflop_literals_from_block
-    bad = {
-        "players_at_table": 8, "effective_bb": 40,
-        "hero_position": "HJ", "hero_hand": "AsKs",
-        "preflop_actions": "R2-F-F-F-R5-F-F-F-C",
-    }
-    fixed = repair_preflop_literals_from_block(
-        "Eff 40bb UTG raise hero hj raise AsKs to 5bb utg call",
-        bad,
-    )
-    assert_eq(fixed["preflop_actions"], "R2-F-F-R5-F-F-F-F-C")
+    # raw duplicates hero's Jd on the flop -> honest refusal sentinel
+    refused = parse_block("Eff 50bb u+1 open hero bb Jd7d call\nJd93 x x",
+                          client=_Client())
+    assert_true(isinstance(refused, dict) and refused.get("_refused"))
+    assert_true("hero_position" not in refused)
 
 
 @test
@@ -14791,70 +14823,6 @@ def test_live_simple_preflop_fallback_parses_terse_fold_row():
     assert_eq(hand["effective_bb"], 15.5)
     assert_eq(hand["hero_hand"], "A5o")
     assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-F-F")
-
-
-@test
-def test_live_short_preflop_round_repair_inserts_blind_folds_before_continuation():
-    """8-max 3bet spots may parse as 7 tokens with hero's continuation call
-    immediately after the BTN 3bet. Insert missing SB/BB folds before that C."""
-    from live_flow import repair_short_preflop_round
-    hand = {"players_at_table": 8,
-            "preflop_actions": "F-F-F-R2-F-R5-C"}
-    fixed = repair_short_preflop_round(hand)
-    assert_eq(fixed["preflop_actions"], "F-F-F-R2-F-R5-F-F-C")
-
-
-@test
-def test_live_single_raise_first_round_repair_rebuilds_named_multiway_callers():
-    """One-raise multiway live shorthand names every first-round actor.  If
-    Gemini drops a seat and returns 7 tokens, rebuild from the raw header."""
-    from live_flow import repair_single_raise_first_round_from_block
-    hand = {"players_at_table": 8,
-            "preflop_actions": "F-F-R2-C-C-C-C"}
-    fixed = repair_single_raise_first_round_from_block(
-        "Eff 35bb LJ raise co call btn call hero sb call 5d5c bb call",
-        hand,
-    )
-    assert_eq(fixed["preflop_actions"], "F-F-R2-F-C-C-C-C")
-
-
-@test
-def test_live_first_round_repair_does_not_read_hand_as_raise_size():
-    """Bare hand tokens / annotations after 'raise' are not sizing.  Only
-    'to 5' or '5bb' should size a raise; otherwise default open size is R2."""
-    from live_flow import repair_single_raise_first_round_from_block
-    h1 = repair_single_raise_first_round_from_block(
-        "Eff 65bb +1 raise hero lj call 33 others fold",
-        {"players_at_table": 8, "preflop_actions": "F-R2-C-F-F-F-F-F"},
-    )
-    assert_eq(h1["preflop_actions"], "F-R2-C-F-F-F-F-F")
-    h2 = repair_single_raise_first_round_from_block(
-        "Eff 20bb Hero co raise 44 btn call",
-        {"players_at_table": 8, "preflop_actions": "F-F-F-F-R2-C-F-F"},
-    )
-    assert_eq(h2["preflop_actions"], "F-F-F-F-R2-C-F-F")
-    h3 = repair_single_raise_first_round_from_block(
-        "Eff 25bb Hero u open Ks7s (EV 0) btn call bb call",
-        {"players_at_table": 8, "preflop_actions": "R2-F-F-F-F-C-F-C"},
-    )
-    assert_eq(h3["preflop_actions"], "R2-F-F-F-F-C-F-C")
-
-
-@test
-def test_live_repair_impossible_facing_checks_removes_phantom_multiway_checks():
-    """After BTN bets, BB cannot check.  Such checks are parser hallucinations
-    for unlisted multiway seats and should be stripped before validation."""
-    from live_flow import repair_impossible_facing_checks
-    hand = {"streets": [{"board": "6h7hAs", "actions": [
-        {"position": "BB", "action": "X"},
-        {"position": "UTG", "action": "X"},
-        {"position": "BTN", "action": "R3", "size": 3},
-        {"position": "BB", "action": "X"},
-        {"position": "UTG", "action": "C"},
-    ]}]}
-    fixed = repair_impossible_facing_checks(hand)
-    assert_eq([(a["position"], a["action"]) for a in fixed["streets"][0]["actions"]],
-              [("BB", "X"), ("UTG", "X"), ("BTN", "R3"), ("UTG", "C")])
 
 
 @test
@@ -14874,17 +14842,18 @@ def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
                 {"position": "SB", "action": "X"}, {"position": "BB", "action": "X"}]},
         ],
     }
-    fixed = repair_card_literals_from_block(class_block, parsed)
+    fixed, _ = repair_card_literals_from_block(class_block, parsed)
     assert_true(fixed is not None)
     assert_eq(fixed["hero_hand"], "AJo")
     assert_eq(fixed["streets"][0]["board"][0::2], "K36")
     assert_eq(fixed["streets"][1]["card"][0], "K")
 
-    dup = repair_card_literals_from_block(
+    dup, dup_notes = repair_card_literals_from_block(
         "Eff 50bb hero bb Qd7d call\nQd9h3c x x",
         dict(parsed, hero_hand="Qd7d", streets=[{"board": "Qd9h3c", "actions": []}]),
     )
     assert_true(dup is None)
+    assert_true(dup_notes)   # refusal always says why (surfaced in the report)
 
 
 @test
@@ -14902,7 +14871,7 @@ def test_live_card_literal_repair_accepts_street_labels_and_comments():
     blocks = split_batch(text)
     assert_eq(len(blocks), 2)
     assert_true(">" not in blocks[0] and "###" not in blocks[0])
-    fixed = repair_card_literals_from_block(blocks[0], {
+    fixed, _ = repair_card_literals_from_block(blocks[0], {
         "players_at_table": 8, "effective_bb": 17,
         "hero_position": "BB", "hero_hand": "65o",
         "preflop_actions": "F-F-R2-F-F-F-F-C",
@@ -14934,7 +14903,7 @@ def test_live_card_literal_repair_accepts_mixed_suited_flop_token():
             {"card": "Jh", "actions": []},
         ],
     }
-    fixed = repair_card_literals_from_block(block, parsed)
+    fixed, _ = repair_card_literals_from_block(block, parsed)
     assert_true(fixed is not None)
     assert_eq(fixed["streets"][0]["board"][0:4], "6c4c")
     assert_eq(fixed["streets"][0]["board"][4], "3")
@@ -15002,27 +14971,40 @@ def test_live_repair_hu_pot_and_ghost():
 
 
 @test
-def test_live_repair_hu_pot_continuation_ghost_call():
-    """3bet HU shorthand: CO opens, BTN calls, hero SB 3bets, CO folds,
-    BTN calls. Gemini can put the post-3bet call on CO, leaving CO as a
-    postflop ghost and omitting BTN's continuation call. Repair deterministically
-    folds the ghost continuation and appends the real HU caller."""
-    from live_flow import repair_hu_pot, find_ghost
-    bad = {"players_at_table": 8, "effective_bb": 100, "hero_position": "SB",
-           "hero_hand": "Ah6h",
-           "preflop_actions": "F-F-F-F-R2-C-R10-F-C",
-           "streets": [
-               {"board": "Kc2cJs", "actions": [
-                   {"position": "SB", "action": "R2.5", "size": 2.5},
-                   {"position": "BTN", "action": "C"}]},
-               {"card": "7d", "actions": [
-                   {"position": "SB", "action": "X"},
-                   {"position": "BTN", "action": "R7.5", "size": 7.5},
-                   {"position": "SB", "action": "F"}]},
-           ]}
-    fixed = repair_hu_pot(bad)
-    assert_eq(fixed["preflop_actions"], "F-F-F-F-R2-C-R10-F-F-C")
-    assert_true(find_ghost(fixed) is None)
+def test_live_report_shows_repairs_and_refusal_echo():
+    """Repair visibility contract: any hand the pipeline auto-repaired is
+    listed under 🔧 with what changed (the owner's acceptance check is
+    eyeballing each echo — invisible repairs defeat it); a refused/failed hand
+    echoes its raw first line back so the owner can rewrite it."""
+    from live_flow import render_tg_html
+    dec = {"street": "flop", "idx": 0, "leaf": "flop:SRP:BBvEP:OOP:first_to_act",
+           "ev_loss": 0.2, "severity": "⚠️", "taken": "X", "best": "R3",
+           "taken_label": "Check", "best_label": "Bet 3bb", "gto_freq": 0.7,
+           "ungraded_reason": None, "discarded": False, "limp_origin": False}
+    result = {
+        "date": "2026-07-11",
+        "totals": {"hands": 3, "decisions": 2, "graded": 2, "mistakes": 1,
+                   "parse_failed": 1},
+        "hands": [
+            {"idx": 1, "ok": True, "hand_id": "live:d:1", "echo": "BB Qd7d 50bb",
+             "repairs": ["hero_hand Jd7d→Qd7d", "flop Jc9d3h→Qc9d3h"],
+             "decisions": [dec]},
+            {"idx": 2, "ok": True, "hand_id": "live:d:2", "echo": "CO AhKh 30bb",
+             "repairs": [], "decisions": [dict(dec, ev_loss=0.0, severity="✅")]},
+            {"idx": 3, "ok": False, "error": "literal_conflict",
+             "refusal": ["river 出現重複牌"],
+             "raw": "Eff 50bb hero co KsJd open bb call\nJd x x",
+             "decisions": []},
+        ],
+        "queue": [],
+    }
+    html = render_tg_html(result)
+    assert_in("🔧", html)
+    assert_in("hero_hand Jd7d→Qd7d", html)
+    assert_true("Hand 2" in html)                       # clean hand untouched
+    assert_in("river 出現重複牌", html)                  # refusal reason surfaced
+    assert_in("Eff 50bb hero co KsJd open bb call", html)  # raw echoed for rewrite
+    assert_in("請改寫", html)
 
 
 @test

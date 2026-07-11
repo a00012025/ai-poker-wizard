@@ -223,7 +223,10 @@ def _card_specs_from_street_token(tok: str) -> list[tuple[str, str | None]]:
             i += 1
         out.append((r, suit))
         i += 1
-    return out if 1 <= len(out) <= 3 else []
+    # only a flop (3) or a turn/river card (1) is a street literal; a 2-card
+    # token is a typo or a hand-class annotation — treat as "no hint" and let
+    # the street-count alignment check decide
+    return out if len(out) in (1, 3) else []
 
 
 def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str, str | None]]]]:
@@ -303,99 +306,63 @@ def _cards_from_specs(specs: list[tuple[str, str | None]], parsed: str,
     return "".join(out)
 
 
-def repair_card_literals_from_block(block: str, hand: dict) -> dict | None:
+_STREET_NAMES = ("flop", "turn", "river")
+
+
+def _street_name(i: int) -> str:
+    return _STREET_NAMES[i] if i < len(_STREET_NAMES) else f"street{i + 1}"
+
+
+def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None, list[str]]:
     """Lock hero/board card literals to the raw live note before grading.
 
-    Returns a repaired copy of ``hand``.  If the raw exact literals are internally
-    impossible (e.g. duplicate exact card), returns None so the caller refuses
-    the parse instead of feeding a silently corrupted hand to the solver.
+    Returns ``(repaired_copy, notes)``. ``notes`` lists every literal actually
+    changed — surfaced as 🔧 in the report so the owner can audit the echo
+    (repairs must never be invisible). Returns ``(None, [reason])`` — an honest
+    refusal — when the raw literals cannot be applied faithfully: a duplicated
+    exact card, or raw street lines that don't align 1:1 with the parsed
+    streets (zip-truncating would silently keep drifted cards on the tail —
+    exactly the corruption this gate exists to prevent).
     """
     hero_hint, street_hints = _extract_literal_hints(block)
     repaired = json.loads(json.dumps(hand))
+    notes: list[str] = []
     used: set[str] = set()
 
     if hero_hint:
+        old = repaired.get("hero_hand") or ""
+        if old != hero_hint:
+            notes.append(f"hero_hand {old or '?'}→{hero_hint}")
         repaired["hero_hand"] = hero_hint
         if len(hero_hint) == 4 and _CARD_RE.match(hero_hint[:2]) and _CARD_RE.match(hero_hint[2:]):
             hero_cards = _split_cards(hero_hint)
             if len(set(hero_cards)) != 2:
-                return None
+                return None, [f"hero 手牌重複牌：{hero_hint}"]
             used.update(hero_cards)
 
     streets = repaired.get("streets") or []
-    for st, specs in zip(streets, street_hints):
+    if len(street_hints) != len(streets):
+        return None, [f"原文 {len(street_hints)} 條街 vs 解析出 {len(streets)} 條街，"
+                      f"牌面無法對齊"]
+    for i, (st, specs) in enumerate(zip(streets, street_hints)):
+        old = st.get("board") or st.get("card") or ""
         if len(specs) == 3:
             fixed = _cards_from_specs(specs, st.get("board") or "", used)
             if fixed is None:
-                return None
+                return None, [f"{_street_name(i)} 出現重複牌"]
             st["board"] = fixed
             st.pop("card", None)
-            used.update(_split_cards(fixed))
-        elif len(specs) == 1:
+        else:   # 1-card street: _card_specs_from_street_token only emits 1 or 3
             fixed = _cards_from_specs(specs, st.get("card") or "", used)
             if fixed is None:
-                return None
+                return None, [f"{_street_name(i)} 出現重複牌"]
             st["card"] = fixed
             st.pop("board", None)
-            used.update(_split_cards(fixed))
+        used.update(_split_cards(fixed))
+        if old != fixed:
+            notes.append(f"{_street_name(i)} {old or '?'}→{fixed}")
 
-    return repaired
-
-
-def _raw_hero_action_from_header(block: str, hero_pos: str) -> str | None:
-    """Extract an explicit ``hero <pos> <action>`` preflop action from raw text.
-
-    This is deliberately narrow: it only trusts raw notes that name both
-    ``hero`` and the parsed hero position next to it.  It repairs deterministic
-    mis-seating (e.g. ``hero hj raise ... to 5bb`` parsed as CO raising) without
-    trying to replace Gemini's whole action parser.
-    """
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
-    if not lines:
-        return None
-    toks = re.split(r"\s+", lines[0])
-    for i, tok in enumerate(toks):
-        if _clean_word(tok) != "hero" or i + 1 >= len(toks):
-            continue
-        if _norm_pos(toks[i + 1]) != hero_pos:
-            continue
-        j = i + 2
-        # Common live note: "hero hj has 10bb fold".
-        if j < len(toks) and _clean_word(toks[j]) == "has":
-            j += 1
-            if j < len(toks) and _bb_number(toks[j]) is not None:
-                j += 1
-        for k in range(j, min(len(toks), j + 8)):
-            t = _clean_word(toks[k])
-            if t in {"fold", "f"}:
-                return "F"
-            if t in {"call", "c"}:
-                return "C"
-            if t in {"x", "check"}:
-                return "X"
-            if t in {"all", "ai", "jam", "shove"}:
-                size = None
-                if t == "all" and k + 1 < len(toks) and _clean_word(toks[k + 1]) == "in":
-                    size = _bb_number(toks[k + 2]) if k + 2 < len(toks) else None
-                else:
-                    size = _bb_number(toks[k + 1]) if k + 1 < len(toks) else None
-                return "AI" + (size or "")
-            if t in {"raise", "open", "r", "3b", "3bet"}:
-                size = None
-                for m in range(k + 1, min(len(toks), k + 8)):
-                    if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
-                        size = _bb_number(toks[m + 1])
-                        break
-                    cand = _bb_number_with_unit(toks[m])
-                    if cand is not None:
-                        size = cand
-                        break
-                if size:
-                    return "R" + size
-                if t in {"raise", "open", "r"}:
-                    return "R2"
-        return None
-    return None
+    return repaired, notes
 
 
 def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
@@ -429,129 +396,6 @@ def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | N
             if t in {"raise", "open", "r"}:
                 return "R2"
     return None
-
-
-def repair_preflop_literals_from_block(block: str, hand: dict) -> dict:
-    """Repair narrow raw-vs-parse preflop action mis-seating.
-
-    Example: raw says ``UTG raise hero HJ raise ... to 5bb UTG call`` but
-    Gemini can put the R5 on CO and leave HJ folded.  If raw explicitly names
-    hero's position and action, and parsed first-round hero action is folded,
-    move that action back onto hero and fold the single duplicate aggressive
-    action seat.
-    """
-    from hh_parser import POSITION_ORDERS
-    hero_pos = hand.get("hero_position")
-    raw_code = _raw_hero_action_from_header(block, hero_pos or "")
-    if not hero_pos or not raw_code:
-        return hand
-    npl = hand.get("players_at_table") or 8
-    order = POSITION_ORDERS.get(npl)
-    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
-    if not order or hero_pos not in order or len(parts) < npl:
-        return hand
-    hero_i = order.index(hero_pos)
-    r1 = parts[:npl]
-    if r1[hero_i] == raw_code:
-        return hand
-    # Stay conservative: do not overwrite a non-fold hero action.
-    if r1[hero_i] not in ("F", ""):
-        return hand
-    r1[hero_i] = raw_code
-    if raw_code.startswith(("R", "AI")):
-        dup = [i for i, code in enumerate(r1) if i != hero_i and code == raw_code]
-        if len(dup) == 1:
-            r1[dup[0]] = "F"
-    hand["preflop_actions"] = "-".join(r1 + parts[npl:])
-    return hand
-
-
-def _raw_first_round_from_header(block: str, npl: int) -> list[str] | None:
-    from hh_parser import POSITION_ORDERS
-    order = POSITION_ORDERS.get(npl)
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
-    if not order or not lines:
-        return None
-    toks = re.split(r"\s+", lines[0])
-    r1 = ["F"] * npl
-    found = False
-    i = 0
-    while i < len(toks):
-        pos = None
-        start = i + 1
-        if _clean_word(toks[i]) == "hero" and i + 1 < len(toks) and _norm_pos(toks[i + 1]):
-            pos = _norm_pos(toks[i + 1])
-            start = i + 2
-        else:
-            pos = _norm_pos(toks[i])
-        if pos in order:
-            code = _action_code_from_tokens(toks, start)
-            if code:
-                r1[order.index(pos)] = code
-                found = True
-        i += 1
-    return r1 if found else None
-
-
-def repair_single_raise_first_round_from_block(block: str, hand: dict) -> dict:
-    """Rebuild a short first round for one-raise multiway shorthand.
-
-    Example: ``LJ raise CO call BTN call hero SB call BB call`` can come back
-    as 7 tokens (missing one seat).  Since every first-round actor is named in
-    the raw header and there is only one raise, reconstruct the 8-seat round.
-    """
-    npl = hand.get("players_at_table") or 8
-    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
-    if len(parts) > npl:
-        return hand
-    raw = _raw_first_round_from_header(block, npl)
-    if not raw:
-        return hand
-    if sum(1 for p in raw if p.upper().startswith(("R", "AI"))) == 1:
-        hand["preflop_actions"] = "-".join(raw + parts[npl:])
-    return hand
-
-
-def repair_short_preflop_round(hand: dict) -> dict:
-    """Pad missing first-round folds before a clear continuation action.
-
-    Gemini sometimes emits ``F-F-F-R2-F-R5-C`` for "HJ opens, BTN 3bets,
-    hero calls" on an 8-max table: SB/BB folds are missing, so the final C is
-    actually HJ's continuation action.  Insert the absent blind folds before
-    that trailing continuation.
-    """
-    npl = hand.get("players_at_table") or 8
-    parts = [p for p in (hand.get("preflop_actions") or "").split("-") if p]
-    if len(parts) >= npl or len(parts) < 2:
-        return hand
-    aggs = [p for p in parts[:-1] if p.upper().startswith(("R", "AI"))]
-    if len(aggs) >= 2 and parts[-1] in {"C", "F"}:
-        missing = npl - (len(parts) - 1)
-        if 0 < missing <= 3:
-            hand["preflop_actions"] = "-".join(parts[:-1] + ["F"] * missing + [parts[-1]])
-    return hand
-
-
-def repair_impossible_facing_checks(hand: dict) -> dict:
-    """Drop impossible postflop checks after a bet/raise is already pending.
-
-    Live shorthand often omits inactive multiway players after the aggressor
-    bets. Gemini sometimes fills those seats with phantom checks, which are
-    illegal while facing a bet and make validation fail. Removing only these
-    impossible checks is deterministic and conservative.
-    """
-    for st in hand.get("streets") or []:
-        fixed = []
-        facing_bet = False
-        for a in st.get("actions") or []:
-            act = a.get("action") or ""
-            if act == "X" and facing_bet:
-                continue
-            fixed.append(a)
-            if act.startswith(("R", "AI")):
-                facing_bet = True
-        st["actions"] = fixed
-    return hand
 
 
 def parse_simple_preflop_block(block: str) -> dict | None:
@@ -611,6 +455,11 @@ LIVE_HINT = (
 
 def parse_block(block: str, client=None, model: str | None = None,
                 extra_hint: str = "") -> dict | None:
+    """Parse one live-hand block. Returns the hand dict (with
+    ``hand["_repairs"]`` notes when the card-literal gate changed anything),
+    ``{"_refused": [reasons]}`` when the raw literals are internally impossible
+    (refuse honestly, never feed the solver a corrupted hand), or None when
+    parsing failed outright."""
     from google import genai
     from google.genai import types
     from src.gemini_session import PARSE_PROMPT
@@ -633,20 +482,20 @@ def parse_block(block: str, client=None, model: str | None = None,
             m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             js = m.group(1) if m else text.strip()
             hand = json.loads(js).get("hand")
-            if hand and hand.get("hero_position") and hand.get("preflop_actions") \
-                    and hand.get("hero_hand"):
-                hand = repair_card_literals_from_block(block, hand)
-                if not hand:
-                    return None
-                hand = repair_preflop_literals_from_block(block, hand)
-                hand = repair_single_raise_first_round_from_block(block, hand)
-                hand = repair_short_preflop_round(hand)
-                return repair_impossible_facing_checks(hand)
-            return fallback
         except Exception:
             if attempt == 2:
                 return fallback
             time.sleep(1.5)
+            continue
+        if hand and hand.get("hero_position") and hand.get("preflop_actions") \
+                and hand.get("hero_hand"):
+            gated, notes = repair_card_literals_from_block(block, hand)
+            if gated is None:
+                return {"_refused": notes or ["牌面字面值衝突"]}
+            if notes:
+                gated["_repairs"] = notes
+            return gated
+        return fallback
     return None
 
 
@@ -697,20 +546,6 @@ def repair_hu_pot(hand: dict) -> dict:
         seat_toks = _preflop_seat_tokens(tokens, npl)
         if last_raise_i >= len(seat_toks):
             return hand
-        # A second common HU shorthand failure: after a 3bet, the parser assigns
-        # the opener's continuation fold/call to the wrong earlier caller.  If
-        # that seat never appears postflop and its last action after the final
-        # raise is a call, fold that ghost; the real HU opponent's missing call
-        # is appended below.
-        last_by_pos: dict[str, tuple[int, str]] = {}
-        for idx, (pos, code) in enumerate(seat_toks):
-            if code:
-                last_by_pos[pos] = (idx, code)
-        for g in {p for p, (_idx, code) in last_by_pos.items() if code != "F"} - actors:
-            idx, code = last_by_pos[g]
-            if idx > last_raise_i and code == "C":
-                tokens[idx] = "F"
-                seat_toks[idx] = (g, "F")
         last_raiser = seat_toks[last_raise_i][0]
         other = next(p for p in actors if p != last_raiser) \
             if last_raiser in actors else None
@@ -997,14 +832,19 @@ def process_batch(text: str, date_str: str | None = None,
         progress(f"[{i}/{len(blocks)}] parsing...")
         entry = {"idx": i, "raw": block, "hand_id": None, "ok": False,
                  "error": None, "echo": None, "decisions": [],
-                 "validation_soft": []}
+                 "validation_soft": [], "repairs": []}
         result["hands"].append(entry)
         hand = parse_block(block)
-        if hand is None:
-            entry["error"] = "parse_failed"
+        if hand is None or hand.get("_refused"):
+            entry["error"] = "parse_failed" if hand is None else "literal_conflict"
+            entry["refusal"] = list((hand or {}).get("_refused") or [])
             result["totals"]["parse_failed"] += 1
             continue
+        repairs = list(hand.pop("_repairs", []))
+        pre_repair = json.dumps(hand, sort_keys=True)
         hand = repair_hu_pot(hand)
+        if json.dumps(hand, sort_keys=True) != pre_repair:
+            repairs.append("HU pot 動作歸屬修補")
         ghost = find_ghost(hand)
         if ghost:
             # semantic contradiction (a live preflop seat never acts in a HU
@@ -1016,10 +856,12 @@ def process_batch(text: str, date_str: str | None = None,
                     f"（continuation call 屬於原加注者），確保翻牌後的兩位玩家 preflop 都未棄牌、"
                     f"其他人都已棄牌。")
             hand2 = parse_block(block, extra_hint=hint)
-            if hand2:
+            if hand2 and not hand2.get("_refused"):
+                repairs2 = list(hand2.pop("_repairs", []))
                 hand2 = repair_hu_pot(hand2)
                 if find_ghost(hand2) is None:
                     hand = hand2
+                    repairs = repairs2 + ["矛盾重解析（動作歸屬重判）"]
                     ghost = None
         if ghost:
             entry["error"] = "parse_inconsistent"
@@ -1027,6 +869,7 @@ def process_batch(text: str, date_str: str | None = None,
                 f"{ghost} preflop 未棄牌但翻牌後從未行動 — 動作歸屬解析不一致，請人工確認"]
             result["totals"]["parse_failed"] += 1
             continue
+        entry["repairs"] = repairs
         rep = validate_hand(hand)
         if not rep.ok:
             entry["error"] = "validation_failed"
@@ -1049,6 +892,8 @@ def process_batch(text: str, date_str: str | None = None,
         except Exception as e:
             entry["error"] = f"grading_failed: {e}"
             continue
+        if repairs:
+            hand["_repairs"] = repairs   # audit trail into ledger parsed_json
         hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap)
         entry["ok"] = True
         entry["hand_row"] = hand_row
@@ -1145,9 +990,19 @@ def render_tg_html(result: dict) -> str:
         L.append(f"✅ 無明顯偏差：{ids}")
     for h in failed:
         why = h.get("error") or "?"
-        extra = "；".join(h.get("validation_hard") or [])
+        extra = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
         L.append(f"❗ <b>Hand {h['idx']}</b> 解析失敗（{escape(why)}）"
-                 f"{('：' + escape(extra)) if extra else ''} — 可修正後重傳")
+                 f"{('：' + escape(extra)) if extra else ''}")
+        raw_lines = (h.get("raw") or "").strip().splitlines()
+        if raw_lines:
+            L.append(f"　原文「{escape(raw_lines[0][:60])}」— 請改寫後重傳")
+
+    repaired = [h for h in result["hands"] if h.get("ok") and h.get("repairs")]
+    if repaired:
+        L.append("")
+        L.append(f"🔧 {len(repaired)} 手經自動修補，請核對 echo 與原文一致：")
+        for h in repaired:
+            L.append(f"・Hand {h['idx']}：{escape('；'.join(h['repairs']))}")
     if result["queue"]:
         L.append("")
         L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看，週日課表會帶到）")
@@ -1211,9 +1066,13 @@ def main():
           f"{t['parse_failed']} parse-failed ==")
     for h in result["hands"]:
         if not h.get("ok"):
-            print(f"Hand {h['idx']}: FAILED {h.get('error')}")
+            why = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
+            print(f"Hand {h['idx']}: FAILED {h.get('error')}"
+                  f"{(' — ' + why) if why else ''}")
             continue
         print(f"Hand {h['idx']}: {h['echo']}")
+        if h.get("repairs"):
+            print(f"  REPAIRS: {'; '.join(h['repairs'])}")
         for d in h["decisions"]:
             ev = f"{d['ev_loss']:.2f}bb" if d["ev_loss"] is not None else "-"
             why = f" [{d['ungraded_reason']}]" if d.get("ungraded_reason") else ""
