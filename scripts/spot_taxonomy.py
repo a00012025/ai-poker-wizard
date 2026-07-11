@@ -176,26 +176,34 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
 
     if raise_count == 2:
         if hero_raised and hero_raise_level == 1:      # hero opened, faces 3bet/squeeze
+            rel = ip_oop(hero, three_bettor, npl)
+            vc = pos_cat(three_bettor)
             if caller_before_3bet:
                 return {"category": "vsSqueeze", "l1": f"{hc}_vsSqueeze",
-                        "l2": f"{hc}_vsSqueeze_{ip_oop(hero, three_bettor, npl)}",
+                        "l2": f"{hc}_vsSqueeze_v{vc}_{rel}",
                         "villain": three_bettor, "note": ""}
+            # The 3-bettor's position drives their 3bet range (an SB 3bet, a BB
+            # 3bet and an IP cold-3bet are very different ranges), so it is part
+            # of the action-line key, not just a stored attribute.
             return {"category": "vs3bet", "l1": f"{hc}_vs3bet",
-                    "l2": f"{hc}_vs3bet_{ip_oop(hero, three_bettor, npl)}",
+                    "l2": f"{hc}_vs3bet_v{vc}_{rel}",
                     "villain": three_bettor, "note": ""}
         # hero did not open but faces a 3bet (cold-caller or blind) -> vsCold3bet
+        rel = ip_oop(hero, three_bettor, npl)
         return {"category": "vsCold3bet", "l1": f"{hc}_vsCold3bet",
-                "l2": f"{hc}_vsCold3bet_{ip_oop(hero, three_bettor, npl)}",
+                "l2": f"{hc}_vsCold3bet_v{pos_cat(three_bettor)}_{rel}",
                 "villain": three_bettor, "note": ""}
 
     if raise_count == 3:
+        rel = ip_oop(hero, last_raiser, npl)
+        vc = pos_cat(last_raiser)
         if hero_raised and hero_raise_level == 2:      # hero 3bet, faces 4bet
             return {"category": "vs4bet", "l1": f"{hc}_vs4bet",
-                    "l2": f"{hc}_vs4bet_{ip_oop(hero, last_raiser, npl)}",
+                    "l2": f"{hc}_vs4bet_v{vc}_{rel}",
                     "villain": last_raiser, "note": ""}
         # hero opened or is cold, a 3bet then 4bet came, hero faces the 4bet -> vsCold4bet
         return {"category": "vsCold4bet", "l1": f"{hc}_vsCold4bet",
-                "l2": f"{hc}_vsCold4bet_{ip_oop(hero, last_raiser, npl)}",
+                "l2": f"{hc}_vsCold4bet_v{vc}_{rel}",
                 "villain": last_raiser, "note": ""}
 
     return {"category": "other", "l1": "other:5bet_plus", "l2": None,
