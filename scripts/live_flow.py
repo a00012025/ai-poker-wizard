@@ -290,6 +290,35 @@ def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str,
     return hero_hand, streets
 
 
+def _raw_street_lines(block: str) -> list[str]:
+    """Street lines from the raw note (non-noise lines after the header)."""
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    return lines[1:] if len(lines) > 1 else []
+
+
+def _street_alignment_retry_hint(block: str, reasons: list[str]) -> str:
+    """User-note-aware retry instruction when Gemini drops/merges a street."""
+    _hero, street_hints = _extract_literal_hints(block)
+    raw_streets = _raw_street_lines(block)
+    street_bits = []
+    for idx, (line, specs) in enumerate(zip(raw_streets, street_hints), 1):
+        ranks = "".join(r + (s or "") for r, s in specs)
+        street_bits.append(f"{idx}. {ranks}: {line}")
+    listed = "；".join(street_bits) if street_bits else "（無）"
+    return (
+        "上一次解析的街數與原文不一致："
+        f"{'；'.join(reasons)}。原文中每一行牌面都是一條獨立街，"
+        "尤其像「A x x」代表 turn 兩人 check，不能省略、不能跟下一行 river 合併。"
+        f"請輸出剛好 {len(street_hints)} 個 streets，逐行對齊：{listed}。"
+        "如果某一行的對手位置縮寫與 preflop 存活玩家不一致，但底池是 HU，"
+        "請保留該街並把動作歸給唯一對手，不要刪街。"
+    )
+
+
+def _is_street_count_refusal(notes: list[str]) -> bool:
+    return any("條街" in n and "解析出" in n for n in notes)
+
+
 def _split_cards(s: str) -> list[str]:
     return [s[i:i + 2] for i in range(0, len(s or ""), 2)]
 
@@ -327,6 +356,31 @@ _STREET_NAMES = ("flop", "turn", "river")
 
 def _street_name(i: int) -> str:
     return _STREET_NAMES[i] if i < len(_STREET_NAMES) else f"street{i + 1}"
+
+
+def _literal_change_note(label: str, old: str, fixed: str,
+                         specs: list[tuple[str, str | None]]) -> str | None:
+    """Return a repair note only for user-visible literal changes.
+
+    Raw rank-only cards intentionally get deterministic filler suits before
+    solver lookup.  If the only difference is such a filler suit (e.g. raw
+    "6c4c3" and Gemini chose 3h while we chose 3d), that is not something the
+    user can or should "fix", so do not surface it as a scary auto-repair.
+    """
+    if old == fixed:
+        return None
+    old_cards = _split_cards(old) if old and len(old) % 2 == 0 else []
+    fixed_cards = _split_cards(fixed)
+    if len(old_cards) != len(fixed_cards) or len(specs) != len(fixed_cards):
+        return f"{label} {old or '?'}→{fixed}"
+    for old_card, fixed_card, (raw_rank, raw_suit) in zip(old_cards, fixed_cards, specs):
+        old_rank = _canon_rank(old_card[0])
+        old_suit = old_card[1].lower() if len(old_card) > 1 else None
+        if old_rank != raw_rank:
+            return f"{label} {old or '?'}→{fixed}"
+        if raw_suit is not None and old_suit != raw_suit:
+            return f"{label} {old or '?'}→{fixed}"
+    return None
 
 
 def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None, list[str]]:
@@ -380,8 +434,9 @@ def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None
             st.pop("board", None)
         used.update(_split_cards(fixed))
         used_suits.update(c[1] for c in _split_cards(fixed))
-        if old != fixed:
-            notes.append(f"{_street_name(i)} {old or '?'}→{fixed}")
+        note = _literal_change_note(_street_name(i), old, fixed, specs)
+        if note:
+            notes.append(note)
 
     return repaired, notes
 
@@ -492,7 +547,10 @@ def parse_block(block: str, client=None, model: str | None = None,
         prompt += f"\n\n{extra_hint}"
     prompt += f"\n\n用戶訊息：\n{block}"
     fallback = parse_simple_preflop_block(block)
-    for attempt in (1, 2):
+    literal_retry_used = False
+    attempt = 0
+    while attempt < 3:
+        attempt += 1
         try:
             resp = client.models.generate_content(
                 model=model, contents=prompt,
@@ -504,7 +562,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             js = m.group(1) if m else text.strip()
             hand = json.loads(js).get("hand")
         except Exception:
-            if attempt == 2:
+            if attempt >= 2:
                 return fallback
             time.sleep(1.5)
             continue
@@ -512,6 +570,11 @@ def parse_block(block: str, client=None, model: str | None = None,
                 and hand.get("hero_hand"):
             gated, notes = repair_card_literals_from_block(block, hand)
             if gated is None:
+                if _is_street_count_refusal(notes) and not literal_retry_used:
+                    literal_retry_used = True
+                    prompt += f"\n\n{_street_alignment_retry_hint(block, notes)}"
+                    time.sleep(0.5)
+                    continue
                 return {"_refused": notes or ["牌面字面值衝突"]}
             if notes:
                 gated["_repairs"] = notes
@@ -1008,6 +1071,47 @@ async def persist(result: dict) -> None:
 
 
 # ── TG rendering (HTML + inline-button payload) ──────────────────────────────
+def _repair_explanation(note: str) -> str:
+    if note == "HU pot 動作歸屬修補":
+        return "翻後 HU 動作歸屬校正：移除已棄牌玩家的 phantom 行動，並按兩人順序重排 check/bet/call"
+    if note.startswith("矛盾重解析"):
+        return "偵測到 preflop 存活玩家與翻後行動者不一致，已要求模型重判位置"
+    if note.startswith("hero_hand "):
+        return f"手牌字面校正（以你原文為準）：{note}"
+    if any(note.startswith(prefix) for prefix in ("flop ", "turn ", "river ")):
+        return f"牌面字面校正（以你原文為準）：{note}"
+    return note
+
+
+def _failure_help(h: dict) -> tuple[str, str]:
+    why = h.get("error") or "?"
+    extra = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
+    if why == "literal_conflict" and "條街" in extra:
+        return (
+            "街數對不起來",
+            "我讀到的街數和解析模型輸出的街數不同；常見原因是「A x x」這種 check-through 街被模型跟下一行合併。請把 Flop / Turn / River 各自獨立一行，必要時補上對手位置。"
+        )
+    if why == "literal_conflict":
+        return (
+            "牌面字面值衝突",
+            f"{extra or '原文牌面和解析牌面無法安全對齊'}。請重傳該手，補明 hero 手牌與每街牌面。"
+        )
+    if why == "parse_inconsistent":
+        return (
+            "動作歸屬矛盾",
+            f"{extra or 'preflop 存活玩家與翻後行動者不一致'}。請重傳該手，明寫誰 call / fold，以及翻後每個動作屬於誰。"
+        )
+    if why == "validation_failed":
+        return (
+            "動作線不合法",
+            f"{extra or '這條線不能重播成合法牌局'}。請檢查是否少寫 call/fold、位置，或有人 fold 後又行動。"
+        )
+    return (
+        why,
+        f"{extra or '模型沒有產生可評分的手牌'}。請用「Eff + 位置 + 手牌 + Flop/Turn/River」格式重傳該手。"
+    )
+
+
 def render_tg_html(result: dict) -> str:
     t = result["totals"]
     L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 個決策節點</b>"]
@@ -1056,26 +1160,29 @@ def render_tg_html(result: dict) -> str:
         ids = ", ".join(f"Hand {h['idx']}" for h in clean_hands)
         L.append(f"✅ 無明顯偏差：{ids}")
     for h in failed:
-        why = h.get("error") or "?"
-        extra = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
-        L.append(f"❗ <b>Hand {h['idx']}</b> 解析失敗（{escape(why)}）"
-                 f"{('：' + escape(extra)) if extra else ''}")
+        title, help_text = _failure_help(h)
+        L.append(f"❗ <b>Hand {h['idx']}</b> 無法安全評分：{escape(title)}")
+        L.append(f"　原因 / 怎麼修：{escape(help_text)}")
         raw_lines = (h.get("raw") or "").strip().splitlines()
         if raw_lines:
-            L.append(f"　原文「{escape(raw_lines[0][:60])}」— 請改寫後重傳")
+            L.append(f"　原文開頭：{escape(raw_lines[0][:80])}")
+            L.append("　可直接重傳這一手；建議格式：Header / Flop / Turn / River 各一行。")
 
     repaired = [h for h in result["hands"] if h.get("ok") and h.get("repairs")]
     if repaired:
         L.append("")
-        L.append(f"🔧 {len(repaired)} 手經自動修補，請核對 echo 與原文一致：")
+        L.append(f"🔧 {len(repaired)} 手已自動校正後送 solver（這不是偏差）：")
+        L.append("　請只核對每手 echo 是否符合你的原意；若不對，重傳該手即可。")
         for h in repaired:
-            L.append(f"・Hand {h['idx']}：{escape('；'.join(h['repairs']))}")
+            reasons = "；".join(_repair_explanation(str(r)) for r in h["repairs"])
+            L.append(f"・Hand {h['idx']} {escape(h.get('echo') or '')}")
+            L.append(f"　校正：{escape(reasons)}")
     if result["queue"]:
         L.append("")
         L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看，週日課表會帶到）")
     L.append("")
     L.append("⚠️ 評分為 chipEV 近似（現場賽段未知）；limp pot 節點不評分。"
-             "解析有誤請回覆更正，例如「Hand 3 的 board 是 …」。")
+             "解析有誤請重傳單手，或回覆更正，例如「Hand 3 的 turn 是 Ah、river 是 2c」。")
     return "\n".join(L)
 
 
