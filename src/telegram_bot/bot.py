@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -1436,10 +1437,15 @@ class PokerWizardBot:
         await query.answer()
         hand_id = data[4:]                          # lvd:<hand_id>
         raw = None
+        hand_json = None
         if self.db and self.db.pool:
-            raw = await self.db.pool.fetchval(
-                "SELECT raw_text FROM ledger_hands WHERE gtow_hand_id=$1", hand_id)
-        if not raw:
+            row = await self.db.pool.fetchrow(
+                "SELECT raw_text, parsed_json FROM ledger_hands "
+                "WHERE gtow_hand_id=$1 AND source='live'", hand_id)
+            if row:
+                raw = row["raw_text"]
+                hand_json = self._decode_live_parsed_json(row["parsed_json"])
+        if not raw or not hand_json:
             await context.bot.send_message(chat_id, "找不到這手的原始記錄。")
             return
         label = f"live-detail-{chat_id}"
@@ -1453,9 +1459,8 @@ class PokerWizardBot:
 
         refresh_token = await self._get_user_refresh_token(user_id)
         try:
-            response = await self.session_manager.send_message(
-                chat_id, raw, on_status=_on_status,
-                user_id=user_id, refresh_token=refresh_token)
+            response = await self._analyze_live_parsed_hand(
+                chat_id, user_id, hand_id, hand_json, _on_status, refresh_token)
             await status_msg.delete()
             if response and response.strip():
                 response, markup = self._finalize_followups(
@@ -1479,6 +1484,96 @@ class PokerWizardBot:
             except Exception:
                 pass
             await context.bot.send_message(chat_id, "抱歉，深入分析時出錯了。")
+
+    @staticmethod
+    def _decode_live_parsed_json(value) -> dict | None:
+        """Return ledger_hands.parsed_json as a dict, accepting DB JSONB/string.
+
+        Live detail buttons must reuse the already-ingested parsed hand.  The raw
+        shorthand is only a user-facing echo; sending it back through the normal
+        parser can produce a different hand than the one just graded.
+        """
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @staticmethod
+    def _live_hand_desc(hand_id: str, hand: dict) -> str:
+        """Deterministic hand description for live deep-dive coaching."""
+        desc = [
+            f"Hand ID: {hand_id}",
+            f"Hero {hand.get('hero_position')} {hand.get('hero_hand')} "
+            f"({hand.get('effective_bb')}bb, {hand.get('players_at_table') or hand.get('num_players') or 8}人)",
+            f"Preflop: {hand.get('preflop_actions')}",
+        ]
+        for street in hand.get("streets") or []:
+            board = street.get("board") or street.get("card") or street.get("cards") or ""
+            acts = " ".join(
+                f"{a.get('position')}:{a.get('action')}"
+                + (f"({a.get('size')}bb)" if a.get("size") is not None else "")
+                for a in (street.get("actions") or [])
+            )
+            desc.append(f"{board} → {acts}".rstrip())
+        repairs = hand.get("_repairs") or []
+        if repairs:
+            desc.append("Live parse repairs: " + "；".join(str(r) for r in repairs))
+        return "\n".join(desc)
+
+    async def _analyze_live_parsed_hand(self, chat_id: int, user_id: int,
+                                        hand_id: str, hand_json: dict,
+                                        on_status, refresh_token: str | None) -> str:
+        """Analyze a stored live parsed_json without reparsing raw shorthand."""
+        if not refresh_token:
+            return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
+
+        if on_status:
+            await on_status("查詢 GTO 策略中...")
+        self._setup_user_token(user_id, refresh_token)
+        try:
+            from analyze_hand import analyze_hand_full
+            context = analyze_hand_full(hand_json)
+        finally:
+            self._clear_user_token()
+
+        gto_data = context["text"]
+        self.session_manager.hand_contexts[chat_id] = context
+        pending_images = getattr(self.session_manager, "pending_images", None)
+        if isinstance(pending_images, dict):
+            pending_images.pop(chat_id, None)
+
+        if on_status:
+            await on_status("分析回覆中...")
+        prompt = (
+            "這是 /live 入帳後的深入分析。手牌已經由 live_flow 解析、修補並入帳；"
+            "請使用下面的穩定 parsed_json 摘要與 GTO Solver 數據，不要重新解析原始 shorthand。\n\n"
+            f"手牌摘要：\n{self._live_hand_desc(hand_id, hand_json)}\n\n"
+            f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+            "請根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+            "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
+            "FOLLOWUP: 問題一\n"
+            "FOLLOWUP: 問題二\n"
+            "FOLLOWUP: 問題三\n"
+        )
+        response = await self.session_manager._chat_with_tools(
+            chat_id, prompt, on_status=on_status,
+            user_id=user_id, refresh_token=refresh_token,
+            force_tool_eligible=False,
+        )
+        response, followups = self.session_manager._extract_followups(response)
+        if followups:
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if ctx is not None:
+                ctx["followup_questions"] = followups
+        warning = (context.get("validation") or {}).get("user_warning")
+        if warning:
+            response += f"\n\n{warning}"
+        return f"📋 `{hand_id}`\n\n{response}"
 
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report — admin-only analytics report."""
