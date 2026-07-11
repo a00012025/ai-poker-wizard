@@ -223,10 +223,26 @@ def _card_specs_from_street_token(tok: str) -> list[tuple[str, str | None]]:
             i += 1
         out.append((r, suit))
         i += 1
-    # only a flop (3) or a turn/river card (1) is a street literal; a 2-card
-    # token is a typo or a hand-class annotation — treat as "no hint" and let
-    # the street-count alignment check decide
-    return out if len(out) in (1, 3) else []
+    return out if 1 <= len(out) <= 3 else []
+
+
+def _street_specs_from_tokens(toks: list[str]) -> list[tuple[str, str | None]]:
+    """A street literal may span tokens ('KsJ 2 rainbow', 'Ks Jc 2d') — join
+    leading card tokens up to 3 cards; a rainbow marker ends the literal.
+    Only a flop (3) or a turn/river card (1) is a valid street literal; a
+    2-card result is a typo/annotation and gives no hint, letting the gate's
+    alignment checks refuse instead of mis-locking."""
+    specs: list[tuple[str, str | None]] = []
+    for tok in toks:
+        if specs and _clean_card_token(tok).lower() == "r":
+            break
+        part = _card_specs_from_street_token(tok)
+        if not part or len(specs) + len(part) > 3:
+            break
+        specs.extend(part)
+        if len(specs) == 3:
+            break
+    return specs if len(specs) in (1, 3) else []
 
 
 def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str, str | None]]]]:
@@ -266,8 +282,9 @@ def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str,
     streets: list[list[tuple[str, str | None]]] = []
     for ln in lines[1:]:
         toks = re.split(r"\s+", ln)
-        card_tok = toks[1] if toks and toks[0].strip(":").lower() in {"flop", "turn", "river"} and len(toks) > 1 else _first_token(ln)
-        specs = _card_specs_from_street_token(card_tok)
+        if toks and toks[0].strip(":").lower() in {"flop", "turn", "river"}:
+            toks = toks[1:]
+        specs = _street_specs_from_tokens(toks)
         if specs:
             streets.append(specs)
     return hero_hand, streets
@@ -277,25 +294,23 @@ def _split_cards(s: str) -> list[str]:
     return [s[i:i + 2] for i in range(0, len(s or ""), 2)]
 
 
-def _pick_suit(rank: str, preferred: str | None, used: set[str]) -> str | None:
-    if preferred and preferred in _SUITS:
-        c = rank + preferred
-        if c not in used:
-            return preferred
-    for suit in _SUITS:
+def _pick_suit(rank: str, used: set[str], used_suits: set[str]) -> str | None:
+    # repo convention (_canonicalize_board_streets): when raw gives no suit,
+    # prefer suits unused on the board so far — rainbow for bare flops, fresh
+    # suit on turn/river — never fabricating flush texture the note never said
+    for suit in [s for s in _SUITS if s not in used_suits] + list(_SUITS):
         if rank + suit not in used:
             return suit
     return None
 
 
-def _cards_from_specs(specs: list[tuple[str, str | None]], parsed: str,
-                      used: set[str]) -> str | None:
-    cards = _split_cards(parsed) if parsed and len(parsed) % 2 == 0 else []
+def _cards_from_specs(specs: list[tuple[str, str | None]], used: set[str],
+                      used_suits: set[str]) -> str | None:
     out: list[str] = []
     local_used = set(used)
-    for i, (rank, raw_suit) in enumerate(specs):
-        parsed_suit = cards[i][1].lower() if i < len(cards) and _CARD_RE.match(cards[i]) else None
-        suit = raw_suit or _pick_suit(rank, parsed_suit, local_used)
+    local_suits = set(used_suits)
+    for rank, raw_suit in specs:
+        suit = raw_suit or _pick_suit(rank, local_used, local_suits)
         if suit is None:
             return None
         card = rank + suit
@@ -303,6 +318,7 @@ def _cards_from_specs(specs: list[tuple[str, str | None]], parsed: str,
             return None
         out.append(card)
         local_used.add(card)
+        local_suits.add(suit)
     return "".join(out)
 
 
@@ -344,21 +360,26 @@ def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None
     if len(street_hints) != len(streets):
         return None, [f"原文 {len(street_hints)} 條街 vs 解析出 {len(streets)} 條街，"
                       f"牌面無法對齊"]
+    if street_hints and (len(street_hints[0]) != 3
+                         or any(len(s) != 1 for s in street_hints[1:])):
+        # streets[0] is always the flop in this schema; a non-[3,1,1…] hint
+        # shape means the raw street literals weren't understood — refuse
+        # rather than lock cards onto the wrong street
+        return None, ["原文街牌形狀無法辨識（flop 應 3 張、turn/river 各 1 張）"]
+    used_suits: set[str] = set()
     for i, (st, specs) in enumerate(zip(streets, street_hints)):
         old = st.get("board") or st.get("card") or ""
+        fixed = _cards_from_specs(specs, used, used_suits)
+        if fixed is None:
+            return None, [f"{_street_name(i)} 出現重複牌"]
         if len(specs) == 3:
-            fixed = _cards_from_specs(specs, st.get("board") or "", used)
-            if fixed is None:
-                return None, [f"{_street_name(i)} 出現重複牌"]
             st["board"] = fixed
             st.pop("card", None)
-        else:   # 1-card street: _card_specs_from_street_token only emits 1 or 3
-            fixed = _cards_from_specs(specs, st.get("card") or "", used)
-            if fixed is None:
-                return None, [f"{_street_name(i)} 出現重複牌"]
+        else:   # 1-card street: hint shape is [3,1,1…] past the guard above
             st["card"] = fixed
             st.pop("board", None)
         used.update(_split_cards(fixed))
+        used_suits.update(c[1] for c in _split_cards(fixed))
         if old != fixed:
             notes.append(f"{_street_name(i)} {old or '?'}→{fixed}")
 
@@ -546,6 +567,19 @@ def repair_hu_pot(hand: dict) -> dict:
         seat_toks = _preflop_seat_tokens(tokens, npl)
         if last_raise_i >= len(seat_toks):
             return hand
+        # continuation-round ghost: a seat whose post-3bet call belongs to the
+        # real HU opponent (e.g. raw 'co fold btn call' put on CO). With both
+        # postflop actors known the fold + appended call are forced, same
+        # determinism contract as the round-1 ghost-caller fold above.
+        last_by_pos: dict[str, tuple[int, str]] = {}
+        for idx, (pos, code) in enumerate(seat_toks):
+            if code:
+                last_by_pos[pos] = (idx, code)
+        for g in {p for p, (_idx, code) in last_by_pos.items() if code != "F"} - actors:
+            idx, code = last_by_pos[g]
+            if idx > last_raise_i and code == "C":
+                tokens[idx] = "F"
+                seat_toks[idx] = (g, "F")
         last_raiser = seat_toks[last_raise_i][0]
         other = next(p for p in actors if p != last_raiser) \
             if last_raiser in actors else None
@@ -562,6 +596,28 @@ def repair_hu_pot(hand: dict) -> dict:
         for i, a in enumerate(st.get("actions") or []):
             a["position"] = p[i % 2]
     return hand
+
+
+def hero_folded_but_acts(hand: dict) -> bool:
+    """Parse contradiction: hero marked folded preflop while acting postflop
+    (Gemini mis-seated hero's own action, e.g. 'hero hj raise … to 5bb' put on
+    CO). Must be detected BEFORE repair_hu_pot strips hero's street actions;
+    the caller reparses with precise feedback — never silently re-seats."""
+    from hh_parser import POSITION_ORDERS
+    from spot_taxonomy import _preflop_seat_tokens
+    npl = hand.get("players_at_table") or 8
+    order = POSITION_ORDERS.get(npl)
+    pos = hand.get("hero_position")
+    tokens = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
+    if not order or pos not in order or len(tokens) < npl:
+        return False
+    last = None
+    for p, c in _preflop_seat_tokens(tokens, npl):
+        if p == pos and c:
+            last = c
+    acts = any(a.get("position") == pos for st in hand.get("streets") or []
+               for a in (st.get("actions") or []))
+    return acts and last == "F"
 
 
 def find_ghost(hand: dict) -> str | None:
@@ -841,6 +897,17 @@ def process_batch(text: str, date_str: str | None = None,
             result["totals"]["parse_failed"] += 1
             continue
         repairs = list(hand.pop("_repairs", []))
+        if hero_folded_but_acts(hand):
+            # hero's own preflop action mis-seated — reparse with precise
+            # feedback before repair_hu_pot strips hero's street actions
+            hint = (f"上一次解析矛盾：hero（{hand.get('hero_position')}）的 preflop 動作"
+                    f"被標記為棄牌，但 hero 在翻牌後有行動。原文寫「hero <位置> <動作>」時，"
+                    f"該動作屬於 hero 本人；請把 hero 的 preflop 動作放回 "
+                    f"{hand.get('hero_position')}，不要放到其他座位。")
+            hand2 = parse_block(block, extra_hint=hint)
+            if hand2 and not hand2.get("_refused") and not hero_folded_but_acts(hand2):
+                repairs = list(hand2.pop("_repairs", [])) + ["矛盾重解析（hero preflop 動作歸屬）"]
+                hand = hand2
         pre_repair = json.dumps(hand, sort_keys=True)
         hand = repair_hu_pot(hand)
         if json.dumps(hand, sort_keys=True) != pre_repair:
