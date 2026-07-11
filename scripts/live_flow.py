@@ -114,11 +114,203 @@ def split_batch(text: str) -> list[str]:
 
 
 # ── parse (Gemini, same prompt as the bot's text path) ───────────────────────
+_RANKS = "23456789TJQKA"
+_SUITS = "cdhs"
+_CARD_RE = re.compile(r"^[2-9TJQKA][cdhs]$", re.IGNORECASE)
+_COMBO_RE = re.compile(
+    r"^(?:[2-9TJQKA][cdhs]){2}$|^[2-9TJQKA]{2}[so]?$", re.IGNORECASE)
+_STREET_CARD_TOKEN_RE = re.compile(
+    r"^(?:(?:[2-9TJQKA][cdhs]){1,3}|[2-9TJQKA]{1,3}r?)$",
+    re.IGNORECASE,
+)
+
+
+def _canon_rank(r: str) -> str:
+    return "T" if r == "10" else r.upper()
+
+
+def _clean_card_token(tok: str) -> str:
+    t = tok.strip().strip(",.;:()[]{}").replace("10", "T")
+    return re.sub(r"(rainbow|rbw)$", "r", t, flags=re.IGNORECASE)
+
+
+def _canon_hand_token(tok: str) -> str | None:
+    """Return a canonical live shorthand hand token, if ``tok`` is one.
+
+    This intentionally accepts only compact hand literals (Qd7d, AJo, 44).
+    Chips/sizes/actions such as 50bb, R3, all-in are rejected.  For classes
+    with no exact suits, keep the 169-hand class (AJo/76o/44) rather than
+    inventing a specific combo that the live note never supplied.
+    """
+    t = _clean_card_token(tok)
+    if not _COMBO_RE.match(t):
+        return None
+    if len(t) == 4 and _CARD_RE.match(t[:2]) and _CARD_RE.match(t[2:]):
+        c1 = _canon_rank(t[0]) + t[1].lower()
+        c2 = _canon_rank(t[2]) + t[3].lower()
+        return c1 + c2
+    if len(t) in (2, 3):
+        r1, r2 = _canon_rank(t[0]), _canon_rank(t[1])
+        if r1 not in _RANKS or r2 not in _RANKS:
+            return None
+        if len(t) == 2:
+            return r1 + r2
+        suf = t[2].lower()
+        if suf not in ("s", "o"):
+            return None
+        return r1 + r2 + suf
+    return None
+
+
+def _card_specs_from_street_token(tok: str) -> list[tuple[str, str | None]]:
+    """Parse a street-leading board token into (rank, optional suit) specs.
+
+    Handles exact cards (Jd5d5h), rank-only shorthand (Q93/Q72r), and mixed
+    shorthand (6c4c3).  The token is only accepted if all chars are consumed;
+    this keeps action words/sizes out of the literal gate.
+    """
+    raw = _clean_card_token(tok)
+    t = raw
+    if t.lower().endswith("r"):
+        t = t[:-1]
+    if not t or not _STREET_CARD_TOKEN_RE.match(raw):
+        return []
+    out: list[tuple[str, str | None]] = []
+    i = 0
+    while i < len(t):
+        r = _canon_rank(t[i])
+        if r not in _RANKS:
+            return []
+        suit = None
+        if i + 1 < len(t) and t[i + 1].lower() in _SUITS:
+            suit = t[i + 1].lower()
+            i += 1
+        out.append((r, suit))
+        i += 1
+    return out if 1 <= len(out) <= 3 else []
+
+
+def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str, str | None]]]]:
+    """Extract card literals directly from the raw live note.
+
+    Gemini is still used for structure (positions, action ownership, sizing),
+    but the note's card tokens are treated as source-of-truth for ranks/exact
+    suits.  This prevents legal-but-wrong LLM drift such as Q93 -> J93.
+    """
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if not lines:
+        return None, []
+
+    hero_hand = None
+    header_tokens = re.split(r"\s+", lines[0])
+    hero_idx = next((i for i, t in enumerate(header_tokens)
+                     if t.strip().strip(",.;:").lower() == "hero"), None)
+    # Prefer the first hand literal after "hero"; only fall back to the whole
+    # header for terse notes like "UTG 10bb fold K9s" where the hero marker is
+    # omitted and the acting seat is implicitly hero.
+    token_window = header_tokens[hero_idx + 1:] if hero_idx is not None else header_tokens
+    for tok in token_window:
+        h = _canon_hand_token(tok)
+        if h:
+            hero_hand = h
+            break
+    if hero_hand is None:
+        # Allow "Ah Ks" style exact-card pairs in live notes.
+        for a, b in zip(token_window, token_window[1:]):
+            ca = _clean_card_token(a)
+            cb = _clean_card_token(b)
+            if _CARD_RE.match(ca) and _CARD_RE.match(cb):
+                hero_hand = (_canon_rank(ca[0]) + ca[1].lower()
+                             + _canon_rank(cb[0]) + cb[1].lower())
+                break
+
+    streets: list[list[tuple[str, str | None]]] = []
+    for ln in lines[1:]:
+        specs = _card_specs_from_street_token(_first_token(ln))
+        if specs:
+            streets.append(specs)
+    return hero_hand, streets
+
+
+def _split_cards(s: str) -> list[str]:
+    return [s[i:i + 2] for i in range(0, len(s or ""), 2)]
+
+
+def _pick_suit(rank: str, preferred: str | None, used: set[str]) -> str | None:
+    if preferred in _SUITS:
+        c = rank + preferred
+        if c not in used:
+            return preferred
+    for suit in _SUITS:
+        if rank + suit not in used:
+            return suit
+    return None
+
+
+def _cards_from_specs(specs: list[tuple[str, str | None]], parsed: str,
+                      used: set[str]) -> str | None:
+    cards = _split_cards(parsed) if parsed and len(parsed) % 2 == 0 else []
+    out: list[str] = []
+    local_used = set(used)
+    for i, (rank, raw_suit) in enumerate(specs):
+        parsed_suit = cards[i][1].lower() if i < len(cards) and _CARD_RE.match(cards[i]) else None
+        suit = raw_suit or _pick_suit(rank, parsed_suit, local_used)
+        if suit is None:
+            return None
+        card = rank + suit
+        if card in local_used:
+            return None
+        out.append(card)
+        local_used.add(card)
+    return "".join(out)
+
+
+def repair_card_literals_from_block(block: str, hand: dict) -> dict | None:
+    """Lock hero/board card literals to the raw live note before grading.
+
+    Returns a repaired copy of ``hand``.  If the raw exact literals are internally
+    impossible (e.g. duplicate exact card), returns None so the caller refuses
+    the parse instead of feeding a silently corrupted hand to the solver.
+    """
+    hero_hint, street_hints = _extract_literal_hints(block)
+    repaired = json.loads(json.dumps(hand))
+    used: set[str] = set()
+
+    if hero_hint:
+        repaired["hero_hand"] = hero_hint
+        if len(hero_hint) == 4 and _CARD_RE.match(hero_hint[:2]) and _CARD_RE.match(hero_hint[2:]):
+            hero_cards = _split_cards(hero_hint)
+            if len(set(hero_cards)) != 2:
+                return None
+            used.update(hero_cards)
+
+    streets = repaired.get("streets") or []
+    for st, specs in zip(streets, street_hints):
+        if len(specs) == 3:
+            fixed = _cards_from_specs(specs, st.get("board") or "", used)
+            if fixed is None:
+                return None
+            st["board"] = fixed
+            st.pop("card", None)
+            used.update(_split_cards(fixed))
+        elif len(specs) == 1:
+            fixed = _cards_from_specs(specs, st.get("card") or "", used)
+            if fixed is None:
+                return None
+            st["card"] = fixed
+            st.pop("board", None)
+            used.update(_split_cards(fixed))
+
+    return repaired
+
+
 LIVE_HINT = (
     "補充：這是現場手牌速記，底池絕大多數是兩人。翻牌後只列實際行動的玩家，"
     "絕對不要替沒被提到的玩家（尤其已棄牌的 SB/BB）補 check。"
     "若有人 re-raise（3bet）後寫「對手 call / +1 call」，那是【原加注者】的 "
-    "continuation call（接在 N 個位置之後），不是後面位置的冷跟注。")
+    "continuation call（接在 N 個位置之後），不是後面位置的冷跟注。"
+    "所有手牌與牌面 rank 必須逐字抄用戶原文，不可把 Q 改成 J 或改任何 rank；"
+    "只有原文沒給花色時才補合法花色。")
 
 
 def parse_block(block: str, client=None, model: str | None = None,
@@ -146,7 +338,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             hand = json.loads(js).get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") \
                     and hand.get("hero_hand"):
-                return hand
+                return repair_card_literals_from_block(block, hand)
             return None
         except Exception:
             if attempt == 2:

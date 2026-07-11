@@ -14694,6 +14694,96 @@ def test_live_split_batch_header_variants():
 
 
 @test
+def test_live_card_literal_repair_locks_raw_ranks():
+    """Gemini may produce a structurally legal but wrong card literal
+    (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading
+    must trust the raw shorthand for hero/board ranks before solver lookup."""
+    from live_flow import repair_card_literals_from_block
+    block = ("Eff 50bb u+1 open hero bb Qd7d call\n"
+             "Q93 x x\n"
+             "2s b3 c\n"
+             "9h x b7 f")
+    drifted = {
+        "players_at_table": 8, "effective_bb": 50,
+        "hero_position": "BB", "hero_hand": "Jd7d",
+        "preflop_actions": "F-R2-F-F-F-F-F-C",
+        "streets": [
+            {"board": "Jc9d3h", "actions": [
+                {"position": "BB", "action": "X"}, {"position": "UTG+1", "action": "X"}]},
+            {"card": "3s", "actions": [
+                {"position": "BB", "action": "R3", "size": 3}, {"position": "UTG+1", "action": "C"}]},
+            {"card": "8h", "actions": [
+                {"position": "BB", "action": "X"}, {"position": "UTG+1", "action": "R7", "size": 7},
+                {"position": "BB", "action": "F"}]},
+        ],
+    }
+    fixed = repair_card_literals_from_block(block, drifted)
+    assert_true(fixed is not None)
+    assert_eq(fixed["hero_hand"], "Qd7d")          # exact raw hero combo wins
+    assert_eq(fixed["streets"][0]["board"][0::2], "Q93")  # raw rank-only board wins
+    assert_eq(fixed["streets"][1]["card"], "2s")  # exact raw turn wins
+    assert_eq(fixed["streets"][2]["card"], "9h")  # exact raw river wins
+
+
+@test
+def test_live_parse_block_applies_card_literal_gate():
+    """Integration: parse_block must apply the literal gate to Gemini output,
+    not just expose a helper that callers might forget to run."""
+    from live_flow import parse_block
+
+    class _Resp:
+        text = json.dumps({"hand": {
+            "players_at_table": 8, "effective_bb": 50,
+            "hero_position": "BB", "hero_hand": "Jd7d",
+            "preflop_actions": "F-R2-F-F-F-F-F-C",
+            "streets": [{"board": "Jc9d3h", "actions": []}],
+        }})
+
+    class _Models:
+        def generate_content(self, **_kwargs):
+            return _Resp()
+
+    class _Client:
+        models = _Models()
+
+    hand = parse_block("Eff 50bb u+1 open hero bb Qd7d call\nQ93 x x",
+                       client=_Client())
+    assert_true(hand is not None)
+    assert_eq(hand["hero_hand"], "Qd7d")
+    assert_eq(hand["streets"][0]["board"][0::2], "Q93")
+
+
+@test
+def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
+    """Class-only live notes stay class-only (no false exact combo), but exact
+    raw duplicates are refused instead of silently reaching the solver."""
+    from live_flow import repair_card_literals_from_block
+    class_block = "Eff 22bb hero sb r3 AJo bb c\nK36rainbow b2 c\nK x x"
+    parsed = {
+        "players_at_table": 8, "effective_bb": 22,
+        "hero_position": "SB", "hero_hand": "AhJd",
+        "preflop_actions": "F-F-F-F-F-F-R3-C",
+        "streets": [
+            {"board": "Qh3d6s", "actions": [
+                {"position": "SB", "action": "R2", "size": 2}, {"position": "BB", "action": "C"}]},
+            {"card": "Qd", "actions": [
+                {"position": "SB", "action": "X"}, {"position": "BB", "action": "X"}]},
+        ],
+    }
+    fixed = repair_card_literals_from_block(class_block, parsed)
+    assert_true(fixed is not None)
+    assert_eq(fixed["hero_hand"], "AJo")
+    assert_eq(fixed["streets"][0]["board"][0::2], "K36")
+    assert_eq(fixed["streets"][1]["card"][0], "K")
+
+    dup = repair_card_literals_from_block(
+        "Eff 50bb hero bb Qd7d call\nQd9h3c x x",
+        dict(parsed, hero_hand="Qd7d", streets=[{"board": "Qd9h3c", "actions": []}]),
+    )
+    assert_true(dup is None)
+
+
+@test
 def test_live_walk_spots_from_parsed():
     """Text-parsed hands classify onto the SAME leaves as the online walker
     (cross-source aggregation), incl. the fully-limped pot -> 'limp'."""
