@@ -15193,6 +15193,103 @@ def test_live_queue_selection_and_report():
 
 
 @test
+def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
+    """Live detail buttons must analyze ledger_hands.parsed_json directly.
+
+    Regression: tapping Hand 4 detail re-sent raw shorthand through the normal
+    text parser, and Gemini produced a different hand (AA) than the already
+    graded live hand (Js8h).  The callback path now consumes the persisted
+    parsed_json and never asks the parser to reinterpret raw shorthand.
+    """
+    import asyncio
+    import copy
+    import analyze_hand
+    from telegram_bot.bot import PokerWizardBot
+    from gemini_session import GeminiSessionManager as GeminiSession
+
+    parsed = {
+        "gametype": "MTTGeneral",
+        "effective_bb": 12,
+        "players_at_table": 8,
+        "hero_position": "BB",
+        "hero_hand": "Js8h",
+        "preflop_actions": "F-F-F-F-F-F-C-X",
+        "streets": [
+            {"board": "Ts7hQh", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+            ]},
+            {"card": "Kh", "actions": [
+                {"position": "SB", "action": "R1.5", "size": 1.5},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "2d", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R2", "size": 2},
+                {"position": "SB", "action": "F"},
+            ]},
+        ],
+    }
+    calls = []
+
+    def fake_analyze(hand):
+        calls.append(copy.deepcopy(hand))
+        return {"text": f"GTO data for {hand['hero_hand']}", "hand": hand}
+
+    class SessionStub:
+        def __init__(self):
+            self.hand_contexts = {}
+            self.pending_images = {42: [b"stale"]}
+            self.prompt = None
+
+        async def _chat_with_tools(self, chat_id, prompt, **kwargs):
+            self.prompt = prompt
+            return "Js8h river bet 偏離。\nFOLLOWUP: BB river bluff 範圍是什麼？"
+
+        _extract_followups = staticmethod(GeminiSession._extract_followups)
+
+    async def run_case():
+        bot = PokerWizardBot.__new__(PokerWizardBot)
+        bot.session_manager = SessionStub()
+        bot._setup_user_token = lambda user_id, refresh_token: None
+        bot._clear_user_token = lambda: None
+        statuses = []
+
+        async def on_status(msg):
+            statuses.append(msg)
+
+        response = await bot._analyze_live_parsed_hand(
+            42, 7, "live:2026-07-11:hand4", parsed, on_status, "refresh-token")
+        return bot, statuses, response
+
+    orig = analyze_hand.analyze_hand_full
+    try:
+        analyze_hand.analyze_hand_full = fake_analyze
+        bot, statuses, response = asyncio.run(run_case())
+    finally:
+        analyze_hand.analyze_hand_full = orig
+
+    assert_eq(calls[0]["hero_hand"], "Js8h",
+              "solver analysis must receive persisted parsed_json hero hand")
+    assert_eq(calls[0]["preflop_actions"], "F-F-F-F-F-F-C-X")
+    assert_in("Hero BB Js8h", bot.session_manager.prompt)
+    assert_true("AA" not in bot.session_manager.prompt,
+                "live detail prompt must not contain a reparse-drifted AA hand")
+    assert_true("FOLLOWUP" not in response,
+                "visible response strips follow-up markers")
+    assert_eq(bot.session_manager.hand_contexts[42]["followup_questions"],
+              ["BB river bluff 範圍是什麼？"])
+    assert_true(42 not in bot.session_manager.pending_images,
+                "stale range images for prior hands are cleared")
+    assert_in("live:2026-07-11:hand4", response)
+    assert_true(any("GTO" in s for s in statuses))
+
+    assert_eq(PokerWizardBot._decode_live_parsed_json('{"hero_hand":"Js8h"}'),
+              {"hero_hand": "Js8h"})
+    assert_eq(PokerWizardBot._decode_live_parsed_json("not json"), None)
+
+
+@test
 def test_live_ledger_row_shapes():
     """Live decision rows carry source/grader/honesty + the same taxonomy
     columns online rows have (cross-source leaf equality is the contract)."""
