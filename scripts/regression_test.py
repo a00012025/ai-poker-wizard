@@ -14553,14 +14553,21 @@ def test_spot_taxonomy_preflop_lines():
     # vsRaiseCall: open + caller before hero
     r = classify_preflop("BTN", [("HJ","R2.5"),("CO","C")], 8)
     assert_eq(r["category"], "vsRaiseCall"); assert_eq(r["l1"], "BTN_vsRaiseCall".replace("BTN","LP"))
-    # vs3bet: hero opened, faces a 3bet (hero cat + IP/OOP)
+    # vs3bet: hero opened, faces a 3bet. Leaf carries the 3-bettor position
+    # category (SB vs BB vs IP 3bet are different ranges) + hero IP/OOP.
     r = classify_preflop("CO", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","R2.5"),("BTN","F"),
                                 ("SB","R9"),("BB","F")], 8)
     assert_eq(r["category"], "vs3bet"); assert_eq(r["l1"], "LP_vs3bet")
-    assert_eq(r["l2"], "LP_vs3bet_IP")            # CO is IP vs SB postflop
-    # vsCold3bet: hero cold (did not open), faces a 3bet
+    assert_eq(r["l2"], "LP_vs3bet_vSB_IP")        # CO opener, SB 3-bettor, CO is IP
+    # same hero/opener but a BB 3-bet -> DISTINCT leaf (this is the whole point)
+    r_bb = classify_preflop("CO", [("UTG","F"),("LJ","F"),("HJ","F"),("CO","R2.5"),("BTN","F"),
+                                   ("SB","F"),("BB","R9")], 8)
+    assert_eq(r_bb["l2"], "LP_vs3bet_vBB_IP")
+    assert_true(r["l2"] != r_bb["l2"], "SB and BB 3-bet must land in different lines")
+    # vsCold3bet: hero cold (did not open), faces a 3bet (also carries 3-bettor pos)
     r = classify_preflop("BB", [("CO","R2.5"),("BTN","R8"),("SB","F")], 8)
     assert_eq(r["category"], "vsCold3bet"); assert_eq(r["l1"], "BB_vsCold3bet")
+    assert_eq(r["l2"], "BB_vsCold3bet_vLP_OOP")   # BTN (LP) 3-bettor, BB is OOP
     # limp-involved decisions are discarded (limp ranges unreliable)
     r = classify_preflop("BB", [("SB","C")], 8)
     assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:faced_limp")
