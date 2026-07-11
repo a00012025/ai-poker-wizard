@@ -67,10 +67,10 @@ _POS_TOKENS = {
     "utg", "utg+1", "utg+2", "utg1", "utg2", "lj", "hj", "co", "btn", "bu",
     "sb", "bb", "mp", "ep", "+1", "+2",
 }
-_HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero"} | _POS_TOKENS
+_HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOKENS
 # a whole line that is only a hand result / annotation — never a decision
 _RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
-                        r"(\s+to\s+.+)?$", re.IGNORECASE)
+                        r"(\s+(to\s+)?\S.*)?$", re.IGNORECASE)
 
 
 def _first_token(line: str) -> str:
@@ -81,7 +81,7 @@ def _first_token(line: str) -> str:
 def _is_noise(line: str) -> bool:
     """Blank, a result marker, or a token with no letters (e.g. '7/3')."""
     s = line.strip()
-    if not s or _RESULT_RE.match(s):
+    if not s or s.startswith(">") or re.match(r"^#{1,6}\s+", s) or _RESULT_RE.match(s):
         return True
     return not re.search(r"[A-Za-z]", s)
 
@@ -90,7 +90,8 @@ def _is_header(line: str) -> bool:
     tok = _first_token(line)
     # exact seat/keyword, or a glued stack form: "Eff17"/"eff50bb"/"有效50bb"
     return (tok in _HEADER_FIRST or bool(re.match(r"eff\d", tok))
-            or tok.startswith("有效"))
+            or tok.startswith("有效") or bool(re.match(r"(utg|u)\d+$", tok))
+            or bool(re.match(r"\d+(?:\.\d+)?bb$", tok)))
 
 
 def split_batch(text: str) -> list[str]:
@@ -114,15 +115,372 @@ def split_batch(text: str) -> list[str]:
 
 
 # ── parse (Gemini, same prompt as the bot's text path) ───────────────────────
+_RANKS = "23456789TJQKA"
+_SUITS = "cdhs"
+_CARD_RE = re.compile(r"^[2-9TJQKA][cdhs]$", re.IGNORECASE)
+_COMBO_RE = re.compile(
+    r"^(?:[2-9TJQKA][cdhs]){2}$|^[2-9TJQKA]{2}[so]?$", re.IGNORECASE)
+_STREET_CARD_TOKEN_RE = re.compile(
+    r"^(?:[2-9TJQKA](?:[cdhs])?){1,3}r?$",
+    re.IGNORECASE,
+)
+_POS_ALIASES = {
+    "utg": "UTG", "u": "UTG", "utg1": "UTG+1", "utg+1": "UTG+1",
+    "u1": "UTG+1", "u+1": "UTG+1", "+1": "UTG+1",
+    "utg2": "UTG+2", "utg+2": "UTG+2", "u2": "UTG+2",
+    "u+2": "UTG+2", "+2": "UTG+2",
+    "lj": "LJ", "hj": "HJ", "co": "CO", "btn": "BTN", "bu": "BTN",
+    "sb": "SB", "bb": "BB",
+}
+
+
+def _canon_rank(r: str) -> str:
+    return "T" if r == "10" else r.upper()
+
+
+def _clean_card_token(tok: str) -> str:
+    t = tok.strip().strip(",.;:()[]{}").replace("10", "T")
+    return re.sub(r"(rainbow|rbw)$", "r", t, flags=re.IGNORECASE)
+
+
+def _clean_word(tok: str) -> str:
+    return tok.strip().strip(",.;:()[]{}").lower()
+
+
+def _norm_pos(tok: str) -> str | None:
+    t = _clean_word(tok)
+    if re.match(r"^(utg|u)\d+$", t):
+        return "UTG+" + t.lstrip("utg").lstrip("u")
+    return _POS_ALIASES.get(t)
+
+
+def _bb_number(tok: str) -> str | None:
+    t = _clean_word(tok)
+    m = re.match(r"^(\d+(?:\.\d+)?)bb$", t)
+    if m:
+        return m.group(1)
+    if re.match(r"^\d+(?:\.\d+)?$", t):
+        return t
+    return None
+
+
+def _bb_number_with_unit(tok: str) -> str | None:
+    t = _clean_word(tok)
+    m = re.match(r"^(\d+(?:\.\d+)?)bb$", t)
+    return m.group(1) if m else None
+
+
+def _canon_hand_token(tok: str) -> str | None:
+    """Return a canonical live shorthand hand token, if ``tok`` is one.
+
+    This intentionally accepts only compact hand literals (Qd7d, AJo, 44).
+    Chips/sizes/actions such as 50bb, R3, all-in are rejected.  For classes
+    with no exact suits, keep the 169-hand class (AJo/76o/44) rather than
+    inventing a specific combo that the live note never supplied.
+    """
+    t = _clean_card_token(tok)
+    if not _COMBO_RE.match(t):
+        return None
+    if len(t) == 4 and _CARD_RE.match(t[:2]) and _CARD_RE.match(t[2:]):
+        c1 = _canon_rank(t[0]) + t[1].lower()
+        c2 = _canon_rank(t[2]) + t[3].lower()
+        return c1 + c2
+    if len(t) in (2, 3):
+        r1, r2 = _canon_rank(t[0]), _canon_rank(t[1])
+        if r1 not in _RANKS or r2 not in _RANKS:
+            return None
+        if len(t) == 2:
+            return r1 + r2
+        suf = t[2].lower()
+        if suf not in ("s", "o"):
+            return None
+        return r1 + r2 + suf
+    return None
+
+
+def _card_specs_from_street_token(tok: str) -> list[tuple[str, str | None]]:
+    """Parse a street-leading board token into (rank, optional suit) specs.
+
+    Handles exact cards (Jd5d5h), rank-only shorthand (Q93/Q72r), and mixed
+    shorthand (6c4c3).  The token is only accepted if all chars are consumed;
+    this keeps action words/sizes out of the literal gate.
+    """
+    raw = _clean_card_token(tok)
+    t = raw
+    if t.lower().endswith("r"):
+        t = t[:-1]
+    if not t or not _STREET_CARD_TOKEN_RE.match(raw):
+        return []
+    out: list[tuple[str, str | None]] = []
+    i = 0
+    while i < len(t):
+        r = _canon_rank(t[i])
+        if r not in _RANKS:
+            return []
+        suit = None
+        if i + 1 < len(t) and t[i + 1].lower() in _SUITS:
+            suit = t[i + 1].lower()
+            i += 1
+        out.append((r, suit))
+        i += 1
+    return out if 1 <= len(out) <= 3 else []
+
+
+def _street_specs_from_tokens(toks: list[str]) -> list[tuple[str, str | None]]:
+    """A street literal may span tokens ('KsJ 2 rainbow', 'Ks Jc 2d') — join
+    leading card tokens up to 3 cards; a rainbow marker ends the literal.
+    Only a flop (3) or a turn/river card (1) is a valid street literal; a
+    2-card result is a typo/annotation and gives no hint, letting the gate's
+    alignment checks refuse instead of mis-locking."""
+    specs: list[tuple[str, str | None]] = []
+    for tok in toks:
+        if specs and _clean_card_token(tok).lower() == "r":
+            break
+        part = _card_specs_from_street_token(tok)
+        if not part or len(specs) + len(part) > 3:
+            break
+        specs.extend(part)
+        if len(specs) == 3:
+            break
+    return specs if len(specs) in (1, 3) else []
+
+
+def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str, str | None]]]]:
+    """Extract card literals directly from the raw live note.
+
+    Gemini is still used for structure (positions, action ownership, sizing),
+    but the note's card tokens are treated as source-of-truth for ranks/exact
+    suits.  This prevents legal-but-wrong LLM drift such as Q93 -> J93.
+    """
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if not lines:
+        return None, []
+
+    hero_hand = None
+    header_tokens = re.split(r"\s+", lines[0])
+    hero_idx = next((i for i, t in enumerate(header_tokens)
+                     if t.strip().strip(",.;:").lower() == "hero"), None)
+    # Prefer the first hand literal after "hero"; only fall back to the whole
+    # header for terse notes like "UTG 10bb fold K9s" where the hero marker is
+    # omitted and the acting seat is implicitly hero.
+    token_window = header_tokens[hero_idx + 1:] if hero_idx is not None else header_tokens
+    for tok in token_window:
+        h = _canon_hand_token(tok)
+        if h:
+            hero_hand = h
+            break
+    if hero_hand is None:
+        # Allow "Ah Ks" style exact-card pairs in live notes.
+        for a, b in zip(token_window, token_window[1:]):
+            ca = _clean_card_token(a)
+            cb = _clean_card_token(b)
+            if _CARD_RE.match(ca) and _CARD_RE.match(cb):
+                hero_hand = (_canon_rank(ca[0]) + ca[1].lower()
+                             + _canon_rank(cb[0]) + cb[1].lower())
+                break
+
+    streets: list[list[tuple[str, str | None]]] = []
+    for ln in lines[1:]:
+        toks = re.split(r"\s+", ln)
+        if toks and toks[0].strip(":").lower() in {"flop", "turn", "river"}:
+            toks = toks[1:]
+        specs = _street_specs_from_tokens(toks)
+        if specs:
+            streets.append(specs)
+    return hero_hand, streets
+
+
+def _split_cards(s: str) -> list[str]:
+    return [s[i:i + 2] for i in range(0, len(s or ""), 2)]
+
+
+def _pick_suit(rank: str, used: set[str], used_suits: set[str]) -> str | None:
+    # repo convention (_canonicalize_board_streets): when raw gives no suit,
+    # prefer suits unused on the board so far — rainbow for bare flops, fresh
+    # suit on turn/river — never fabricating flush texture the note never said
+    for suit in [s for s in _SUITS if s not in used_suits] + list(_SUITS):
+        if rank + suit not in used:
+            return suit
+    return None
+
+
+def _cards_from_specs(specs: list[tuple[str, str | None]], used: set[str],
+                      used_suits: set[str]) -> str | None:
+    out: list[str] = []
+    local_used = set(used)
+    local_suits = set(used_suits)
+    for rank, raw_suit in specs:
+        suit = raw_suit or _pick_suit(rank, local_used, local_suits)
+        if suit is None:
+            return None
+        card = rank + suit
+        if card in local_used:
+            return None
+        out.append(card)
+        local_used.add(card)
+        local_suits.add(suit)
+    return "".join(out)
+
+
+_STREET_NAMES = ("flop", "turn", "river")
+
+
+def _street_name(i: int) -> str:
+    return _STREET_NAMES[i] if i < len(_STREET_NAMES) else f"street{i + 1}"
+
+
+def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None, list[str]]:
+    """Lock hero/board card literals to the raw live note before grading.
+
+    Returns ``(repaired_copy, notes)``. ``notes`` lists every literal actually
+    changed — surfaced as 🔧 in the report so the owner can audit the echo
+    (repairs must never be invisible). Returns ``(None, [reason])`` — an honest
+    refusal — when the raw literals cannot be applied faithfully: a duplicated
+    exact card, or raw street lines that don't align 1:1 with the parsed
+    streets (zip-truncating would silently keep drifted cards on the tail —
+    exactly the corruption this gate exists to prevent).
+    """
+    hero_hint, street_hints = _extract_literal_hints(block)
+    repaired = json.loads(json.dumps(hand))
+    notes: list[str] = []
+    used: set[str] = set()
+
+    if hero_hint:
+        old = repaired.get("hero_hand") or ""
+        if old != hero_hint:
+            notes.append(f"hero_hand {old or '?'}→{hero_hint}")
+        repaired["hero_hand"] = hero_hint
+        if len(hero_hint) == 4 and _CARD_RE.match(hero_hint[:2]) and _CARD_RE.match(hero_hint[2:]):
+            hero_cards = _split_cards(hero_hint)
+            if len(set(hero_cards)) != 2:
+                return None, [f"hero 手牌重複牌：{hero_hint}"]
+            used.update(hero_cards)
+
+    streets = repaired.get("streets") or []
+    if len(street_hints) != len(streets):
+        return None, [f"原文 {len(street_hints)} 條街 vs 解析出 {len(streets)} 條街，"
+                      f"牌面無法對齊"]
+    if street_hints and (len(street_hints[0]) != 3
+                         or any(len(s) != 1 for s in street_hints[1:])):
+        # streets[0] is always the flop in this schema; a non-[3,1,1…] hint
+        # shape means the raw street literals weren't understood — refuse
+        # rather than lock cards onto the wrong street
+        return None, ["原文街牌形狀無法辨識（flop 應 3 張、turn/river 各 1 張）"]
+    used_suits: set[str] = set()
+    for i, (st, specs) in enumerate(zip(streets, street_hints)):
+        old = st.get("board") or st.get("card") or ""
+        fixed = _cards_from_specs(specs, used, used_suits)
+        if fixed is None:
+            return None, [f"{_street_name(i)} 出現重複牌"]
+        if len(specs) == 3:
+            st["board"] = fixed
+            st.pop("card", None)
+        else:   # 1-card street: hint shape is [3,1,1…] past the guard above
+            st["card"] = fixed
+            st.pop("board", None)
+        used.update(_split_cards(fixed))
+        used_suits.update(c[1] for c in _split_cards(fixed))
+        if old != fixed:
+            notes.append(f"{_street_name(i)} {old or '?'}→{fixed}")
+
+    return repaired, notes
+
+
+def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
+    for k in range(start, min(len(toks), start + 8)):
+        t = _clean_word(toks[k])
+        if t in {"fold", "f"}:
+            return "F"
+        if t in {"call", "c"}:
+            return "C"
+        if t in {"x", "check"}:
+            return "X"
+        if t in {"all", "ai", "jam", "shove"}:
+            size = default_stack
+            if t == "all" and k + 1 < len(toks) and _clean_word(toks[k + 1]) == "in":
+                size = _bb_number(toks[k + 2]) if k + 2 < len(toks) else size
+            else:
+                size = _bb_number(toks[k + 1]) if k + 1 < len(toks) else size
+            return "AI" + (size or "")
+        if t in {"raise", "open", "r", "3b", "3bet"}:
+            size = None
+            for m in range(k + 1, min(len(toks), k + 8)):
+                if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
+                    size = _bb_number(toks[m + 1])
+                    break
+                cand = _bb_number_with_unit(toks[m])
+                if cand is not None:
+                    size = cand
+                    break
+            if size:
+                return "R" + size
+            if t in {"raise", "open", "r"}:
+                return "R2"
+    return None
+
+
+def parse_simple_preflop_block(block: str) -> dict | None:
+    """Deterministic fallback for terse one-line preflop-only live notes.
+
+    Example: ``Co 15.5bb fold a5o``.  This is intentionally not a general
+    language parser; it only rescues compact single-decision rows that are
+    already unambiguous enough to grade as a preflop node.
+    """
+    from hh_parser import POSITION_ORDERS
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
+    if len(lines) != 1:
+        return None
+    toks = re.split(r"\s+", lines[0])
+    pos = None
+    start = 0
+    if toks and _clean_word(toks[0]) == "hero" and len(toks) > 1:
+        pos = _norm_pos(toks[1])
+        start = 2
+    elif toks:
+        pos = _norm_pos(toks[0])
+        start = 1
+    if pos is None and toks and _bb_number(toks[0]) is not None and len(toks) > 1:
+        pos = _norm_pos(toks[1])
+        start = 2
+    order = POSITION_ORDERS.get(8)
+    if not pos or not order or pos not in order:
+        return None
+    eff = next((_bb_number(t) for t in toks if _bb_number(t) is not None), None)
+    hero_hand, _street_hints = _extract_literal_hints(block)
+    if not eff or not hero_hand:
+        return None
+    code = _action_code_from_tokens(toks, start, default_stack=eff)
+    if code is None:
+        return None
+    parts = ["F"] * 8
+    if code != "F":
+        parts[order.index(pos)] = code
+    return {
+        "gametype": "MTTGeneral",
+        "players_at_table": 8,
+        "effective_bb": float(eff),
+        "hero_position": pos,
+        "hero_hand": hero_hand,
+        "preflop_actions": "-".join(parts),
+    }
+
+
 LIVE_HINT = (
     "補充：這是現場手牌速記，底池絕大多數是兩人。翻牌後只列實際行動的玩家，"
     "絕對不要替沒被提到的玩家（尤其已棄牌的 SB/BB）補 check。"
     "若有人 re-raise（3bet）後寫「對手 call / +1 call」，那是【原加注者】的 "
-    "continuation call（接在 N 個位置之後），不是後面位置的冷跟注。")
+    "continuation call（接在 N 個位置之後），不是後面位置的冷跟注。"
+    "所有手牌與牌面 rank 必須逐字抄用戶原文，不可把 Q 改成 J 或改任何 rank；"
+    "只有原文沒給花色時才補合法花色。")
 
 
 def parse_block(block: str, client=None, model: str | None = None,
                 extra_hint: str = "") -> dict | None:
+    """Parse one live-hand block. Returns the hand dict (with
+    ``hand["_repairs"]`` notes when the card-literal gate changed anything),
+    ``{"_refused": [reasons]}`` when the raw literals are internally impossible
+    (refuse honestly, never feed the solver a corrupted hand), or None when
+    parsing failed outright."""
     from google import genai
     from google.genai import types
     from src.gemini_session import PARSE_PROMPT
@@ -133,6 +491,7 @@ def parse_block(block: str, client=None, model: str | None = None,
     if extra_hint:
         prompt += f"\n\n{extra_hint}"
     prompt += f"\n\n用戶訊息：\n{block}"
+    fallback = parse_simple_preflop_block(block)
     for attempt in (1, 2):
         try:
             resp = client.models.generate_content(
@@ -144,14 +503,20 @@ def parse_block(block: str, client=None, model: str | None = None,
             m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             js = m.group(1) if m else text.strip()
             hand = json.loads(js).get("hand")
-            if hand and hand.get("hero_position") and hand.get("preflop_actions") \
-                    and hand.get("hero_hand"):
-                return hand
-            return None
         except Exception:
             if attempt == 2:
-                return None
+                return fallback
             time.sleep(1.5)
+            continue
+        if hand and hand.get("hero_position") and hand.get("preflop_actions") \
+                and hand.get("hero_hand"):
+            gated, notes = repair_card_literals_from_block(block, hand)
+            if gated is None:
+                return {"_refused": notes or ["牌面字面值衝突"]}
+            if notes:
+                gated["_repairs"] = notes
+            return gated
+        return fallback
     return None
 
 
@@ -202,6 +567,19 @@ def repair_hu_pot(hand: dict) -> dict:
         seat_toks = _preflop_seat_tokens(tokens, npl)
         if last_raise_i >= len(seat_toks):
             return hand
+        # continuation-round ghost: a seat whose post-3bet call belongs to the
+        # real HU opponent (e.g. raw 'co fold btn call' put on CO). With both
+        # postflop actors known the fold + appended call are forced, same
+        # determinism contract as the round-1 ghost-caller fold above.
+        last_by_pos: dict[str, tuple[int, str]] = {}
+        for idx, (pos, code) in enumerate(seat_toks):
+            if code:
+                last_by_pos[pos] = (idx, code)
+        for g in {p for p, (_idx, code) in last_by_pos.items() if code != "F"} - actors:
+            idx, code = last_by_pos[g]
+            if idx > last_raise_i and code == "C":
+                tokens[idx] = "F"
+                seat_toks[idx] = (g, "F")
         last_raiser = seat_toks[last_raise_i][0]
         other = next(p for p in actors if p != last_raiser) \
             if last_raiser in actors else None
@@ -218,6 +596,28 @@ def repair_hu_pot(hand: dict) -> dict:
         for i, a in enumerate(st.get("actions") or []):
             a["position"] = p[i % 2]
     return hand
+
+
+def hero_folded_but_acts(hand: dict) -> bool:
+    """Parse contradiction: hero marked folded preflop while acting postflop
+    (Gemini mis-seated hero's own action, e.g. 'hero hj raise … to 5bb' put on
+    CO). Must be detected BEFORE repair_hu_pot strips hero's street actions;
+    the caller reparses with precise feedback — never silently re-seats."""
+    from hh_parser import POSITION_ORDERS
+    from spot_taxonomy import _preflop_seat_tokens
+    npl = hand.get("players_at_table") or 8
+    order = POSITION_ORDERS.get(npl)
+    pos = hand.get("hero_position")
+    tokens = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
+    if not order or pos not in order or len(tokens) < npl:
+        return False
+    last = None
+    for p, c in _preflop_seat_tokens(tokens, npl):
+        if p == pos and c:
+            last = c
+    acts = any(a.get("position") == pos for st in hand.get("streets") or []
+               for a in (st.get("actions") or []))
+    return acts and last == "F"
 
 
 def find_ghost(hand: dict) -> str | None:
@@ -488,14 +888,30 @@ def process_batch(text: str, date_str: str | None = None,
         progress(f"[{i}/{len(blocks)}] parsing...")
         entry = {"idx": i, "raw": block, "hand_id": None, "ok": False,
                  "error": None, "echo": None, "decisions": [],
-                 "validation_soft": []}
+                 "validation_soft": [], "repairs": []}
         result["hands"].append(entry)
         hand = parse_block(block)
-        if hand is None:
-            entry["error"] = "parse_failed"
+        if hand is None or hand.get("_refused"):
+            entry["error"] = "parse_failed" if hand is None else "literal_conflict"
+            entry["refusal"] = list((hand or {}).get("_refused") or [])
             result["totals"]["parse_failed"] += 1
             continue
+        repairs = list(hand.pop("_repairs", []))
+        if hero_folded_but_acts(hand):
+            # hero's own preflop action mis-seated — reparse with precise
+            # feedback before repair_hu_pot strips hero's street actions
+            hint = (f"上一次解析矛盾：hero（{hand.get('hero_position')}）的 preflop 動作"
+                    f"被標記為棄牌，但 hero 在翻牌後有行動。原文寫「hero <位置> <動作>」時，"
+                    f"該動作屬於 hero 本人；請把 hero 的 preflop 動作放回 "
+                    f"{hand.get('hero_position')}，不要放到其他座位。")
+            hand2 = parse_block(block, extra_hint=hint)
+            if hand2 and not hand2.get("_refused") and not hero_folded_but_acts(hand2):
+                repairs = list(hand2.pop("_repairs", [])) + ["矛盾重解析（hero preflop 動作歸屬）"]
+                hand = hand2
+        pre_repair = json.dumps(hand, sort_keys=True)
         hand = repair_hu_pot(hand)
+        if json.dumps(hand, sort_keys=True) != pre_repair:
+            repairs.append("HU pot 動作歸屬修補")
         ghost = find_ghost(hand)
         if ghost:
             # semantic contradiction (a live preflop seat never acts in a HU
@@ -507,10 +923,12 @@ def process_batch(text: str, date_str: str | None = None,
                     f"（continuation call 屬於原加注者），確保翻牌後的兩位玩家 preflop 都未棄牌、"
                     f"其他人都已棄牌。")
             hand2 = parse_block(block, extra_hint=hint)
-            if hand2:
+            if hand2 and not hand2.get("_refused"):
+                repairs2 = list(hand2.pop("_repairs", []))
                 hand2 = repair_hu_pot(hand2)
                 if find_ghost(hand2) is None:
                     hand = hand2
+                    repairs = repairs2 + ["矛盾重解析（動作歸屬重判）"]
                     ghost = None
         if ghost:
             entry["error"] = "parse_inconsistent"
@@ -518,6 +936,7 @@ def process_batch(text: str, date_str: str | None = None,
                 f"{ghost} preflop 未棄牌但翻牌後從未行動 — 動作歸屬解析不一致，請人工確認"]
             result["totals"]["parse_failed"] += 1
             continue
+        entry["repairs"] = repairs
         rep = validate_hand(hand)
         if not rep.ok:
             entry["error"] = "validation_failed"
@@ -540,6 +959,8 @@ def process_batch(text: str, date_str: str | None = None,
         except Exception as e:
             entry["error"] = f"grading_failed: {e}"
             continue
+        if repairs:
+            hand["_repairs"] = repairs   # audit trail into ledger parsed_json
         hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap)
         entry["ok"] = True
         entry["hand_row"] = hand_row
@@ -636,9 +1057,19 @@ def render_tg_html(result: dict) -> str:
         L.append(f"✅ 無明顯偏差：{ids}")
     for h in failed:
         why = h.get("error") or "?"
-        extra = "；".join(h.get("validation_hard") or [])
+        extra = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
         L.append(f"❗ <b>Hand {h['idx']}</b> 解析失敗（{escape(why)}）"
-                 f"{('：' + escape(extra)) if extra else ''} — 可修正後重傳")
+                 f"{('：' + escape(extra)) if extra else ''}")
+        raw_lines = (h.get("raw") or "").strip().splitlines()
+        if raw_lines:
+            L.append(f"　原文「{escape(raw_lines[0][:60])}」— 請改寫後重傳")
+
+    repaired = [h for h in result["hands"] if h.get("ok") and h.get("repairs")]
+    if repaired:
+        L.append("")
+        L.append(f"🔧 {len(repaired)} 手經自動修補，請核對 echo 與原文一致：")
+        for h in repaired:
+            L.append(f"・Hand {h['idx']}：{escape('；'.join(h['repairs']))}")
     if result["queue"]:
         L.append("")
         L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看，週日課表會帶到）")
@@ -702,9 +1133,13 @@ def main():
           f"{t['parse_failed']} parse-failed ==")
     for h in result["hands"]:
         if not h.get("ok"):
-            print(f"Hand {h['idx']}: FAILED {h.get('error')}")
+            why = "；".join((h.get("refusal") or []) + (h.get("validation_hard") or []))
+            print(f"Hand {h['idx']}: FAILED {h.get('error')}"
+                  f"{(' — ' + why) if why else ''}")
             continue
         print(f"Hand {h['idx']}: {h['echo']}")
+        if h.get("repairs"):
+            print(f"  REPAIRS: {'; '.join(h['repairs'])}")
         for d in h["decisions"]:
             ev = f"{d['ev_loss']:.2f}bb" if d["ev_loss"] is not None else "-"
             why = f" [{d['ungraded_reason']}]" if d.get("ungraded_reason") else ""
