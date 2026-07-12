@@ -201,10 +201,77 @@ def _root_solution_url(depth: float, gametype: str) -> str:
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
 
 
+def _real_action_code(action: dict) -> str:
+    """Action code suitable for gtow_action_resolver's parsed-hand input.
+
+    Analyze represents all-ins as ``RAI``.  The resolver needs the real numeric
+    target so it can map that shove onto the destination tree's all-in code.
+    """
+    code = action.get("code") or ""
+    if code == "RAI":
+        size = action.get("betsize")
+        if size in (None, ""):
+            raise ValueError("Analyze all-in action has no betsize")
+        return f"R{float(size):g}"
+    return code
+
+
+def _parsed_hand_from_analyze(detail: dict, hero_pos: str,
+                              preflop_depth_bb: float, gametype: str) -> dict:
+    """Reconstruct the parsed-hand shape from Analyze's real action stream."""
+    gps = ((detail.get("game_analysis") or {}).get("game_points")) or []
+    by_street: dict[str, list[dict]] = {s: [] for s in _STREET_ORDER}
+    for gp in gps:
+        real_game = gp.get("real_game") or {}
+        st = _GA_STREET.get(
+            ((real_game.get("current_street") or {}).get("type")) or "")
+        action = gp.get("real_game_action") or {}
+        if not st or not action.get("position") or not action.get("code"):
+            continue
+        code = _real_action_code(action)
+        by_street[st].append({
+            "position": action["position"], "action": code,
+            "size": float(action.get("betsize") or 0.0),
+        })
+
+    preflop = "-".join(a["action"] for a in by_street["preflop"])
+    if not preflop:
+        raise ValueError("Analyze detail has no real preflop action stream")
+
+    boards = detail.get("boards") or []
+    board = boards[0] if boards else ""
+    streets: list[dict] = []
+    if by_street["flop"] or len(board) >= 6:
+        streets.append({"board": board[:6], "actions": by_street["flop"]})
+    if by_street["turn"] or len(board) >= 8:
+        streets.append({"card": board[6:8], "actions": by_street["turn"]})
+    if by_street["river"] or len(board) >= 10:
+        streets.append({"card": board[8:10], "actions": by_street["river"]})
+
+    return {
+        "gametype": gametype or "MTTGeneral",
+        "effective_bb": float(preflop_depth_bb),
+        "hero_position": hero_pos,
+        "players_at_table": int(detail.get("players_dealt") or 8),
+        "preflop_actions": preflop,
+        "streets": streets,
+    }
+
+
 def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
-                            decision_idx: int) -> str | None:
-    """/solutions Study URL for hero's (street, decision_idx) decision, built
-    from the archived hand detail's `solved_action_sequence`.
+                            decision_idx: int, *,
+                            preflop_depth_bb: float | None = None,
+                            resolver=None) -> str | None:
+    """/solutions Study URL for hero's (street, decision_idx) decision.
+
+    When ``preflop_depth_bb`` is provided (the queue path), replay Analyze's
+    *real* action stream through the current solver tree.  The archive's
+    ``solved_action_sequence`` is an approximation used for grading and may be
+    at a different depth/sizing (e.g. real 37.5bb R2.2 -> current 40bb R2.3,
+    while the archived approximation says 30bb R2.1).  It is not a faithful
+    navigation path for the original hand.
+
+    The archive-only path remains for callers without list-row depth metadata.
 
     Returns None when the node can't be located or the solver has no solution
     for it (caller falls back). A first-to-act RFI (empty action line) resolves
@@ -214,6 +281,29 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
     gp = _find_decision_game_point(detail, hero_pos, street, decision_idx)
     if gp is None or not gp.get("has_solution"):
         return None
+    board = _canonical_board_str((gp.get("real_game") or {}).get("board") or "", street)
+
+    if preflop_depth_bb is not None:
+        try:
+            if resolver is None:
+                from gtow_action_resolver import resolve_actions_for_deviation
+                resolver = resolve_actions_for_deviation
+            gametype = gp.get("gametype") or "MTTGeneral"
+            hand = _parsed_hand_from_analyze(
+                detail, hero_pos, float(preflop_depth_bb), gametype)
+            resolved = resolver(hand, street, decision_idx)
+            if not resolved.get("preflop_actions"):
+                return _root_solution_url(resolved["depth"], resolved.get("gametype") or gametype)
+            return build_solution_url(resolved, board)
+        except Exception as exc:
+            # A wrong Study link is worse than the caller's broad Analyze-table
+            # fallback.  Do not silently reuse the known-lossy archive line.
+            _log.warning(
+                "review Study URL real-line resolution failed (%s %s[%s]): %s",
+                hero_pos, street, decision_idx, exc,
+            )
+            return None
+
     sas = gp.get("solved_action_sequence") or {}
     pre = sas.get("preflop_actions") or []
     if not pre:
@@ -237,7 +327,6 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
         "depth": float(gp.get("depth") or 0),
         "gametype": gp.get("gametype") or "MTTGeneral",
     }
-    board = _canonical_board_str((gp.get("real_game") or {}).get("board") or "", street)
     try:
         return build_solution_url(resolved, board)
     except ValueError:
