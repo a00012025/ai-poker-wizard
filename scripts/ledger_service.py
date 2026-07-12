@@ -60,16 +60,27 @@ def _top_spots_sql(category: str | None, hero_cat: str | None, days: int | None,
     return sql, args
 
 
+def _excluded_count_sql(category: str | None, days: int | None):
+    """Excluded/discarded caveat count with the SAME scope (source/category/
+    window) as the summary stats it is shown beside — a wider-scope count would
+    misstate the honesty caveat (§5.2)."""
+    where = ["(excluded OR discarded)", "source='online'"]
+    args: list = []
+    if category:
+        args.append(category); where.append(f"spot_category = ${len(args)}")
+    if days:
+        args.append(days); where.append(f"played_at >= now() - make_interval(days => ${len(args)})")
+    return f"SELECT count(*) FROM ledger_decisions WHERE {' AND '.join(where)}", args
+
+
 async def query_ledger_summary(pool, category=None, hero_cat=None, days=None) -> dict:
     sql, args = _summary_sql(category, hero_cat, days)
     tsql, targs = _top_spots_sql(category, hero_cat, days, 10)
+    esql, eargs = _excluded_count_sql(category, days)
     async with pool.acquire() as conn:
         agg = await conn.fetchrow(sql, *args)
         tops = await conn.fetch(tsql, *targs)
-        exc = await conn.fetchval(
-            "SELECT count(*) FROM ledger_decisions WHERE (excluded OR discarded)"
-            + (" AND spot_category=$1" if category else ""),
-            *([category] if category else []))
+        exc = await conn.fetchval(esql, *eargs)
     return {
         "n": agg["n"] or 0, "total_bb": float(agg["total_bb"] or 0),
         "per100": float(agg["per100"] or 0), "excluded_n": exc or 0,
@@ -80,9 +91,14 @@ async def query_ledger_summary(pool, category=None, hero_cat=None, days=None) ->
     }
 
 
-async def query_ledger_hands(pool, category=None, spot=None, min_ev_loss=0.5,
-                             days=90, limit=5) -> list[dict]:
-    where = ["NOT d.excluded", "NOT d.discarded", "d.ev_loss_bb >= $1"]
+def _hands_sql(category: str | None, spot: str | None, min_ev_loss: float,
+               days: int | None, limit: int):
+    """Pure WHERE-builder for the worst-hands listing. source='online' only
+    (§5.2): live hands are selectively recorded — they surface via the drill
+    queue / 線下 sections, never blended into this list (their Analyze review
+    links would be meaningless anyway)."""
+    where = ["NOT d.excluded", "NOT d.discarded", "d.source='online'",
+             "d.ev_loss_bb >= $1"]
     args: list = [float(min_ev_loss)]
     if category:
         args.append(category); where.append(f"d.spot_category = ${len(args)}")
@@ -95,6 +111,12 @@ async def query_ledger_hands(pool, category=None, spot=None, min_ev_loss=0.5,
            f"d.spot_leaf, d.ev_loss_bb, d.correctness "
            f"FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id=d.gtow_hand_id "
            f"WHERE {' AND '.join(where)} ORDER BY d.ev_loss_bb DESC LIMIT ${len(args)}")
+    return sql, args
+
+
+async def query_ledger_hands(pool, category=None, spot=None, min_ev_loss=0.5,
+                             days=90, limit=5) -> list[dict]:
+    sql, args = _hands_sql(category, spot, min_ev_loss, days, limit)
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
     out = []

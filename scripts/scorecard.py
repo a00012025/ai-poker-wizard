@@ -5,6 +5,11 @@ Diagnose (action-line leak board by avg EV loss) -> prescribe 1-2 focus spots
 with precise multi-depth GTOW Trainer drill links (the drill itself is the
 retrieval practice) -> next-cycle EV-loss readback on the treated spot.
 
+Windows (§2.2 歸因): weekly mode diagnoses over the trailing FOCUS_WINDOW_DAYS
+(a cumulative all-history average would bury recent form), and the readback of
+last week's focus spot is computed strictly over the post-prescription window —
+that is the only window where the treatment effect is observable.
+
 --preview   full-history window, no DB writes; emits data/scorecards/preview.*
 --weekly    current ISO week, writes scorecards + coach_focus + readback backfill
 """
@@ -72,9 +77,13 @@ def _svg_sparkline(values, w=560, h=80) -> str:
             f'<polyline fill="none" stroke="#2b6cb0" stroke-width="2" points="{pts}"/></svg>')
 
 
+# diagnosis window for --weekly: recent form, not all-history
+FOCUS_WINDOW_DAYS = 90
+
+
 # ── pure assembly ──────────────────────────────────────────────────────────
 def compute_training_plan(window_label, weekly_series, spots, top_hands,
-                          prev_focus, honesty, focus_k=2) -> dict:
+                          readback, honesty, focus_k=2) -> dict:
     per100 = weekly_series[-1]["per100"] if weekly_series else 0.0
     delta = (weekly_series[-1]["per100"] - weekly_series[-2]["per100"]
              if len(weekly_series) >= 2 else 0.0)
@@ -96,24 +105,27 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
         "per100": per100, "delta": delta, "weekly_series": weekly_series,
         "leaderboard": [dict(it["row"], drill_url=it["url"], restrict=it.get("restrict"))
                         for it in spots],
-        "focus": focus, "readback": prev_focus_readback(prev_focus, spots),
+        "focus": focus, "readback": readback,
         "top_hands": top_hands, "honesty": honesty,
     }
 
 
-def prev_focus_readback(prev_focus, spots):
-    """Given last cycle's focus spot_leafs, report this window's per100 for each."""
+def prev_focus_readback(prev_focus, current_by_leaf):
+    """Given last cycle's focus spot_leafs and their POST-PRESCRIPTION window
+    stats ({leaf: {n, per100}}), build the readback rows. Never fed cumulative
+    averages: adding one week of play to months of history dilutes any change
+    to invisibility, which would blind the §2.2 attribution loop."""
     if not prev_focus:
         return None
-    by_leaf = {it["row"]["spot_leaf"]: it["row"] for it in spots}
     out = []
     for f in prev_focus:
         leaf = f.get("spot_leaf")
-        cur = by_leaf.get(leaf)
+        cur = (current_by_leaf or {}).get(leaf)
+        has_data = bool(cur and cur.get("n"))
         out.append({"spot_leaf": leaf, "prescribed_per100": f.get("per100"),
-                    "current_per100": (cur["avg_ev"] * 100) if cur else None,
+                    "current_per100": cur["per100"] if has_data else None,
                     "n": cur["n"] if cur else 0,
-                    "note": "單週讀數僅供參考，連續 4 週才算數"})
+                    "note": "處方後實戰窗口讀數，連續 4 週才算數"})
     return out
 
 
@@ -313,11 +325,23 @@ FROM ledger_decisions
 WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
 GROUP BY 1 ORDER BY 1
 """
-TOP_HANDS_SQL = """
+def top_hands_sql(since=None) -> str:
+    win = " AND played_at >= $1" if since else ""
+    return f"""
 SELECT gtow_hand_id, played_at, hero_hand, position, boards, total_ev_loss_bb
-FROM ledger_hands WHERE total_ev_loss_bb > 0 AND source='online'
+FROM ledger_hands WHERE total_ev_loss_bb > 0 AND source='online'{win}
 ORDER BY total_ev_loss_bb DESC LIMIT 3
 """
+
+
+# post-prescription window stats for last cycle's focus leaf (§2.2 readback)
+READBACK_WINDOW_SQL = """
+SELECT count(*) n, avg(ev_loss_bb)*100 per100
+FROM ledger_decisions
+WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
+  AND played_at >= $2
+"""
+
 QUEUE_SQL = """
 SELECT id, spot_leaf, spot_category, drill_url, n_sources, total_ev_loss_bb, source
 FROM drill_queue WHERE status='pending'
@@ -344,12 +368,30 @@ async def fetch_drill_queue(conn) -> list[dict]:
     return [dict(r) for r in await conn.fetch(QUEUE_SQL)]
 
 
-async def build(conn, window_label, prev_focus, min_n=50, top=8):
+async def fetch_readback(conn, prev_focus, prev_at) -> dict:
+    """{leaf: {n, per100}} over the post-prescription window (played_at >= prev_at)."""
+    out = {}
+    for f in prev_focus or []:
+        leaf = f.get("spot_leaf")
+        if not leaf:
+            continue
+        r = await conn.fetchrow(READBACK_WINDOW_SQL, leaf, prev_at)
+        out[leaf] = {"n": r["n"] or 0,
+                     "per100": float(r["per100"]) if r["per100"] is not None else None}
+    return out
+
+
+async def build(conn, window_label, prev_focus, min_n=50, top=8,
+                since=None, prev_at=None):
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
-    spots = await lb.leaderboard(conn, min_n=min_n, top=top)
-    top_hands = [dict(r) for r in await conn.fetch(TOP_HANDS_SQL)]
+    spots = await lb.leaderboard(conn, min_n=min_n, top=top, since=since)
+    top_hands = [dict(r) for r in await conn.fetch(
+        top_hands_sql(since), *([since] if since else []))]
     honesty = await _honesty(conn)
-    data = compute_training_plan(window_label, weekly, spots, top_hands, prev_focus, honesty)
+    readback = None
+    if prev_focus and prev_at:
+        readback = prev_focus_readback(prev_focus, await fetch_readback(conn, prev_focus, prev_at))
+    data = compute_training_plan(window_label, weekly, spots, top_hands, readback, honesty)
     data["drill_queue"] = await fetch_drill_queue(conn)
     return data
 
@@ -370,12 +412,15 @@ async def _run(mode: str, min_n: int):
         now = datetime.now(TPE)
         y, wk, _ = now.isocalendar()
         week = f"{y}-W{wk:02d}"
-        prev = await conn.fetchrow("SELECT week, families FROM coach_focus ORDER BY created_at DESC LIMIT 1")
-        prev_focus = None
+        prev = await conn.fetchrow(
+            "SELECT week, families, created_at FROM coach_focus ORDER BY created_at DESC LIMIT 1")
+        prev_focus, prev_at = None, None
         if prev:
             fam = prev["families"]
             prev_focus = json.loads(fam) if isinstance(fam, str) else fam
-        data = await build(conn, week, prev_focus, min_n=min_n)
+            prev_at = prev["created_at"]
+        since = datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS)
+        data = await build(conn, week, prev_focus, min_n=min_n, since=since, prev_at=prev_at)
         html = render_html(data)
         (outdir / f"{week}.html").write_text(html)
         fam_payload = [{"spot_leaf": f["spot_leaf"], "per100": f["per100"], "n": f["n"],

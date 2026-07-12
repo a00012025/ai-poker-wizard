@@ -44,7 +44,12 @@ BAND_ZH = {"short": "短籌(≤20)", "medium": "中籌(20-50)", "large": "深籌
 PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vsCold3bet",
                 "vs4bet", "vsCold4bet"}
 
-LEADER_SQL = """
+# All three queries take an optional time window (§2.2 歸因): an unwindowed
+# leaderboard is a cumulative average — recent improvement/regression barely
+# moves it, so focus picking and readback would be blind to change.
+def leader_sql(since=None) -> str:
+    win = " AND played_at >= $3" if since else ""
+    return f"""
 SELECT spot_leaf, spot_category,
        count(*) n, sum(ev_loss_bb) total_ev, avg(ev_loss_bb) avg_ev,
        mode() WITHIN GROUP (ORDER BY hero_cat)   hero_cat,
@@ -54,26 +59,32 @@ SELECT spot_leaf, spot_category,
        mode() WITHIN GROUP (ORDER BY depth_band) depth_band,
        mode() WITHIN GROUP (ORDER BY street)     street
 FROM ledger_decisions
-WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
+WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'{win}
 GROUP BY spot_leaf, spot_category
 HAVING count(*) >= $1
 ORDER BY avg(ev_loss_bb) DESC
 LIMIT $2
 """
 
-SAMPLE_SQL = """
+
+def sample_sql(since=None) -> str:
+    win = " AND d.played_at >= $2" if since else ""
+    return f"""
 SELECT d.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards, h.total_ev_loss_bb,
        d.ev_loss_bb, d.correctness
 FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
-WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='online'
+WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='online'{win}
 ORDER BY d.ev_loss_bb DESC LIMIT 2
 """
 
-BAND_SQL = """
+
+def band_sql(since=None) -> str:
+    win = " AND played_at >= $2" if since else ""
+    return f"""
 SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
 FROM ledger_decisions
 WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
-  AND source='online'
+  AND source='online'{win}
 GROUP BY eff_stack
 """
 
@@ -112,13 +123,16 @@ def _drill_url(r, depths) -> str | None:
         return None
 
 
-async def leaderboard(conn, min_n=50, top=5):
-    rows = await conn.fetch(LEADER_SQL, min_n, top)
+async def leaderboard(conn, min_n=50, top=5, since=None):
+    """since=None → all-history (CLI/preview); a datetime restricts every
+    aggregate (ranking, bands, samples) to that window."""
+    extra = [since] if since else []
+    rows = await conn.fetch(leader_sql(since), min_n, top, *extra)
     out = []
     for r in rows:
-        bands = [dict(b) for b in await conn.fetch(BAND_SQL, r["spot_leaf"])]
+        bands = [dict(b) for b in await conn.fetch(band_sql(since), r["spot_leaf"], *extra)]
         restrict, depths = choose_depths(bands)
-        samples = await conn.fetch(SAMPLE_SQL, r["spot_leaf"])
+        samples = await conn.fetch(sample_sql(since), r["spot_leaf"], *extra)
         out.append({"row": r, "url": _drill_url(r, depths), "samples": samples,
                     "bands": bands, "restrict": restrict})
     return out
