@@ -8696,11 +8696,27 @@ def test_snap_depth_boundary_tie_low():
 
 @test
 def test_build_url_open_raise():
-    """build_trainer_url: open_raise → fh_actions=RFI"""
+    """Every trainer URL carries the owner's global session defaults."""
     url = build_trainer_url("open_raise", "preflop", 20)
     qs = parse_qs(urlparse(url).query)
     assert_eq(qs["fh_actions"], ["RFI"])
     assert_eq(qs["fh_start_spot"], ["preflop"])
+    assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
+    assert_eq(qs["fh_trainer_learning_mode"], ["on"])
+    assert_eq(qs["fh_trainer_session"], ["100"])
+
+
+@test
+def test_apply_trainer_defaults_upgrades_existing_url():
+    from gtow_trainer_url import apply_trainer_defaults
+    old = "https://app.gtowizard.com/practice/trainer?fh_actions=RFI&fh_trainer_game_speed=normal"
+    qs = parse_qs(urlparse(apply_trainer_defaults(old)).query)
+    assert_eq(qs["fh_actions"], ["RFI"])
+    assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
+    assert_eq(qs["fh_trainer_learning_mode"], ["on"])
+    assert_eq(qs["fh_trainer_session"], ["100"])
+    non_trainer = "https://app.gtowizard.com/solutions?gametype=MTTGeneral"
+    assert_eq(apply_trainer_defaults(non_trainer), non_trainer)
 
 
 @test
@@ -13755,6 +13771,12 @@ def test_training_plan_focus_and_readback():
     row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
     assert_in("3bet", spot_desc_zh(row))
+    assert_eq(spot_desc_zh({"spot_leaf": "HJ_RFI", "spot_category": "RFI",
+                            "hero_pos": "HJ"}), "HJ 開池")
+    assert_eq(spot_desc_zh({"spot_leaf": "turn:3bet:EPvSB:IP:[b-c]:vs_bet",
+                            "spot_category": "turn", "hero_cat": "EP",
+                            "villain_cat": "SB", "ip_oop": "IP"}),
+              "3bet 底池，你 EP 在 IP，轉牌面對下注")
     spots = [{"row": row, "url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
               "samples": [], "bands": [], "restrict": None, "fragile": True}]
     weekly = [{"week": "2026-W27", "n": 100, "per100": 2.5, "total_bb": 2.5},
@@ -14853,7 +14875,7 @@ def test_live_queue_labels_include_prior_street_actions():
         "hero_cat": "BB", "villain_cat": "LP", "ip_oop": "OOP",
         "position": "BB", "flop_seq": "x-b-c", "turn_seq": None,
     }
-    assert_in("轉牌 面對下注（flop x-b-c）", spot_label_zh(turn))
+    assert_in("轉牌面對下注（flop x-b-c）", spot_label_zh(turn))
 
     river = {
         "spot_category": "river", "street": "river",
@@ -14861,7 +14883,7 @@ def test_live_queue_labels_include_prior_street_actions():
         "hero_cat": "LP", "villain_cat": "EP", "ip_oop": "IP",
         "position": "BTN", "flop_seq": None, "turn_seq": None,
     }
-    assert_in("河牌 面對過牌（flop x-x / turn x-b-c）",
+    assert_in("河牌面對過牌（flop x-x / turn x-b-c）",
               spot_label_zh(river))
 
 
@@ -15095,8 +15117,9 @@ def test_queue_aging_and_single_upsert_policy():
               queue_feed._OPEN_DRILL_SQL)                        # merge only into open drill row
     assert_in("ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1",
               queue_feed._OPEN_DRILL_SQL)                        # single open row, pending-first
-    assert_in("$5::jsonb", queue_feed._INSERT_SQL)              # store arrays, not JSON strings
+    assert_in("$7::jsonb", queue_feed._INSERT_SQL)              # store arrays, not JSON strings
     assert_in("kind, added_by, source", queue_feed._INSERT_SQL)
+    assert_in("review_anchor_url, review_anchor_street", queue_feed._INSERT_SQL)
     drain = inspect.getsource(sc._run)
     assert_in("AND status='pending'", drain)                    # drain never re-promotes
 
@@ -15214,6 +15237,8 @@ def test_queue_feed_review_and_manual_items():
     assert_in("−22.7bb", lbl)
     assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
     assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))
+    hinted = qf.review_label(dict(row, review_anchor_street="flop"))
+    assert_in("（Flop 走了低頻分支，建議從 Flop 開始看）", hinted)
     # no raw_path -> Study link can't build -> day-range Analyze fallback
     assert_true(qf.review_url(row).startswith("https://app.gtowizard.com/analyze"))
     assert_true(qf.review_url({"ref_hand_id": "x"}) is None)   # no played_at -> no link
@@ -15227,6 +15252,25 @@ def test_queue_feed_review_and_manual_items():
     assert_eq(it["total_ev_loss_bb"], 0.0)                      # drilling a spot played right
     assert_true(it["drill_url"] and it["label"])
     assert_eq(it["source_hands"][0]["src"], "manual")
+
+
+@test
+def test_queue_feed_low_frequency_review_anchor():
+    """A review starts at the earliest prior <=5% hero branch, never at the
+    lossy decision itself or a later bottleneck."""
+    import queue_feed as qf
+    decisions = [
+        {"street": "preflop", "decision_idx": 0, "taken_freq": 1.0},
+        {"street": "flop", "decision_idx": 0, "taken_freq": 0.023},
+        {"street": "turn", "decision_idx": 0, "taken_freq": 0.01},
+        {"street": "river", "decision_idx": 0, "taken_freq": 0.0},
+    ]
+    anchor = qf.low_frequency_anchor(decisions, "river", 0)
+    assert_eq((anchor["street"], anchor["decision_idx"]), ("flop", 0))
+    assert_true(qf.low_frequency_anchor(decisions[:1], "preflop", 0) is None)
+    assert_true(qf.low_frequency_anchor(
+        [{"street": "flop", "decision_idx": 0, "taken_freq": 0.051}],
+        "turn", 0) is None)
 
 
 @test
@@ -15411,9 +15455,11 @@ def test_weekly_payload_review_buttons():
              {"id": 11, "kind": "drill", "label": "BB 面對 SB 開池", "spot_leaf": "x",
               "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
               "n_sources": 3, "total_ev_loss_bb": 1.2, "status": "pending"},
-             {"id": 12, "kind": "review", "label": "復盤 6/1 河牌 面對下注 −22.7bb",
+             {"id": 12, "kind": "review", "label": "復盤 6/1 河牌面對下注 −22.7bb",
               "spot_leaf": "y", "ref_hand_id": "abc",
               "drill_url": "https://app.gtowizard.com/analyze/v4/hands/table?f=1",
+              "review_anchor_url": "https://app.gtowizard.com/solutions?flop=1",
+              "review_anchor_street": "flop",
               "total_ev_loss_bb": 22.7, "status": "pending"},
          ]}
     payload = weekly_tg_payload("2026-W28", d)
@@ -15422,7 +15468,8 @@ def test_weekly_payload_review_buttons():
     assert_in("qcl:12", cbs)                                   # review 完成
     assert_in("qex:12", cbs)                                   # review 加練
     assert_true(any(b.get("url", "").endswith("a=1") and "📥" in b["text"] for b in flat))
-    assert_true(any("🔗" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
+    assert_true(any("損失" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
+    assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("flop=1") for b in flat))
     # review section header + both kinds rendered in the text
     assert_in("練習佇列", payload["html"])
     assert_in("🔍", payload["html"])
@@ -15438,7 +15485,8 @@ def test_queue_clear_refreshes_message_with_remaining_items():
 
     rows = [
         {"id": 12, "kind": "review", "label": "復盤 A", "spot_leaf": "a",
-         "drill_url": "https://example.com/a", "status": "pending",
+         "drill_url": "https://example.com/a", "review_anchor_url": "https://example.com/flop",
+         "review_anchor_street": "flop", "status": "pending",
          "n_sources": 1, "total_ev_loss_bb": 12.0},
         {"id": 13, "kind": "drill", "label": "練習 B", "spot_leaf": "b",
          "drill_url": "https://example.com/b", "status": "pending",
@@ -15451,6 +15499,13 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     empty_html, empty_buttons = _queue_payload([])
     assert_in("已清空", empty_html)
     assert_eq(empty_buttons, [])
+
+    review_html, review_buttons = _queue_payload(rows[:1])
+    review_flat = [b for row in review_buttons for b in row]
+    assert_true(any(b.get("url") == "https://example.com/flop" and "Flop" in b["text"]
+                    for b in review_flat))
+    assert_true(any(b.get("url") == "https://example.com/a" and "損失" in b["text"]
+                    for b in review_flat))
 
     src = inspect.getsource(PokerWizardBot.handle_live_button)
     assert_in("edit_message_text", src)
@@ -15472,6 +15527,15 @@ def test_migration_unified_drill_queue():
         assert_in(col, sql)
     assert_in("WHERE status = 'pending' AND kind = 'drill'", sql)
     assert_in("WHERE status = 'pending' AND kind = 'review'", sql)
+
+
+@test
+def test_migration_path_aware_review_links():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    sql = (root / "supabase/migrations/20260712180000_path_aware_review_links.sql").read_text()
+    assert_in("review_anchor_url TEXT", sql)
+    assert_in("review_anchor_street TEXT", sql)
 
 
 @test

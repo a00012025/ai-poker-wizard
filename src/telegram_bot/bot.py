@@ -62,13 +62,26 @@ def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
         if r["kind"] == "review":
             L.append(f"🔍 {i}. {_esc(lbl)}{st}")
             row_btns = []
+            anchor = r.get("review_anchor_url")
+            anchor_street = r.get("review_anchor_street")
+            if anchor:
+                row_btns.append({"text": f"↩ {i} {(anchor_street or '上游').title()}",
+                                 "url": anchor})
             if r["drill_url"]:
-                row_btns.append({"text": f"🔗 復盤 {i}", "url": r["drill_url"]})
-            row_btns.append({"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"})
-            row_btns.append({"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"})
+                text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
+                row_btns.append({"text": text, "url": r["drill_url"]})
+            actions = [
+                {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"},
+                {"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"},
+            ]
+            if anchor and row_btns:
+                buttons.append(row_btns)
+                row_btns = actions
+            else:
+                row_btns.extend(actions)
         else:
             ev = r["total_ev_loss_bb"] or 0
-            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
+            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}")
             row_btns = []
             if r["drill_url"]:
                 row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
@@ -1406,7 +1419,8 @@ class PokerWizardBot:
 
     async def _fetch_queue_rows(self):
         return await self.db.pool.fetch(
-            "SELECT id, spot_leaf, label, drill_url, status, n_sources, "
+            "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
+            "review_anchor_street, status, n_sources, "
             "total_ev_loss_bb, kind, ref_hand_id "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
