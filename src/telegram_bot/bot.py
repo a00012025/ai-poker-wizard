@@ -174,9 +174,11 @@ class PokerWizardBot:
         """Reply with setup instructions when user has no GTO token."""
         msg = (
             "請先綁定 GTO Wizard 帳號才能使用。\n\n"
-            "安裝 Extension 自動取得 token：\n"
-            "→ github.com/a00012025/ai-poker-wizard/releases\n\n"
-            "或手動：登入 app.gtowizard.com → F12 Console → "
+            "推薦：安裝 Chrome Extension 自動同步。\n"
+            "1. 下載最新版：github.com/a00012025/ai-poker-wizard/releases\n"
+            "2. 回到 Telegram 輸入 /pair 取得五分鐘配對碼\n"
+            "3. 在 Extension popup 輸入配對碼並登入 GTOW\n\n"
+            "手動備援：登入 app.gtowizard.com → F12 Console → "
             "copy(localStorage.getItem('user_refresh')) → /settoken <貼上>"
         )
         await update.message.reply_text(msg)
@@ -199,7 +201,8 @@ class PokerWizardBot:
             "⚡ 開始前，請先綁定 GTO Wizard 帳號：\n\n"
             "方法一：安裝 Chrome Extension（推薦）\n"
             "→ github.com/a00012025/ai-poker-wizard/releases\n"
-            "安裝後登入 GTO Wizard，自動複製 token\n\n"
+            "安裝後輸入 /pair，把配對碼貼到 Extension popup。\n"
+            "之後每次登入 GTO Wizard 都會自動同步，不必再貼 token。\n\n"
             "方法二：手動取得\n"
             "1. 登入 app.gtowizard.com\n"
             "2. F12 開啟 Console\n"
@@ -212,8 +215,11 @@ class PokerWizardBot:
             "• 預設 = MTT（錦標賽）\n"
             "• 提到「cash」「現金桌」「ring game」= 現金桌分析\n"
             "• 例：cash 6max 100bb, CO raise 2.5bb, BTN 3bet 8bb AKs\n\n"
-            "/settoken — 綁定 token\n"
-            "/logout — 解除綁定\n"
+            "/pair — 配對 Chrome Extension\n"
+            "/devices — 查看已配對裝置\n"
+            "/revoke — 撤銷指定裝置\n"
+            "/settoken — 手動綁定 token（備援）\n"
+            "/logout — 解除 token 並撤銷所有裝置\n"
             "/clear — 清除對話紀錄"
         )
         await update.message.reply_text(welcome_msg)
@@ -226,6 +232,11 @@ class PokerWizardBot:
 **指令：**
 /start - 開始使用
 /help - 顯示說明
+/pair - 產生 Chrome Extension 配對碼
+/devices - 查看已配對裝置
+/revoke 裝置ID - 撤銷裝置
+/settoken - 手動 token 備援
+/logout - 解除 token 並撤銷同步裝置
 /clear - 清除對話紀錄
 
 **手牌分析：**
@@ -249,8 +260,92 @@ class PokerWizardBot:
         self.session_manager.clear_session(chat_id)
         await update.message.reply_text("🔄 對話紀錄已清除，開始新的對話！")
 
+    async def pair_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a short-lived code that pairs the Chrome Extension."""
+        from datetime import datetime, timedelta, timezone
+        from src.token_sync import (
+            PAIR_TTL_MINUTES,
+            generate_pair_code,
+            hash_pair_code,
+        )
+
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("為保護配對碼，請私訊 Bot 後再輸入 /pair。")
+            return
+        await self._touch_user(update)
+        if not self.db:
+            await update.message.reply_text("配對服務目前不可用，請稍後再試。")
+            return
+        try:
+            code = generate_pair_code()
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAIR_TTL_MINUTES)
+            await self.db.create_gtow_device_pairing(
+                update.effective_user.id,
+                hash_pair_code(code),
+                expires_at,
+            )
+        except Exception:
+            self.log.exception("Failed to create GTOW device pairing")
+            await update.message.reply_text("配對服務設定尚未完成，請聯絡管理員。")
+            return
+        await update.message.reply_text(
+            "🔗 Chrome Extension 配對碼\n\n"
+            f"`{code}`\n\n"
+            f"請在 {PAIR_TTL_MINUTES} 分鐘內貼到 Extension popup。"
+            "配對碼只能使用一次；之後 GTOW token 會自動同步。",
+            parse_mode="Markdown",
+        )
+
+    async def devices_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List active Chrome Extension pairings."""
+        from src.token_sync import short_device_id
+        from telegram.helpers import escape_markdown
+
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("裝置管理僅限私訊 Bot 使用。")
+            return
+
+        if not self.db:
+            await update.message.reply_text("裝置服務目前不可用。")
+            return
+        rows = await self.db.list_gtow_sync_devices(update.effective_user.id)
+        if not rows:
+            await update.message.reply_text("目前沒有已配對的 Chrome Extension。輸入 /pair 開始配對。")
+            return
+        lines = ["🧩 已配對裝置", ""]
+        for row in rows:
+            last_sync = row["last_sync_at"]
+            sync_text = last_sync.strftime("%Y-%m-%d %H:%M UTC") if last_sync else "尚未同步"
+            lines.append(
+                f"• {escape_markdown(row['name'], version=1)}\n"
+                f"  ID: `{short_device_id(row['id'])}` · {sync_text}"
+            )
+        lines.append("\n撤銷：`/revoke 裝置ID`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def revoke_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Revoke one Chrome Extension device by its displayed UUID prefix."""
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("裝置管理僅限私訊 Bot 使用。")
+            return
+        if not self.db:
+            await update.message.reply_text("裝置服務目前不可用。")
+            return
+        prefix = "".join(context.args).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{8,32}", prefix):
+            await update.message.reply_text("請使用 `/revoke 裝置ID`。裝置 ID 可從 /devices 查看。", parse_mode="Markdown")
+            return
+        row = await self.db.revoke_gtow_sync_device(update.effective_user.id, prefix)
+        if not row:
+            await update.message.reply_text("找不到唯一對應的有效裝置，請重新查看 /devices。")
+            return
+        await update.message.reply_text(f"已撤銷裝置：{row['name']}")
+
     async def settoken_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /settoken <token> — validate and store user's GTO Wizard token."""
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("Token 綁定僅限私訊 Bot 使用，請勿在群組貼上 token。")
+            return
         label = self._user_label(update)
         user_id = update.effective_user.id
         self.log.info(f"[{label}] /settoken")
@@ -258,7 +353,7 @@ class PokerWizardBot:
         # Extract token from command args
         raw_text = update.message.text or ""
         token = " ".join(context.args) if context.args else ""
-        self.log.info(f"[{label}] /settoken raw len={len(raw_text)}, token len={len(token)}, prefix={token[:20]}...")
+        self.log.info(f"[{label}] /settoken raw len={len(raw_text)}, token len={len(token)}")
         if not token or not token.startswith("eyJ"):
             self.log.warning(f"[{label}] /settoken bad format: token_empty={not token}, raw='{raw_text[:60]}'")
             await update.message.reply_text(
@@ -303,7 +398,7 @@ class PokerWizardBot:
                     code = body.get("code", "")
             except Exception:
                 pass
-            self.log.warning(f"[{label}] /settoken refresh failed (token prefix: {token[:20]}...) code={code} reason={reason}")
+            self.log.warning(f"[{label}] /settoken refresh failed code={code} reason={reason}")
 
             ERROR_HINTS = {
                 "FORCED_LOGOUT": (
@@ -323,7 +418,12 @@ class PokerWizardBot:
 
         # Store in DB
         if self.db:
-            await self.db.save_user_gto_token(user_id, token)
+            saved = await self.db.save_user_gto_token(user_id, token)
+            if not saved:
+                await update.message.reply_text(
+                    "這組 token 比目前同步版本舊，因此未覆蓋。請重新整理 GTO Wizard 後再試。"
+                )
+                return
 
         self.log.info(f"[{label}] GTO token bound successfully")
         await update.message.reply_text("GTO Wizard 帳號綁定成功！之後的查詢會使用你的帳號。")
@@ -335,12 +435,12 @@ class PokerWizardBot:
         self.log.info(f"[{label}] /logout")
 
         if self.db:
-            await self.db.delete_user_gto_token(user_id)
+            await self.db.logout_gtow_user(user_id)
 
         from gto_token import invalidate_user_token
         invalidate_user_token(user_id)
 
-        await update.message.reply_text("已解除 GTO Wizard 帳號綁定。")
+        await update.message.reply_text("已解除 GTO Wizard token，並撤銷所有 Extension 同步裝置。")
 
     async def _get_user_refresh_token(self, user_id: int) -> str | None:
         """Look up user's GTO Wizard refresh token from DB."""
@@ -1778,6 +1878,9 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("clear", self.clear_command))
+        self.application.add_handler(CommandHandler("pair", self.pair_command))
+        self.application.add_handler(CommandHandler("devices", self.devices_command))
+        self.application.add_handler(CommandHandler("revoke", self.revoke_command))
         self.application.add_handler(CommandHandler("settoken", self.settoken_command))
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(CommandHandler("report", self.report_command))

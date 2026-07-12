@@ -68,3 +68,4 @@ scripts/_tmp*.py
 data/gtow_raw/
 data/scorecards/
 .gtow_client_id
+dist/

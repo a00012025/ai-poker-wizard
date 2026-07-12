@@ -1,11 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "GTO Wizard Token",
-  "version": "1.0",
-  "description": "Copy GTO Wizard token for AI Poker Wizard Telegram bot",
-  "permissions": ["activeTab", "scripting"],
+  "name": "AI Poker Wizard - GTOW Sync",
+  "version": "2.0.0",
+  "description": "Securely pair with AI Poker Wizard and automatically sync your GTO Wizard token.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://app.gtowizard.com/*",
+    "https://ivtfzwsytdkdqolzxhkh.supabase.co/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.gtowizard.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
-    "default_title": "Copy GTO Token"
+    "default_title": "AI Poker Wizard GTOW Sync",
+    "default_popup": "popup.html"
   },
   "background": {
     "service_worker": "background.js"

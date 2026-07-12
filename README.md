@@ -27,7 +27,9 @@ GTO 撲克教練 — 結合 GTO Wizard solver 數據與 Gemini LLM，提供即�
 - LLM 可即時查詢 solver 回答 follow-up 問題
 
 ### Chrome Extension
-- 一鍵複製 GTO Wizard token，方便綁定帳號
+- 一次性 Telegram 配對，之後自動同步 GTO Wizard token
+- Popup 顯示配對、GTOW 登入與最後同步狀態
+- 每台 Chrome 都有可撤銷的 device credential
 - 原始碼在 `chrome-extension/` 目錄
 
 ## 使用教學
@@ -38,11 +40,14 @@ GTO 撲克教練 — 結合 GTO Wizard solver 數據與 Gemini LLM，提供即�
 
 **方法一：Chrome Extension（推薦）**
 
-1. 到 [Releases 頁面](https://github.com/a00012025/ai-poker-wizard/releases) 下載 `gto-wizard-ext-v1.0.zip`
+1. 到 [Releases 頁面](https://github.com/a00012025/ai-poker-wizard/releases) 下載最新版 `ai-poker-wizard-gtow-sync-v2.0.0.zip`
 2. 解壓縮後，Chrome 開啟 `chrome://extensions` → 開啟「開發人員模式」
 3. 點「載入未封裝項目」→ 選擇解壓後的資料夾
-4. 登入 [app.gtowizard.com](https://app.gtowizard.com) → 點擊 extension 圖示 → 自動複製指令
-5. 回到 Telegram 貼上即可
+4. 私訊 Telegram bot 輸入 `/pair`，把五分鐘配對碼貼到 Extension popup
+5. 登入 [app.gtowizard.com](https://app.gtowizard.com)；Extension 會自動同步，以後不必再貼 token
+
+同一帳號可配對多台 Desktop Chrome；每台需依序使用新的 `/pair` 配對碼，並各自登入
+GTOW。任一台取得新 token 後都會自動更新 Bot，但不會替其他瀏覽器注入 token 或登入。
 
 **方法二：手動取得**
 
@@ -81,8 +86,11 @@ turn 3h, SB bet 60% CO fold
 | 指令 | 說明 |
 |------|------|
 | `/start` | 顯示歡迎訊息與設定教學 |
-| `/settoken` | 綁定 GTO Wizard token |
-| `/logout` | 解除綁定 |
+| `/pair` | 私訊中產生 Chrome Extension 五分鐘配對碼 |
+| `/devices` | 查看已配對的同步裝置 |
+| `/revoke <ID>` | 撤銷指定同步裝置 |
+| `/settoken` | 手動綁定 GTO Wizard token（備援） |
+| `/logout` | 移除 token 並撤銷全部同步裝置 |
 | `/clear` | 清除對話紀錄 |
 
 ## 自行部署
@@ -100,6 +108,7 @@ turn 3h, SB bet 60% CO fold
 | `BOT_TOKEN` | Telegram bot token |
 | `SUPABASE_CONN` | Supabase 連線字串（transaction pooler） |
 | `ADMIN_CHAT_ID` | 管理員 Telegram chat ID |
+| `GTOW_SYNC_PEPPER` | Bot 與 Edge Function 共用的 pairing/device HMAC secret（至少 32 字元） |
 
 ### 安裝與啟動
 
@@ -112,6 +121,8 @@ python -m src.main_gemini
 # Docker 部署
 docker compose up -d
 ```
+
+Chrome Extension自動同步使用 Supabase Edge Function，不需要自訂 domain，也不需要把 Docker host port公開到 Internet。完整首次部署、secret設定、驗證與 rollback流程見 [`docs/GTOW_TOKEN_SYNC_DEPLOY.md`](docs/GTOW_TOKEN_SYNC_DEPLOY.md)。
 
 ### 測試
 
@@ -132,6 +143,7 @@ python scripts/e2e_test.py -i "有效 50bb, CO open 2bb, hero SB AcTh raise 7.5b
 User (Telegram)
   ↓
 PokerWizardBot
+  ├── /pair → Supabase one-time pairing
   ├── Token gate（檢查使用者是否已綁定 GTO Wizard）
   ↓
 GeminiSessionManager
@@ -141,6 +153,16 @@ GeminiSessionManager
   │     ├── gto_formatter.py — solver 數據 → 自然語言
   │     └── icm_modes.py — ICM 階段 & stack 配置
   └── Coaching (Gemini Pro + tool use for follow-ups)
+```
+
+```
+Chrome Extension popup/content script
+  ↓ HTTPS + revocable device credential
+Supabase Edge Function (gtow-sync)
+  ↓
+users.gto_refresh_token
+  ↓
+Telegram bot / solver API
 ```
 
 ## License
