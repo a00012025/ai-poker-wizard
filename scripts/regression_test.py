@@ -14798,10 +14798,11 @@ def test_live_card_literal_gate_rank_only_suit_fill_is_rainbow():
     block2 = "Eff 20bb hero co open AhTs bb call\nAQ3 x b2 c\n9 x x"
     parsed2 = dict(base, streets=[{"board": "AcQc3c", "actions": []},
                                   {"card": "9c", "actions": []}])
-    fixed2, _ = repair_card_literals_from_block(block2, parsed2)
+    fixed2, notes2 = repair_card_literals_from_block(block2, parsed2)
     b2 = fixed2["streets"][0]["board"]
     assert_eq(len({b2[1], b2[3], b2[5]}), 3)
     assert_true(fixed2["streets"][1]["card"][1] not in {b2[1], b2[3], b2[5]})
+    assert_eq(notes2, [], "rank-only suit filler changes should not be shown as scary repairs")
 
 
 @test
@@ -14882,6 +14883,61 @@ def test_live_parse_block_applies_card_literal_gate():
                           client=_Client())
     assert_true(isinstance(refused, dict) and refused.get("_refused"))
     assert_true("hero_position" not in refused)
+
+
+@test
+def test_live_parse_block_retries_when_gemini_drops_checkthrough_street():
+    """Observed live batch: 'A x x' was merged into the river, producing
+    raw 3 streets vs parsed 2. parse_block should retry with a precise street
+    alignment hint before refusing, so normal user shorthand grades."""
+    from live_flow import parse_block
+
+    block = ("Eff 30bb Hero utg raise As5s hj call\n"
+             "KsJ 2 rainbow hero bet 2bb hj call\n"
+             "A x x\n"
+             "2 Hero bet 7bb lj call")
+    first = json.dumps({"hand": {
+        "players_at_table": 8, "effective_bb": 30,
+        "hero_position": "UTG", "hero_hand": "As5s",
+        "preflop_actions": "R2-F-F-C-F-F-F-F",
+        "streets": [{"board": "KsJc2d", "actions": []},
+                    {"card": "Ac", "actions": []}],
+    }})
+    second = json.dumps({"hand": {
+        "players_at_table": 8, "effective_bb": 30,
+        "hero_position": "UTG", "hero_hand": "As5s",
+        "preflop_actions": "R2-F-F-F-C-F-F-F",
+        "streets": [
+            {"board": "KsJc2d", "actions": []},
+            {"card": "Ad", "actions": []},
+            {"card": "2h", "actions": []},
+        ],
+    }})
+
+    class _Resp:
+        def __init__(self, text):
+            self.text = text
+
+    class _Models:
+        def __init__(self):
+            self.prompts = []
+
+        def generate_content(self, **kwargs):
+            self.prompts.append(kwargs["contents"])
+            return _Resp(first if len(self.prompts) == 1 else second)
+
+    class _Client:
+        def __init__(self):
+            self.models = _Models()
+
+    client = _Client()
+    hand = parse_block(block, client=client)
+    assert_true(hand is not None and not hand.get("_refused"))
+    assert_eq(len(hand["streets"]), 3)
+    assert_eq(hand["streets"][1]["card"], "Ah")
+    assert_eq(hand["streets"][2]["card"], "2c")
+    assert_true(len(client.models.prompts) == 2)
+    assert_in("不能省略", client.models.prompts[1])
 
 
 @test
@@ -15120,10 +15176,11 @@ def test_live_report_shows_repairs_and_refusal_echo():
     html = render_tg_html(result)
     assert_in("🔧", html)
     assert_in("hero_hand Jd7d→Qd7d", html)
+    assert_in("這不是偏差", html)
     assert_true("Hand 2" in html)                       # clean hand untouched
     assert_in("river 出現重複牌", html)                  # refusal reason surfaced
     assert_in("Eff 50bb hero co KsJd open bb call", html)  # raw echoed for rewrite
-    assert_in("請改寫", html)
+    assert_in("重傳", html)
 
 
 @test
