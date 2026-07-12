@@ -56,8 +56,19 @@ def _pad_preflop_to_mtt_tree(
     Returns (padded_action_string_with_original_codes, hero_position_8max,
              ordered_positions_list_8max).
     """
+    if players_at_table == 9:
+        # MTTGeneral exposes an 8-max tree.  A 9-max hand maps safely only when
+        # the extra earliest seat (physical UTG) folded: remove that fold and
+        # shift UTG+1/UTG+2 onto solver UTG/UTG+1.  Never erase a voluntary UTG
+        # action — that would change the spot rather than approximate seating.
+        tokens = [t for t in (preflop_actions_raw or "").split("-") if t]
+        if not tokens or tokens[0] != "F":
+            raise ValueError("9-max MTT review cannot drop a non-folding UTG seat")
+        hero_8max = {"UTG+1": "UTG", "UTG+2": "UTG+1"}.get(
+            hero_position, hero_position)
+        return "-".join(tokens[1:]), hero_8max, POSITION_ORDERS[MTT_TREE_SIZE]
     if players_at_table >= MTT_TREE_SIZE:
-        return preflop_actions_raw, hero_position, POSITION_ORDERS[players_at_table][:MTT_TREE_SIZE]
+        return preflop_actions_raw, hero_position, POSITION_ORDERS[MTT_TREE_SIZE]
 
     pad = MTT_TREE_SIZE - players_at_table
     prefix = "F-" * pad

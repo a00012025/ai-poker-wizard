@@ -49,6 +49,34 @@ def _estimate_live_batch_minutes(hand_count: int) -> tuple[int, int]:
     return low, high
 
 
+def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
+    """Render the current practice queue for both /queue and qcl refresh."""
+    if not rows:
+        return "📥 練習佇列已清空 — 沒有待練的行動線。", []
+    from html import escape as _esc
+    L = [f"📥 <b>練習佇列</b>（{len(rows)} 項）", ""]
+    buttons: list[list[dict]] = []
+    for i, r in enumerate(rows, 1):
+        lbl = r["label"] or r["spot_leaf"]
+        st = "（本週課表內）" if r["status"] == "prescribed" else ""
+        if r["kind"] == "review":
+            L.append(f"🔍 {i}. {_esc(lbl)}{st}")
+            row_btns = []
+            if r["drill_url"]:
+                row_btns.append({"text": f"🔗 復盤 {i}", "url": r["drill_url"]})
+            row_btns.append({"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"})
+            row_btns.append({"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"})
+        else:
+            ev = r["total_ev_loss_bb"] or 0
+            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
+            row_btns = []
+            if r["drill_url"]:
+                row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
+            row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
+        buttons.append(row_btns)
+    return "\n".join(L), buttons
+
+
 def _setup_logger() -> logging.Logger:
     _LOG_DIR.mkdir(exist_ok=True)
     logger = logging.getLogger("poker_bot")
@@ -1376,6 +1404,13 @@ class PokerWizardBot:
                 except OSError:
                     pass
 
+    async def _fetch_queue_rows(self):
+        return await self.db.pool.fetch(
+            "SELECT id, spot_leaf, label, drill_url, status, n_sources, "
+            "total_ev_loss_bb, kind, ref_hand_id "
+            "FROM drill_queue WHERE status IN ('pending','prescribed') "
+            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
+
     async def queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/queue — owner-only: pending/prescribed practice queue with buttons."""
         if not self._is_owner(update):
@@ -1383,38 +1418,9 @@ class PokerWizardBot:
         if not (self.db and self.db.pool):
             await update.message.reply_text("Database not connected.")
             return
-        rows = await self.db.pool.fetch(
-            "SELECT id, spot_leaf, label, drill_url, status, n_sources, "
-            "total_ev_loss_bb, kind, ref_hand_id "
-            "FROM drill_queue WHERE status IN ('pending','prescribed') "
-            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
-        if not rows:
-            await update.message.reply_text("📥 練習佇列是空的 — 沒有待練的行動線。")
-            return
-        from html import escape as _esc
-        L = [f"📥 <b>練習佇列</b>（{len(rows)} 項）", ""]
-        buttons: list[list[dict]] = []
-        for i, r in enumerate(rows, 1):
-            lbl = r["label"] or r["spot_leaf"]
-            st = "（本週課表內）" if r["status"] == "prescribed" else ""
-            if r["kind"] == "review":
-                # label already reads「復盤 M/D … −Xbb」
-                L.append(f"🔍 {i}. {_esc(lbl)}{st}")
-                row_btns = []
-                if r["drill_url"]:
-                    row_btns.append({"text": f"🔗 復盤 {i}", "url": r["drill_url"]})
-                row_btns.append({"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"})
-                row_btns.append({"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"})
-            else:
-                ev = r["total_ev_loss_bb"] or 0
-                L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
-                row_btns = []
-                if r["drill_url"]:
-                    row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
-                row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
-            buttons.append(row_btns)
+        html, buttons = _queue_payload(await self._fetch_queue_rows())
         await update.message.reply_text(
-            "\n".join(L), parse_mode="HTML", disable_web_page_preview=True,
+            html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(buttons))
 
     async def plan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1517,16 +1523,20 @@ class PokerWizardBot:
             return
 
         if data.startswith("qcl:"):
-            await query.answer("✔ 已標記為完成")
             if self.db and self.db.pool:
                 await self.db.pool.execute(
                     "UPDATE drill_queue SET status='cleared', cleared_at=NOW() "
                     "WHERE id=$1", int(data[4:]))
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            await context.bot.send_message(chat_id, "✔ 已清掉，用 /queue 看剩下的。")
+                html, buttons = _queue_payload(await self._fetch_queue_rows())
+                await query.answer("✔ 已標記為完成")
+                try:
+                    await query.edit_message_text(
+                        html, parse_mode="HTML", disable_web_page_preview=True,
+                        reply_markup=self._rows_to_markup(buttons))
+                except Exception:
+                    await context.bot.send_message(chat_id, "✔ 已清掉；用 /queue 可查看最新清單。")
+            else:
+                await query.answer("Database not connected.")
             return
 
         if data.startswith("qex:"):

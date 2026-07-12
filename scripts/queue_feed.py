@@ -199,7 +199,10 @@ def _study_solution_url(row: dict) -> str | None:
         opener = gzip.open if str(p).endswith(".gz") else open
         with opener(p, "rb") as fh:
             detail = json.loads(fh.read())
-        return build_hand_solution_url(detail, hero_pos, street, int(idx))
+        return build_hand_solution_url(
+            detail, hero_pos, street, int(idx),
+            preflop_depth_bb=row.get("preflop_depth_bb"),
+        )
     except Exception:
         return None
 
@@ -383,7 +386,7 @@ ORDER BY sum(ev_loss_bb) DESC
 # per-hand meta for the Study link + combo (kept off the grouped scan to avoid a
 # ledger_hands JOIN — both tables carry a `source` column, which would make the
 # honesty predicate ambiguous).
-_HAND_META_SQL = ("SELECT hero_hand, raw_path, position FROM ledger_hands "
+_HAND_META_SQL = ("SELECT hero_hand, raw_path, position, preflop_depth_bb FROM ledger_hands "
                   "WHERE gtow_hand_id = $1")
 
 _CLEARED_SQL = ("SELECT max(cleared_at) c FROM drill_queue "
@@ -430,6 +433,7 @@ async def _build_review_items(conn, since) -> list[dict]:
             row["hero_hand"] = meta["hero_hand"]
             row["raw_path"] = meta["raw_path"]
             row["hero_pos"] = meta["position"] or row.get("hero_pos")
+            row["preflop_depth_bb"] = meta["preflop_depth_bb"]
         items.append({
             "kind": "review", "added_by": "auto", "source": "online",
             "ref_hand_id": row["ref_hand_id"], "spot_leaf": row["spot_leaf"],
@@ -440,6 +444,45 @@ async def _build_review_items(conn, since) -> list[dict]:
     return items
 
 
+_REVIEW_REFRESH_SQL = """
+SELECT q.id, q.drill_url, q.ref_hand_id, q.source_hands,
+       h.raw_path, h.position hero_pos, h.preflop_depth_bb, h.played_at
+FROM drill_queue q
+JOIN ledger_hands h ON h.gtow_hand_id = q.ref_hand_id
+WHERE q.kind = 'review'
+  AND ($1::boolean OR q.status IN ('pending', 'prescribed'))
+ORDER BY q.id
+"""
+
+
+async def refresh_review_links(conn, include_all: bool = False) -> dict:
+    """Rebuild persisted review URLs from real actions + preflop depth.
+
+    Weekly scans refresh open rows so old approximate links cannot remain in
+    the visible queue.  The maintenance CLI can include cleared history too.
+    """
+    rows = await conn.fetch(_REVIEW_REFRESH_SQL, include_all)
+    tally = {"checked": len(rows), "updated": 0, "unresolved": 0}
+    for raw in rows:
+        row = dict(raw)
+        entries = _as_list(row.get("source_hands"))
+        worst = entries[0] if entries else {}
+        row["worst_street"] = worst.get("street")
+        row["worst_idx"] = worst.get("decision_idx")
+        url = _study_solution_url(row)
+        if not url:
+            # Preserve the existing button on a transient token/cache/archive
+            # failure; the next weekly scan retries. New rows still use
+            # review_url() and get the honest Analyze-table fallback.
+            tally["unresolved"] += 1
+            continue
+        if url != row.get("drill_url"):
+            await conn.execute("UPDATE drill_queue SET drill_url=$2 WHERE id=$1",
+                               row["id"], url)
+            tally["updated"] += 1
+    return tally
+
+
 async def scan_online(conn, window_days: int = QUEUE_SCAN_WINDOW_DAYS,
                       dry_run: bool = False) -> dict:
     """Scan the rolling online window; enqueue drill + review items (idempotent).
@@ -447,13 +490,16 @@ async def scan_online(conn, window_days: int = QUEUE_SCAN_WINDOW_DAYS,
     Called by scorecard's weekly job BEFORE it drains the queue (§5.4), and by
     the CLI's first run (which IS the owner's "past two months" backfill)."""
     since = datetime.now(timezone.utc) - timedelta(days=window_days)
+    refresh = {"checked": 0, "updated": 0, "unresolved": 0}
+    if not dry_run:
+        refresh = await refresh_review_links(conn)
     drill_items = await _build_drill_items(conn, since)
     review_items = await _build_review_items(conn, since)
     tally = {"merged": 0, "inserted": 0, "noop": 0}
     if not dry_run:
         tally = await enqueue(conn, drill_items + review_items)
     return {"since": since, "drill": drill_items, "review": review_items,
-            "tally": tally}
+            "tally": tally, "refresh": refresh}
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -471,6 +517,7 @@ def _print_scan(res: dict, dry_run: bool) -> None:
               f"— {it['label']}")
     if not dry_run:
         print(f"enqueue tally: {res['tally']}")
+        print(f"review-link refresh: {res['refresh']}")
 
 
 async def _run(window_days: int, dry_run: bool) -> int:
@@ -484,14 +531,32 @@ async def _run(window_days: int, dry_run: bool) -> int:
         await conn.close()
 
 
+async def _run_refresh(include_all: bool) -> int:
+    import asyncpg
+    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
+    try:
+        tally = await refresh_review_links(conn, include_all=include_all)
+        print(f"review-link refresh: {tally}")
+        return 0
+    finally:
+        await conn.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scan", action="store_true", help="scan the online window and enqueue")
+    ap.add_argument("--refresh-review-links", action="store_true",
+                    help="rebuild persisted review links from real Analyze actions")
+    ap.add_argument("--all-statuses", action="store_true",
+                    help="with --refresh-review-links, include cleared rows")
     ap.add_argument("--window-days", type=int, default=QUEUE_SCAN_WINDOW_DAYS)
     ap.add_argument("--dry-run", action="store_true", help="print candidates, no DB writes")
     a = ap.parse_args()
+    if a.refresh_review_links:
+        raise SystemExit(asyncio.run(_run_refresh(a.all_statuses)))
     if not a.scan:
-        print("usage: queue_feed.py --scan [--window-days 60] [--dry-run]")
+        print("usage: queue_feed.py --scan [--window-days 60] [--dry-run] | "
+              "--refresh-review-links [--all-statuses]")
         raise SystemExit(1)
     raise SystemExit(asyncio.run(_run(a.window_days, a.dry_run)))
 

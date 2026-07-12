@@ -9429,6 +9429,29 @@ def test_classify_board_odd_length_raises():
 
 
 @test
+def test_resolver_9max_drops_only_leading_utg_fold():
+    """9-max MTTGeneral safely maps onto its 8-max solver tree only by
+    removing a leading physical-UTG fold; early-position hero names shift too.
+    A voluntary UTG action must fail closed rather than change the spot."""
+    from gtow_action_resolver import _pad_preflop_to_mtt_tree
+
+    line = "F-R2-F-F-F-C-R5.5-F-F-C-F"
+    padded, hero, positions = _pad_preflop_to_mtt_tree(line, 9, "BTN")
+    assert_eq(padded, "R2-F-F-F-C-R5.5-F-F-C-F")
+    assert_eq(hero, "BTN")
+    assert_eq(len(positions), 8)
+    _line, early_hero, _positions = _pad_preflop_to_mtt_tree(
+        "F-R2-F-F-F-F-F-F-F", 9, "UTG+1")
+    assert_eq(early_hero, "UTG")
+    try:
+        _pad_preflop_to_mtt_tree("R2-F-F-F-F-F-F-F-F", 9, "UTG")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-folding 9-max UTG must not be dropped")
+
+
+@test
 def test_resolve_h2665_turn_decision():
     """gtow_action_resolver: H2665 turn fold resolves to R2.1 / R1.9-C / R5.2 at 30bb."""
     from gtow_action_resolver import resolve_actions_for_deviation
@@ -15200,6 +15223,105 @@ def test_build_hand_solution_url_from_archive():
 
 
 @test
+def test_review_solution_url_replays_real_line_at_preflop_depth():
+    """Queue review links must replay the real Analyze action stream at the
+    hand's preflop depth, not reuse Analyzer's approximate solved line/depth.
+
+    Production repro (6/9 Kd7d): real CO open R2.2 at 37.513bb should resolve
+    onto the 40bb tree's R2.3 node.  The archived approximation instead says
+    30.125bb/R2.1 and the river game-point depth is 29.11; both are wrong URL
+    inputs for reviewing the original hand.
+    """
+    from urllib.parse import parse_qs, urlparse
+    from gtow_solution_url import build_hand_solution_url
+
+    def gp(street, pos, code, betsize, board, sas, *, selected=False,
+           has_solution=False, depth="30.125"):
+        return {
+            "real_game_action": {"position": pos, "code": code,
+                                 "betsize": str(betsize),
+                                 "type": "RAISE" if code.startswith("R") else code},
+            "real_game": {"current_street": {"type": street.upper()},
+                          "board": board},
+            "analysis_solved": {"available_actions": [{"selected": selected}]},
+            "has_solution": has_solution, "depth": depth,
+            "gametype": "MTTGeneral", "solved_action_sequence": sas,
+        }
+
+    stale = {"preflop_actions": ["F", "F", "F", "F", "R2.1", "F", "F", "C"],
+             "flop_actions": ["X", "R3.15", "C"], "turn_actions": ["X", "X"],
+             "river_actions": ["R23.7"]}
+    actions = [
+        ("PREFLOP", "UTG", "F", 0), ("PREFLOP", "UTG+1", "F", 0),
+        ("PREFLOP", "LJ", "F", 0), ("PREFLOP", "HJ", "F", 0),
+        ("PREFLOP", "CO", "R2.2", 2.2), ("PREFLOP", "BTN", "F", 0),
+        ("PREFLOP", "SB", "F", 0), ("PREFLOP", "BB", "C", 2.2),
+        ("FLOP", "BB", "X", 0), ("FLOP", "CO", "R3.05", 3.05),
+        ("FLOP", "BB", "C", 3.05), ("TURN", "BB", "X", 0),
+        ("TURN", "CO", "X", 0), ("RIVER", "BB", "RAI", 23.71),
+        ("RIVER", "CO", "F", 0),
+    ]
+    gps = [gp(st, pos, code, size, "7c5c3hJd2d", stale,
+              selected=(st == "RIVER" and pos == "CO"),
+              has_solution=(st == "RIVER" and pos == "CO"),
+              depth="29.11" if st == "RIVER" else "30.125")
+           for st, pos, code, size in actions]
+    detail = {"players_dealt": 8, "boards": ["7c5c3hJd2d"],
+              "game_analysis": {"game_points": gps}}
+
+    captured = {}
+    def fake_resolver(hand, street, idx):
+        captured.update(hand=hand, street=street, idx=idx)
+        return {"preflop_actions": "F-F-F-F-R2.3-F-F-C",
+                "flop_actions": "X-R3.3-C", "turn_actions": "X-X",
+                "river_actions": "RAI", "history_spot": 14,
+                "depth": 40.125, "gametype": "MTTGeneral"}
+
+    url = build_hand_solution_url(
+        detail, "CO", "river", 0, preflop_depth_bb=37.513,
+        resolver=fake_resolver)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["depth"], ["40.125"])
+    assert_eq(qs["preflop_actions"], ["F-F-F-F-R2.3-F-F-C"])
+    assert_eq(captured["hand"]["preflop_actions"], "F-F-F-F-R2.2-F-F-C")
+    assert_eq(captured["hand"]["effective_bb"], 37.513)
+    assert_eq(captured["hand"]["streets"][2]["actions"][0]["action"], "R23.71")
+    assert_true(build_hand_solution_url(
+        detail, "CO", "river", 0, preflop_depth_bb=37.513,
+        resolver=lambda *_: (_ for _ in ()).throw(RuntimeError("cache miss"))) is None,
+        "strict queue path must not fall back to the known-wrong archived line")
+
+
+@test
+def test_queue_review_study_url_passes_preflop_depth():
+    """queue_feed must pass ledger_hands.preflop_depth_bb into the strict
+    real-action review-link builder; otherwise it silently revives R2.1."""
+    import gzip
+    import tempfile
+    import gtow_solution_url
+    import queue_feed as qf
+
+    with tempfile.NamedTemporaryFile(suffix=".json.gz") as raw:
+        with gzip.open(raw.name, "wt") as fh:
+            json.dump({"game_analysis": {"game_points": []}}, fh)
+        calls = []
+        old = gtow_solution_url.build_hand_solution_url
+        def fake(detail, hero, street, idx, **kw):
+            calls.append((hero, street, idx, kw))
+            return "https://app.gtowizard.com/solutions?depth=40.125"
+        gtow_solution_url.build_hand_solution_url = fake
+        try:
+            url = qf._study_solution_url({
+                "raw_path": raw.name, "hero_pos": "CO", "worst_street": "river",
+                "worst_idx": 0, "preflop_depth_bb": 37.513,
+            })
+        finally:
+            gtow_solution_url.build_hand_solution_url = old
+    assert_in("depth=40.125", url)
+    assert_eq(calls, [("CO", "river", 0, {"preflop_depth_bb": 37.513})])
+
+
+@test
 def test_scorecard_queue_quota_and_weekly_scan():
     """Scorecard §7: QUEUE_SQL exposes kind/ref_hand_id + pending-first order;
     fetch_drill_queue mixes the quota; the weekly run scans the online window
@@ -15217,6 +15339,10 @@ def test_scorecard_queue_quota_and_weekly_scan():
                 "must scan into the queue before draining it")
     fdq = inspect.getsource(sc.fetch_drill_queue)
     assert_in("mix_queue_quota", fdq)
+    import queue_feed as qf
+    qsrc = inspect.getsource(qf.scan_online)
+    assert_in("refresh_review_links(conn)", qsrc)
+    assert_in("preflop_depth_bb", qf._HAND_META_SQL)
 
 
 @test
@@ -15246,6 +15372,35 @@ def test_weekly_payload_review_buttons():
     assert_in("練習佇列", payload["html"])
     assert_in("🔍", payload["html"])
     assert_in("🎯", payload["html"])
+
+
+@test
+def test_queue_clear_refreshes_message_with_remaining_items():
+    """qcl refreshes the same Telegram message (renumbered buttons included)
+    and renders an explicit empty state instead of requiring another /queue."""
+    import inspect
+    from telegram_bot.bot import _queue_payload, PokerWizardBot
+
+    rows = [
+        {"id": 12, "kind": "review", "label": "復盤 A", "spot_leaf": "a",
+         "drill_url": "https://example.com/a", "status": "pending",
+         "n_sources": 1, "total_ev_loss_bb": 12.0},
+        {"id": 13, "kind": "drill", "label": "練習 B", "spot_leaf": "b",
+         "drill_url": "https://example.com/b", "status": "pending",
+         "n_sources": 3, "total_ev_loss_bb": 3.0},
+    ]
+    html, buttons = _queue_payload(rows[1:])
+    assert_in("練習佇列</b>（1 項）", html)
+    assert_in("qcl:13", [b.get("callback_data") for b in buttons[0]])
+    assert_in("✔ 1 已練", [b.get("text") for b in buttons[0]])
+    empty_html, empty_buttons = _queue_payload([])
+    assert_in("已清空", empty_html)
+    assert_eq(empty_buttons, [])
+
+    src = inspect.getsource(PokerWizardBot.handle_live_button)
+    assert_in("edit_message_text", src)
+    assert_in("_fetch_queue_rows", src)
+    assert_not_in("用 /queue 看剩下的", src)
 
 
 @test
