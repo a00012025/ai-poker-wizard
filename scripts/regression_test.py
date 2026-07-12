@@ -14447,8 +14447,8 @@ def test_weekly_series_tz_bucketing():
 def test_training_plan_focus_and_readback():
     """Scorecard v2 = training plan: focus spot + precise drill link +
     self-contained HTML + next-cycle EV-loss readback."""
-    from scorecard import (compute_training_plan, render_html, spot_desc_zh,
-                           weekly_tg_html, weekly_tg_payload)
+    from scorecard import (compute_training_plan, prev_focus_readback, render_html,
+                           spot_desc_zh, weekly_tg_html, weekly_tg_payload)
     row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet", "avg_ev": 0.135,
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
     assert_in("3bet", spot_desc_zh(row))
@@ -14466,10 +14466,19 @@ def test_training_plan_focus_and_readback():
     assert_in("MP_vs3bet_IP", html)
     assert_in("<svg", html)
     assert_true("<script src" not in html)
-    rb = compute_training_plan("2026-W29", weekly, spots, [],
-                               [{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}], honesty)
+    # readback is computed from the POST-PRESCRIPTION window stats, not the
+    # cumulative leaderboard (§2.2: cumulative averages hide the treatment)
+    rb_rows = prev_focus_readback([{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}],
+                                  {"MP_vs3bet_IP": {"n": 12, "per100": 13.5}})
+    rb = compute_training_plan("2026-W29", weekly, spots, [], rb_rows, honesty)
     assert_eq(rb["readback"][0]["spot_leaf"], "MP_vs3bet_IP")
     assert_eq(round(rb["readback"][0]["current_per100"], 1), 13.5)
+    assert_eq(rb["readback"][0]["n"], 12)
+    # no post-prescription decisions yet -> honest "no data", not a stale average
+    empty = prev_focus_readback([{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}],
+                                {"MP_vs3bet_IP": {"n": 0, "per100": None}})
+    assert_eq(empty[0]["current_per100"], None)
+    assert_eq(empty[0]["n"], 0)
     # end-user weekly TG message: drill links ride as URL BUTTONS (not in the
     # text), no jargon, honest caveats, live practice queue section
     data["leaderboard"] = [dict(row, drill_url=spots[0]["url"], restrict=None)]
@@ -14533,6 +14542,49 @@ def test_ledger_service_summary_sql():
     tsql, targs = _top_spots_sql("vs3bet", None, None, 10)
     assert_in("GROUP BY spot_leaf", tsql); assert_in("ORDER BY sum(ev_loss_bb) DESC", tsql)
     assert_eq(targs, ["vs3bet", 10])
+
+
+@test
+def test_ledger_service_source_isolation():
+    """§5.2: EVERY ledger stats/listing query is online-only — live hands are a
+    biased sample and must only surface via the drill queue / 線下 sections."""
+    from ledger_service import _summary_sql, _top_spots_sql, _hands_sql, _excluded_count_sql
+    for sql, _ in (_summary_sql(None, None, None), _top_spots_sql(None, None, None, 10)):
+        assert_in("source='online'", sql)
+    hsql, hargs = _hands_sql(None, None, 0.5, 90, 5)
+    assert_in("d.source='online'", hsql)
+    assert_eq(hargs, [0.5, 90, 5])
+    hsql2, hargs2 = _hands_sql("vs3bet", "MP_vs3bet_IP", 1.0, None, 20)
+    assert_in("d.source='online'", hsql2)
+    assert_eq(hargs2, [1.0, "vs3bet", "MP_vs3bet_IP", 10])
+    # excluded_n caveat count carries the SAME scope as the stats beside it
+    esql, eargs = _excluded_count_sql("vs3bet", 30)
+    assert_in("source='online'", esql)
+    assert_in("spot_category = $1", esql)
+    assert_in("make_interval(days => $2)", esql)
+    assert_eq(eargs, ["vs3bet", 30])
+
+
+@test
+def test_leaderboard_sql_time_window():
+    """§2.2: the leaderboard SQL takes an optional window — an unwindowed
+    (cumulative) board cannot show recent form or the treatment effect."""
+    from datetime import datetime, timezone
+    from spot_leaderboard import leader_sql, sample_sql, band_sql
+    t = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    assert_in("played_at >= $3", leader_sql(t))
+    assert_true("played_at >=" not in leader_sql(None))
+    assert_in("d.played_at >= $2", sample_sql(t))
+    assert_true("played_at >=" not in sample_sql(None))
+    assert_in("played_at >= $2", band_sql(t))
+    assert_true("played_at >=" not in band_sql(None))
+    for sql in (leader_sql(t), sample_sql(t), band_sql(t)):
+        assert_in("source='online'", sql)
+    from scorecard import top_hands_sql, READBACK_WINDOW_SQL
+    assert_in("played_at >= $1", top_hands_sql(t))
+    assert_true("played_at >=" not in top_hands_sql(None))
+    assert_in("played_at >= $2", READBACK_WINDOW_SQL)
+    assert_in("source='online'", READBACK_WINDOW_SQL)
 
 
 @test
