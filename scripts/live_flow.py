@@ -279,6 +279,140 @@ def _street_specs_from_tokens(toks: list[str]) -> list[tuple[str, str | None]]:
     return specs if len(specs) in (1, 3) else []
 
 
+def _street_literal_token_count(toks: list[str]) -> int:
+    """Return how many leading tokens belong to the street card literal.
+
+    Like _street_specs_from_tokens, but keeps the token count so action hints
+    can start after the board/card marker.  A following ``rainbow`` / ``r``
+    marker is part of the literal, not an action.
+    """
+    specs: list[tuple[str, str | None]] = []
+    consumed = 0
+    for tok in toks:
+        clean = _clean_card_token(tok).lower()
+        if specs and clean in {"r", "rainbow"}:
+            consumed += 1
+            break
+        part = _card_specs_from_street_token(tok)
+        if not part or len(specs) + len(part) > 3:
+            break
+        specs.extend(part)
+        consumed += 1
+        if len(specs) == 3:
+            # Optional separate "rainbow" marker after a 3-card flop.
+            if consumed < len(toks) and _clean_card_token(toks[consumed]).lower() in {"r", "rainbow"}:
+                consumed += 1
+            break
+    return consumed if len(specs) in (1, 3) else 0
+
+
+def _action_hint_codes_from_tokens(toks: list[str]) -> list[str]:
+    """Parse raw street shorthand action tokens into coarse action codes.
+
+    The hints are only used for conservative alignment repairs; raises compare
+    by class (R/AI), so exact GTOW bet-code snapping stays in the solver path.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(toks):
+        t = _clean_word(toks[i])
+        if t in {"x", "check"}:
+            out.append("X")
+        elif t in {"c", "call"}:
+            out.append("C")
+        elif t in {"f", "fold"}:
+            out.append("F")
+        elif t in {"all", "ai", "jam", "shove"}:
+            out.append("AI")
+            if t == "all" and i + 1 < len(toks) and _clean_word(toks[i + 1]) == "in":
+                i += 1
+        else:
+            m = re.match(r"^(?:b|bet|r|raise)(\d+(?:\.\d+)?)(?:bb)?$", t)
+            if m:
+                out.append("R" + m.group(1))
+            elif t in {"b", "bet", "r", "raise"}:
+                size = None
+                if i + 1 < len(toks):
+                    size = _bb_number(toks[i + 1])
+                    if size is not None:
+                        i += 1
+                out.append("R" + (size or ""))
+        i += 1
+    return out
+
+
+def _extract_street_action_hints(block: str) -> list[list[str]]:
+    """Action hints from each raw street line, aligned with street order."""
+    hints: list[list[str]] = []
+    for ln in _raw_street_lines(block):
+        toks = re.split(r"\s+", ln.strip())
+        if toks and toks[0].strip(":").lower() in {"flop", "turn", "river"}:
+            toks = toks[1:]
+        n = _street_literal_token_count(toks)
+        hints.append(_action_hint_codes_from_tokens(toks[n:]) if n else [])
+    return hints
+
+
+def _action_class(code: str | None) -> str:
+    c = (code or "").upper()
+    if c.startswith("AI"):
+        return "AI"
+    if c.startswith(("R", "B")):
+        return "R"
+    if c in {"X", "CHECK"}:
+        return "X"
+    if c.startswith("C") and not c.startswith("CH"):
+        return "C"
+    if c.startswith("F"):
+        return "F"
+    return c
+
+
+def _is_aggr_code(code: str | None) -> bool:
+    return _action_class(code) in {"R", "AI"}
+
+
+def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list[str]]:
+    """Conservatively repair dropped leading HU checks from raw live shorthand.
+
+    Observed failure: raw turn ``9 x b10 f`` (OOP checks, hero bets, OOP folds)
+    was parsed as ``SB b10, hero fold``.  Poker rules allow that corrupted
+    sequence, so the validator cannot catch it.  In a heads-up street, if raw
+    action hints are exactly one action longer and the missing action is a
+    leading check before an aggression, insert the check; ``repair_hu_pot`` will
+    then reassign positions by strict HU alternation.
+    """
+    from hh_parser import POSITION_ORDERS
+
+    repaired = json.loads(json.dumps(hand))
+    streets = repaired.get("streets") or []
+    hints_by_street = _extract_street_action_hints(block)
+    if not streets or len(hints_by_street) != len(streets):
+        return repaired, []
+    npl = repaired.get("players_at_table") or 8
+    order = POSITION_ORDERS.get(npl)
+    if not order:
+        return repaired, []
+    postflop_order = order[-2:] + order[:-2]  # SB, BB, UTG, ...
+    notes: list[str] = []
+
+    for idx, (st, hints) in enumerate(zip(streets, hints_by_street)):
+        actions = st.get("actions") or []
+        actors = {a.get("position") for a in actions if a.get("position")}
+        if len(actors) != 2 or not hints or len(actions) + 1 != len(hints):
+            continue
+        parsed_classes = [_action_class(a.get("action")) for a in actions]
+        hint_classes = [_action_class(h) for h in hints]
+        if (hint_classes[0] != "X" or not actions or not _is_aggr_code(actions[0].get("action"))
+                or parsed_classes != hint_classes[1:]):
+            continue
+        oop = sorted(actors, key=postflop_order.index)[0]
+        actions.insert(0, {"position": oop, "action": "X"})
+        st["actions"] = actions
+        notes.append(f"{_street_name(idx)} 補回原文開頭 check")
+    return repaired, notes
+
+
 def _extract_literal_hints(block: str) -> tuple[str | None, list[list[tuple[str, str | None]]]]:
     """Extract card literals directly from the raw live note.
 
@@ -729,6 +863,10 @@ def parse_block(block: str, client=None, model: str | None = None,
                 return {"_refused": notes or ["牌面字面值衝突"]}
             if notes:
                 gated["_repairs"] = notes
+            gated2, action_notes = repair_street_actions_from_block(block, gated)
+            if action_notes:
+                gated2["_repairs"] = list(gated2.get("_repairs") or []) + action_notes
+                gated = gated2
             return gated
         return fallback
     return None
@@ -961,7 +1099,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             "board_suit": spot["tags"]["board_suit"],
             "discarded": spot["discarded"], "limp_origin": spot["limp_origin"],
             # display-only extras (dropped before DB write)
-            "_dev": dev, "_spot": spot,
+            "_dev": dev, "_spot": spot, "_hand": hand,
         })
 
     hand_row = {
@@ -981,6 +1119,20 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
 # ── drill queue ──────────────────────────────────────────────────────────────
 def drill_url_for(dec: dict) -> str | None:
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
+
+    hand = dec.get("_hand")
+    if hand and dec.get("street") in {"flop", "turn", "river"}:
+        try:
+            from gtow_custom_url import build_custom_spot_url
+            return build_custom_spot_url(
+                hand, dec["street"], int(dec.get("decision_idx") or 0),
+                dec.get("pot_type") or "",
+            )
+        except Exception:
+            # Custom links require exact HU/on-tree action resolution. Live
+            # shorthand can still be too approximate, so fall back to the
+            # broader bucket drill instead of dropping the button.
+            pass
 
     depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
     return drill_url_for_spot(
@@ -1022,7 +1174,12 @@ def spot_label_zh(dec: dict) -> str:
 # Prefer the pending row when both exist (it re-enters the weekly plan).
 MERGE_OPEN_SQL = """
 UPDATE drill_queue SET
-  source_hands = source_hands || $2::jsonb,
+  source_hands = (
+    CASE WHEN jsonb_typeof(source_hands) = 'array'
+         THEN source_hands
+         ELSE (source_hands #>> '{}')::jsonb
+    END
+  ) || $2::jsonb,
   n_sources = n_sources + $3,
   total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + COALESCE($4, 0),
   drill_url = COALESCE($5, drill_url),
@@ -1036,9 +1193,14 @@ WHERE id = (
 ENQUEUE_SQL = """
 INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url, source_hands,
                          n_sources, total_ev_loss_bb)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
 ON CONFLICT (spot_leaf) WHERE status = 'pending' DO UPDATE SET
-  source_hands = drill_queue.source_hands || EXCLUDED.source_hands,
+  source_hands = (
+    CASE WHEN jsonb_typeof(drill_queue.source_hands) = 'array'
+         THEN drill_queue.source_hands
+         ELSE (drill_queue.source_hands #>> '{}')::jsonb
+    END
+  ) || EXCLUDED.source_hands,
   n_sources = drill_queue.n_sources + EXCLUDED.n_sources,
   total_ev_loss_bb = COALESCE(drill_queue.total_ev_loss_bb, 0)
                      + COALESCE(EXCLUDED.total_ev_loss_bb, 0),
