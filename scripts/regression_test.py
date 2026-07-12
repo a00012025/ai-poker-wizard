@@ -14997,28 +14997,219 @@ def test_shared_drill_url_policy():
 
 
 @test
-def test_queue_aging_and_merge_sql():
-    """Queue lifecycle fixes: (a) the weekly plan re-surfaces prescribed-but-
-    uncleared items instead of silently dropping them (§14.2); (b) a leaf that
-    re-deviates while a row is still OPEN (pending or prescribed) merges into
-    that row — no duplicate queue rows per leaf; (c) the drain only promotes
-    pending rows."""
+def test_queue_aging_and_single_upsert_policy():
+    """Queue lifecycle + single-policy upsert: (a) the weekly plan re-surfaces
+    prescribed-but-uncleared items (§14.2); (b) the drain only promotes pending
+    rows; (c) the ONE enqueue lives in queue_feed and live_flow re-exports it
+    (§5.2, PR #92 dedup spirit) — the merge path only touches OPEN drill rows of
+    the same leaf."""
     import inspect
     from scorecard import QUEUE_SQL
     import scorecard as sc
-    from live_flow import MERGE_OPEN_SQL, ENQUEUE_SQL
+    import live_flow
+    import queue_feed
     assert_in("status IN ('pending', 'prescribed')", QUEUE_SQL)
     assert_in("prescribed_week", QUEUE_SQL)
-    assert_in("(status = 'pending') DESC", QUEUE_SQL)          # pending first
-    assert_in("$5::jsonb", ENQUEUE_SQL)                        # store arrays, not JSON strings
-    assert_in("jsonb_typeof(source_hands) = 'array'", MERGE_OPEN_SQL)
-    assert_in("jsonb_typeof(drill_queue.source_hands) = 'array'", ENQUEUE_SQL)
-    assert_in("status IN ('pending', 'prescribed')", MERGE_OPEN_SQL)
+    assert_in("(status = 'pending') DESC", QUEUE_SQL)             # pending first
+    # single policy: live_flow.enqueue IS queue_feed.enqueue (no second copy)
+    assert_true(live_flow.enqueue is queue_feed.enqueue)
+    assert_in("kind = 'drill' AND status IN ('pending', 'prescribed')",
+              queue_feed._OPEN_DRILL_SQL)                        # merge only into open drill row
     assert_in("ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1",
-              MERGE_OPEN_SQL)                                   # single open row
-    assert_in("ON CONFLICT (spot_leaf) WHERE status = 'pending'", ENQUEUE_SQL)
+              queue_feed._OPEN_DRILL_SQL)                        # single open row, pending-first
+    assert_in("$5::jsonb", queue_feed._INSERT_SQL)              # store arrays, not JSON strings
+    assert_in("kind, added_by, source", queue_feed._INSERT_SQL)
     drain = inspect.getsource(sc._run)
     assert_in("AND status='pending'", drain)                    # drain never re-promotes
+
+
+@test
+def test_queue_feed_scan_sql_shape():
+    """The online scan reuses the leaderboard honesty predicate verbatim, gates
+    drills by n>=MIN_N AND total>=MIN_TOTAL over lossy decisions, aggregates
+    reviews per hand (worst decision drives leaf/label), and tags every
+    source_hands entry with the §5.2 dedupe key + src."""
+    import queue_feed as qf
+    ds = qf._drill_scan_sql()
+    assert_in("NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL "
+              "AND source='online'", ds)
+    assert_in("ev_loss_bb >= $2", ds)                           # lossy floor
+    assert_in("HAVING count(*) >= $3 AND sum(ev_loss_bb) >= $4", ds)
+    assert_in("ORDER BY sum(ev_loss_bb) DESC", ds)              # EV-weighted, never freq (§7.3)
+    for k in ("'hand_id'", "'street'", "'decision_idx'", "'ev_loss_bb'", "'src'"):
+        assert_in(k, ds)
+    assert_in("array_agg(played_at ORDER BY played_at) played_ats", ds)  # for re-open gate
+    rs = qf._REVIEW_SCAN_SQL
+    assert_in("GROUP BY gtow_hand_id", rs)                      # one review per hand
+    assert_in("(array_agg(spot_leaf     ORDER BY ev_loss_bb DESC))[1] spot_leaf", rs)
+    assert_in("ev_loss_bb >= $2", rs)
+    assert_eq(qf.QUEUE_DRILL_MIN_N, 3)
+    assert_eq(qf.QUEUE_DRILL_MIN_TOTAL_BB, 3.0)
+    assert_eq(qf.QUEUE_REVIEW_MIN_BB, 5.0)
+    assert_eq(qf.QUEUE_SCAN_WINDOW_DAYS, 60)
+
+
+@test
+def test_queue_feed_dedupe_and_reopen():
+    """§5.2 idempotency primitives: entry_key identity, Python-side diff that
+    only adds fresh entries' EV, and the re-open route (merge / insert / skip)."""
+    from datetime import datetime, timezone, timedelta
+    import queue_feed as qf
+    e = {"hand_id": "h1", "street": "flop", "decision_idx": 0,
+         "ev_loss_bb": 0.5, "src": "online"}
+    assert_eq(qf.entry_key(e), ("h1", "flop", 0, 0.5, "online"))
+    existing = [e]
+    incoming = [dict(e), {"hand_id": "h2", "street": "turn", "decision_idx": 1,
+                          "ev_loss_bb": 0.3, "src": "online"}]
+    fresh, add_ev = qf.diff_new_entries(existing, incoming)
+    assert_eq(len(fresh), 1)                                    # h1 deduped
+    assert_eq(fresh[0]["hand_id"], "h2")
+    assert_eq(add_ev, 0.3)                                      # only NEW ev added
+    assert_eq(qf.diff_new_entries(existing, [dict(e)]), ([], 0.0))  # nothing new -> noop
+    # dedupe within a single incoming batch
+    assert_eq(len(qf.dedupe_entries([dict(e), dict(e)])), 1)
+    # re-open routing
+    c = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    assert_eq(qf.reopen_decision(True, None, []), "merge")     # open row exists
+    assert_eq(qf.reopen_decision(False, None, []), "insert")   # never seen
+    assert_eq(qf.reopen_decision(False, c, [c + timedelta(days=1)]), "skip")   # 1 new < 2
+    assert_eq(qf.reopen_decision(False, c, [c + timedelta(days=1),
+                                            c + timedelta(days=2)]), "insert")  # >=2 new
+    assert_eq(qf.reopen_decision(False, c, [c - timedelta(days=1)]), "skip")   # pre-clear only
+
+
+@test
+def test_queue_feed_quota_mix():
+    """Weekly plan drains a per-kind quota (§7): 3 drill + 2 review, a short kind
+    topped up from the other, pending-first / EV-desc order preserved."""
+    import queue_feed as qf
+    rows = [
+        {"kind": "drill", "id": 1}, {"kind": "drill", "id": 2},
+        {"kind": "review", "id": 3}, {"kind": "drill", "id": 4},
+        {"kind": "drill", "id": 5}, {"kind": "review", "id": 6},
+        {"kind": "drill", "id": 7},
+    ]
+    ids = [r["id"] for r in qf.mix_queue_quota(rows, 3, 2, 5)]
+    assert_eq(ids, [1, 2, 3, 4, 6])                             # 3 drill + 2 review, order kept
+    alld = [{"kind": "drill", "id": i} for i in range(6)]
+    assert_eq([r["id"] for r in qf.mix_queue_quota(alld, 3, 2, 5)], [0, 1, 2, 3, 4])  # backfill
+    assert_eq(qf.mix_queue_quota([], 3, 2, 5), [])
+
+
+@test
+def test_queue_feed_qex_submenu_callback_data():
+    """qex sub-menu: numeric decision ids in callback_data (never the spot_leaf
+    string — 64-byte limit), street order, and correct (0-loss) decisions kept."""
+    import queue_feed as qf
+    decs = [
+        {"id": 71, "street": "river", "decision_idx": 0, "spot_category": "river",
+         "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet", "hero_cat": "SB",
+         "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 22.7},
+        {"id": 70, "street": "flop", "decision_idx": 0, "spot_category": "flop",
+         "spot_leaf": "flop:SRP:SBvBB:OOP:[b-c]:first_to_act", "hero_cat": "SB",
+         "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 0.0},
+    ]
+    rows = qf.qex_submenu(decs, 123456)
+    assert_eq(rows[0]["callback_data"], "qad:123456:70")        # flop first (street order)
+    assert_eq(rows[1]["callback_data"], "qad:123456:71")
+    assert_true(all(len(r["callback_data"]) <= 64 for r in rows))
+    assert_true(all(len(r["text"]) <= 60 for r in rows))
+    assert_in("打對", rows[0]["text"])                          # 0-loss decision surfaced
+    assert_in("−22.7bb", rows[1]["text"])
+
+
+@test
+def test_queue_feed_review_and_manual_items():
+    """Review label format (+⚠近似 on approx-sensitive worst decisions), review
+    URL fallback, and the manual drill item (kind/added_by/source, ev may be 0)."""
+    from datetime import datetime, timezone
+    import queue_feed as qf
+    row = {"spot_category": "river", "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet",
+           "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP", "hero_pos": "SB",
+           "max_ev": 22.7, "approx_flags": ["chipev_grading"],
+           "played_at": datetime(2026, 6, 1, 3, 0, tzinfo=timezone.utc), "ref_hand_id": "abc"}
+    lbl = qf.review_label(row)
+    assert_true(lbl.startswith("復盤 6/1 "))
+    assert_in("−22.7bb", lbl)
+    assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
+    assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))
+    assert_true(qf.review_url(row).startswith("https://app.gtowizard.com/analyze"))
+    assert_true(qf.review_url({"ref_hand_id": "x"}) is None)   # no played_at -> no link
+    dec = {"gtow_hand_id": "h9", "street": "flop", "decision_idx": 1, "spot_category": "flop",
+           "spot_leaf": "flop:SRP:BBvLP:OOP:[x-b]:vs_bet", "hero_cat": "BB", "villain_cat": "LP",
+           "ip_oop": "OOP", "position": "BB", "pot_type": "SRP", "eff_stack": "medium",
+           "ev_loss_bb": 0.0}
+    it = qf.manual_drill_item(dec)
+    assert_eq((it["kind"], it["added_by"], it["source"]), ("drill", "manual", "manual"))
+    assert_eq(it["ref_hand_id"], "h9")
+    assert_eq(it["total_ev_loss_bb"], 0.0)                      # drilling a spot played right
+    assert_true(it["drill_url"] and it["label"])
+    assert_eq(it["source_hands"][0]["src"], "manual")
+
+
+@test
+def test_scorecard_queue_quota_and_weekly_scan():
+    """Scorecard §7: QUEUE_SQL exposes kind/ref_hand_id + pending-first order;
+    fetch_drill_queue mixes the quota; the weekly run scans the online window
+    BEFORE building/draining the plan (§5.4)."""
+    import inspect
+    from scorecard import QUEUE_SQL, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS
+    import scorecard as sc
+    assert_in("kind, ref_hand_id", QUEUE_SQL)
+    assert_in("(status = 'pending') DESC", QUEUE_SQL)
+    assert_eq((QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS), (3, 2))
+    src = inspect.getsource(sc._run)
+    assert_in("scan_online(conn)", src)
+    # scan is ordered before the prescribe/drain UPDATE
+    assert_true(src.index("scan_online(conn)") < src.index("status='prescribed'"),
+                "must scan into the queue before draining it")
+    fdq = inspect.getsource(sc.fetch_drill_queue)
+    assert_in("mix_queue_quota", fdq)
+
+
+@test
+def test_weekly_payload_review_buttons():
+    """Weekly buttons: review items ride 🔗 復盤 (URL) + ✔ 完成 (qcl) + ➕ 加練
+    (qex) callbacks; drill items ride a 📥 URL button (§7/§6.2)."""
+    from scorecard import weekly_tg_payload
+    d = {"per100": 3.0, "delta": 0.0, "weekly_series": [], "focus": [],
+         "leaderboard": [], "readback": [], "honesty": {},
+         "drill_queue": [
+             {"id": 11, "kind": "drill", "label": "BB 面對 SB 開池", "spot_leaf": "x",
+              "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
+              "n_sources": 3, "total_ev_loss_bb": 1.2, "status": "pending"},
+             {"id": 12, "kind": "review", "label": "復盤 6/1 河牌 面對下注 −22.7bb",
+              "spot_leaf": "y", "ref_hand_id": "abc",
+              "drill_url": "https://app.gtowizard.com/analyze/v4/hands/table?f=1",
+              "total_ev_loss_bb": 22.7, "status": "pending"},
+         ]}
+    payload = weekly_tg_payload("2026-W28", d)
+    flat = [b for row in payload["buttons"] for b in row]
+    cbs = [b.get("callback_data") for b in flat if b.get("callback_data")]
+    assert_in("qcl:12", cbs)                                   # review 完成
+    assert_in("qex:12", cbs)                                   # review 加練
+    assert_true(any(b.get("url", "").endswith("a=1") and "📥" in b["text"] for b in flat))
+    assert_true(any("🔗" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
+    # review section header + both kinds rendered in the text
+    assert_in("練習佇列", payload["html"])
+    assert_in("🔍", payload["html"])
+    assert_in("🎯", payload["html"])
+
+
+@test
+def test_migration_unified_drill_queue():
+    """The unified-queue migration exists with the kind/ref_hand_id/added_by/
+    cleared_at columns and the per-kind partial unique indexes (§4)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    mig = root / "supabase/migrations/20260712120000_unified_drill_queue.sql"
+    assert_true(mig.exists(), "migration file present")
+    sql = mig.read_text()
+    for col in ("kind TEXT NOT NULL DEFAULT 'drill'", "ref_hand_id TEXT",
+                "added_by TEXT NOT NULL DEFAULT 'auto'", "cleared_at TIMESTAMPTZ"):
+        assert_in(col, sql)
+    assert_in("WHERE status = 'pending' AND kind = 'drill'", sql)
+    assert_in("WHERE status = 'pending' AND kind = 'review'", sql)
 
 
 @test
