@@ -14604,6 +14604,39 @@ def test_live_repair_hu_pot_continuation_ghost_call():
 
 
 @test
+def test_live_repair_street_actions_restores_dropped_leading_check():
+    """Real queue outlier: raw turn '9 x b10 f' was parsed as villain bets
+    and hero folds, fabricating a 75bb loss while hero actually bet after a
+    check.  Raw HU action hints must restore the leading check before HU
+    alternation reassigns positions."""
+    from live_flow import repair_street_actions_from_block, repair_hu_pot
+    from hand_validator import validate_hand
+
+    block = ("Eff 70bb +1 raise hero co call 77 sb raise 9bb f c\n"
+             "733 rainbow b5.5 c\n"
+             "9 x b10 f")
+    bad = {
+        "gametype": "MTTGeneral", "players_at_table": 8, "effective_bb": 70,
+        "hero_position": "CO", "hero_hand": "77",
+        "preflop_actions": "F-R2-F-F-C-F-R9-F-C",
+        "streets": [
+            {"street": "flop", "board": "7c3d3h", "actions": [
+                {"position": "SB", "action": "R5.5", "size": 5.5},
+                {"position": "CO", "action": "C"}]},
+            {"street": "turn", "card": "9s", "actions": [
+                {"position": "SB", "action": "R10", "size": 10},
+                {"position": "CO", "action": "F"}]},
+        ],
+    }
+    repaired, notes = repair_street_actions_from_block(block, bad)
+    assert_true(any("補回原文開頭 check" in n for n in notes))
+    fixed = repair_hu_pot(repaired)
+    assert_eq([(a["position"], a["action"]) for a in fixed["streets"][1]["actions"]],
+              [("SB", "X"), ("CO", "R10"), ("SB", "F")])
+    assert_true(validate_hand(fixed).ok)
+
+
+@test
 def test_live_hero_folded_but_acts_contradiction():
     """Real batch-1 Hand 18: raw 'hero hj raise … to 5bb' mis-seated by Gemini
     leaves hero folded preflop while acting postflop. That contradiction must
@@ -14727,6 +14760,35 @@ def test_live_queue_selection_and_report():
     assert_true(any(b.get("url", "").startswith("https://app.gtowizard.com/")
                     for b in flat))
     assert_true(QUEUE_EV_MIN == 0.10)
+
+
+@test
+def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
+    """Postflop queue buttons should use the exact custom-spot builder when
+    the representative parsed hand is available; bucket URLs can be ignored by
+    GTOW and land on preflop/any-action."""
+    import gtow_custom_url
+    from live_flow import drill_url_for
+
+    calls = []
+    old = gtow_custom_url.build_custom_spot_url
+
+    def fake(hand, street, action_index, pot_type):
+        calls.append((hand, street, action_index, pot_type))
+        return "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot&history_spot=7"
+
+    gtow_custom_url.build_custom_spot_url = fake
+    try:
+        url = drill_url_for({
+            "gtow_hand_id": "live:x", "street": "turn", "decision_idx": 0,
+            "spot_category": "turn", "position": "CO", "hero_cat": "LP",
+            "villain_cat": "SB", "ip_oop": "IP", "pot_type": "squeezed",
+            "eff_stack": "medium", "_hand": {"hero_position": "CO"},
+        })
+    finally:
+        gtow_custom_url.build_custom_spot_url = old
+    assert_in("fh_start_spot=custom_spot", url)
+    assert_eq(calls[0][1:], ("turn", 0, "squeezed"))
 
 
 @test
@@ -14923,6 +14985,9 @@ def test_queue_aging_and_merge_sql():
     assert_in("status IN ('pending', 'prescribed')", QUEUE_SQL)
     assert_in("prescribed_week", QUEUE_SQL)
     assert_in("(status = 'pending') DESC", QUEUE_SQL)          # pending first
+    assert_in("$5::jsonb", ENQUEUE_SQL)                        # store arrays, not JSON strings
+    assert_in("jsonb_typeof(source_hands) = 'array'", MERGE_OPEN_SQL)
+    assert_in("jsonb_typeof(drill_queue.source_hands) = 'array'", ENQUEUE_SQL)
     assert_in("status IN ('pending', 'prescribed')", MERGE_OPEN_SQL)
     assert_in("ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1",
               MERGE_OPEN_SQL)                                   # single open row
