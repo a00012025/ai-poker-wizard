@@ -1384,24 +1384,34 @@ class PokerWizardBot:
             await update.message.reply_text("Database not connected.")
             return
         rows = await self.db.pool.fetch(
-            "SELECT id, spot_leaf, label, drill_url, status, n_sources, total_ev_loss_bb "
+            "SELECT id, spot_leaf, label, drill_url, status, n_sources, "
+            "total_ev_loss_bb, kind, ref_hand_id "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
-            "ORDER BY total_ev_loss_bb DESC NULLS LAST LIMIT 8")
+            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
         if not rows:
             await update.message.reply_text("📥 練習佇列是空的 — 沒有待練的行動線。")
             return
         from html import escape as _esc
-        L = [f"📥 <b>練習佇列</b>（{len(rows)} 條行動線）", ""]
+        L = [f"📥 <b>練習佇列</b>（{len(rows)} 項）", ""]
         buttons: list[list[dict]] = []
         for i, r in enumerate(rows, 1):
             lbl = r["label"] or r["spot_leaf"]
             st = "（本週課表內）" if r["status"] == "prescribed" else ""
-            ev = r["total_ev_loss_bb"] or 0
-            L.append(f"{i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
-            row_btns = []
-            if r["drill_url"]:
-                row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
-            row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
+            if r["kind"] == "review":
+                # label already reads「復盤 M/D … −Xbb」
+                L.append(f"🔍 {i}. {_esc(lbl)}{st}")
+                row_btns = []
+                if r["drill_url"]:
+                    row_btns.append({"text": f"🔗 復盤 {i}", "url": r["drill_url"]})
+                row_btns.append({"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"})
+                row_btns.append({"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"})
+            else:
+                ev = r["total_ev_loss_bb"] or 0
+                L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
+                row_btns = []
+                if r["drill_url"]:
+                    row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
+                row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
             buttons.append(row_btns)
         await update.message.reply_text(
             "\n".join(L), parse_mode="HTML", disable_web_page_preview=True,
@@ -1428,24 +1438,104 @@ class PokerWizardBot:
             payload["html"], parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(payload["buttons"]))
 
+    async def _queue_expand_review(self, update: Update,
+                                   context: ContextTypes.DEFAULT_TYPE, queue_id: int):
+        """qex:<queue_id> — show a review hand's graded decisions as a sub-menu;
+        each row's ➕ button adds that decision as a manual drill (§6.2)."""
+        query = update.callback_query
+        chat_id = update.effective_chat.id
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        await query.answer()
+        item = await self.db.pool.fetchrow(
+            "SELECT ref_hand_id, label FROM drill_queue WHERE id=$1", queue_id)
+        if not item or not item["ref_hand_id"]:
+            await context.bot.send_message(chat_id, "找不到這個復盤項的來源手。")
+            return
+        rows = await self.db.pool.fetch(
+            "SELECT id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
+            "villain_cat, ip_oop, position, ev_loss_bb "
+            "FROM ledger_decisions "
+            "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
+            "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
+            "WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx",
+            item["ref_hand_id"])
+        if not rows:
+            await context.bot.send_message(chat_id, "這手沒有可加練的已評分決策。")
+            return
+        from queue_feed import qex_submenu
+        from html import escape as _esc
+        btn_rows = qex_submenu([dict(r) for r in rows], queue_id)
+        await context.bot.send_message(
+            chat_id,
+            f"➕ <b>選一條 action line 加入練習</b>\n{_esc(item['label'] or item['ref_hand_id'])}\n"
+            "（含打對的決策 — 想練沒把握的線也行）",
+            parse_mode="HTML",
+            reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
+
+    async def _queue_add_manual(self, update: Update,
+                                context: ContextTypes.DEFAULT_TYPE,
+                                queue_id: int, decision_id: int):
+        """qad:<queue_id>:<decision_id> — add one graded decision as a manual
+        drill (kind='drill', added_by='manual', source='manual'), §6.2."""
+        query = update.callback_query
+        chat_id = update.effective_chat.id
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        dec = await self.db.pool.fetchrow(
+            "SELECT id, gtow_hand_id, street, decision_idx, spot_category, spot_leaf, "
+            "hero_cat, villain_cat, ip_oop, position, pot_type, eff_stack, ev_loss_bb "
+            "FROM ledger_decisions WHERE id=$1", decision_id)
+        if not dec:
+            await query.answer("找不到這個決策。")
+            return
+        from queue_feed import manual_drill_item, enqueue
+        from html import escape as _esc
+        item = manual_drill_item(dict(dec))
+        async with self.db.pool.acquire() as conn:
+            await enqueue(conn, [item])
+        await query.answer("➕ 已加入練習佇列")
+        await context.bot.send_message(
+            chat_id, f"➕ 已加入練習：{_esc(item['label'] or item['spot_leaf'] or '?')}\n"
+                     "用 /queue 查看。")
+
     async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """lvd:<hand_id> — deep-dive a live hand via the normal coach path;
-        qcl:<queue_id> — mark a practice-queue line cleared."""
+        """Practice-queue + live-hand callbacks (all owner-only, §6.3):
+        lvd:<hand_id> — deep-dive a live hand via the normal coach path;
+        qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
+        qex:<queue_id> — expand a review item into its decisions to hand-pick;
+        qad:<queue_id>:<decision_id> — add one decision as a manual drill."""
         query = update.callback_query
         data = query.data or ""
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
 
+        if not self._is_owner(update):
+            await query.answer()
+            return
+
         if data.startswith("qcl:"):
-            await query.answer("✔ 已標記為已練")
+            await query.answer("✔ 已標記為完成")
             if self.db and self.db.pool:
                 await self.db.pool.execute(
-                    "UPDATE drill_queue SET status='cleared' WHERE id=$1", int(data[4:]))
+                    "UPDATE drill_queue SET status='cleared', cleared_at=NOW() "
+                    "WHERE id=$1", int(data[4:]))
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
             except Exception:
                 pass
             await context.bot.send_message(chat_id, "✔ 已清掉，用 /queue 看剩下的。")
+            return
+
+        if data.startswith("qex:"):
+            await self._queue_expand_review(update, context, int(data[4:]))
+            return
+
+        if data.startswith("qad:"):
+            _, qid, did = data.split(":")
+            await self._queue_add_manual(update, context, int(qid), int(did))
             return
 
         await query.answer()
@@ -1675,7 +1765,7 @@ class PokerWizardBot:
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         # pattern handlers must precede the generic follow-up handler
         self.application.add_handler(
-            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl):"))
+            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl|qex|qad):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application

@@ -1153,9 +1153,13 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
         it = by_leaf.setdefault(d["spot_leaf"], {
             "spot_leaf": d["spot_leaf"], "spot_category": d["spot_category"],
             "drill_url": drill_url_for(d), "label": spot_label_zh(d),
-            "source_hands": [], "total_ev_loss_bb": 0.0})
+            "source_hands": [], "total_ev_loss_bb": 0.0,
+            "kind": "drill", "added_by": "auto", "source": "live"})
+        # §5.2 full dedupe key: {hand_id, street, decision_idx, ev_loss_bb, src}
         it["source_hands"].append({"hand_id": d["gtow_hand_id"],
-                                   "street": d["street"], "ev_loss_bb": ev})
+                                   "street": d["street"],
+                                   "decision_idx": d.get("decision_idx"),
+                                   "ev_loss_bb": ev, "src": "live"})
         it["total_ev_loss_bb"] = round(it["total_ev_loss_bb"] + ev, 4)
     return sorted(by_leaf.values(), key=lambda x: -x["total_ev_loss_bb"])
 
@@ -1216,57 +1220,12 @@ def _seqs_from_spot_leaf(leaf: str) -> tuple[str, str]:
     return flop, turn
 
 
-# Merge a re-offending leaf into its OPEN row first — pending OR prescribed.
-# Without this, a leaf that re-deviates while prescribed (the partial unique
-# index only covers pending) grew a SECOND row and showed up twice in /queue.
-# Prefer the pending row when both exist (it re-enters the weekly plan).
-MERGE_OPEN_SQL = """
-UPDATE drill_queue SET
-  source_hands = (
-    CASE WHEN jsonb_typeof(source_hands) = 'array'
-         THEN source_hands
-         ELSE (source_hands #>> '{}')::jsonb
-    END
-  ) || $2::jsonb,
-  n_sources = n_sources + $3,
-  total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + COALESCE($4, 0),
-  drill_url = COALESCE($5, drill_url),
-  last_added = NOW()
-WHERE id = (
-  SELECT id FROM drill_queue
-  WHERE spot_leaf = $1 AND status IN ('pending', 'prescribed')
-  ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1)
-"""
-
-ENQUEUE_SQL = """
-INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url, source_hands,
-                         n_sources, total_ev_loss_bb)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-ON CONFLICT (spot_leaf) WHERE status = 'pending' DO UPDATE SET
-  source_hands = (
-    CASE WHEN jsonb_typeof(drill_queue.source_hands) = 'array'
-         THEN drill_queue.source_hands
-         ELSE (drill_queue.source_hands #>> '{}')::jsonb
-    END
-  ) || EXCLUDED.source_hands,
-  n_sources = drill_queue.n_sources + EXCLUDED.n_sources,
-  total_ev_loss_bb = COALESCE(drill_queue.total_ev_loss_bb, 0)
-                     + COALESCE(EXCLUDED.total_ev_loss_bb, 0),
-  drill_url = COALESCE(EXCLUDED.drill_url, drill_queue.drill_url),
-  last_added = NOW()
-"""
-
-
-async def enqueue(conn, items: list[dict]):
-    for it in items:
-        merged = await conn.execute(
-            MERGE_OPEN_SQL, it["spot_leaf"], json.dumps(it["source_hands"]),
-            len(it["source_hands"]), it["total_ev_loss_bb"], it["drill_url"])
-        if merged == "UPDATE 0":
-            await conn.execute(
-                ENQUEUE_SQL, it["spot_leaf"], it["spot_category"], it["label"],
-                it["drill_url"], json.dumps(it["source_hands"]),
-                len(it["source_hands"]), it["total_ev_loss_bb"])
+# The queue's upsert policy lives in ONE place — queue_feed.enqueue — so the
+# live flow, the online scan, and manual adds share a single dedupe-aware
+# implementation (§5.2, PR #92 dedup spirit). live_flow re-exports it for its
+# own persist path; a re-offending leaf merges into its OPEN row (pending OR
+# prescribed) with per-entry key dedupe so re-imports never inflate totals.
+from queue_feed import enqueue  # noqa: E402,F401  (shared upsert; used by persist)
 
 
 # ── DB upserts ───────────────────────────────────────────────────────────────

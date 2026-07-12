@@ -76,8 +76,10 @@ async def _weekly_scorecard_job(context):
         payload = weekly_tg_payload(row["week"], data)
         markup = None
         if payload["buttons"]:
+            # rows may carry url (drills / 復盤) OR callback_data (✔ 完成 / ➕ 加練)
             markup = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(b["text"], url=b["url"]) for b in r]
+                [[InlineKeyboardButton(b["text"], url=b.get("url"),
+                                       callback_data=b.get("callback_data")) for b in r]
                  for r in payload["buttons"]])
         await context.bot.send_message(
             owner, payload["html"], parse_mode="HTML",

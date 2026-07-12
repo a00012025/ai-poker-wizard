@@ -241,17 +241,21 @@ def weekly_tg_html(week: str, d: dict) -> str:
     if dq:
         lb_leafs = {r["spot_leaf"] for r in d.get("leaderboard", [])}
         L.append("")
-        L.append("<b>📥 現場手牌的練習佇列：</b>")
+        L.append("<b>📥 練習佇列（現場 + 線上）：</b>")
         for q in dq:
-            lbl = q.get("label") or q.get("spot_leaf") or "?"
-            cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
             aging = ""
             if q.get("status") == "prescribed":
                 wk = q.get("prescribed_week")
                 aging = f"（{wk} 已開過，還沒練 ⏰）" if wk else "（先前已開過，還沒練 ⏰）"
-            ev = q.get("total_ev_loss_bb") or 0
-            L.append(f"• {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手現場牌，"
-                     f"累計漏 {ev:.1f}bb{cross}{aging}")
+            lbl = q.get("label") or q.get("spot_leaf") or "?"
+            if q.get("kind") == "review":
+                # label already reads「復盤 M/D … −Xbb」
+                L.append(f"• 🔍 {escape(lbl)}{aging}")
+            else:
+                cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
+                ev = q.get("total_ev_loss_bb") or 0
+                L.append(f"• 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
+                         f"累計漏 {ev:.1f}bb{cross}{aging}")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -288,18 +292,29 @@ def weekly_tg_html(week: str, d: dict) -> str:
 
 
 def weekly_tg_payload(week: str, d: dict) -> dict:
-    """Weekly TG message + inline URL buttons: {"html": str, "buttons": rows}.
+    """Weekly TG message + inline buttons: {"html": str, "buttons": rows}.
 
-    Buttons (one row each): 🎯 focus-spot drills, then 📥 live-queue drills.
-    Rendered by the bot as InlineKeyboardButton(url=...) — no raw links in text.
+    Buttons: 🎯 focus-spot drills, then the practice-queue quota — drill items
+    ride a 🎯 URL button; review items ride 🔗 復盤 (URL) + ✔ 完成 (qcl) + ➕ 加練
+    (qex) callbacks (§7/§6.2). Rows may carry url OR callback_data entries.
     """
     buttons: list[list[dict]] = []
     for i, f in enumerate(d.get("focus", []), 1):
         if f.get("drill_url"):
             buttons.append([{"text": f"🎯 練 {i}：{f['desc'][:28]}", "url": f["drill_url"]}])
-    for q in (d.get("drill_queue") or [])[:3]:
-        if q.get("drill_url"):
-            lbl = (q.get("label") or q.get("spot_leaf") or "?")[:28]
+    for q in (d.get("drill_queue") or []):
+        qid = q.get("id")
+        lbl = (q.get("label") or q.get("spot_leaf") or "?")[:24]
+        if q.get("kind") == "review":
+            row: list[dict] = []
+            if q.get("drill_url"):
+                row.append({"text": f"🔗 復盤：{lbl}", "url": q["drill_url"]})
+            if qid is not None:
+                row.append({"text": "✔ 完成", "callback_data": f"qcl:{qid}"})
+                row.append({"text": "➕ 加練", "callback_data": f"qex:{qid}"})
+            if row:
+                buttons.append(row)
+        elif q.get("drill_url"):
             buttons.append([{"text": f"📥 佇列：{lbl}", "url": q["drill_url"]}])
     return {"html": weekly_tg_html(week, d), "buttons": buttons}
 
@@ -356,12 +371,17 @@ WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
 
 # prescribed-but-uncleared items KEEP re-surfacing in the plan (§14.2:
 # silently dropping an unpracticed prescription degrades the coaching
-# signal) — pending first, then open prescriptions by EV.
+# signal) — pending first, then open prescriptions by EV. The plan drains a
+# per-kind quota (§7): QUEUE_DRILL_SLOTS drills + QUEUE_REVIEW_SLOTS reviews,
+# one topping up the other to QUEUE_SLOTS. Fetch a wider window, mix in Python.
+QUEUE_DRILL_SLOTS = 3
+QUEUE_REVIEW_SLOTS = 2
+QUEUE_SLOTS = QUEUE_DRILL_SLOTS + QUEUE_REVIEW_SLOTS
 QUEUE_SQL = """
-SELECT id, spot_leaf, spot_category, drill_url, n_sources, total_ev_loss_bb,
-       source, status, prescribed_week
+SELECT id, spot_leaf, spot_category, label, drill_url, n_sources, total_ev_loss_bb,
+       source, status, prescribed_week, kind, ref_hand_id
 FROM drill_queue WHERE status IN ('pending', 'prescribed')
-ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 5
+ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 40
 """
 
 
@@ -387,8 +407,11 @@ async def _honesty(conn) -> dict:
 
 
 async def fetch_drill_queue(conn) -> list[dict]:
-    """Pending practice-queue lines (live flow deviations) for the weekly plan."""
-    return [dict(r) for r in await conn.fetch(QUEUE_SQL)]
+    """Top practice-queue items for the weekly plan (drill + review), mixed to
+    the per-kind quota (§7). Pending-first / EV-desc order is preserved."""
+    from queue_feed import mix_queue_quota
+    rows = [dict(r) for r in await conn.fetch(QUEUE_SQL)]
+    return mix_queue_quota(rows, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS, QUEUE_SLOTS)
 
 
 async def fetch_readback(conn, prev_focus, prev_at) -> dict:
@@ -442,6 +465,14 @@ async def _run(mode: str, min_n: int):
             fam = prev["families"]
             prev_focus = json.loads(fam) if isinstance(fam, str) else fam
             prev_at = prev["created_at"]
+        # §5.4: scan the online window into the queue BEFORE building the plan,
+        # so this week's fresh drill/review items are eligible to be prescribed
+        # and drained. The scan uses its own 60d window (queue_feed constant),
+        # deliberately distinct from the 90d focus window below.
+        from queue_feed import scan_online
+        scan = await scan_online(conn)
+        print(f"queue scan: {len(scan['drill'])} drill + {len(scan['review'])} "
+              f"review candidates, tally={scan['tally']}")
         since = datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS)
         data = await build(conn, week, prev_focus, min_n=min_n, since=since, prev_at=prev_at)
         html = render_html(data)
