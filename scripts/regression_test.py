@@ -9429,6 +9429,29 @@ def test_classify_board_odd_length_raises():
 
 
 @test
+def test_resolver_9max_drops_only_leading_utg_fold():
+    """9-max MTTGeneral safely maps onto its 8-max solver tree only by
+    removing a leading physical-UTG fold; early-position hero names shift too.
+    A voluntary UTG action must fail closed rather than change the spot."""
+    from gtow_action_resolver import _pad_preflop_to_mtt_tree
+
+    line = "F-R2-F-F-F-C-R5.5-F-F-C-F"
+    padded, hero, positions = _pad_preflop_to_mtt_tree(line, 9, "BTN")
+    assert_eq(padded, "R2-F-F-F-C-R5.5-F-F-C-F")
+    assert_eq(hero, "BTN")
+    assert_eq(len(positions), 8)
+    _line, early_hero, _positions = _pad_preflop_to_mtt_tree(
+        "F-R2-F-F-F-F-F-F-F", 9, "UTG+1")
+    assert_eq(early_hero, "UTG")
+    try:
+        _pad_preflop_to_mtt_tree("R2-F-F-F-F-F-F-F-F", 9, "UTG")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-folding 9-max UTG must not be dropped")
+
+
+@test
 def test_resolve_h2665_turn_decision():
     """gtow_action_resolver: H2665 turn fold resolves to R2.1 / R1.9-C / R5.2 at 30bb."""
     from gtow_action_resolver import resolve_actions_for_deviation
