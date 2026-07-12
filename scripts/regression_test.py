@@ -14105,6 +14105,31 @@ def test_live_split_batch_header_variants():
 
 
 @test
+def test_live_split_batch_bare_eff_header_continues_to_seat_line():
+    """Regression for live batch: a stack-only line (``Eff 21bb``) is not a
+    complete hand.  The following seat-led preflop line belongs to it, even
+    though seat-led lines normally start new hands."""
+    from live_flow import split_batch
+    text = ("Eff 21bb\n"
+            "UTG call sb call hero bb raise AsJh to 3bb utg call sb fold\n"
+            "5c9cTs b2 call\n"
+            "9d x b4 fold\n"
+            "Eff 11bb btn open hero bb call T9o\n"
+            "TT8 rainbow x x")
+    blocks = split_batch(text)
+    assert_eq(len(blocks), 2)
+    assert_true(blocks[0].startswith("Eff 21bb\nUTG call"))
+    assert_in("5c9cTs", blocks[0])
+    assert_true(blocks[1].startswith("Eff 11bb"))
+    # But a real stack-led next hand after a bare/incomplete header still
+    # starts a new hand; only seat/hero-led continuations are merged.
+    blocks2 = split_batch("Eff 21bb\nEff 11bb btn open hero bb call T9o")
+    assert_eq(len(blocks2), 2)
+    assert_eq(blocks2[0], "Eff 21bb")
+    assert_true(blocks2[1].startswith("Eff 11bb"))
+
+
+@test
 def test_live_card_literal_repair_locks_raw_ranks():
     """Gemini may produce a structurally legal but wrong card literal
     (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading
@@ -14342,6 +14367,34 @@ def test_live_parse_block_retries_when_gemini_drops_checkthrough_street():
 
 
 @test
+def test_live_parse_block_uses_preflop_fallback_when_llm_omits_seats():
+    """If Gemini returns a syntactically present but too-short preflop line,
+    parse_block must not pass it to validation; use the deterministic one-line
+    fallback instead."""
+    from live_flow import parse_block
+
+    class _Resp:
+        text = json.dumps({"hand": {
+            "players_at_table": 8, "effective_bb": 25,
+            "hero_position": "HJ", "hero_hand": "QQ",
+            "preflop_actions": "F-F-F-R2-R6-AI",
+        }})
+
+    class _Models:
+        def generate_content(self, **_kwargs):
+            return _Resp()
+
+    class _Client:
+        models = _Models()
+
+    hand = parse_block("Eff 25bb hero hj raise qq co raise 6bb hero all in",
+                       client=_Client())
+    assert_true(hand is not None and not hand.get("_refused"))
+    assert_eq(hand["preflop_actions"], "F-F-F-R2-R6-F-F-F-AI25")
+    assert_true(any("LLM 漏座位" in n for n in hand.get("_repairs", [])))
+
+
+@test
 def test_live_simple_preflop_fallback_parses_terse_fold_row():
     """Single-line live rows like 'Co 15.5bb fold a5o' do not need LLM
     inference; parse them deterministically if Gemini abstains/fails."""
@@ -14352,6 +14405,32 @@ def test_live_simple_preflop_fallback_parses_terse_fold_row():
     assert_eq(hand["effective_bb"], 15.5)
     assert_eq(hand["hero_hand"], "A5o")
     assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-F-F")
+
+
+@test
+def test_live_simple_preflop_fallback_parses_multiaction_allin_row():
+    """Regression for failed Hand 5: Gemini returned only six preflop tokens
+    for ``hero HJ open / CO 3bet / hero jam``.  The deterministic fallback
+    pads skipped seats and appends hero's continuation all-in."""
+    from live_flow import parse_simple_preflop_block
+    from hand_validator import validate_hand
+
+    hand = parse_simple_preflop_block(
+        "Eff 25bb hero hj raise qq co raise 6bb hero all in")
+    assert_true(hand is not None)
+    assert_eq(hand["hero_position"], "HJ")
+    assert_eq(hand["hero_hand"], "QQ")
+    assert_eq(hand["preflop_actions"], "F-F-F-R2-R6-F-F-F-AI25")
+    assert_true(validate_hand(hand).ok)
+
+    # ``all in 55`` means hero has pocket fives, not a 55bb jam.
+    hand2 = parse_simple_preflop_block(
+        "Eff 14bb Hj raise hero co all in 55 hj fold")
+    assert_true(hand2 is not None)
+    assert_eq(hand2["hero_position"], "CO")
+    assert_eq(hand2["hero_hand"], "55")
+    assert_eq(hand2["preflop_actions"], "F-F-F-R2-AI14-F-F-F-F")
+    assert_true(validate_hand(hand2).ok)
 
 
 @test
