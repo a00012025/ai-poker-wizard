@@ -15154,9 +15154,10 @@ def test_queue_feed_review_and_manual_items():
 @test
 def test_build_hand_solution_url_from_archive():
     """The /solutions Study URL is built straight from an archived hand detail's
-    solved_action_sequence — pins the exact node the review decision was at, and
-    refuses (None) when the node is absent, un-solved, or a first-to-act RFI
-    (empty action line) so the caller falls back."""
+    solved_action_sequence — pins the exact node the review decision was at,
+    refuses (None) when the node is absent or un-solved (caller falls back), and
+    for a first-to-act RFI (empty action line) emits the bare gametype+depth
+    ROOT node (the opening range) rather than falling back."""
     from gtow_solution_url import build_hand_solution_url
 
     def gp(street, pos, sas, has_solution=True, selected=True):
@@ -15188,7 +15189,14 @@ def test_build_hand_solution_url_from_archive():
     assert_true(build_hand_solution_url(nosol, "SB", "river", 0) is None)    # unsolved node
     rfi = {"game_analysis": {"game_points": [gp("preflop", "UTG",
         {"preflop_actions": [], "flop_actions": [], "turn_actions": [], "river_actions": []})]}}
-    assert_true(build_hand_solution_url(rfi, "UTG", "preflop", 0) is None)   # first-in RFI: no line
+    rfi_url = build_hand_solution_url(rfi, "UTG", "preflop", 0)              # first-in RFI: ROOT node
+    assert_true(rfi_url and rfi_url.startswith("https://app.gtowizard.com/solutions?"))
+    assert_in("gametype=MTTGeneral", rfi_url)
+    assert_in("depth=34.125", rfi_url)                                       # 34.692 → 34.125 (MTT .125 suffix)
+    assert_in("soltab=strategy", rfi_url)
+    assert_in("history_spot=0", rfi_url)                                     # no action line into the node
+    assert_true("preflop_actions=" not in rfi_url)                          # bare root: no line params
+    assert_true("board=" not in rfi_url)
 
 
 @test

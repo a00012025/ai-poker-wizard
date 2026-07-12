@@ -186,13 +186,30 @@ def _canonical_board_str(board_raw: str, street: str) -> str:
     return _canonical_flop(b[:6]) + b[6:] if len(b) >= 6 else b
 
 
+def _root_solution_url(depth: float, gametype: str) -> str:
+    """Bare /solutions ROOT node — the first-to-act (RFI) decision, which GTOW
+    addresses by gametype+depth alone (no action line). Verified against GTOW's
+    own study-link endpoint (emits `history_spot=0`, no `preflop_actions`) and
+    the live SPA (lands on the UTG opening range)."""
+    gametype = gametype or "MTTGeneral"
+    depth_str = f"{depth:g}"
+    if gametype == "MTTGeneral" and not depth_str.endswith(".125"):
+        depth_str = f"{int(depth)}.125"
+    params: list[tuple[str, str]] = [("gametype", gametype), ("depth", depth_str)]
+    params.extend(_STATIC_UI)
+    params.append(("history_spot", "0"))
+    return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
+
+
 def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
                             decision_idx: int) -> str | None:
     """/solutions Study URL for hero's (street, decision_idx) decision, built
     from the archived hand detail's `solved_action_sequence`.
 
     Returns None when the node can't be located or the solver has no solution
-    for it (caller falls back), so a review link never points at an empty node.
+    for it (caller falls back). A first-to-act RFI (empty action line) resolves
+    to the bare gametype+depth ROOT node — the opening range — not None, so
+    even a UTG open gets a real Study link.
     """
     gp = _find_decision_game_point(detail, hero_pos, street, decision_idx)
     if gp is None or not gp.get("has_solution"):
@@ -200,7 +217,9 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
     sas = gp.get("solved_action_sequence") or {}
     pre = sas.get("preflop_actions") or []
     if not pre:
-        return None
+        # first-to-act RFI: no preceding action line → the solver ROOT node.
+        return _root_solution_url(float(gp.get("depth") or 0),
+                                  gp.get("gametype") or "MTTGeneral")
 
     def _join(x):
         return "-".join(x) if x else ""
