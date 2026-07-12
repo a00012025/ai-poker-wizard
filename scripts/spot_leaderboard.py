@@ -23,8 +23,8 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
-from gtow_trainer_url import (build_drill_url, CAT_POSITIONS, SpotNotSupportedError,
-                              MTT_DEPTHS, DEPTH_BAND_DEPTHS)
+from gtow_trainer_url import (CAT_POSITIONS, MTT_DEPTHS, DEPTH_BAND_DEPTHS,
+                              PREFLOP_CATS, drill_url_for_spot)  # noqa: F401 — PREFLOP_CATS re-exported
 
 TPE = ZoneInfo("Asia/Taipei")
 
@@ -41,8 +41,6 @@ def analyze_table_url(day_start_taipei: str, day_end_taipei: str) -> str:
 
 BAND_MID = {"le15": 12, "15_25": 20, "25_40": 32, "40plus": 50}
 BAND_ZH = {"short": "短籌(≤20)", "medium": "中籌(20-50)", "large": "深籌(>50)"}
-PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vsCold3bet",
-                "vs4bet", "vsCold4bet"}
 
 # All three queries take an optional time window (§2.2 歸因): an unwindowed
 # leaderboard is a cumulative average — recent improvement/regression barely
@@ -107,26 +105,11 @@ def choose_depths(bands) -> tuple[str | None, list[int]]:
 
 
 def _drill_url(r, depths) -> str | None:
-    cat = r["spot_category"]
     parts = r["spot_leaf"].split(":")
-    try:
-        if cat in PREFLOP_CATS:
-            if cat in ("RFI", "vsOpen"):
-                hero = [r["hero_pos"]] if r["hero_pos"] else CAT_POSITIONS.get(r["hero_cat"], [])
-            else:
-                hero = CAT_POSITIONS.get(r["hero_cat"], [])
-            vc = r["villain_cat"]
-            opp = CAT_POSITIONS.get(vc) if vc in CAT_POSITIONS else None
-            return build_drill_url(cat, "preflop", 20, hero, opponent_positions=opp,
-                                   rel_position=r["ip_oop"], depths=depths)
-        pot_type = parts[1] if len(parts) > 1 else None
-        hero = CAT_POSITIONS.get(r["hero_cat"], [])
-        vc = r["villain_cat"]
-        opp = CAT_POSITIONS.get(vc) if vc in CAT_POSITIONS else None
-        return build_drill_url(cat, cat, 20, hero, opponent_positions=opp,
-                               rel_position=r["ip_oop"], pot_type=pot_type, depths=depths)
-    except (SpotNotSupportedError, ValueError):
-        return None
+    return drill_url_for_spot(
+        r["spot_category"], hero_pos=r.get("hero_pos"), hero_cat=r.get("hero_cat"),
+        villain_cat=r.get("villain_cat"), ip_oop=r.get("ip_oop"),
+        pot_type=parts[1] if len(parts) > 1 else None, depths=depths)
 
 
 def is_fragile(row: dict, rel_threshold: float = 0.30, min_clean_n: int = 10) -> bool:
