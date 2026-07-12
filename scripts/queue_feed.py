@@ -49,6 +49,7 @@ QUEUE_DRILL_MIN_TOTAL_BB = 3.0  # worth one <=20min Trainer session (北極星 �
 QUEUE_REVIEW_MIN_BB = 5.0       # single-decision disaster threshold
 LOSSY_MIN_BB = 0.10             # a decision counts as "lossy" at/above this (== live QUEUE_EV_MIN)
 REOPEN_MIN_NEW = 2              # cleared drill leaf revives only on >=this many post-clear lossy decisions
+LOW_FREQUENCY_BRANCH = 0.05     # path hint only; NEVER used for EV ordering (§7.3)
 
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
@@ -121,6 +122,26 @@ def _has_approx(flags) -> bool:
 
 
 _SUIT_GLYPH = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}
+_STREET_ORDER = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+_STREET_TITLE = {"preflop": "Preflop", "flop": "Flop", "turn": "Turn", "river": "River"}
+
+
+def low_frequency_anchor(decisions: list[dict], worst_street: str,
+                         worst_idx: int) -> dict | None:
+    """Earliest prior hero decision whose chosen action is <=5% in GTO.
+
+    This is a review-order hint, not an EV severity score: the queue remains
+    ranked by realized EV loss.  All ledger_decisions are hero decisions.
+    """
+    worst_key = (_STREET_ORDER.get(worst_street, 9), int(worst_idx or 0))
+    ordered = sorted(decisions, key=lambda d: (
+        _STREET_ORDER.get(d.get("street"), 9), int(d.get("decision_idx") or 0)))
+    for dec in ordered:
+        key = (_STREET_ORDER.get(dec.get("street"), 9), int(dec.get("decision_idx") or 0))
+        freq = dec.get("taken_freq")
+        if key < worst_key and freq is not None and float(freq) <= LOW_FREQUENCY_BRANCH:
+            return dec
+    return None
 
 
 def pretty_hand(hero_hand: str | None) -> str:
@@ -151,8 +172,11 @@ def review_label(row: dict) -> str:
         "street": row.get("spot_category")})
     hand = pretty_hand(row.get("hero_hand"))
     ev = float(row.get("max_ev") or 0.0)
+    anchor_title = _STREET_TITLE.get(row.get("review_anchor_street"))
+    hint = (f"（{anchor_title} 走了低頻分支，建議從 {anchor_title} 開始看）"
+            if anchor_title else "")
     warn = " ⚠近似" if _has_approx(row.get("approx_flags")) else ""
-    return f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb{warn}"
+    return f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb{hint}{warn}"
 
 
 def drill_label(row: dict) -> str:
@@ -235,14 +259,23 @@ def qex_submenu(decisions: list[dict], queue_id: int) -> list[dict]:
     rows = []
     for d in sorted(decisions, key=lambda d: (st_order.get(d.get("street"), 9),
                                               d.get("decision_idx") or 0)):
-        ev = d.get("ev_loss_bb")
-        ev_txt = f"−{ev:.1f}bb" if ev else "打對✓"
+        ev = float(d.get("ev_loss_bb") or 0.0)
+        freq = d.get("taken_freq")
+        if ev > 0:
+            verdict = f"−{ev:.1f}bb"
+        elif freq is not None and float(freq) <= LOW_FREQUENCY_BRANCH:
+            verdict = f"低頻分支 {float(freq) * 100:.1f}%"
+        elif freq is not None:
+            kind = "主要策略" if d.get("correctness") == "BEST_MOVE" else "GTO 頻率"
+            verdict = f"{kind} {float(freq) * 100:.1f}%"
+        else:
+            verdict = "EV 差小"
         desc = spot_desc_zh({
             "spot_category": d.get("spot_category"), "spot_leaf": d.get("spot_leaf"),
             "hero_cat": d.get("hero_cat"), "villain_cat": d.get("villain_cat"),
             "ip_oop": d.get("ip_oop"), "hero_pos": d.get("position"),
             "street": d.get("spot_category")})
-        rows.append({"text": f"➕ {d.get('street')} {desc} {ev_txt}"[:60],
+        rows.append({"text": f"➕ {d.get('street')} {desc} {verdict}"[:60],
                      "callback_data": f"qad:{queue_id}:{d['id']}"})
     return rows
 
@@ -289,16 +322,17 @@ UPDATE drill_queue SET
   n_sources = $3,
   total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + $4,
   drill_url = COALESCE($5, drill_url),
-  label = COALESCE(label, $6),
+  label = COALESCE($6, label),
   last_added = NOW()
 WHERE id = $1
 """
 
 _INSERT_SQL = """
-INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url, source_hands,
+INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url,
+                         review_anchor_url, review_anchor_street, source_hands,
                          n_sources, total_ev_loss_bb, kind, added_by, source,
                          ref_hand_id)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)
 """
 
 
@@ -323,7 +357,8 @@ async def enqueue_one(conn, it: dict) -> str:
             return "merged"
     await conn.execute(
         _INSERT_SQL, it.get("spot_leaf"), it.get("spot_category"), it.get("label"),
-        it.get("drill_url"), json.dumps(incoming), len(incoming),
+        it.get("drill_url"), it.get("review_anchor_url"),
+        it.get("review_anchor_street"), json.dumps(incoming), len(incoming),
         it.get("total_ev_loss_bb"), kind, it.get("added_by", "auto"),
         it.get("source", "online"), it.get("ref_hand_id"))
     return "inserted"
@@ -388,6 +423,14 @@ ORDER BY sum(ev_loss_bb) DESC
 # honesty predicate ambiguous).
 _HAND_META_SQL = ("SELECT hero_hand, raw_path, position, preflop_depth_bb FROM ledger_hands "
                   "WHERE gtow_hand_id = $1")
+_HAND_DECISIONS_SQL = """
+SELECT street, decision_idx, taken_freq, spot_category, spot_leaf, hero_cat,
+       villain_cat, ip_oop, position, ev_loss_bb, approx_flags
+FROM ledger_decisions
+WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded
+ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1
+         WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx
+"""
 
 _CLEARED_SQL = ("SELECT max(cleared_at) c FROM drill_queue "
                 "WHERE spot_leaf = $1 AND kind = 'drill' AND status = 'cleared'")
@@ -434,19 +477,34 @@ async def _build_review_items(conn, since) -> list[dict]:
             row["raw_path"] = meta["raw_path"]
             row["hero_pos"] = meta["position"] or row.get("hero_pos")
             row["preflop_depth_bb"] = meta["preflop_depth_bb"]
+        decisions = [dict(d) for d in await conn.fetch(
+            _HAND_DECISIONS_SQL, r["ref_hand_id"])]
+        anchor = low_frequency_anchor(
+            decisions, row.get("worst_street"), row.get("worst_idx"))
+        anchor_url = None
+        if anchor:
+            anchor_url = _study_solution_url(dict(
+                row, worst_street=anchor["street"],
+                worst_idx=anchor["decision_idx"]))
+        if anchor_url:
+            row["review_anchor_street"] = anchor["street"]
         items.append({
             "kind": "review", "added_by": "auto", "source": "online",
             "ref_hand_id": row["ref_hand_id"], "spot_leaf": row["spot_leaf"],
             "spot_category": row["spot_category"], "label": review_label(row),
-            "drill_url": review_url(row), "source_hands": _as_list(row["source_hands"]),
+            "drill_url": review_url(row), "review_anchor_url": anchor_url,
+            "review_anchor_street": row.get("review_anchor_street"),
+            "source_hands": _as_list(row["source_hands"]),
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
         })
     return items
 
 
 _REVIEW_REFRESH_SQL = """
-SELECT q.id, q.drill_url, q.ref_hand_id, q.source_hands,
-       h.raw_path, h.position hero_pos, h.preflop_depth_bb, h.played_at
+SELECT q.id, q.label, q.drill_url, q.review_anchor_url,
+       q.review_anchor_street, q.ref_hand_id, q.source_hands,
+       h.raw_path, h.position hero_pos, h.hero_hand,
+       h.preflop_depth_bb, h.played_at
 FROM drill_queue q
 JOIN ledger_hands h ON h.gtow_hand_id = q.ref_hand_id
 WHERE q.kind = 'review'
@@ -456,7 +514,7 @@ ORDER BY q.id
 
 
 async def refresh_review_links(conn, include_all: bool = False) -> dict:
-    """Rebuild persisted review URLs from real actions + preflop depth.
+    """Rebuild persisted review URLs, path hints, and normalized labels.
 
     Weekly scans refresh open rows so old approximate links cannot remain in
     the visible queue.  The maintenance CLI can include cleared history too.
@@ -467,18 +525,63 @@ async def refresh_review_links(conn, include_all: bool = False) -> dict:
         row = dict(raw)
         entries = _as_list(row.get("source_hands"))
         worst = entries[0] if entries else {}
-        row["worst_street"] = worst.get("street")
-        row["worst_idx"] = worst.get("decision_idx")
-        url = _study_solution_url(row)
-        if not url:
+        worst_street = worst.get("street")
+        worst_idx = worst.get("decision_idx")
+        decisions = [dict(d) for d in await conn.fetch(
+            _HAND_DECISIONS_SQL, row["ref_hand_id"])]
+        worst_dec = next((d for d in decisions
+                          if d.get("street") == worst_street
+                          and int(d.get("decision_idx") or 0) == int(worst_idx or 0)), None)
+        if not worst_dec:
             # Preserve the existing button on a transient token/cache/archive
             # failure; the next weekly scan retries. New rows still use
             # review_url() and get the honest Analyze-table fallback.
             tally["unresolved"] += 1
             continue
-        if url != row.get("drill_url"):
+        context = dict(row, **worst_dec, worst_street=worst_street,
+                       worst_idx=worst_idx, max_ev=worst_dec.get("ev_loss_bb"),
+                       hero_pos=row.get("hero_pos") or worst_dec.get("position"))
+        loss_url = _study_solution_url(context)
+        if not loss_url:
+            tally["unresolved"] += 1
+            loss_url = row.get("drill_url")
+
+        anchor = low_frequency_anchor(decisions, worst_street, worst_idx)
+        anchor_url = None
+        anchor_street = None
+        if anchor:
+            anchor_url = _study_solution_url(dict(
+                context, worst_street=anchor["street"],
+                worst_idx=anchor["decision_idx"]))
+            if anchor_url:
+                anchor_street = anchor["street"]
+        context["review_anchor_street"] = anchor_street
+        label = review_label(context)
+        current = (row.get("drill_url"), row.get("review_anchor_url"),
+                   row.get("review_anchor_street"), row.get("label"))
+        rebuilt = (loss_url, anchor_url, anchor_street, label)
+        if rebuilt != current:
+            await conn.execute(
+                "UPDATE drill_queue SET drill_url=$2, review_anchor_url=$3, "
+                "review_anchor_street=$4, label=$5 WHERE id=$1",
+                row["id"], loss_url, anchor_url, anchor_street, label)
+            tally["updated"] += 1
+    return tally
+
+
+async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
+    """Apply current global Trainer defaults to persisted drill queue URLs."""
+    from gtow_trainer_url import apply_trainer_defaults
+    status = "" if include_all else "AND status IN ('pending', 'prescribed')"
+    rows = await conn.fetch(
+        f"SELECT id, drill_url FROM drill_queue WHERE kind='drill' "
+        f"AND drill_url IS NOT NULL {status} ORDER BY id")
+    tally = {"checked": len(rows), "updated": 0}
+    for row in rows:
+        rebuilt = apply_trainer_defaults(row["drill_url"])
+        if rebuilt != row["drill_url"]:
             await conn.execute("UPDATE drill_queue SET drill_url=$2 WHERE id=$1",
-                               row["id"], url)
+                               row["id"], rebuilt)
             tally["updated"] += 1
     return tally
 
@@ -491,15 +594,18 @@ async def scan_online(conn, window_days: int = QUEUE_SCAN_WINDOW_DAYS,
     the CLI's first run (which IS the owner's "past two months" backfill)."""
     since = datetime.now(timezone.utc) - timedelta(days=window_days)
     refresh = {"checked": 0, "updated": 0, "unresolved": 0}
+    trainer_refresh = {"checked": 0, "updated": 0}
     if not dry_run:
         refresh = await refresh_review_links(conn)
+        trainer_refresh = await refresh_trainer_links(conn)
     drill_items = await _build_drill_items(conn, since)
     review_items = await _build_review_items(conn, since)
     tally = {"merged": 0, "inserted": 0, "noop": 0}
     if not dry_run:
         tally = await enqueue(conn, drill_items + review_items)
     return {"since": since, "drill": drill_items, "review": review_items,
-            "tally": tally, "refresh": refresh}
+            "tally": tally, "refresh": refresh,
+            "trainer_refresh": trainer_refresh}
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -518,6 +624,7 @@ def _print_scan(res: dict, dry_run: bool) -> None:
     if not dry_run:
         print(f"enqueue tally: {res['tally']}")
         print(f"review-link refresh: {res['refresh']}")
+        print(f"trainer-link refresh: {res['trainer_refresh']}")
 
 
 async def _run(window_days: int, dry_run: bool) -> int:
@@ -542,11 +649,24 @@ async def _run_refresh(include_all: bool) -> int:
         await conn.close()
 
 
+async def _run_trainer_refresh(include_all: bool) -> int:
+    import asyncpg
+    conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
+    try:
+        tally = await refresh_trainer_links(conn, include_all=include_all)
+        print(f"trainer-link refresh: {tally}")
+        return 0
+    finally:
+        await conn.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scan", action="store_true", help="scan the online window and enqueue")
     ap.add_argument("--refresh-review-links", action="store_true",
                     help="rebuild persisted review links from real Analyze actions")
+    ap.add_argument("--refresh-trainer-links", action="store_true",
+                    help="apply current global defaults to persisted Trainer links")
     ap.add_argument("--all-statuses", action="store_true",
                     help="with --refresh-review-links, include cleared rows")
     ap.add_argument("--window-days", type=int, default=QUEUE_SCAN_WINDOW_DAYS)
@@ -554,9 +674,12 @@ def main():
     a = ap.parse_args()
     if a.refresh_review_links:
         raise SystemExit(asyncio.run(_run_refresh(a.all_statuses)))
+    if a.refresh_trainer_links:
+        raise SystemExit(asyncio.run(_run_trainer_refresh(a.all_statuses)))
     if not a.scan:
         print("usage: queue_feed.py --scan [--window-days 60] [--dry-run] | "
-              "--refresh-review-links [--all-statuses]")
+              "--refresh-review-links [--all-statuses] | "
+              "--refresh-trainer-links [--all-statuses]")
         raise SystemExit(1)
     raise SystemExit(asyncio.run(_run(a.window_days, a.dry_run)))
 

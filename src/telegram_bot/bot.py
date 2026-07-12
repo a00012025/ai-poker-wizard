@@ -62,13 +62,26 @@ def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
         if r["kind"] == "review":
             L.append(f"🔍 {i}. {_esc(lbl)}{st}")
             row_btns = []
+            anchor = r.get("review_anchor_url")
+            anchor_street = r.get("review_anchor_street")
+            if anchor:
+                row_btns.append({"text": f"↩ {i} {(anchor_street or '上游').title()}",
+                                 "url": anchor})
             if r["drill_url"]:
-                row_btns.append({"text": f"🔗 復盤 {i}", "url": r["drill_url"]})
-            row_btns.append({"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"})
-            row_btns.append({"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"})
+                text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
+                row_btns.append({"text": text, "url": r["drill_url"]})
+            actions = [
+                {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"},
+                {"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"},
+            ]
+            if anchor and row_btns:
+                buttons.append(row_btns)
+                row_btns = actions
+            else:
+                row_btns.extend(actions)
         else:
             ev = r["total_ev_loss_bb"] or 0
-            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計漏 {ev:.1f}bb{st}")
+            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}")
             row_btns = []
             if r["drill_url"]:
                 row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
@@ -1506,7 +1519,8 @@ class PokerWizardBot:
 
     async def _fetch_queue_rows(self):
         return await self.db.pool.fetch(
-            "SELECT id, spot_leaf, label, drill_url, status, n_sources, "
+            "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
+            "review_anchor_street, status, n_sources, "
             "total_ev_loss_bb, kind, ref_hand_id "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
@@ -1561,7 +1575,8 @@ class PokerWizardBot:
             return
         rows = await self.db.pool.fetch(
             "SELECT id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
-            "villain_cat, ip_oop, position, ev_loss_bb "
+            "villain_cat, ip_oop, position, ev_loss_bb, taken_freq, freq_diff, "
+            "correctness "
             "FROM ledger_decisions "
             "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
             "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
@@ -1575,8 +1590,8 @@ class PokerWizardBot:
         btn_rows = qex_submenu([dict(r) for r in rows], queue_id)
         await context.bot.send_message(
             chat_id,
-            f"➕ <b>選一條 action line 加入練習</b>\n{_esc(item['label'] or item['ref_hand_id'])}\n"
-            "（含打對的決策 — 想練沒把握的線也行）",
+            f"➕ <b>選一條 action line 加入練習</b>\n"
+            f"{_esc(item['label'] or item['ref_hand_id'])}",
             parse_mode="HTML",
             reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
 

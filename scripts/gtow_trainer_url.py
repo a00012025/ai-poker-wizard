@@ -34,7 +34,7 @@ trainer starts from the requested street.
 
 from __future__ import annotations
 
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 
 # Available practice depths observed in GTOW trainer (verified empirically
@@ -81,7 +81,9 @@ _TRAINER_UI_DEFAULTS: dict[str, str] = {
     "fh_trainer_mode":              "stop_end_of_hand",
     "fh_trainer_game_mode":         "trainer_actions",
     "fh_trainer_grouping":          "swv_grouping_none",
-    "fh_trainer_game_speed":        "normal",
+    "fh_trainer_game_speed":        "turbo",
+    "fh_trainer_learning_mode":     "on",
+    "fh_trainer_session":           "100",
     "fh_trainer_quick_result":      "on",
     "fh_trainer_hero_range":        "on",
     "fh_trainer_opponent_range":    "on",
@@ -100,6 +102,19 @@ _TRAINER_UI_DEFAULTS: dict[str, str] = {
 _BASE_URL = "https://app.gtowizard.com/practice/trainer"
 
 _VALID_STREETS = ("preflop", "flop", "turn", "river")
+
+
+def apply_trainer_defaults(url: str | None) -> str | None:
+    """Apply global session defaults to a previously persisted Trainer URL."""
+    if not url:
+        return url
+    parts = urlsplit(url)
+    if parts.path.rstrip("/") != "/practice/trainer":
+        return url
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params.update(_TRAINER_UI_DEFAULTS)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(params), parts.fragment))
 
 
 class SpotNotSupportedError(ValueError):

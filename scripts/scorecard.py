@@ -37,7 +37,7 @@ from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
 CAT_ZH = {
-    "RFI": "首開", "vsOpen": "面對開池", "vsRaiseCall": "面對開池+跟注",
+    "RFI": "開池", "vsOpen": "面對開池", "vsRaiseCall": "面對開池+跟注",
     "vsSqueeze": "被擠壓", "vs3bet": "被 3bet", "vsCold3bet": "冷面對 3bet",
     "vs4bet": "被 4bet", "vsCold4bet": "冷面對 4bet",
     "flop": "翻牌", "turn": "轉牌", "river": "河牌",
@@ -54,9 +54,9 @@ def spot_desc_zh(row: dict) -> str:
         parts = row["spot_leaf"].split(":")
         pot = parts[1] if len(parts) > 1 else "?"
         facing = FACING_ZH.get(parts[-1], parts[-1])
-        return f"{pot} 底池，你 {hc} 在 {rel or '?'}，{CAT_ZH[cat]} {facing}"
+        return f"{pot} 底池，你 {hc} 在 {rel or '?'}，{CAT_ZH[cat]}{facing}"
     if cat == "RFI":
-        return f"{row.get('hero_pos') or hc} 首開（RFI）"
+        return f"{row.get('hero_pos') or hc} 開池"
     if cat == "vsOpen":
         return f"{row.get('hero_pos') or hc} 面對 {vc} 開池"
     if cat in ("vs3bet", "vsCold3bet", "vs4bet", "vsCold4bet", "vsSqueeze"):
@@ -255,7 +255,7 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
                 ev = q.get("total_ev_loss_bb") or 0
                 L.append(f"• 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
-                         f"累計漏 {ev:.1f}bb{cross}{aging}")
+                         f"累計損失 {ev:.1f}bb{cross}{aging}")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -307,11 +307,23 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
         lbl = (q.get("label") or q.get("spot_leaf") or "?")[:24]
         if q.get("kind") == "review":
             row: list[dict] = []
+            anchor = q.get("review_anchor_url")
+            anchor_street = q.get("review_anchor_street")
+            if anchor:
+                row.append({"text": f"↩ 先看 {(anchor_street or '上游').title()}",
+                            "url": anchor})
             if q.get("drill_url"):
-                row.append({"text": f"🔗 復盤：{lbl}", "url": q["drill_url"]})
+                text = "💥 再看損失" if anchor else f"🔗 復盤：{lbl}"
+                row.append({"text": text, "url": q["drill_url"]})
+            actions: list[dict] = []
             if qid is not None:
-                row.append({"text": "✔ 完成", "callback_data": f"qcl:{qid}"})
-                row.append({"text": "➕ 加練", "callback_data": f"qex:{qid}"})
+                actions.append({"text": "✔ 完成", "callback_data": f"qcl:{qid}"})
+                actions.append({"text": "➕ 加練", "callback_data": f"qex:{qid}"})
+            if anchor and row:
+                buttons.append(row)
+                row = actions
+            else:
+                row.extend(actions)
             if row:
                 buttons.append(row)
         elif q.get("drill_url"):
@@ -378,8 +390,9 @@ QUEUE_DRILL_SLOTS = 3
 QUEUE_REVIEW_SLOTS = 2
 QUEUE_SLOTS = QUEUE_DRILL_SLOTS + QUEUE_REVIEW_SLOTS
 QUEUE_SQL = """
-SELECT id, spot_leaf, spot_category, label, drill_url, n_sources, total_ev_loss_bb,
-       source, status, prescribed_week, kind, ref_hand_id
+SELECT id, spot_leaf, spot_category, label, drill_url, review_anchor_url,
+       review_anchor_street, n_sources, total_ev_loss_bb, source, status,
+       prescribed_week, kind, ref_hand_id
 FROM drill_queue WHERE status IN ('pending', 'prescribed')
 ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 40
 """
