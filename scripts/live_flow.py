@@ -880,6 +880,23 @@ def spot_label_zh(dec: dict) -> str:
                          "hero_pos": dec.get("position"), "street": dec["street"]})
 
 
+# Merge a re-offending leaf into its OPEN row first — pending OR prescribed.
+# Without this, a leaf that re-deviates while prescribed (the partial unique
+# index only covers pending) grew a SECOND row and showed up twice in /queue.
+# Prefer the pending row when both exist (it re-enters the weekly plan).
+MERGE_OPEN_SQL = """
+UPDATE drill_queue SET
+  source_hands = source_hands || $2::jsonb,
+  n_sources = n_sources + $3,
+  total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + COALESCE($4, 0),
+  drill_url = COALESCE($5, drill_url),
+  last_added = NOW()
+WHERE id = (
+  SELECT id FROM drill_queue
+  WHERE spot_leaf = $1 AND status IN ('pending', 'prescribed')
+  ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1)
+"""
+
 ENQUEUE_SQL = """
 INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url, source_hands,
                          n_sources, total_ev_loss_bb)
@@ -896,10 +913,14 @@ ON CONFLICT (spot_leaf) WHERE status = 'pending' DO UPDATE SET
 
 async def enqueue(conn, items: list[dict]):
     for it in items:
-        await conn.execute(
-            ENQUEUE_SQL, it["spot_leaf"], it["spot_category"], it["label"],
-            it["drill_url"], json.dumps(it["source_hands"]),
-            len(it["source_hands"]), it["total_ev_loss_bb"])
+        merged = await conn.execute(
+            MERGE_OPEN_SQL, it["spot_leaf"], json.dumps(it["source_hands"]),
+            len(it["source_hands"]), it["total_ev_loss_bb"], it["drill_url"])
+        if merged == "UPDATE 0":
+            await conn.execute(
+                ENQUEUE_SQL, it["spot_leaf"], it["spot_category"], it["label"],
+                it["drill_url"], json.dumps(it["source_hands"]),
+                len(it["source_hands"]), it["total_ev_loss_bb"])
 
 
 # ── DB upserts ───────────────────────────────────────────────────────────────
