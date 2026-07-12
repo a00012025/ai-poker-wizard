@@ -977,6 +977,62 @@ def _whitelist(facts: Facts, board: str) -> set[str]:
     return wl
 
 
+# ── initial-verdict verification (§14.7: every output surface is verified) ──
+
+_RANKS_ASC = "23456789TJQKA"
+
+
+def _expand_range_tokens(text: str) -> set[str]:
+    """Expand compressed range notation into its member class tokens.
+
+    The initial-verdict whitelist is built from the solver TEXT, which uses
+    compressed notation ('Q2s-Q4s', '22+', 'A2s+'). A coach reading such a
+    range may legitimately name an interior member (Q3s) that never appears
+    verbatim — without expansion those become false-positive violations."""
+    out: set[str] = set()
+    for m in re.finditer(
+            r"\b([2-9TJQKA])([2-9TJQKA])(s|o)?\s*-\s*([2-9TJQKA])([2-9TJQKA])(s|o)?\b",
+            text):
+        h1, k1, s1, h2, k2, s2 = m.groups()
+        s1, s2 = s1 or "", s2 or ""
+        if h1 == k1 and h2 == k2 and not s1 and not s2:        # pair run 22-66
+            lo, hi = sorted((_RANKS_ASC.index(h1), _RANKS_ASC.index(h2)))
+            out |= {_RANKS_ASC[i] * 2 for i in range(lo, hi + 1)}
+        elif h1 == h2 and s1 == s2 and s1:                     # kicker run Q2s-Q4s
+            lo, hi = sorted((_RANKS_ASC.index(k1), _RANKS_ASC.index(k2)))
+            out |= {h1 + _RANKS_ASC[i] + s1 for i in range(lo, hi + 1)}
+    for m in re.finditer(r"\b([2-9TJQKA])([2-9TJQKA])(s|o)?\+", text):
+        h, k, s = m.groups()
+        if h == k and not s:                                   # pair plus 22+
+            out |= {_RANKS_ASC[i] * 2
+                    for i in range(_RANKS_ASC.index(h), len(_RANKS_ASC))}
+        elif s and h != k:                                     # kicker plus A2s+
+            hi_i, lo_i = _RANKS_ASC.index(h), _RANKS_ASC.index(k)
+            if lo_i < hi_i:
+                out |= {h + _RANKS_ASC[i] + s for i in range(lo_i, hi_i)}
+    return out
+
+
+def initial_verdict_facts(source_texts: list[str], hand_context: dict) -> Facts:
+    """Whitelist Facts for verifying the INITIAL coaching verdict.
+
+    The first reply's grounding is the already-computed solver text, so the
+    coach may only name hands/combos that this data, the user's own message,
+    or the table itself (hero hand / board — added by _whitelist) mentions.
+    Anything else is an invented range claim — the hallucination class the
+    verifier exists to catch (§14.7)."""
+    allowed: set[str] = set()
+    for t in source_texts:
+        if not t:
+            continue
+        allowed |= extract_combo_tokens(t)
+        allowed |= _expand_range_tokens(t)
+    hero = _hero_hand(hand_context)
+    if hero:
+        allowed |= extract_combo_tokens(hero)
+    return Facts(intent="initial_verdict", title="", allowed_claims=allowed)
+
+
 def verify_claims(prose: str, facts: Facts, board: str,
                   audit_numbers: bool = False) -> Verdict:
     """Flag any poker-combo token in prose not present in the whitelist.
