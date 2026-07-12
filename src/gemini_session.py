@@ -747,71 +747,17 @@ EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
 )
 
 
-# ── Leak Detection Tool Declarations ──
-
-QUERY_MY_LEAKS_DECLARATION = types.FunctionDeclaration(
-    name="query_my_leaks",
-    description=(
-        "查詢用戶的 GTO 偏離數據，找出最大的弱點。"
-        "可以按 spot_category、street、position 過濾。"
-        "回傳按嚴重程度排序的偏離統計（偏離率 × 樣本數）。"
-        "當用戶問「我最大的弱點是什麼」「什麼地方打最差」等問題時使用。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "spot_category": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "過濾特定 spot 類別。可選值："
-                    "open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot, "
-                    "cbet_ip, cbet_oop, facing_cbet_ip, facing_cbet_oop, "
-                    "probe, facing_probe, donk, check_raise"
-                ),
-            ),
-            "street": types.Schema(
-                type=types.Type.STRING,
-                enum=["preflop", "flop", "turn", "river"],
-                description="過濾特定街",
-            ),
-            "position": types.Schema(
-                type=types.Type.STRING,
-                description="過濾特定位置（如 CO, BB）",
-            ),
-            "min_samples": types.Schema(
-                type=types.Type.INTEGER,
-                description="最少樣本數（預設 5）",
-            ),
-        },
-        required=[],
-    ),
-)
-
-QUERY_MY_STATS_DECLARATION = types.FunctionDeclaration(
-    name="query_my_stats",
-    description=(
-        "查詢用戶的整體統計數據：分析手牌數、偏離率、各街表現、最差 spot。"
-        "可以按時間過濾（最近 7 天、30 天等）。"
-        "當用戶問「我的統計」「我打了多少手」等問題時使用。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "days": types.Schema(
-                type=types.Type.INTEGER,
-                description="過去幾天的統計（如 7=一週, 30=一個月）。不指定則全部。",
-            ),
-        },
-        required=[],
-    ),
-)
+# ── Training-loop Tool Declarations (ledger-backed; EV-weighted only) ──
+# The frequency-era deviations tools (query_my_leaks / query_my_stats) were
+# retired per North Star §7.3 — weakness/stats questions route to
+# query_ledger_summary below.
 
 GET_TRAINING_PLAN_DECLARATION = types.FunctionDeclaration(
     name="get_training_plan",
     description=(
-        "根據用戶的最大弱點生成訓練計畫。"
-        "選出 top 3 最嚴重的 leak，為每個提供具體練習建議。"
-        "當用戶問「我該練什麼」「給我訓練計畫」時使用。"
+        "取得本週訓練計畫（週日 21:00 自動生成的記分卡）：焦點 spot（EV loss 排序）"
+        "+ GTOW Trainer drill 連結 + 上週焦點回讀 + 現場手牌練習佇列。"
+        "當用戶問「我該練什麼」「給我訓練計畫」「本週計畫」時使用。"
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -823,23 +769,28 @@ GET_TRAINING_PLAN_DECLARATION = types.FunctionDeclaration(
 GET_PROGRESS_DECLARATION = types.FunctionDeclaration(
     name="get_progress",
     description=(
-        "查詢特定 spot 類別的週進步趨勢。"
-        "顯示每週偏離率變化，觀察是否有改善。"
+        "查詢每週 EV loss 趨勢（bb/100 決策，帶樣本數 n）。可選按 spot 大類"
+        "（RFI/vsOpen/vs3bet/…/flop/turn/river）或精確 spot_leaf 過濾。"
         "當用戶問「我有進步嗎」「XX 有改善嗎」時使用。"
+        "注意：技能趨勢是月尺度，單週波動不是訊號。"
     ),
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
-            "spot_category": types.Schema(
+            "category": types.Schema(
                 type=types.Type.STRING,
-                description="要查詢的 spot 類別",
+                description="spot 大類，如 vs3bet、flop（可選）",
+            ),
+            "spot_leaf": types.Schema(
+                type=types.Type.STRING,
+                description="精確 action-line spot leaf（可選）",
             ),
             "weeks": types.Schema(
                 type=types.Type.INTEGER,
-                description="查詢最近幾週（預設 4）",
+                description="查詢最近幾週（預設 8）",
             ),
         },
-        required=["spot_category"],
+        required=[],
     ),
 )
 
@@ -850,7 +801,8 @@ QUERY_LEDGER_SUMMARY_DECLARATION = types.FunctionDeclaration(
         "EV loss 聚合。可按 spot 大類（RFI/vsOpen/vsRaiseCall/vs3bet/vsCold3bet/"
         "vs4bet/vsSqueeze/flop/turn/river）或 hero 位置類（EP/MP/LP/SB/BB）或天數過濾。"
         "回傳 EV loss/100 決策、總損失、樣本數 n、excluded 數與 top spot。"
-        "使用者問『我哪裡漏 EV / 某類 spot 表現如何 / 我 3bet pot 打得怎樣』時用這個。"
+        "使用者問『我最大的弱點 / 什麼地方打最差 / 我的統計 / 我哪裡漏 EV / "
+        "某類 spot 表現如何 / 我 3bet pot 打得怎樣』時用這個。"
     ),
     parameters=types.Schema(type=types.Type.OBJECT, properties={
         "category": types.Schema(type=types.Type.STRING,
@@ -2749,8 +2701,8 @@ class GeminiSessionManager:
                         )
 
                 # Record the OCR confidence even when Gemini produced the
-                # final hand — the number lets weekly_report track the
-                # classifier's population conf distribution over time.
+                # final hand — the number tracks the classifier's population
+                # conf distribution over time.
                 if ocr_result is not None:
                     hand["__ocr_conf__"] = float(ocr_result.get("confidence", 0.0))
                 return hand
@@ -3184,43 +3136,6 @@ class GeminiSessionManager:
             return retry
         return hand_json
 
-    async def _coach(self, chat_id: int, user_text: str, gto_data: str) -> str:
-        """Generate coaching analysis from GTO solver data."""
-        coaching_prompt = (
-            f"用戶描述：\n{user_text}\n\n"
-            f"GTO Solver 數據：\n{gto_data}"
-        )
-        self._logger.debug(
-            f"[chat={chat_id}] Coach prompt (model={self.model}, "
-            f"{len(coaching_prompt)} chars):\n{coaching_prompt}"
-        )
-
-        history = self.histories.get(chat_id, [])
-        messages = list(history) + [
-            types.Content(role="user", parts=[types.Part(text=coaching_prompt)]),
-        ]
-
-        response = await asyncio.wait_for(
-            self.client.aio.models.generate_content(
-                model=self.model,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    system_instruction=COACH_SYSTEM,
-                ),
-            ),
-            timeout=120,
-        )
-
-        result = _normalize_terms(response.text or "")
-        self._logger.debug(f"[chat={chat_id}] Coach response ({len(result)} chars):\n{result}")
-
-        # Update history (keep user's original text, not the coaching prompt)
-        history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
-        history.append(types.Content(role="model", parts=[types.Part(text=result)]))
-        self.histories[chat_id] = history[-20:]
-
-        return result
-
     async def _chat(self, chat_id: int, user_text: str,
                      on_status: Callable[[str], Any] | None = None,
                      user_id: int | None = None,
@@ -3270,10 +3185,8 @@ class GeminiSessionManager:
         ]
         if self.db:
             declarations.append(LOOKUP_HAND_DECLARATION)
-            # Leak detection tools (require DB)
+            # Training-loop tools (require DB) — all ledger-backed, EV-weighted
             declarations.extend([
-                QUERY_MY_LEAKS_DECLARATION,
-                QUERY_MY_STATS_DECLARATION,
                 GET_TRAINING_PLAN_DECLARATION,
                 GET_PROGRESS_DECLARATION,
                 QUERY_LEDGER_SUMMARY_DECLARATION,
@@ -3408,8 +3321,8 @@ class GeminiSessionManager:
                     # Local deterministic eval — no API call needed
                     await _status("判斷牌型...")
                     tool_result = self._execute_evaluate_hand(chat_id, args)
-                elif fn_name in ("query_my_leaks", "query_my_stats", "get_training_plan", "get_progress"):
-                    await _status("查詢偏離數據...")
+                elif fn_name in ("get_training_plan", "get_progress"):
+                    await _status("查詢訓練數據...")
                     tool_result = await self._execute_leak_tool(chat_id, fn_name, args, user_id)
                 elif fn_name in ("query_ledger_summary", "query_ledger_hands"):
                     await _status("查詢帳本...")
@@ -3646,163 +3559,78 @@ class GeminiSessionManager:
                          f"（{h['correctness']}）· [Analyze]({h['review_url']})")
         return "\n".join(lines)
 
+    @staticmethod
+    def _render_training_plan(week: str, data: dict) -> str:
+        """Pure renderer for the get_training_plan tool (scorecard data_json)."""
+        lines = [f"🎯 本週訓練計畫（{week}）："]
+        if data.get("headline"):
+            lines.append(data["headline"])
+        for i, f in enumerate(data.get("focus", []), 1):
+            lines.append(f"\n重點 {i}: {f['desc']}")
+            lines.append(f"  {f['per100']:.2f} bb/100 · n={f['n']} · `{f['spot_leaf']}`")
+            if f.get("drill_url"):
+                lines.append(f"  → [GTOW Trainer 練這個]({f['drill_url']})")
+        for r in (data.get("readback") or []):
+            if r.get("current_per100") is not None and r.get("prescribed_per100") is not None:
+                lines.append(
+                    f"\n上週焦點 `{r['spot_leaf']}`：{r['prescribed_per100']:.1f} → "
+                    f"{r['current_per100']:.1f} bb/100（n={r['n']}，{r['note']}）")
+        dq = data.get("drill_queue") or []
+        if dq:
+            lines.append("\n📥 現場手牌練習佇列：")
+            for q in dq:
+                lines.append(f"· {q.get('label') or q.get('spot_leaf')}"
+                             f"（{q.get('n_sources', 1)} 手，漏 {(q.get('total_ev_loss_bb') or 0):.1f}bb）")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_progress(scope: str, series: list[dict]) -> str:
+        """Pure renderer for the get_progress tool: weekly EV-loss series with n.
+
+        EV-weighted only (§7.3) and no single-week verdicts — skill trends are
+        month-scale (§14.4), so the note replaces any ✅/⚠️ judgement."""
+        lines = [f"📈 {scope} 每週 EV loss（bb/100 決策）："]
+        for p in series:
+            lines.append(f"  {p['week']}: {p['per100']:.2f} bb/100 (n={p['n']})")
+        lines.append("")
+        lines.append("技能趨勢是月尺度：單週樣本波動大，連續 4 週同向才算訊號；"
+                     "不足 4 週先不下結論。")
+        return "\n".join(lines)
+
     async def _execute_leak_tool(self, chat_id: int, fn_name: str,
                                   args: dict, user_id: int | None) -> str:
-        """Execute leak detection tool calls. Returns formatted data in Chinese."""
+        """Training-loop tools over the ledger (EV-weighted, always with n).
+
+        The frequency-era deviations tools (query_my_leaks / query_my_stats,
+        deviation-rate trends) were retired per North Star §7.3 — weakness &
+        stats questions route to query_ledger_summary instead."""
         if not self.db or not self.db.pool:
             return "暫時無法查詢你的資料，請稍後再試"
 
         try:
-            from leak_service import (
-                query_stats, query_progress,
-                get_top_leaks_ev_ranked,
-                SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH,
-            )
+            if fn_name == "get_training_plan":
+                from ledger_service import fetch_latest_scorecard
+                row = await fetch_latest_scorecard(self.db.pool)
+                if not row:
+                    return ("本週訓練計畫還沒生成（每週日 21:00 自動產生）。"
+                            "可以先用 query_ledger_summary 看目前最漏的 spot。")
+                return self._render_training_plan(row["week"], row["data"])
 
-            target_chat_id = user_id or chat_id
-
-            if fn_name == "query_my_leaks":
-                leaks = await get_top_leaks_ev_ranked(
-                    pool=self.db.pool,
-                    chat_id=target_chat_id,
-                    days=int(args.get("days", 30)),
-                    spot_category=args.get("spot_category"),
-                    street=args.get("street"),
-                    position=args.get("position"),
-                    min_samples=int(args.get("min_samples", 5)),
-                    limit=5,
-                )
-                if not leaks:
-                    return "目前沒有足夠數據來分析你的弱點。需要至少 5 手相同類型的 spot 才能分析。繼續分析手牌，數據會自動累積！"
-
-                lines = ["💸 你的 leaks（按 EV 損失排序）：\n"]
-                for i, leak in enumerate(leaks, 1):
-                    desc = SPOT_DESCRIPTIONS_ZH.get(
-                        leak["spot_category"], leak["spot_category"]
-                    )
-                    direction = AGGRESSION_DIRECTION_ZH.get(
-                        leak["aggression_label"], leak["aggression_label"]
-                    )
-                    ev = leak["total_ev_loss_bb"]
-                    n = leak["sample_count"]
-                    hands = " · ".join(f"H{h}" for h in leak["top_hand_ids"][:3])
-                    block = [f"**{i}. {desc}**（n={n}, -{ev:.2f}bb）"]
-                    block.append(f"   方向：{direction}")
-                    if hands:
-                        block.append(f"   最貴決策：{hands}")
-                    if leak.get("practice_url"):
-                        block.append(f"   → [練習連結]({leak['practice_url']})")
-                    lines.append("\n".join(block))
-                return "\n".join(lines)
-
-            elif fn_name == "query_my_stats":
-                days = int(args["days"]) if args.get("days") else None
-                stats = await query_stats(
-                    pool=self.db.pool,
-                    chat_id=target_chat_id,
-                    days=days,
-                )
-                period_label = f"（最近 {days} 天）" if days else "（全部）"
-                lines = [f"📈 你的統計數據{period_label}：\n"]
-                lines.append(f"分析決策點: {stats['total_decisions']}")
-                lines.append(f"分析手牌數: {stats['total_hands']}")
-                lines.append(f"總偏離次數: {stats['total_deviations']}")
-                lines.append(f"整體偏離率: {stats['deviation_rate']*100:.0f}%\n")
-
-                if stats["by_street"]:
-                    lines.append("各街偏離率:")
-                    for street, data in stats["by_street"].items():
-                        lines.append(
-                            f"  {street}: {data['deviation_rate']*100:.0f}% "
-                            f"(n={data['count']})"
-                        )
-
-                # EV-ranked worst spots (replaces old deviation_rate ranking)
-                worst = await get_top_leaks_ev_ranked(
-                    pool=self.db.pool,
-                    chat_id=target_chat_id,
-                    days=days or 30,
-                    limit=3,
-                )
-                if worst:
-                    lines.append("\n💸 最貴的 leak（按 EV 損失）:")
-                    for ws in worst:
-                        desc = SPOT_DESCRIPTIONS_ZH.get(
-                            ws["spot_category"], ws["spot_category"]
-                        )
-                        lines.append(
-                            f"  {desc}: -{ws['total_ev_loss_bb']:.2f}bb "
-                            f"(n={ws['sample_count']})"
-                        )
-                return "\n".join(lines)
-
-            elif fn_name == "get_training_plan":
-                leaks = await get_top_leaks_ev_ranked(
-                    pool=self.db.pool,
-                    chat_id=target_chat_id,
-                    min_samples=5,
-                    limit=3,
-                )
-                if not leaks:
-                    return "目前數據不足以生成訓練計畫。繼續分析手牌，數據會自動累積！"
-
-                lines = ["🎯 訓練計畫（根據本月最貴的 leak）：\n"]
-                for i, leak in enumerate(leaks, 1):
-                    desc = SPOT_DESCRIPTIONS_ZH.get(
-                        leak["spot_category"], leak["spot_category"]
-                    )
-                    direction = AGGRESSION_DIRECTION_ZH.get(
-                        leak["aggression_label"], leak["aggression_label"]
-                    )
-                    ev = leak["total_ev_loss_bb"]
-                    n = leak["sample_count"]
-                    block = [
-                        f"重點 {i}: {desc}",
-                        f"  累計 EV 損失: -{ev:.2f}bb (n={n})",
-                        f"  方向: {direction}",
-                    ]
-                    if leak.get("practice_url"):
-                        block.append(f"  練習連結: {leak['practice_url']}")
-                    else:
-                        block.append(f"  建議: 在 GTO Wizard 練習 {desc} 場景")
-                    lines.append("\n".join(block))
-                return "\n\n".join(lines)
-
-            elif fn_name == "get_progress":
-                spot = args.get("spot_category", "")
-                weeks = int(args.get("weeks", 4))
-                progress = await query_progress(
-                    pool=self.db.pool,
-                    chat_id=target_chat_id,
-                    spot_category=spot,
-                    weeks=weeks,
-                )
-                if not progress:
-                    return f"'{spot}' 沒有足夠數據來顯示趨勢。"
-
-                lines = [f"📈 {spot} 進步趨勢：\n"]
-                for p in progress:
-                    rate = p["deviation_rate"] * 100
-                    lines.append(
-                        f"  {p['week']}: 偏離率 {rate:.0f}% (n={p['sample_count']})"
-                    )
-
-                if len(progress) >= 2:
-                    first_rate = progress[0]["deviation_rate"]
-                    last_rate = progress[-1]["deviation_rate"]
-                    delta = (last_rate - first_rate) * 100
-                    if delta < -5:
-                        lines.append(f"\n✅ 有進步！偏離率下降了 {abs(delta):.0f}%")
-                    elif delta > 5:
-                        lines.append(f"\n⚠️ 偏離率上升了 {delta:.0f}%，需要更多練習")
-                    else:
-                        lines.append(f"\n偏離率穩定")
-                return "\n".join(lines)
+            if fn_name == "get_progress":
+                from ledger_service import query_progress_series
+                weeks = int(args.get("weeks", 8))
+                series = await query_progress_series(
+                    self.db.pool, category=args.get("category"),
+                    spot_leaf=args.get("spot_leaf"), weeks=weeks)
+                if not series:
+                    return "沒有符合條件的決策資料。"
+                scope = args.get("spot_leaf") or args.get("category") or "整體"
+                return self._render_progress(scope, series)
 
             return "未知的工具名稱"
 
         except Exception as e:
-            self._logger.warning(f"[chat={chat_id}] Leak tool error: {e}")
+            self._logger.warning(f"[chat={chat_id}] Training tool error: {e}")
             return "暫時無法查詢你的資料，請稍後再試"
 
     def _execute_query_gto(self, chat_id: int, args: dict) -> str:

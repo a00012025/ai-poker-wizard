@@ -91,6 +91,49 @@ async def query_ledger_summary(pool, category=None, hero_cat=None, days=None) ->
     }
 
 
+def progress_sql(category: str | None, spot_leaf: str | None):
+    """Weekly EV-loss series builder (bb/100 with n), newest weeks first.
+
+    EV-weighted only — the frequency-era deviation-rate trend is retired
+    (§7.3). Returns (sql, args) with the LIMIT (weeks) as the LAST positional
+    parameter, to be appended by the caller."""
+    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
+             "source='online'"]
+    args: list = []
+    if category:
+        args.append(category); where.append(f"spot_category = ${len(args)}")
+    if spot_leaf:
+        args.append(spot_leaf); where.append(f"spot_leaf = ${len(args)}")
+    sql = (f"SELECT to_char((played_at AT TIME ZONE 'Asia/Taipei'), 'IYYY-\"W\"IW') week, "
+           f"count(*) n, avg(ev_loss_bb)*100 per100 "
+           f"FROM ledger_decisions WHERE {' AND '.join(where)} "
+           f"GROUP BY 1 ORDER BY 1 DESC LIMIT ${len(args) + 1}")
+    return sql, args
+
+
+async def query_progress_series(pool, category=None, spot_leaf=None, weeks=8) -> list[dict]:
+    """Last `weeks` ISO weeks of EV loss/100 (ascending for display)."""
+    sql, args = progress_sql(category, spot_leaf)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args, weeks)
+    return [{"week": r["week"], "n": r["n"], "per100": float(r["per100"] or 0)}
+            for r in reversed(rows)]
+
+
+async def fetch_latest_scorecard(pool) -> dict | None:
+    """Latest weekly scorecard row as {week, data} (data_json normalized)."""
+    import json
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
+    if not row:
+        return None
+    data = row["data_json"]
+    if isinstance(data, str):
+        data = json.loads(data)
+    return {"week": row["week"], "data": data or {}}
+
+
 def _hands_sql(category: str | None, spot: str | None, min_ev_loss: float,
                days: int | None, limit: int):
     """Pure WHERE-builder for the worst-hands listing. source='online' only

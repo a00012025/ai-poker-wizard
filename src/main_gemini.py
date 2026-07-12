@@ -21,21 +21,8 @@ logger = logging.getLogger("poker_bot")
 
 db = Database()
 
-# Weekly report timezone (Taiwan = UTC+8)
+# Scheduled-job timezone (Taiwan = UTC+8)
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
-
-
-async def _weekly_report_job(context):
-    """PTB JobQueue callback: generate and send weekly reports."""
-    try:
-        if not db.pool:
-            logger.warning("Weekly report: DB pool not available, skipping")
-            return
-        from weekly_report import send_weekly_reports
-        sent = await send_weekly_reports(db.pool, context.bot)
-        logger.info(f"Weekly report job completed: {sent} reports sent")
-    except Exception as e:
-        logger.error(f"Weekly report job failed: {e}")
 
 
 async def _run_script(*script_args) -> tuple[int, str]:
@@ -131,17 +118,10 @@ async def post_init(application):
         except Exception as e:
             logger.warning(f"CardClassifier preload failed: {e}")
 
-    # Schedule weekly leak report (Sunday 10:00 AM Taipei time).
     # PTB v20+ uses cron-style day numbering: 0=Sun, 1=Mon, ..., 6=Sat.
+    # The legacy frequency-era weekly leak report is retired — the ledger
+    # scorecard (Sun 21:00) is the single weekly surface (North Star §12).
     if db.pool and application.job_queue:
-        application.job_queue.run_daily(
-            _weekly_report_job,
-            time=dt_time(hour=10, minute=0, tzinfo=TZ_TAIPEI),
-            days=(0,),
-            name="weekly_leak_report",
-        )
-        logger.info("Weekly leak report job scheduled (Sunday 10:00 AM Taipei)")
-
         # Phase 1 ledger loop: daily incremental ingest + Sunday training-plan push.
         application.job_queue.run_daily(
             _daily_ledger_ingest_job,

@@ -9290,548 +9290,6 @@ def run_tests():
     return failed == 0
 
 
-# ── Leak Miner Tests ──
-
-@test
-def test_label_aggression_all_passive():
-    """leak_miner: all passive → too_passive."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(5, 0, 0, 0), "too_passive")
-
-
-@test
-def test_label_aggression_all_aggressive():
-    """leak_miner: all aggressive → too_aggressive."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(0, 5, 0, 0), "too_aggressive")
-
-
-@test
-def test_label_aggression_70pct_passive():
-    """leak_miner: 70% passive exactly → too_passive."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(7, 3, 0, 0), "too_passive")
-
-
-@test
-def test_label_aggression_69pct_passive():
-    """leak_miner: 69% passive → mixed (below threshold)."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(69, 31, 0, 0), "mixed")
-
-
-@test
-def test_label_aggression_50_50():
-    """leak_miner: 50/50 split → mixed."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(5, 5, 0, 0), "mixed")
-
-
-@test
-def test_label_aggression_all_aligned():
-    """leak_miner: all aligned → aligned."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(0, 0, 10, 0), "aligned")
-
-
-@test
-def test_label_aggression_mostly_aligned_one_passive():
-    """leak_miner: mostly aligned with 1 passive → too_passive (non-aligned dominated by passive)."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(1, 0, 9, 0), "too_passive")
-
-
-@test
-def test_label_aggression_empty():
-    """leak_miner: zero everything → mixed (degenerate fallback)."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(0, 0, 0, 0), "mixed")
-
-
-@test
-def test_label_aggression_mixed_with_mixed_bucket():
-    """leak_miner: 3/2/0/5 → mixed (neither side hits threshold)."""
-    from leak_miner import _label_aggression
-    assert_eq(_label_aggression(3, 2, 0, 5), "mixed")
-
-
-@test
-def test_cluster_key_to_dict():
-    """leak_miner: ClusterKey.to_dict preserves all fields incl. Nones."""
-    from leak_miner import ClusterKey
-    k = ClusterKey(
-        pot_type="srp",
-        street="flop",
-        gtow_hero_role=None,
-        villain_pos="BB",
-        hero_pos="BTN",
-        spot_category="cbet_ip",
-        board_texture=None,
-    )
-    d = k.to_dict()
-    assert_eq(d["pot_type"], "srp")
-    assert_eq(d["street"], "flop")
-    assert_eq(d["gtow_hero_role"], None)
-    assert_eq(d["villain_pos"], "BB")
-    assert_eq(d["hero_pos"], "BTN")
-    assert_eq(d["spot_category"], "cbet_ip")
-    assert_eq(d["board_texture"], None)
-    assert_eq(set(d.keys()), {
-        "pot_type", "street", "gtow_hero_role", "villain_pos",
-        "hero_pos", "spot_category", "board_texture",
-    })
-
-
-@test
-def test_cluster_to_dict_rounding():
-    """leak_miner: Cluster.to_dict rounds numeric fields as specified."""
-    from leak_miner import Cluster, ClusterKey
-    k = ClusterKey(
-        pot_type="3bp",
-        street="preflop",
-        gtow_hero_role="IP_3B",
-        villain_pos="CO",
-        hero_pos="BTN",
-        spot_category="facing_3bet",
-        board_texture=None,
-    )
-    c = Cluster(
-        key=k,
-        sample_count=12,
-        total_ev_loss_bb=3.14159,
-        avg_ev_loss_bb=0.26180,
-        aggression_label="too_passive",
-        passive_ratio=0.83333,
-        aggressive_ratio=0.16666,
-        top_hand_ids=[101, 202, 303],
-        top_deviation_ids=[9101, 9202, 9303],
-        effective_bb_median=27.55,
-        gtow_type="ICMGeneral",
-    )
-    d = c.to_dict()
-    assert_eq(d["sample_count"], 12)
-    assert_eq(d["total_ev_loss_bb"], 3.14)
-    assert_eq(d["avg_ev_loss_bb"], 0.262)
-    assert_eq(d["aggression_label"], "too_passive")
-    assert_eq(d["passive_ratio"], 0.83)
-    assert_eq(d["aggressive_ratio"], 0.17)
-    assert_eq(d["top_hand_ids"], [101, 202, 303])
-    assert_eq(d["effective_bb_median"], 27.6)
-    assert_eq(d["gtow_type"], "ICMGeneral")
-    assert_true("key" in d and isinstance(d["key"], dict))
-
-
-# ── Weekly Report v2 Tests (Lane C2) ──
-
-
-def _make_test_cluster(
-    spot_category="cbet_ip",
-    street="flop",
-    pot_type="SRP",
-    hero_pos="BTN",
-    villain_pos="BB",
-    board_texture="dry",
-    sample_count=11,
-    total_ev_loss_bb=4.80,
-    aggression_label="too_aggressive",
-    top_hand_ids=None,
-    top_deviation_ids=None,
-    effective_bb_median=30.0,
-    gtow_type="MTTGeneral",
-):
-    from leak_miner import Cluster, ClusterKey
-    if top_hand_ids is None:
-        top_hand_ids = [2590, 2574, 2601]
-    if top_deviation_ids is None:
-        top_deviation_ids = []
-    return Cluster(
-        key=ClusterKey(
-            pot_type=pot_type,
-            street=street,
-            gtow_hero_role=None,
-            villain_pos=villain_pos,
-            hero_pos=hero_pos,
-            spot_category=spot_category,
-            board_texture=board_texture,
-        ),
-        sample_count=sample_count,
-        total_ev_loss_bb=total_ev_loss_bb,
-        avg_ev_loss_bb=total_ev_loss_bb / max(sample_count, 1),
-        aggression_label=aggression_label,
-        passive_ratio=0.0 if aggression_label == "too_aggressive" else 1.0,
-        aggressive_ratio=1.0 if aggression_label == "too_aggressive" else 0.0,
-        top_hand_ids=top_hand_ids,
-        top_deviation_ids=top_deviation_ids,
-        effective_bb_median=effective_bb_median,
-        gtow_type=gtow_type,
-    )
-
-
-@test
-def test_validate_hand_ids_clean():
-    """weekly_report: narrative referencing only allowed H IDs validates."""
-    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="cbet 過頻",
-        explanation="H2590 和 H2574 都打了過頻，特別是 H2601。",
-        practice_hint="練 SRP 乾板",
-    )
-    assert_true(_validate_narrative_hand_ids(nar, {2590, 2574, 2601}))
-
-
-@test
-def test_validate_hand_ids_extra_id_rejected():
-    """weekly_report: narrative referencing un-allowed H ID rejected."""
-    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="cbet 過頻",
-        explanation="H2590 和 H9999 都打了過頻。",  # 9999 not allowed
-        practice_hint="hint",
-    )
-    assert_true(not _validate_narrative_hand_ids(nar, {2590, 2574, 2601}))
-
-
-@test
-def test_validate_hand_ids_no_mentions():
-    """weekly_report: narrative with zero hand IDs is vacuously valid."""
-    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="cbet 過頻",
-        explanation="這個 spot 你打太多。",
-        practice_hint="hint",
-    )
-    assert_true(_validate_narrative_hand_ids(nar, {2590}))
-
-
-@test
-def test_validate_hand_ids_strict_h_prefix():
-    """weekly_report: bare numbers (e.g. dates, percentages) are NOT matched."""
-    from weekly_report import _validate_narrative_hand_ids, ClusterNarrative
-    # 2026 (year) and 50 (a percent) should NOT be parsed as hand IDs.
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="2026 年表現",
-        explanation="這個 spot 偏離 50% 以上，看 H2590。",
-        practice_hint="hint",
-    )
-    assert_true(_validate_narrative_hand_ids(nar, {2590}))
-
-
-@test
-def test_templated_narrative_basic():
-    """weekly_report: templated fallback fills required fields + flags is_fallback."""
-    from weekly_report import _templated_narrative
-    cluster = _make_test_cluster()
-    nar = _templated_narrative(cluster, "0")
-    assert_true(nar.is_fallback)
-    assert_eq(nar.cluster_id, "0")
-    assert_true(len(nar.headline) > 0)
-    assert_true(len(nar.explanation) > 0)
-    assert_true(len(nar.practice_hint) > 0)
-    # Templated narrative should not invent hand IDs.
-    from weekly_report import _validate_narrative_hand_ids
-    assert_true(_validate_narrative_hand_ids(nar, set(cluster.top_hand_ids)))
-
-
-@test
-def test_render_cluster_line_postflop_dry():
-    """weekly_report: postflop SRP dry cluster line contains key substrings."""
-    from weekly_report import _render_cluster_line, ClusterNarrative
-    cluster = _make_test_cluster()
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="LJ 開 + HJ flat 之後乾板過度 cbet",
-        explanation="H2590 和 H2574 都太頻繁。",
-        practice_hint="練 1/3 pot 頻率",
-    )
-    line = _render_cluster_line(
-        cluster, nar, "https://example.com/url", rank=1,
-    )
-    assert_in("**1.", line)
-    assert_in("LJ 開", line)
-    assert_in("乾燥面", line)
-    assert_in("SRP", line)
-    assert_in("n=11", line)
-    assert_in("-4.80bb", line)
-    assert_in("太 aggressive", line)
-    assert_in("H2590", line)
-    assert_in("https://example.com/url", line)
-
-
-@test
-def test_render_cluster_line_preflop_pot_type():
-    """weekly_report: preflop cluster descriptor uses pot_type + position."""
-    from weekly_report import _render_cluster_line, ClusterNarrative
-    cluster = _make_test_cluster(
-        spot_category="facing_3bet",
-        street="preflop",
-        pot_type="3bet",
-        hero_pos="SB",
-        villain_pos="BTN",
-        board_texture=None,
-        aggression_label="too_passive",
-    )
-    nar = ClusterNarrative(
-        cluster_id="0",
-        headline="SB 面對 3bet 太緊",
-        explanation="",
-        practice_hint="",
-    )
-    line = _render_cluster_line(cluster, nar, None, rank=2)
-    assert_in("3bet pot", line)
-    assert_in("SB", line)
-    assert_in("太 passive", line)
-
-
-@test
-def test_render_cluster_line_direction_aligned():
-    """weekly_report: 'aligned' direction renders with proper Chinese label."""
-    from weekly_report import _render_cluster_line, ClusterNarrative
-    cluster = _make_test_cluster(aggression_label="aligned")
-    nar = ClusterNarrative("0", "headline", "exp", "hint")
-    line = _render_cluster_line(cluster, nar, None, rank=1)
-    assert_in("頻率大致正確", line)
-
-
-@test
-def test_render_cluster_line_ev_format():
-    """weekly_report: EV loss formatted with 2 decimals + minus sign."""
-    from weekly_report import _render_cluster_line, ClusterNarrative
-    cluster = _make_test_cluster(total_ev_loss_bb=2.5)
-    nar = ClusterNarrative("0", "h", "e", "p")
-    line = _render_cluster_line(cluster, nar, None, rank=1)
-    assert_in("-2.50bb", line)
-
-
-class _MockGenAIClient:
-    """Mock google-genai client matching client.aio.models.generate_content."""
-    def __init__(self, responses):
-        # responses: list[str] returned in order on successive calls
-        self._responses = list(responses)
-        self.calls = 0
-
-        class _Models:
-            def __init__(inner, parent):
-                inner._parent = parent
-
-            async def generate_content(inner, model, contents, config=None):
-                idx = inner._parent.calls
-                inner._parent.calls += 1
-                if idx >= len(inner._parent._responses):
-                    text = inner._parent._responses[-1]
-                else:
-                    text = inner._parent._responses[idx]
-
-                class _Resp:
-                    pass
-                r = _Resp()
-                r.text = text
-                return r
-
-        class _Aio:
-            def __init__(inner, parent):
-                inner.models = _Models(parent)
-
-        self.aio = _Aio(self)
-
-
-@test
-def test_generate_cluster_narratives_happy_path():
-    """weekly_report: LLM returns valid array → narratives passed through."""
-    import asyncio as _asyncio
-    from weekly_report import generate_cluster_narratives
-    cluster = _make_test_cluster()
-    raw = json.dumps([{
-        "cluster_id":   "0",
-        "headline":     "cbet 過頻",
-        "explanation":  "H2590 是最貴的決策。",
-        "practice_hint": "練 1/3 pot 頻率",
-    }])
-    mock = _MockGenAIClient([raw])
-    out = _asyncio.run(
-        generate_cluster_narratives([cluster], model_client=mock)
-    )
-    assert_eq(len(out), 1)
-    assert_true(not out[0].is_fallback)
-    assert_eq(out[0].headline, "cbet 過頻")
-    assert_eq(mock.calls, 1)
-
-
-@test
-def test_generate_cluster_narratives_retry_then_succeed():
-    """weekly_report: hallucinated ID → retry once → second attempt valid."""
-    import asyncio as _asyncio
-    from weekly_report import generate_cluster_narratives
-    cluster = _make_test_cluster()
-    bad = json.dumps([{
-        "cluster_id":    "0",
-        "headline":      "headline",
-        "explanation":   "H9999 是最貴的決策。",  # hallucinated
-        "practice_hint": "hint",
-    }])
-    good = json.dumps([{
-        "cluster_id":    "0",
-        "headline":      "cbet 過頻",
-        "explanation":   "H2590 是最貴的決策。",
-        "practice_hint": "練習",
-    }])
-    mock = _MockGenAIClient([bad, good])
-    out = _asyncio.run(
-        generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
-    )
-    assert_eq(len(out), 1)
-    assert_true(not out[0].is_fallback)
-    assert_eq(out[0].headline, "cbet 過頻")
-    assert_eq(mock.calls, 2)
-
-
-@test
-def test_generate_cluster_narratives_two_fails_falls_back():
-    """weekly_report: two validation failures in a row → templated fallback."""
-    import asyncio as _asyncio
-    from weekly_report import generate_cluster_narratives
-    cluster = _make_test_cluster()
-    bad = json.dumps([{
-        "cluster_id":    "0",
-        "headline":      "headline",
-        "explanation":   "H9999 hallucinated.",
-        "practice_hint": "hint",
-    }])
-    mock = _MockGenAIClient([bad, bad])
-    out = _asyncio.run(
-        generate_cluster_narratives([cluster], model_client=mock, max_retries=1)
-    )
-    assert_eq(len(out), 1)
-    assert_true(out[0].is_fallback)
-    assert_eq(mock.calls, 2)
-
-
-@test
-def test_generate_cluster_narratives_no_client():
-    """weekly_report: model_client=None → all clusters templated."""
-    import asyncio as _asyncio
-    from weekly_report import generate_cluster_narratives
-    clusters = [_make_test_cluster(), _make_test_cluster(spot_category="cbet_oop")]
-    out = _asyncio.run(
-        generate_cluster_narratives(clusters, model_client=None)
-    )
-    assert_eq(len(out), 2)
-    assert_true(all(n.is_fallback for n in out))
-
-
-@test
-def test_empty_state_message():
-    """weekly_report: empty state helper returns a non-empty zh-TW string."""
-    from weekly_report import _empty_state_message
-    msg = _empty_state_message()
-    assert_true(len(msg) > 0)
-    assert_in("本週", msg)
-
-
-@test
-def test_render_report_full():
-    """weekly_report: end-to-end render assembles header + clusters + total."""
-    from weekly_report import _render_report, _templated_narrative
-    from datetime import datetime as _dt
-    clusters = [
-        _make_test_cluster(total_ev_loss_bb=4.80),
-        _make_test_cluster(spot_category="cbet_oop", total_ev_loss_bb=2.30),
-    ]
-    narratives = [_templated_narrative(c, str(i)) for i, c in enumerate(clusters)]
-    out = _render_report(
-        clusters=clusters,
-        narratives=narratives,
-        urls=[None, None],
-        period_start=_dt(2026, 4, 4),
-        period_end=_dt(2026, 4, 11),
-        total_hands=50,
-        total_decisions=159,
-    )
-    assert_in("📊 週報", out)
-    assert_in("04/04", out)
-    assert_in("04/11", out)
-    assert_in("50 手", out)
-    assert_in("159 決策", out)
-    assert_in("**1.", out)
-    assert_in("**2.", out)
-    assert_in("-7.10bb", out)  # cumulative
-
-
-# ── Backfill script pure helpers ──
-
-@test
-def test_backfill_walk_preflop_first():
-    """backfill: _walk_to_decision finds preflop snapshot at action_index=0."""
-    from backfill_ev_loss import _walk_to_decision
-    analysis = {
-        "hero_spots": [
-            {"street": "preflop"},
-            {"street": "flop"},
-        ],
-        "solutions": [
-            {"action_solutions": [{"action": {"code": "R2"}}]},
-            {"action_solutions": [{"action": {"code": "X"}}]},
-        ],
-    }
-    snap = _walk_to_decision(analysis, "preflop", 0)
-    assert_true(snap is not None, "expected non-None snapshot")
-    assert_eq(snap["action_solutions"][0]["action"]["code"], "R2")
-
-
-@test
-def test_backfill_walk_missing_street():
-    """backfill: _walk_to_decision returns None for mismatched street."""
-    from backfill_ev_loss import _walk_to_decision
-    analysis = {
-        "hero_spots": [{"street": "preflop"}],
-        "solutions": [{"action_solutions": [{"action": {"code": "R2"}}]}],
-    }
-    assert_true(_walk_to_decision(analysis, "river", 0) is None)
-    assert_true(_walk_to_decision({}, "preflop", 0) is None)
-    assert_true(_walk_to_decision(analysis, "preflop", 5) is None)
-
-
-@test
-def test_backfill_walk_postflop_second():
-    """backfill: _walk_to_decision indexes per-street for postflop."""
-    from backfill_ev_loss import _walk_to_decision
-    analysis = {
-        "hero_spots": [
-            {"street": "preflop"},
-            {"street": "flop"},
-            {"street": "flop"},
-            {"street": "turn"},
-        ],
-        "solutions": [
-            {"action_solutions": [{"tag": "pf"}]},
-            {"action_solutions": [{"tag": "flop_a"}]},
-            {"action_solutions": [{"tag": "flop_b"}]},
-            {"action_solutions": [{"tag": "turn"}]},
-        ],
-    }
-    snap = _walk_to_decision(analysis, "flop", 1)
-    assert_true(snap is not None)
-    assert_eq(snap["action_solutions"][0]["tag"], "flop_b")
-
-
-@test
-def test_backfill_parse_args():
-    """backfill: parse_args defaults to dry-run, --execute flips it."""
-    from backfill_ev_loss import parse_args
-    ns = parse_args([])
-    assert_true(ns.dry_run is True, "default must be dry-run")
-    assert_true(ns.execute is False, "execute must default False")
-    ns = parse_args(["--execute"])
-    assert_true(ns.dry_run is False)
-    assert_true(ns.execute is True)
-    ns = parse_args(["--execute", "--limit", "42", "--chat-id", "7"])
-    assert_eq(ns.limit, 42)
-    assert_eq(ns.chat_id, 7)
-
-
 # ── Unified leak tools (EV-ranked) Tests ──
 
 
@@ -9850,216 +9308,6 @@ def test_aggression_direction_zh_complete():
     from leak_service import AGGRESSION_DIRECTION_ZH
     for k in ("too_passive", "too_aggressive", "mixed", "aligned"):
         assert_true(k in AGGRESSION_DIRECTION_ZH, f"missing {k}")
-
-
-@test
-def test_get_top_leaks_ev_ranked_shape():
-    """leak_service: EV-ranked leak rows carry cluster fields + practice_url."""
-    import asyncio
-    from leak_service import get_top_leaks_ev_ranked
-
-    c1 = _make_test_cluster(
-        spot_category="cbet_ip", street="flop", pot_type="SRP",
-        hero_pos="BTN", sample_count=11, total_ev_loss_bb=4.80,
-    )
-    c2 = _make_test_cluster(
-        spot_category="facing_3bet", street="preflop", pot_type="3bet",
-        hero_pos="CO", villain_pos="BB", board_texture=None,
-        sample_count=8, total_ev_loss_bb=3.20,
-        aggression_label="too_passive",
-    )
-    c3 = _make_test_cluster(
-        spot_category="open_raise", street="preflop", pot_type=None,
-        hero_pos="LJ", villain_pos=None, board_texture=None,
-        sample_count=6, total_ev_loss_bb=1.50,
-        aggression_label="too_aggressive",
-    )
-
-    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
-        return [c1, c2, c3]
-
-    rows = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=42, days=30, limit=5,
-        mine_clusters_fn=fake_mine,
-    ))
-    assert_eq(len(rows), 3)
-    # Order preserved (EV ranking done inside mine_clusters)
-    assert_eq(rows[0]["spot_category"], "cbet_ip")
-    assert_eq(rows[1]["spot_category"], "facing_3bet")
-    assert_eq(rows[2]["spot_category"], "open_raise")
-    # Shape: required keys
-    for key in ("spot_category", "street", "pot_type", "hero_pos",
-                "sample_count", "total_ev_loss_bb", "avg_ev_loss_bb",
-                "aggression_label", "top_hand_ids", "effective_bb_median",
-                "practice_url"):
-        assert_true(key in rows[0], f"missing {key}")
-    assert_eq(rows[0]["sample_count"], 11)
-    assert_eq(rows[0]["total_ev_loss_bb"], 4.80)
-    # Practice URL should be built for known preflop/postflop mappings
-    assert_true(rows[0]["practice_url"] is not None, "cbet_ip should have URL")
-    assert_true("gtowizard.com" in rows[0]["practice_url"])
-    assert_true(rows[1]["practice_url"] is not None, "facing_3bet should have URL")
-
-
-@test
-def test_get_top_leaks_ev_ranked_post_filter():
-    """leak_service: post-filter by spot_category narrows the result set."""
-    import asyncio
-    from leak_service import get_top_leaks_ev_ranked
-
-    clusters = [
-        _make_test_cluster(spot_category="cbet_ip", sample_count=10, total_ev_loss_bb=5.0),
-        _make_test_cluster(
-            spot_category="facing_3bet", street="preflop", pot_type="3bet",
-            board_texture=None, sample_count=9, total_ev_loss_bb=4.0,
-        ),
-        _make_test_cluster(spot_category="cbet_ip", sample_count=8, total_ev_loss_bb=3.0,
-                           hero_pos="CO"),
-        _make_test_cluster(spot_category="open_raise", street="preflop",
-                           pot_type=None, board_texture=None,
-                           sample_count=7, total_ev_loss_bb=2.0, hero_pos="LJ"),
-        _make_test_cluster(spot_category="cbet_oop", sample_count=6, total_ev_loss_bb=1.0,
-                           hero_pos="BB"),
-    ]
-
-    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
-        return clusters
-
-    # Filter by spot_category
-    rows = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=5, spot_category="cbet_ip",
-        mine_clusters_fn=fake_mine,
-    ))
-    assert_eq(len(rows), 2)
-    assert_true(all(r["spot_category"] == "cbet_ip" for r in rows))
-
-    # Filter by street
-    rows = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=5, street="preflop",
-        mine_clusters_fn=fake_mine,
-    ))
-    assert_eq(len(rows), 2)
-    assert_true(all(r["street"] == "preflop" for r in rows))
-
-    # Filter by position
-    rows = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=5, position="CO",
-        mine_clusters_fn=fake_mine,
-    ))
-    assert_eq(len(rows), 1)
-    assert_eq(rows[0]["hero_pos"], "CO")
-
-
-@test
-def test_get_top_leaks_ev_ranked_empty():
-    """leak_service: empty cluster list → empty result."""
-    import asyncio
-    from leak_service import get_top_leaks_ev_ranked
-
-    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
-        return []
-
-    rows = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=5, mine_clusters_fn=fake_mine,
-    ))
-    assert_eq(rows, [])
-
-
-@test
-def test_query_my_leaks_rendering():
-    """gemini_session: query_my_leaks branch renders EV-ranked zh-TW output."""
-    import asyncio
-    from leak_service import (
-        SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH, get_top_leaks_ev_ranked,
-    )
-
-    c1 = _make_test_cluster(
-        spot_category="cbet_ip", sample_count=11, total_ev_loss_bb=4.80,
-        top_hand_ids=[2590, 2574, 2601],
-    )
-    c2 = _make_test_cluster(
-        spot_category="facing_3bet", street="preflop", pot_type="3bet",
-        board_texture=None, sample_count=8, total_ev_loss_bb=3.20,
-        aggression_label="too_passive", top_hand_ids=[100, 200, 300],
-    )
-
-    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
-        return [c1, c2]
-
-    leaks = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=5, mine_clusters_fn=fake_mine,
-    ))
-
-    # Replicate the gemini_session rendering loop
-    lines = ["💸 你的 leaks（按 EV 損失排序）：\n"]
-    for i, leak in enumerate(leaks, 1):
-        desc = SPOT_DESCRIPTIONS_ZH.get(leak["spot_category"], leak["spot_category"])
-        direction = AGGRESSION_DIRECTION_ZH.get(
-            leak["aggression_label"], leak["aggression_label"])
-        ev = leak["total_ev_loss_bb"]
-        n = leak["sample_count"]
-        hands = " · ".join(f"H{h}" for h in leak["top_hand_ids"][:3])
-        block = [f"**{i}. {desc}**（n={n}, -{ev:.2f}bb）"]
-        block.append(f"   方向：{direction}")
-        if hands:
-            block.append(f"   最貴決策：{hands}")
-        if leak.get("practice_url"):
-            block.append(f"   → [練習連結]({leak['practice_url']})")
-        lines.append("\n".join(block))
-    rendered = "\n".join(lines)
-
-    assert_in("位置內 C-bet", rendered)
-    assert_in("-4.80bb", rendered)
-    assert_in("n=11", rendered)
-    assert_in("H2590", rendered)
-    assert_in("面對 3-bet 的防禦", rendered)
-    assert_in("太 passive", rendered)
-    assert_in("練習連結", rendered)
-
-
-@test
-def test_get_training_plan_rendering():
-    """gemini_session: training plan renders EV loss + direction + practice URL."""
-    import asyncio
-    from leak_service import (
-        SPOT_DESCRIPTIONS_ZH, AGGRESSION_DIRECTION_ZH, get_top_leaks_ev_ranked,
-    )
-
-    c1 = _make_test_cluster(
-        spot_category="cbet_ip", sample_count=11, total_ev_loss_bb=4.80,
-    )
-
-    async def fake_mine(pool, chat_id, start, end, min_sample=5, top_k=5):
-        return [c1]
-
-    leaks = asyncio.run(get_top_leaks_ev_ranked(
-        pool=None, chat_id=1, limit=3, mine_clusters_fn=fake_mine,
-    ))
-
-    lines = ["🎯 訓練計畫（根據本月最貴的 leak）：\n"]
-    for i, leak in enumerate(leaks, 1):
-        desc = SPOT_DESCRIPTIONS_ZH.get(leak["spot_category"], leak["spot_category"])
-        direction = AGGRESSION_DIRECTION_ZH.get(
-            leak["aggression_label"], leak["aggression_label"])
-        ev = leak["total_ev_loss_bb"]
-        n = leak["sample_count"]
-        block = [
-            f"重點 {i}: {desc}",
-            f"  累計 EV 損失: -{ev:.2f}bb (n={n})",
-            f"  方向: {direction}",
-        ]
-        if leak.get("practice_url"):
-            block.append(f"  練習連結: {leak['practice_url']}")
-        else:
-            block.append(f"  建議: 在 GTO Wizard 練習 {desc} 場景")
-        lines.append("\n".join(block))
-    rendered = "\n\n".join(lines)
-
-    assert_in("重點 1", rendered)
-    assert_in("位置內 C-bet", rendered)
-    assert_in("-4.80bb", rendered)
-    assert_in("練習連結", rendered)
-    assert_in("gtowizard.com", rendered)
 
 
 @test
@@ -10559,25 +9807,6 @@ def test_identify_villain_with_unplayed_river_street():
         preflop_codes="F-F-F-F-R2.1-F-F-C", street="turn",
     )
     assert_eq(result, "BB")
-
-
-@test
-def test_build_url_for_cluster_falls_back_on_build_error():
-    """weekly_report: if custom builder fails (no deviation_ids), returns bucket URL."""
-    import asyncio
-    from weekly_report import _build_url_for_cluster
-
-    cluster = _make_test_cluster(
-        spot_category="cbet_ip", street="turn", pot_type="SRP",
-        hero_pos="BTN", villain_pos="BB", board_texture="paired",
-        effective_bb_median=30.0, top_deviation_ids=[],
-    )
-
-    url = asyncio.run(_build_url_for_cluster(cluster, pool=None))
-    assert_true(url is not None, "fallback should return bucket URL")
-    # Bucket URL markers for postflop street "turn" with pot_type "SRP":
-    assert_in("fh_start_spot=turn", url)
-    assert_in("fh_actions=SRP", url)
 
 
 @test
@@ -11873,51 +11102,59 @@ def test_analyze_hand_attaches_street_actions_before_hero():
 
 
 @test
-def test_weekly_report_schedule_fires_on_sunday():
+def test_scheduled_jobs_days_and_times():
     """Bug regression: PTB v20+ remapped run_daily day_of_week to cron-style
-    (0=Sun … 6=Sat). The old value `days=(6,)` was Saturday, not Sunday, so
-    the weekly leak report never fired on the intended day. This test parses
-    the actual scheduling call in src/main_gemini.py and asserts the next
-    fire lands on a Sunday at 10:00 Taipei.
+    (0=Sun … 6=Sat) — a wrong `days` tuple silently fires on the wrong day.
+    Parses ALL run_daily calls in src/main_gemini.py and asserts the surviving
+    jobs after legacy-weekly-report retirement: daily ingest 05:00 (all days)
+    + weekly scorecard Sunday 21:00. Also asserts the legacy weekly leak
+    report job is GONE (§12: 週報由記分卡取代).
     """
     import ast
     from datetime import datetime
     from pathlib import Path
     from zoneinfo import ZoneInfo
 
-    src = Path(__file__).resolve().parent.parent / "src" / "main_gemini.py"
-    tree = ast.parse(src.read_text())
+    src_path = Path(__file__).resolve().parent.parent / "src" / "main_gemini.py"
+    src_text = src_path.read_text()
+    assert_true("weekly_report" not in src_text,
+                "legacy weekly_report must not be scheduled/imported in main_gemini.py")
+    tree = ast.parse(src_text)
 
-    days_tuple = None
-    hour = minute = None
+    jobs = []  # (callback_name, days_tuple, hour, minute)
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "run_daily"):
+            cb = node.args[0].id if node.args and isinstance(node.args[0], ast.Name) else None
+            days_tuple = hour = minute = None
             for kw in node.keywords:
-                if kw.arg == "days" and isinstance(kw.value, ast.Tuple):
-                    days_tuple = tuple(
-                        e.value for e in kw.value.elts
-                        if isinstance(e, ast.Constant)
-                    )
+                if kw.arg == "days":
+                    if isinstance(kw.value, ast.Tuple):
+                        days_tuple = tuple(e.value for e in kw.value.elts
+                                           if isinstance(e, ast.Constant))
+                    else:  # days=tuple(range(7)) → daily
+                        days_tuple = tuple(range(7))
                 if kw.arg == "time" and isinstance(kw.value, ast.Call):
                     for tkw in kw.value.keywords:
                         if tkw.arg == "hour" and isinstance(tkw.value, ast.Constant):
                             hour = tkw.value.value
                         if tkw.arg == "minute" and isinstance(tkw.value, ast.Constant):
                             minute = tkw.value.value
-            break
+            jobs.append((cb, days_tuple, hour, minute))
 
-    assert_true(days_tuple is not None, "could not locate run_daily(days=...) in main_gemini.py")
-    assert_eq(hour, 10, "weekly job hour must be 10")
-    assert_eq(minute, 0, "weekly job minute must be 0")
+    by_cb = {j[0]: j for j in jobs}
+    assert_eq(sorted(by_cb), ["_daily_ledger_ingest_job", "_weekly_scorecard_job"])
+    assert_eq(by_cb["_daily_ledger_ingest_job"][1:], (tuple(range(7)), 5, 0))
+    _, days_tuple, hour, minute = by_cb["_weekly_scorecard_job"]
+    assert_eq((hour, minute), (21, 0), "scorecard job must be 21:00")
 
     from apscheduler.triggers.cron import CronTrigger
     import telegram.ext._jobqueue as jq
 
     cron_days = ",".join([jq.JobQueue._CRON_MAPPING[d] for d in days_tuple])
     assert_eq(cron_days, "sun",
-              f"weekly job must fire on Sunday (cron 'sun'); got {cron_days!r} "
+              f"scorecard job must fire on Sunday (cron 'sun'); got {cron_days!r} "
               f"from days={days_tuple!r}. Note: in PTB v20+, 0=Sun, 6=Sat.")
 
     tz = ZoneInfo("Asia/Taipei")
@@ -14589,14 +13826,74 @@ def test_leaderboard_sql_time_window():
 
 @test
 def test_ledger_tool_declarations_wired():
-    """The two ledger tools are declared and dispatched in gemini_session."""
+    """All four training-loop tools are ledger-backed; the frequency-era
+    deviations tools (query_my_leaks/query_my_stats) are GONE (§7.3/§12)."""
     import inspect
     import gemini_session as gs
     assert_eq(gs.QUERY_LEDGER_SUMMARY_DECLARATION.name, "query_ledger_summary")
     assert_eq(gs.QUERY_LEDGER_HANDS_DECLARATION.name, "query_ledger_hands")
+    assert_eq(gs.GET_TRAINING_PLAN_DECLARATION.name, "get_training_plan")
+    assert_eq(gs.GET_PROGRESS_DECLARATION.name, "get_progress")
+    assert_true(not hasattr(gs, "QUERY_MY_LEAKS_DECLARATION"))
+    assert_true(not hasattr(gs, "QUERY_MY_STATS_DECLARATION"))
     src = inspect.getsource(gs.GeminiSessionManager)
     assert_in("query_ledger_summary", src)
     assert_in("_execute_ledger_tool", src)
+    for legacy in ("query_stats", "query_progress,", "get_top_leaks_ev_ranked",
+                   "deviation_rate"):
+        assert_true(legacy not in src,
+                    f"legacy frequency-era reference {legacy!r} still in GeminiSessionManager")
+
+
+@test
+def test_progress_sql_ev_weighted():
+    """get_progress backend: weekly EV-loss series builder — EV numbers only,
+    source-isolated, weeks as the trailing LIMIT parameter (§7.3)."""
+    from ledger_service import progress_sql
+    sql, args = progress_sql(None, None)
+    assert_in("avg(ev_loss_bb)*100", sql)
+    assert_in("source='online'", sql)
+    assert_in("LIMIT $1", sql)
+    assert_eq(args, [])
+    sql, args = progress_sql("vs3bet", None)
+    assert_in("spot_category = $1", sql); assert_in("LIMIT $2", sql)
+    assert_eq(args, ["vs3bet"])
+    sql, args = progress_sql(None, "MP_vs3bet_IP")
+    assert_in("spot_leaf = $1", sql)
+    assert_true("deviation" not in sql)
+
+
+@test
+def test_training_tool_renderers():
+    """Renderers for the ledger-backed coach tools: plan shows focus + drill
+    link + queue; progress shows per-week EV with n and the month-scale note,
+    with NO single-week verdict language (§14.4) and NO frequency metrics."""
+    from gemini_session import GeminiSessionManager as GSM
+    plan = GSM._render_training_plan("2026-W28", {
+        "headline": "本週 EV loss 2.10 bb/100 決策，較上週改善 0.30",
+        "focus": [{"desc": "MP 被 3bet（對手 SB，你 IP）", "per100": 13.5,
+                   "n": 67, "spot_leaf": "MP_vs3bet_IP",
+                   "drill_url": "https://app.gtowizard.com/practice/trainer?x=1"}],
+        "readback": [{"spot_leaf": "BTN_vsOpen_EP", "prescribed_per100": 20.0,
+                      "current_per100": 15.0, "n": 12,
+                      "note": "處方後實戰窗口讀數，連續 4 週才算數"}],
+        "drill_queue": [{"label": "河牌 3bet pot OOP 面對下注", "spot_leaf": "x",
+                         "n_sources": 2, "total_ev_loss_bb": 2.4}],
+    })
+    assert_in("2026-W28", plan)
+    assert_in("MP 被 3bet", plan)
+    assert_in("n=67", plan)
+    assert_in("gtowizard.com", plan)
+    assert_in("20.0 → 15.0", plan)
+    assert_in("練習佇列", plan)
+    prog = GSM._render_progress("vs3bet", [
+        {"week": "2026-W27", "n": 210, "per100": 2.5},
+        {"week": "2026-W28", "n": 190, "per100": 2.1},
+    ])
+    assert_in("2026-W28: 2.10 bb/100 (n=190)", prog)
+    assert_in("月尺度", prog)
+    for banned in ("偏離率", "✅", "⚠️ 偏離率"):
+        assert_true(banned not in prog, f"{banned!r} must not appear in progress output")
 
 
 @test
