@@ -94,6 +94,33 @@ def _is_header(line: str) -> bool:
             or bool(re.match(r"\d+(?:\.\d+)?bb$", tok)))
 
 
+def _is_bare_stack_header(line: str) -> bool:
+    """True for an incomplete stack-only header like ``Eff 21bb``.
+
+    Live notes sometimes put the effective stack on its own line, then start
+    the actual preflop action on the next line (often with a seat token such
+    as ``UTG``).  Such a seat-led line is a continuation of the same hand, not
+    a new hand.
+    """
+    toks = [t for t in re.split(r"\s+", line.strip()) if t]
+    if not toks:
+        return False
+    first = _clean_word(toks[0])
+    if re.match(r"^(eff|有效)\d+(?:\.\d+)?bb$", first):
+        return len(toks) == 1
+    if first in {"eff", "eff.", "effective", "有效"}:
+        return len(toks) == 2 and _bb_number_with_unit(toks[1]) is not None
+    return False
+
+
+def _starts_stack_header(line: str) -> bool:
+    tok = _first_token(line)
+    return (tok in {"eff", "eff.", "effective", "有效", "icm"}
+            or bool(re.match(r"eff\d", tok))
+            or tok.startswith("有效")
+            or bool(re.match(r"\d+(?:\.\d+)?bb$", tok)))
+
+
 def split_batch(text: str) -> list[str]:
     """Split a pasted batch into hand blocks.
 
@@ -107,6 +134,13 @@ def split_batch(text: str) -> list[str]:
     for line in text.splitlines():
         if _is_noise(line):
             continue
+        if blocks and _is_bare_stack_header(blocks[-1][0]) and len(blocks[-1]) == 1:
+            # ``Eff 21bb`` followed by ``UTG call ...`` is one hand; starting a
+            # new block would leave a parse-failed stack-only phantom hand.
+            if (_is_header(line) and not _is_bare_stack_header(line)
+                    and not _starts_stack_header(line)):
+                blocks[-1].append(line.rstrip())
+                continue
         if _is_header(line) or not blocks:
             blocks.append([line.rstrip()])
         else:
@@ -446,6 +480,25 @@ def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None
     return repaired, notes
 
 
+def _allin_size_from_tokens(toks: list[str], start: int,
+                            default_stack: str | None = None) -> str | None:
+    """Find an explicit all-in size near ``start`` without confusing hands for chips.
+
+    Live shorthand commonly writes ``all in 55`` to mean "jam pocket fives",
+    not "all-in for 55bb".  Treat bare hand literals as cards; only bb-suffixed
+    numbers are explicit sizes, otherwise fall back to the effective stack.
+    """
+    for k in range(start, min(len(toks), start + 5)):
+        if _clean_word(toks[k]) == "hero" or _norm_pos(toks[k]):
+            break
+        if _canon_hand_token(toks[k]):
+            continue
+        size = _bb_number_with_unit(toks[k])
+        if size is not None:
+            return size
+    return default_stack
+
+
 def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
     for k in range(start, min(len(toks), start + 8)):
         t = _clean_word(toks[k])
@@ -456,15 +509,15 @@ def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | N
         if t in {"x", "check"}:
             return "X"
         if t in {"all", "ai", "jam", "shove"}:
-            size = default_stack
-            if t == "all" and k + 1 < len(toks) and _clean_word(toks[k + 1]) == "in":
-                size = _bb_number(toks[k + 2]) if k + 2 < len(toks) else size
-            else:
-                size = _bb_number(toks[k + 1]) if k + 1 < len(toks) else size
+            size_start = k + 2 if t == "all" and k + 1 < len(toks) \
+                and _clean_word(toks[k + 1]) == "in" else k + 1
+            size = _allin_size_from_tokens(toks, size_start, default_stack)
             return "AI" + (size or "")
         if t in {"raise", "open", "r", "3b", "3bet"}:
             size = None
             for m in range(k + 1, min(len(toks), k + 8)):
+                if _clean_word(toks[m]) == "hero" or _norm_pos(toks[m]):
+                    break
                 if _clean_word(toks[m]) == "to" and m + 1 < len(toks):
                     size = _bb_number(toks[m + 1])
                     break
@@ -479,12 +532,86 @@ def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | N
     return None
 
 
+def _live_preflop_events(toks: list[str], hero_pos: str,
+                         eff: str) -> list[tuple[str, str]]:
+    """Extract explicitly mentioned preflop actor events from one live line."""
+    events: list[tuple[str, str]] = []
+    i = 0
+    while i < len(toks):
+        pos = None
+        action_start = None
+        if _clean_word(toks[i]) == "hero":
+            if i + 1 < len(toks):
+                maybe_pos = _norm_pos(toks[i + 1])
+                if maybe_pos:
+                    pos = maybe_pos
+                    action_start = i + 2
+                    i += 1
+                else:
+                    pos = hero_pos
+                    action_start = i + 1
+        else:
+            maybe_pos = _norm_pos(toks[i])
+            if maybe_pos:
+                pos = maybe_pos
+                action_start = i + 1
+        if pos and action_start is not None:
+            code = _action_code_from_tokens(toks, action_start, default_stack=eff)
+            if code:
+                events.append((pos, code))
+        i += 1
+    return events
+
+
+def _events_to_preflop_actions(events: list[tuple[str, str]], players: int = 8) -> str | None:
+    """Convert ordered actor events into parser-style preflop action tokens.
+
+    First-round events are placed in table order with skipped seats folded.
+    When a seat appears again, the remaining first round is closed with folds
+    and the event is appended as a continuation token.  This matches
+    ``spot_taxonomy._preflop_seat_tokens`` attribution.
+    """
+    from hh_parser import POSITION_ORDERS
+
+    order = POSITION_ORDERS.get(players)
+    if not order:
+        return None
+    first: list[str | None] = [None] * players
+    continuation: list[str] = []
+    ptr = 0
+
+    def close_until(idx: int) -> None:
+        nonlocal ptr
+        while ptr < min(idx, players):
+            if first[ptr] is None:
+                first[ptr] = "F"
+            ptr += 1
+
+    def close_round() -> None:
+        close_until(players)
+
+    for pos, code in events:
+        if pos not in order:
+            return None
+        idx = order.index(pos)
+        if first[idx] is None and idx >= ptr:
+            close_until(idx)
+            first[idx] = code
+            ptr = idx + 1
+        else:
+            close_round()
+            continuation.append(code)
+    close_round()
+    return "-".join([t or "F" for t in first] + continuation)
+
+
 def parse_simple_preflop_block(block: str) -> dict | None:
     """Deterministic fallback for terse one-line preflop-only live notes.
 
-    Example: ``Co 15.5bb fold a5o``.  This is intentionally not a general
-    language parser; it only rescues compact single-decision rows that are
-    already unambiguous enough to grade as a preflop node.
+    Examples: ``Co 15.5bb fold a5o`` and
+    ``Eff 25bb hero hj raise QQ co raise 6bb hero all in``.  This is
+    intentionally not a general language parser; it only rescues compact
+    preflop-only rows that are already unambiguous enough to grade.
     """
     from hh_parser import POSITION_ORDERS
     lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not _is_noise(ln)]
@@ -493,12 +620,17 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     toks = re.split(r"\s+", lines[0])
     pos = None
     start = 0
-    if toks and _clean_word(toks[0]) == "hero" and len(toks) > 1:
-        pos = _norm_pos(toks[1])
-        start = 2
-    elif toks:
-        pos = _norm_pos(toks[0])
-        start = 1
+    hero_idx = next((i for i, t in enumerate(toks) if _clean_word(t) == "hero"), None)
+    if hero_idx is not None and hero_idx + 1 < len(toks):
+        pos = _norm_pos(toks[hero_idx + 1])
+        start = hero_idx + 2
+    if pos is None:
+        if toks and _clean_word(toks[0]) == "hero" and len(toks) > 1:
+            pos = _norm_pos(toks[1])
+            start = 2
+        elif toks:
+            pos = _norm_pos(toks[0])
+            start = 1
     if pos is None and toks and _bb_number(toks[0]) is not None and len(toks) > 1:
         pos = _norm_pos(toks[1])
         start = 2
@@ -509,19 +641,26 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     hero_hand, _street_hints = _extract_literal_hints(block)
     if not eff or not hero_hand:
         return None
-    code = _action_code_from_tokens(toks, start, default_stack=eff)
-    if code is None:
+    events = _live_preflop_events(toks, pos, eff)
+    if events:
+        preflop = _events_to_preflop_actions(events, players=8)
+    else:
+        code = _action_code_from_tokens(toks, start, default_stack=eff)
+        preflop = None
+        if code is not None:
+            parts = ["F"] * 8
+            if code != "F":
+                parts[order.index(pos)] = code
+            preflop = "-".join(parts)
+    if preflop is None:
         return None
-    parts = ["F"] * 8
-    if code != "F":
-        parts[order.index(pos)] = code
     return {
         "gametype": "MTTGeneral",
         "players_at_table": 8,
         "effective_bb": float(eff),
         "hero_position": pos,
         "hero_hand": hero_hand,
-        "preflop_actions": "-".join(parts),
+        "preflop_actions": preflop,
     }
 
 
@@ -573,6 +712,13 @@ def parse_block(block: str, client=None, model: str | None = None,
             continue
         if hand and hand.get("hero_position") and hand.get("preflop_actions") \
                 and hand.get("hero_hand"):
+            if fallback:
+                npl = hand.get("players_at_table") or fallback.get("players_at_table") or 8
+                toks = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
+                fb_toks = [t for t in (fallback.get("preflop_actions") or "").split("-") if t]
+                if len(toks) < npl <= len(fb_toks):
+                    fallback["_repairs"] = ["單行 preflop 速記 deterministic parse（LLM 漏座位）"]
+                    return fallback
             gated, notes = repair_card_literals_from_block(block, hand)
             if gated is None:
                 if _is_street_count_refusal(notes) and not literal_retry_used:
