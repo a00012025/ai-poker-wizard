@@ -14807,6 +14807,30 @@ def test_live_confidence_reflects_repairs():
 
 
 @test
+def test_shared_drill_url_policy():
+    """drill_url_for_spot is the ONE spot→Trainer-link policy (leaderboard
+    rows + live queue items both route through it with identical results)."""
+    from gtow_trainer_url import drill_url_for_spot
+    from spot_leaderboard import _drill_url
+    from live_flow import drill_url_for
+    # a leaderboard row and a live decision describing the SAME spot
+    row = {"spot_category": "vsOpen", "spot_leaf": "BTN_vsOpen_EP", "hero_pos": "BTN",
+           "hero_cat": "LP", "villain_cat": "EP", "ip_oop": None}
+    dec = {"spot_category": "vsOpen", "position": "BTN", "hero_cat": "LP",
+           "villain_cat": "EP", "ip_oop": None, "pot_type": None, "eff_stack": None}
+    u_row = _drill_url(row, None)
+    u_dec = drill_url_for(dec)
+    assert_true(u_row and u_dec)
+    assert_eq(u_row, u_dec)
+    assert_in("fh_hero=BTN", u_row)          # RFI/vsOpen pin the exact seat
+    # postflop: pot_type flows through; unsupported category -> None
+    u_pf = drill_url_for_spot("flop", hero_cat="BB", villain_cat="LP",
+                              ip_oop="OOP", pot_type="SRP")
+    assert_true(u_pf and "fh_actions=SRP" in u_pf)
+    assert_eq(drill_url_for_spot("discarded"), None)
+
+
+@test
 def test_queue_aging_and_merge_sql():
     """Queue lifecycle fixes: (a) the weekly plan re-surfaces prescribed-but-
     uncleared items instead of silently dropping them (§14.2); (b) a leaf that

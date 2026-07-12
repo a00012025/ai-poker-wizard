@@ -291,6 +291,52 @@ def _active_from_gps(gps: list) -> set:
     return seats
 
 
+# ── shared spot-emission core (both walkers yield identical base dicts —
+#    the cross-source leaf-equality contract lives here, not in two copies) ──
+
+def _preflop_spot_base(hero: str, before: list[tuple[str, str]], npl: int) -> dict:
+    cls = classify_preflop(hero, list(before), npl)
+    keys = [cls["l1"]] if cls["l2"] is None else [cls["l1"], cls["l2"]]
+    keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
+    l2 = cls["l2"]
+    pre_ip = "IP" if l2 and l2.endswith("_IP") else (
+        "OOP" if l2 and l2.endswith("_OOP") else None)
+    return {"street": "preflop", "category": cls["category"],
+            "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
+            "keys": keys, "hero_cat": pos_cat(hero),
+            "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
+            "ip_oop": pre_ip, "facing": None, "pot_type": None,
+            "note": cls["note"], "discarded": cls["category"] == "discarded",
+            "limp_origin": False}
+
+
+def _resolve_postflop_villain(hero, facing, street, last_aggr, active, preflop_aggr):
+    """Villain = last aggressor when facing a bet/raise; else the sole other
+    active player; else the preflop aggressor; else 'multi'."""
+    villain = None
+    if facing in ("vs_bet", "vs_raise"):
+        villain = last_aggr[street]
+    if villain is None:
+        others = [p for p in active if p != hero]
+        villain = others[0] if len(others) == 1 else (
+            preflop_aggr if preflop_aggr and preflop_aggr != hero else "multi")
+    return villain
+
+
+def _postflop_spot_base(street, pot_type_hand, hero, npl, facing, villain,
+                        flop_seq, turn_seq) -> dict:
+    cls = classify_postflop(street, pot_type_hand, hero, villain, npl,
+                            facing, flop_seq, turn_seq)
+    return {"street": street, "category": street, "l1": None, "l2": None,
+            "leaf": cls["leaf"], "keys": cls["keys"],
+            "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
+            "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
+            "facing": facing, "note": "",
+            # postflop limp/iso pots reach the flop via a limp; kept but
+            # flagged (grades carry the same limp-range caveat).
+            "discarded": False, "limp_origin": cls["pot_type"] in ("limp", "iso")}
+
+
 def walk_spots(list_row: dict, detail: dict):
     """Yield one classified spot dict per hero decision node."""
     ga = detail.get("game_analysis") or {}
@@ -343,39 +389,13 @@ def walk_spots(list_row: dict, detail: dict):
             excluded = hand_excluded or corr in (None, "UNSOLVED")
 
             if street == "preflop":
-                cls = classify_preflop(hero, list(preflop_before), npl)
-                keys = [cls["l1"]] if cls["l2"] is None else [cls["l1"], cls["l2"]]
-                # top-level category node for rollup
-                keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
-                l2 = cls["l2"]
-                pre_ip = "IP" if l2 and l2.endswith("_IP") else (
-                    "OOP" if l2 and l2.endswith("_OOP") else None)
-                spot = {"street": "preflop", "category": cls["category"],
-                        "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
-                        "keys": keys, "hero_cat": pos_cat(hero),
-                        "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
-                        "ip_oop": pre_ip, "facing": None, "pot_type": None,
-                        "note": cls["note"], "discarded": cls["category"] == "discarded",
-                        "limp_origin": False}
+                spot = _preflop_spot_base(hero, preflop_before, npl)
             else:
                 facing = street_facing(street_acts[street])
-                # villain: last aggressor if facing a bet/raise; else sole other active
-                villain = None
-                if facing in ("vs_bet", "vs_raise"):
-                    villain = last_aggr[street]
-                if villain is None:
-                    others = [p for p in active if p != hero]
-                    villain = others[0] if len(others) == 1 else (preflop_aggr if preflop_aggr and preflop_aggr != hero else "multi")
-                cls = classify_postflop(street, pot_type_hand, hero, villain, npl,
-                                        facing, street_seqs["flop"], street_seqs["turn"])
-                spot = {"street": street, "category": street, "l1": None, "l2": None,
-                        "leaf": cls["leaf"], "keys": cls["keys"],
-                        "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
-                        "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
-                        "facing": facing, "note": "",
-                        # postflop limp/iso pots reach the flop via a limp; kept for
-                        # now but flagged (grades carry the same limp-range caveat).
-                        "discarded": False, "limp_origin": cls["pot_type"] in ("limp", "iso")}
+                villain = _resolve_postflop_villain(
+                    hero, facing, street, last_aggr, active, preflop_aggr)
+                spot = _postflop_spot_base(street, pot_type_hand, hero, npl, facing,
+                                           villain, street_seqs["flop"], street_seqs["turn"])
 
             spot.update({"gtow_hand_id": list_row.get("hand_id"), "hero_pos": hero,
                          "decision_idx": hero_count[street],
@@ -480,23 +500,12 @@ def walk_spots_from_parsed(hand: dict):
     before: list[tuple[str, str]] = []
     for pos, code in seat_tokens:
         if pos == hero:
-            cls = classify_preflop(hero, list(before), npl)
-            keys = [cls["l1"]] if cls["l2"] is None else [cls["l1"], cls["l2"]]
-            keys = [cls["category"]] + keys if cls["category"] != cls["l1"] else keys
-            l2 = cls["l2"]
-            pre_ip = "IP" if l2 and l2.endswith("_IP") else (
-                "OOP" if l2 and l2.endswith("_OOP") else None)
-            yield {"street": "preflop", "category": cls["category"],
-                   "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
-                   "keys": keys, "hero_cat": pos_cat(hero),
-                   "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
-                   "ip_oop": pre_ip, "facing": None, "pot_type": None,
-                   "note": cls["note"], "discarded": cls["category"] == "discarded",
-                   "limp_origin": False, "hero_pos": hero,
-                   "decision_idx": hero_count["preflop"],
-                   "flop_seq": None, "turn_seq": None,
-                   "acts_before": [], "hero_action_raw": code, "hero_size": None,
-                   "tags": dict(tags)}
+            spot = _preflop_spot_base(hero, before, npl)
+            spot.update({"hero_pos": hero, "decision_idx": hero_count["preflop"],
+                         "flop_seq": None, "turn_seq": None,
+                         "acts_before": [], "hero_action_raw": code,
+                         "hero_size": None, "tags": dict(tags)})
+            yield spot
             hero_count["preflop"] += 1
         before.append((pos, code))
 
@@ -522,29 +531,18 @@ def walk_spots_from_parsed(hand: dict):
             code = _parsed_code(act.get("action", ""))
             if pos == hero:
                 facing = street_facing(street_acts[sname])
-                villain = None
-                if facing in ("vs_bet", "vs_raise"):
-                    villain = last_aggr[sname]
-                if villain is None:
-                    others = [p for p in active if p != hero]
-                    villain = others[0] if len(others) == 1 else (
-                        preflop_aggr if preflop_aggr and preflop_aggr != hero else "multi")
-                cls = classify_postflop(sname, pot_type_hand, hero, villain, npl,
-                                        facing, street_seqs["flop"], street_seqs["turn"])
-                yield {"street": sname, "category": sname, "l1": None, "l2": None,
-                       "leaf": cls["leaf"], "keys": cls["keys"],
-                       "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
-                       "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
-                       "facing": facing, "note": "",
-                       "discarded": False,
-                       "limp_origin": cls["pot_type"] in ("limp", "iso"),
-                       "hero_pos": hero, "decision_idx": hero_count[sname],
-                       "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
-                       "acts_before": [{"position": p, "action": c}
-                                       for p, c in street_acts[sname]],
-                       "hero_action_raw": act.get("action", ""),
-                       "hero_size": act.get("size"),
-                       "tags": dict(tags)}
+                villain = _resolve_postflop_villain(
+                    hero, facing, sname, last_aggr, active, preflop_aggr)
+                spot = _postflop_spot_base(sname, pot_type_hand, hero, npl, facing,
+                                           villain, street_seqs["flop"], street_seqs["turn"])
+                spot.update({"hero_pos": hero, "decision_idx": hero_count[sname],
+                             "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
+                             "acts_before": [{"position": p, "action": c}
+                                             for p, c in street_acts[sname]],
+                             "hero_action_raw": act.get("action", ""),
+                             "hero_size": act.get("size"),
+                             "tags": dict(tags)})
+                yield spot
                 hero_count[sname] += 1
             street_acts[sname].append((pos, code))
             street_seqs[sname] = street_seq(street_acts[sname])

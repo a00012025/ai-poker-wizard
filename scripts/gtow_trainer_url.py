@@ -323,3 +323,39 @@ def build_trainer_url(
     params.append(("dialogs", _TRAINER_UI_DEFAULTS["dialogs"]))
 
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
+
+
+# ── shared spot→drill-URL policy ─────────────────────────────────────────────
+# One place for the "classified spot → Trainer deep link" rules; the
+# leaderboard rows and the live-flow queue items previously each had a copy.
+PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet",
+                "vsCold3bet", "vs4bet", "vsCold4bet"}
+
+
+def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
+                       hero_cat: str | None = None, villain_cat: str | None = None,
+                       ip_oop: str | None = None, pot_type: str | None = None,
+                       depths: list[int] | None = None) -> str | None:
+    """Trainer deep link for a classified spot, or None when unsupported.
+
+    RFI/vsOpen pin hero's exact seat when known (frequent lines, exact-seat
+    leaves); other preflop lines use the hero position CATEGORY; postflop
+    adds pot_type. Unsupported configurations return None instead of raising.
+    """
+    depths = list(MTT_DEPTHS) if depths is None else depths
+    opp = CAT_POSITIONS.get(villain_cat) if villain_cat in CAT_POSITIONS else None
+    try:
+        if category in PREFLOP_CATS:
+            hero = ([hero_pos] if category in ("RFI", "vsOpen") and hero_pos
+                    else CAT_POSITIONS.get(hero_cat, []))
+            return build_drill_url(category, "preflop", 20, hero,
+                                   opponent_positions=opp, rel_position=ip_oop,
+                                   depths=depths)
+        if category in ("flop", "turn", "river"):
+            hero = CAT_POSITIONS.get(hero_cat, [])
+            return build_drill_url(category, category, 20, hero,
+                                   opponent_positions=opp, rel_position=ip_oop,
+                                   pot_type=pot_type, depths=depths)
+    except (SpotNotSupportedError, ValueError):
+        return None
+    return None

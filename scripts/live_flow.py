@@ -326,7 +326,12 @@ def _split_cards(s: str) -> list[str]:
 def _pick_suit(rank: str, used: set[str], used_suits: set[str]) -> str | None:
     # repo convention (_canonicalize_board_streets): when raw gives no suit,
     # prefer suits unused on the board so far — rainbow for bare flops, fresh
-    # suit on turn/river — never fabricating flush texture the note never said
+    # suit on turn/river — never fabricating flush texture the note never said.
+    # DELIBERATELY NOT merged with analyze_hand._canonicalize_board_streets:
+    # the failure semantics differ — that one never fails (last-resort 'c' is
+    # fine for its context), this one returns None so the literal gate can
+    # REFUSE the hand (refuse-over-repair, PR #82). A shared helper would
+    # have to pick one semantic and silently weaken the other.
     for suit in [s for s in _SUITS if s not in used_suits] + list(_SUITS):
         if rank + suit not in used:
             return suit
@@ -829,28 +834,13 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
 
 # ── drill queue ──────────────────────────────────────────────────────────────
 def drill_url_for(dec: dict) -> str | None:
-    from gtow_trainer_url import (build_drill_url, CAT_POSITIONS,
-                                  SpotNotSupportedError, MTT_DEPTHS, DEPTH_BAND_DEPTHS)
-    from spot_leaderboard import PREFLOP_CATS
+    from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
 
-    cat = dec["spot_category"]
     depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
-    vc = dec.get("villain_cat")
-    opp = CAT_POSITIONS.get(vc) if vc in CAT_POSITIONS else None
-    try:
-        if cat in PREFLOP_CATS:
-            hero = ([dec["position"]] if cat in ("RFI", "vsOpen") and dec.get("position")
-                    else CAT_POSITIONS.get(dec.get("hero_cat"), []))
-            return build_drill_url(cat, "preflop", 20, hero, opponent_positions=opp,
-                                   rel_position=dec.get("ip_oop"), depths=depths)
-        if cat in ("flop", "turn", "river"):
-            hero = CAT_POSITIONS.get(dec.get("hero_cat"), [])
-            return build_drill_url(cat, cat, 20, hero, opponent_positions=opp,
-                                   rel_position=dec.get("ip_oop"),
-                                   pot_type=dec.get("pot_type"), depths=depths)
-    except (SpotNotSupportedError, ValueError):
-        return None
-    return None
+    return drill_url_for_spot(
+        dec["spot_category"], hero_pos=dec.get("position"),
+        hero_cat=dec.get("hero_cat"), villain_cat=dec.get("villain_cat"),
+        ip_oop=dec.get("ip_oop"), pot_type=dec.get("pot_type"), depths=depths)
 
 
 def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
