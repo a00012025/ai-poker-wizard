@@ -120,9 +120,27 @@ def _has_approx(flags) -> bool:
     return any(f in _APPROX_KEYS for f in _as_list(flags))
 
 
+_SUIT_GLYPH = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}
+
+
+def pretty_hand(hero_hand: str | None) -> str:
+    """'Qh8c' -> 'Q♥8♣' so the review label shows the EXACT combo (with suits)
+    the owner must look up in the solver grid. Non-exact/odd inputs pass through."""
+    h = (hero_hand or "").strip()
+    if not h or len(h) % 2 != 0:
+        return h
+    out = []
+    for i in range(0, len(h), 2):
+        out.append(h[i] + _SUIT_GLYPH.get(h[i + 1].lower(), h[i + 1]))
+    return "".join(out)
+
+
 def review_label(row: dict) -> str:
-    """`復盤 {M/D} {spot_desc_zh(worst decision)} −{ev:.1f}bb` (+⚠近似 when the
-    worst decision's magnitude leans on an off-tree approximation, §5.2)."""
+    """`復盤 {M/D} {hero combo w/ suits} {spot_desc_zh(worst decision)} −{ev:.1f}bb`
+    (+⚠近似 when the worst decision leans on an off-tree approximation, §5.2).
+
+    The exact combo is included so the owner knows which hand to read in the
+    Study solution the link opens to."""
     from scorecard import spot_desc_zh
     played = row.get("played_at")
     md = played.astimezone(TPE).strftime("%-m/%-d") if played else "?"
@@ -131,9 +149,10 @@ def review_label(row: dict) -> str:
         "hero_cat": row.get("hero_cat"), "villain_cat": row.get("villain_cat"),
         "ip_oop": row.get("ip_oop"), "hero_pos": row.get("hero_pos"),
         "street": row.get("spot_category")})
+    hand = pretty_hand(row.get("hero_hand"))
     ev = float(row.get("max_ev") or 0.0)
     warn = " ⚠近似" if _has_approx(row.get("approx_flags")) else ""
-    return f"復盤 {md} {desc} −{ev:.1f}bb{warn}"
+    return f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb{warn}"
 
 
 def drill_label(row: dict) -> str:
@@ -147,12 +166,13 @@ def drill_label(row: dict) -> str:
 
 
 def review_url(row: dict) -> str | None:
-    """Review link. v1 uses the Analyze table filtered to the hand's Taipei day
-    (already-shipped fallback, §5.3). A verified single-hand deep link (needs a
-    gtow-cdp-session to confirm the format) can slot in via _single_hand_url."""
-    single = _single_hand_url(row.get("ref_hand_id"))
-    if single:
-        return single
+    """Review link. PREFERRED: the /solutions Study node for the worst decision,
+    built from the archived hand detail (the owner reads their exact combo there).
+    FALLBACK (archive missing / node has no solution): the Analyze table filtered
+    to the hand's Taipei day."""
+    study = _study_solution_url(row)
+    if study:
+        return study
     played = row.get("played_at")
     if not played:
         return None
@@ -160,13 +180,28 @@ def review_url(row: dict) -> str | None:
     return analyze_table_url(day, day)
 
 
-def _single_hand_url(hand_id) -> str | None:
-    """Verified GTOW Analyze single-hand deep-link, or None (deferred, §5.3).
-
-    The single-hand URL format must be confirmed against the live SPA via the
-    gtow-cdp-session skill before it can be trusted; until then review items
-    fall back to the day-range Analyze table above."""
-    return None
+def _study_solution_url(row: dict) -> str | None:
+    """Build the /solutions Study URL for a review hand's worst decision from
+    its archived GTOW detail JSON (`ledger_hands.raw_path`). Returns None on any
+    failure so review_url falls back to the day-range Analyze table."""
+    raw_path = row.get("raw_path")
+    hero_pos = row.get("hero_pos")
+    street = row.get("worst_street")
+    idx = row.get("worst_idx")
+    if not (raw_path and hero_pos and street and idx is not None):
+        return None
+    try:
+        import gzip
+        from gtow_solution_url import build_hand_solution_url
+        p = Path(raw_path) if os.path.isabs(raw_path) else (ROOT / raw_path)
+        if not p.exists():
+            return None
+        opener = gzip.open if str(p).endswith(".gz") else open
+        with opener(p, "rb") as fh:
+            detail = json.loads(fh.read())
+        return build_hand_solution_url(detail, hero_pos, street, int(idx))
+    except Exception:
+        return None
 
 
 def mix_queue_quota(rows: list[dict], drill_slots: int, review_slots: int,
@@ -333,6 +368,8 @@ SELECT gtow_hand_id ref_hand_id,
        (array_agg(ev_loss_bb    ORDER BY ev_loss_bb DESC))[1] max_ev,
        (array_agg(approx_flags  ORDER BY ev_loss_bb DESC))[1] approx_flags,
        (array_agg(played_at     ORDER BY ev_loss_bb DESC))[1] played_at,
+       (array_agg(street        ORDER BY ev_loss_bb DESC))[1] worst_street,
+       (array_agg(decision_idx  ORDER BY ev_loss_bb DESC))[1] worst_idx,
        jsonb_agg(jsonb_build_object(
            'hand_id', gtow_hand_id, 'street', street,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
@@ -342,6 +379,12 @@ WHERE {_HONEST} AND played_at >= $1 AND ev_loss_bb >= $2
 GROUP BY gtow_hand_id
 ORDER BY sum(ev_loss_bb) DESC
 """
+
+# per-hand meta for the Study link + combo (kept off the grouped scan to avoid a
+# ledger_hands JOIN — both tables carry a `source` column, which would make the
+# honesty predicate ambiguous).
+_HAND_META_SQL = ("SELECT hero_hand, raw_path, position FROM ledger_hands "
+                  "WHERE gtow_hand_id = $1")
 
 _CLEARED_SQL = ("SELECT max(cleared_at) c FROM drill_queue "
                 "WHERE spot_leaf = $1 AND kind = 'drill' AND status = 'cleared'")
@@ -382,6 +425,11 @@ async def _build_review_items(conn, since) -> list[dict]:
         if await conn.fetchval(_REVIEW_EXISTS_SQL, r["ref_hand_id"]):
             continue                       # 復盤過就是過了 (any status blocks)
         row = dict(r)
+        meta = await conn.fetchrow(_HAND_META_SQL, r["ref_hand_id"])
+        if meta:
+            row["hero_hand"] = meta["hero_hand"]
+            row["raw_path"] = meta["raw_path"]
+            row["hero_pos"] = meta["position"] or row.get("hero_pos")
         items.append({
             "kind": "review", "added_by": "auto", "source": "online",
             "ref_hand_id": row["ref_hand_id"], "spot_leaf": row["spot_leaf"],

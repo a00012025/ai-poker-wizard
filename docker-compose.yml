@@ -6,6 +6,10 @@ services:
       - ./logs:/app/logs
       - ./.tokens.json:/app/.tokens.json
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
+      # GTOW raw hand-detail archive: read by the weekly queue scan to build
+      # review-item /solutions Study links; also persists the daily ingest's
+      # archive writes on the host (previously ephemeral in the container).
+      - ./data/gtow_raw:/app/data/gtow_raw
     runtime: nvidia
     deploy:
       resources:

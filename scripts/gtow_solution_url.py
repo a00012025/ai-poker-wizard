@@ -145,6 +145,86 @@ def build_solution_url(resolved: dict, board: str) -> str:
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
 
 
+# ── build straight from an archived GTOW Analyze hand detail ──────────────────
+# The online ledger's raw archive already carries, per decision game_point, the
+# exact solved action line (`solved_action_sequence`) + depth + board the solver
+# was queried at. That maps 1:1 onto build_solution_url with no live token and
+# no re-resolution — the most faithful node link for a played online hand.
+_GA_STREET = {"PREFLOP": "preflop", "FLOP": "flop", "TURN": "turn", "RIVER": "river"}
+_STREET_BOARD_CHARS = {"flop": 6, "turn": 8, "river": 10}
+
+
+def _find_decision_game_point(detail: dict, hero_pos: str, street: str,
+                              decision_idx: int) -> dict | None:
+    """Locate the game_point for hero's Nth decision on `street`.
+
+    Counts hero decisions per street exactly like ledger_distill.distill_hand
+    (a hero decision = a game_point where the actor is hero and some available
+    action is `selected`), so (street, decision_idx) match the ledger rows.
+    """
+    gps = ((detail.get("game_analysis") or {}).get("game_points")) or []
+    counts: dict[str, int] = {}
+    for gp in gps:
+        pos = (gp.get("real_game_action") or {}).get("position", "")
+        st = _GA_STREET.get(
+            ((gp.get("real_game") or {}).get("current_street") or {}).get("type", ""), "")
+        avail = (gp.get("analysis_solved") or {}).get("available_actions") or []
+        if pos == hero_pos and any(a.get("selected") for a in avail):
+            idx = counts.get(st, 0)
+            if st == street and idx == decision_idx:
+                return gp
+            counts[st] = idx + 1
+    return None
+
+
+def _canonical_board_str(board_raw: str, street: str) -> str:
+    """Canonical board (flop rank-descending) truncated to `street`'s depth."""
+    if street == "preflop" or not board_raw:
+        return ""
+    n = _STREET_BOARD_CHARS.get(street)
+    b = board_raw[:n] if n else board_raw
+    return _canonical_flop(b[:6]) + b[6:] if len(b) >= 6 else b
+
+
+def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
+                            decision_idx: int) -> str | None:
+    """/solutions Study URL for hero's (street, decision_idx) decision, built
+    from the archived hand detail's `solved_action_sequence`.
+
+    Returns None when the node can't be located or the solver has no solution
+    for it (caller falls back), so a review link never points at an empty node.
+    """
+    gp = _find_decision_game_point(detail, hero_pos, street, decision_idx)
+    if gp is None or not gp.get("has_solution"):
+        return None
+    sas = gp.get("solved_action_sequence") or {}
+    pre = sas.get("preflop_actions") or []
+    if not pre:
+        return None
+
+    def _join(x):
+        return "-".join(x) if x else ""
+
+    def _cnt(x):
+        return len(x or [])
+
+    resolved = {
+        "preflop_actions": _join(pre),
+        "flop_actions": _join(sas.get("flop_actions")),
+        "turn_actions": _join(sas.get("turn_actions")),
+        "river_actions": _join(sas.get("river_actions")),
+        "history_spot": (_cnt(pre) + _cnt(sas.get("flop_actions"))
+                         + _cnt(sas.get("turn_actions")) + _cnt(sas.get("river_actions"))),
+        "depth": float(gp.get("depth") or 0),
+        "gametype": gp.get("gametype") or "MTTGeneral",
+    }
+    board = _canonical_board_str((gp.get("real_game") or {}).get("board") or "", street)
+    try:
+        return build_solution_url(resolved, board)
+    except ValueError:
+        return None
+
+
 def enumerate_hero_decisions(context: dict) -> list[tuple[str, int]]:
     """List hero decision points as (street, action_index), in play order.
 
