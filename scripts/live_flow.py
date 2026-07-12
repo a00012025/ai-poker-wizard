@@ -1162,10 +1162,58 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
 
 def spot_label_zh(dec: dict) -> str:
     from scorecard import spot_desc_zh
-    return spot_desc_zh({"spot_category": dec["spot_category"],
+    base = spot_desc_zh({"spot_category": dec["spot_category"],
                          "spot_leaf": dec["spot_leaf"], "hero_cat": dec.get("hero_cat"),
                          "villain_cat": dec.get("villain_cat"), "ip_oop": dec.get("ip_oop"),
                          "hero_pos": dec.get("position"), "street": dec["street"]})
+    ctx = _street_line_context(dec)
+    return f"{base}（{ctx}）" if ctx else base
+
+
+def _street_line_context(dec: dict) -> str:
+    """Short prior-street action context for live queue labels.
+
+    Turn spots need the flop line; river spots need flop + turn.  The taxonomy
+    stores those sequences both as columns and inside the spot_leaf
+    (``turn:...:[x-b-c]:...`` / ``river:...:[x-x|x-b-c]:...``), so labels still
+    work when callers only have the leaf.
+    """
+    street = dec.get("street") or dec.get("spot_category")
+    if street not in {"turn", "river"}:
+        return ""
+
+    flop_seq = _clean_seq(dec.get("flop_seq"))
+    turn_seq = _clean_seq(dec.get("turn_seq"))
+    if not flop_seq or (street == "river" and not turn_seq):
+        leaf_flop, leaf_turn = _seqs_from_spot_leaf(dec.get("spot_leaf") or "")
+        flop_seq = flop_seq or leaf_flop
+        turn_seq = turn_seq or leaf_turn
+
+    if street == "turn" and flop_seq:
+        return f"flop {flop_seq}"
+    if street == "river":
+        parts = []
+        if flop_seq:
+            parts.append(f"flop {flop_seq}")
+        if turn_seq:
+            parts.append(f"turn {turn_seq}")
+        return " / ".join(parts)
+    return ""
+
+
+def _clean_seq(seq) -> str:
+    s = str(seq or "").strip()
+    return "" if s in {"", "-", "None", "null"} else s
+
+
+def _seqs_from_spot_leaf(leaf: str) -> tuple[str, str]:
+    m = re.search(r":\[([^\]]+)\]:", leaf or "")
+    if not m:
+        return "", ""
+    parts = m.group(1).split("|", 1)
+    flop = _clean_seq(parts[0])
+    turn = _clean_seq(parts[1]) if len(parts) > 1 else ""
+    return flop, turn
 
 
 # Merge a re-offending leaf into its OPEN row first — pending OR prescribed.

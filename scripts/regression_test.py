@@ -14724,6 +14724,7 @@ def test_live_queue_selection_and_report():
     assert_eq(round(items[0]["total_ev_loss_bb"], 2), 0.44)
     assert_true(items[0]["drill_url"] and "fh_hero=BB" in items[0]["drill_url"])
     assert_true(items[0]["label"])
+    assert_in("flop x-x", items[0]["label"])
     result = {
         "date": "2026-07-10",
         "totals": {"hands": 2, "decisions": 6, "graded": 4, "mistakes": 1,
@@ -14760,6 +14761,30 @@ def test_live_queue_selection_and_report():
     assert_true(any(b.get("url", "").startswith("https://app.gtowizard.com/")
                     for b in flat))
     assert_true(QUEUE_EV_MIN == 0.10)
+
+
+@test
+def test_live_queue_labels_include_prior_street_actions():
+    """Queue labels should tell the player which action line to drill:
+    turn spots show the flop line; river spots show flop + turn."""
+    from live_flow import spot_label_zh
+
+    turn = {
+        "spot_category": "turn", "street": "turn",
+        "spot_leaf": "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet",
+        "hero_cat": "BB", "villain_cat": "LP", "ip_oop": "OOP",
+        "position": "BB", "flop_seq": "x-b-c", "turn_seq": None,
+    }
+    assert_in("轉牌 面對下注（flop x-b-c）", spot_label_zh(turn))
+
+    river = {
+        "spot_category": "river", "street": "river",
+        "spot_leaf": "river:SRP:LPvEP:IP:[x-x|x-b-c]:vs_check",
+        "hero_cat": "LP", "villain_cat": "EP", "ip_oop": "IP",
+        "position": "BTN", "flop_seq": None, "turn_seq": None,
+    }
+    assert_in("河牌 面對過牌（flop x-x / turn x-b-c）",
+              spot_label_zh(river))
 
 
 @test
