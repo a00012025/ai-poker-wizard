@@ -97,6 +97,7 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
             "hero_cat": r.get("hero_cat"), "villain_cat": r.get("villain_cat"),
             "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
             "restrict": it.get("restrict"),
+            "fragile": bool(it.get("fragile")),
             "samples": [dict(s) for s in it.get("samples", [])],
         })
     return {
@@ -168,9 +169,11 @@ def render_html(d: dict) -> str:
             f'{escape(str(s.get("boards") or ""))} 損失 {s.get("ev_loss_bb",0):.1f}bb '
             f'<a href="{analyze_table_url(s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"), s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"))}">Analyze</a></div>'
             for s in f.get("samples", []))
+        frag = ('<div class="note">⚠️ fragile：排除樹外近似樣本後量級變動 &gt;30%，數字保守解讀</div>'
+                if f.get("fragile") else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
                        f'<div class="sub">{f["per100"]:.2f} bb/100 · n={f["n"]} · <code>{escape(f["spot_leaf"])}</code></div>'
-                       f'{drill}{band}{samples}</div>')
+                       f'{drill}{band}{frag}{samples}</div>')
     rb = ""
     if d.get("readback"):
         for r in d["readback"]:
@@ -197,7 +200,7 @@ def render_html(d: dict) -> str:
 <h2>Leak 榜（avg EV loss 排序）</h2>
 <table><tr><th>spot</th><th>bb/100</th><th>n</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
-<h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · chipEV 評分占比 {hon['chipev_share']*100:.0f}%</div>
+<h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · chipEV 評分占比 {hon['chipev_share']*100:.0f}% · 尺寸樹外 {hon.get('sizing_snap_n', 0)} · 深度樹外 {hon.get('depth_snap_n', 0)}</div>
 <div class="note">chipEV 評分：後期/泡沫手含 ICM 近似誤差（Phase 3 處理）；limp 相關 spot 已捨棄。</div>
 </body></html>"""
 
@@ -231,7 +234,8 @@ def weekly_tg_html(week: str, d: dict) -> str:
             if f.get("restrict"):
                 bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
                 band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
-            L.append(f"{i}. {escape(f['desc'])} — 漏 {f['per100']:.1f} bb/100，{f['n']} 手{band}")
+            frag = "（⚠️ 這格的數字對樹外近似敏感，保守看）" if f.get("fragile") else ""
+            L.append(f"{i}. {escape(f['desc'])} — 漏 {f['per100']:.1f} bb/100，{f['n']} 手{band}{frag}")
 
     dq = d.get("drill_queue") or []
     if dq:
@@ -271,6 +275,10 @@ def weekly_tg_html(week: str, d: dict) -> str:
              "泡沫、單桌決賽的手會有 ICM 誤差，之後才會校正。")
     L.append(f"• 你的 limp 手（約 {hon.get('discarded_n', 0)} 個決策）直接沒算進去——"
              "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
+    snap_n = (hon.get("sizing_snap_n") or 0) + (hon.get("depth_snap_n") or 0)
+    if snap_n:
+        L.append(f"• 有 {snap_n} 個決策的尺寸或深度在 solver 樹外（用最近的解近似）——"
+                 "已標記，量級對這些近似敏感的 spot 會註明 fragile。")
     L.append("• 只看得到你有上傳 GTOW Analyzer 的手 + 用 /live 記的現場手，其他不在裡面。")
     return "\n".join(L)
 
@@ -359,8 +367,15 @@ async def _honesty(conn) -> dict:
     chip = await conn.fetchval(
         f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
         f"AND approx_flags::text LIKE '%chipev_grading%' AND {src}")
+    snap = await conn.fetchval(
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
+        f"AND approx_flags ? 'sizing_snap' AND {src}")
+    dgap = await conn.fetchval(
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
+        f"AND approx_flags ? 'depth_snap_gap' AND {src}")
     return {"excluded_n": exc, "discarded_n": dis,
-            "chipev_share": (chip / inc) if inc else 0.0, "total": tot}
+            "chipev_share": (chip / inc) if inc else 0.0, "total": tot,
+            "sizing_snap_n": snap, "depth_snap_n": dgap}
 
 
 async def fetch_drill_queue(conn) -> list[dict]:

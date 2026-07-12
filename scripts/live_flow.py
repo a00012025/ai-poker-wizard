@@ -754,6 +754,12 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     depth = float(hand.get("effective_bb") or 0)
     dec_rows: list[dict] = []
     total_loss = 0.0
+    # Parse confidence is REAL, not nominal (§5.2/§7.2): every visible repair
+    # (🔧 echo / literal-gate note) knocks it down — a repaired parse is a
+    # less certain judgment. Floor at 0.6 (repairs are deterministic and
+    # user-echoed, never blind guesses).
+    n_repairs = len(hand.get("_repairs") or [])
+    parse_conf = round(max(0.6, 1.0 - 0.1 * n_repairs), 2)
 
     for spot in walk_spots_from_parsed(hand):
         key = (spot["street"], spot["decision_idx"])
@@ -765,6 +771,10 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             flags.append("depth_snap_gap")
         if spot["limp_origin"]:
             flags.append("limp_origin")
+        # 3+ 人非 limp 翻後底池被以 HU 方式評分 — 這正是線下 solver 覆蓋最弱
+        # 的區域（§0），必須掛旗（§5.2 誠實層）
+        if spot["street"] != "preflop" and spot.get("villain_cat") == "multi":
+            flags.append("multiway_recast")
         if dev is None or dev.get("ungraded"):
             reason = (dev or {}).get("reason", "not_graded")
             flags.append(f"unsolved:{reason}")
@@ -796,7 +806,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             "pot_type": compute_pot_type_from_preflop(hand.get("preflop_actions") or "", npl),
             "facing": spot["facing"], "taken_code": taken, "best_code": best,
             "ev_loss_bb": ev_loss, "taken_freq": taken_freq,
-            "gametype": "MTTGeneral", "confidence": 1.0,
+            "gametype": "MTTGeneral", "confidence": parse_conf,
             "approx_flags": flags, "excluded": excluded, "played_at": played_at,
             "spot_category": spot["category"], "spot_leaf": spot["leaf"],
             "spot_keys": spot["keys"], "hero_cat": spot["hero_cat"],

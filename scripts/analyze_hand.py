@@ -1527,6 +1527,7 @@ def _run_analysis(hand: dict) -> dict:
     # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
     multiway_note = ""
+    depth_escalation_note = ""
     multiway_positions = None  # set of 2 positions if multiway simplified
     original_depth = depth  # preserve for preflop open spot (before multiway adjustment)
     simplified_preflop, adjusted_depth, multiway_note, multiway_positions = _simplify_multiway(
@@ -1965,6 +1966,12 @@ def _run_analysis(hand: dict) -> dict:
                             ):
                                 continue
                         post_depth = try_depth
+                        # 深度升級是近似（§14.2 大聲失敗）：翻後策略取自另一個
+                        # 深度的 solver，SPR 相關結論可能偏移 — 必須進輸出可見。
+                        depth_escalation_note = (
+                            f"⚠ Postflop 深度升級: {cur_bb:.0f}bb 無翻後解，"
+                            f"已改用 {try_bb:.0f}bb solver（深度近似，SPR 相關結論請保守解讀）"
+                        )
                         if is_icm:
                             chipev_depth = try_depth
                             chipev_preflop = try_pf
@@ -2063,6 +2070,19 @@ def _run_analysis(hand: dict) -> dict:
                         taken_code = find_closest_action_postflop(match_avail, target_size)
 
                 size_str = f" {target_size}bb" if target_size else ""
+                # Hero's own size snapping off-tree is an approximation the
+                # verdict inherits — surface the magnitude when it exceeds the
+                # honesty threshold (same 25% as ledger sizing_snap; §14.2).
+                snap_warn = ""
+                if target_size and taken_code and taken_code.startswith("R"):
+                    try:
+                        _snap_bb = float(taken_code[1:])
+                        _rel = abs(_snap_bb - target_size) / target_size
+                        if _snap_bb > 0 and _rel > 0.25:
+                            snap_warn = (f" ⚠ 尺寸樹外：以最近的 {taken_code} 近似"
+                                         f"（差 {_rel:.0%}）")
+                    except ValueError:
+                        pass
                 actual_pot_pct = None
                 if (
                     target_size
@@ -2076,7 +2096,7 @@ def _run_analysis(hand: dict) -> dict:
                     "header": street_header if street_first_hero else None,
                     "params": params,
                     "solver_hero_pos": solver_hero_pos,
-                    "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）",
+                    "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）{snap_warn}",
                     "taken_code": taken_code,
                     "actual_pot_pct": actual_pot_pct,
                     # True when the immediately preceding action was an
@@ -2748,6 +2768,8 @@ def _run_analysis(hand: dict) -> dict:
         results.append(icm_fallback_note)
     if multiway_note:
         results.append(multiway_note)
+    if depth_escalation_note:
+        results.append(depth_escalation_note)
     if gto_line_note:
         results.append(gto_line_note)
     if offrange_note:
@@ -2872,6 +2894,8 @@ def _run_analysis(hand: dict) -> dict:
     if multiway_note:
         # multiway_note already starts with ⚠ — don't double it
         compact.append(multiway_note if multiway_note.startswith("⚠") else f"⚠ {multiway_note}")
+    if depth_escalation_note:
+        compact.append(depth_escalation_note)
     if gto_line_note:
         compact.append(gto_line_note)
     if offrange_note:

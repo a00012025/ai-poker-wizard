@@ -13734,10 +13734,11 @@ def test_training_plan_focus_and_readback():
            "n": 67, "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ"}
     assert_in("3bet", spot_desc_zh(row))
     spots = [{"row": row, "url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
-              "samples": [], "bands": [], "restrict": None}]
+              "samples": [], "bands": [], "restrict": None, "fragile": True}]
     weekly = [{"week": "2026-W27", "n": 100, "per100": 2.5, "total_bb": 2.5},
               {"week": "2026-W28", "n": 120, "per100": 2.0, "total_bb": 2.4}]
-    honesty = {"excluded_n": 5, "discarded_n": 3, "chipev_share": 1.0, "total": 100}
+    honesty = {"excluded_n": 5, "discarded_n": 3, "chipev_share": 1.0, "total": 100,
+               "sizing_snap_n": 4, "depth_snap_n": 1}
     data = compute_training_plan("2026-W28", weekly, spots, [], None, honesty)
     assert_true(data["headline"])
     assert_eq(round(data["delta"], 2), -0.50)
@@ -13776,6 +13777,8 @@ def test_training_plan_focus_and_readback():
     assert_in("chipEV", msg)                                 # honesty caveat
     assert_in("limp", msg)
     assert_in("練習佇列", msg)                                # live queue section
+    assert_in("樹外近似敏感", msg)                            # fragile focus caveat
+    assert_in("solver 樹外", msg)                             # soft-flag count caveat
     assert_in("線上同一個情境也在漏", msg)                    # cross-source flag
     payload = weekly_tg_payload("2026-W28", data)
     assert_eq(payload["html"], msg)
@@ -14775,6 +14778,45 @@ def test_live_ledger_row_shapes():
     r1 = by_key[("river", 1)]                         # no dev at all
     assert_true(r1["excluded"])
     assert_in("unsolved:not_graded", r1["approx_flags"])
+    # confidence is REAL (§7.2): unrepaired parse -> 1.0
+    assert_eq(t["confidence"], 1.0)
+
+
+@test
+def test_live_confidence_reflects_repairs():
+    """§5.2/§7.2 誠實層: a repaired live parse is a less certain judgment —
+    confidence drops 0.1 per visible repair (floor 0.6), never a nominal 1.0."""
+    import copy
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows
+    ts = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+    hand = copy.deepcopy(_LIVE_HAND1)
+    hand["_repairs"] = ["HU pot 動作歸屬修補", "花色補全（rainbow）"]
+    _, decs = build_hand_rows(hand, "live:x", ts, "raw", {})
+    assert_true(decs, "expected decision rows")
+    assert_true(all(d["confidence"] == 0.8 for d in decs),
+                f"2 repairs -> 0.8, got {decs[0]['confidence']}")
+    hand["_repairs"] = ["r"] * 9
+    _, decs = build_hand_rows(hand, "live:x", ts, "raw", {})
+    assert_true(all(d["confidence"] == 0.6 for d in decs), "floor at 0.6")
+
+
+@test
+def test_leaderboard_fragile_flag():
+    """§5.2 敏感度旗標: avg moving >30% without the off-tree-approximated
+    samples marks the spot fragile; small clean-n or tiny moves don't."""
+    from spot_leaderboard import is_fragile, leader_sql
+    sql = leader_sql(None)
+    assert_in("FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap']))", sql)
+    assert_in("avg_ev_clean", sql)
+    base = {"n": 60, "avg_ev": 0.10}
+    assert_true(is_fragile(dict(base, n_clean=30, avg_ev_clean=0.05)))   # -50%
+    assert_true(not is_fragile(dict(base, n_clean=30, avg_ev_clean=0.09)))  # -10%
+    assert_true(not is_fragile(dict(base, n_clean=5, avg_ev_clean=0.01)),
+                "clean sample too small to conclude")
+    assert_true(not is_fragile(dict(base, n_clean=30, avg_ev_clean=None)))
+    assert_true(not is_fragile({"n": 60, "avg_ev": 0.0, "n_clean": 30,
+                                "avg_ev_clean": 0.05}), "zero avg guarded")
 
 
 if __name__ == "__main__":
