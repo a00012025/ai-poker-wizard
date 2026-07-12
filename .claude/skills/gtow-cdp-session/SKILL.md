@@ -87,8 +87,17 @@ real JSON, unlike the `404` from `chrome://inspect` mode):
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9222/json/version   # expect 200
 ```
 
-Then **ask the user to log in** in that Chrome window via CRD. Poll until the tab
-leaves `/login`:
+Then log in. **The dedicated profile keeps a Google session, so you usually
+don't need the user or any credentials — just click the "GOOGLE" button on the
+GTOW login page and it auto-signs-in** (verified 2026-07-12):
+
+```bash
+agent-browser --cdp 9222 find text GOOGLE click   # one-click Google SSO; no password prompt
+```
+
+Only if that bounces back to `/login` (Google session itself expired) do you
+need to **ask the user to log in** by hand in that Chrome window via CRD. Either
+way, poll until the tab leaves `/login`:
 
 ```bash
 agent-browser --cdp 9222 tab list   # authed when title is "Dashboard/Hands - GTO Wizard", not "Login - GTO Wizard"
