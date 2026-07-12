@@ -1475,7 +1475,8 @@ class PokerWizardBot:
             return
         rows = await self.db.pool.fetch(
             "SELECT id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
-            "villain_cat, ip_oop, position, ev_loss_bb "
+            "villain_cat, ip_oop, position, ev_loss_bb, taken_freq, freq_diff, "
+            "correctness "
             "FROM ledger_decisions "
             "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
             "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
@@ -1489,8 +1490,8 @@ class PokerWizardBot:
         btn_rows = qex_submenu([dict(r) for r in rows], queue_id)
         await context.bot.send_message(
             chat_id,
-            f"➕ <b>選一條 action line 加入練習</b>\n{_esc(item['label'] or item['ref_hand_id'])}\n"
-            "（含打對的決策 — 想練沒把握的線也行）",
+            f"➕ <b>選一條 action line 加入練習</b>\n"
+            f"{_esc(item['label'] or item['ref_hand_id'])}",
             parse_mode="HTML",
             reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
 

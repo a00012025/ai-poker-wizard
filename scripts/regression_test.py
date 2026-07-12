@@ -15200,7 +15200,8 @@ def test_queue_feed_quota_mix():
 @test
 def test_queue_feed_qex_submenu_callback_data():
     """qex sub-menu: numeric decision ids in callback_data (never the spot_leaf
-    string — 64-byte limit), street order, and correct (0-loss) decisions kept."""
+    string — 64-byte limit), street order, and low-frequency zero-EV branches
+    must never be mislabeled as simply '打對'."""
     import queue_feed as qf
     decs = [
         {"id": 71, "street": "river", "decision_idx": 0, "spot_category": "river",
@@ -15208,15 +15209,23 @@ def test_queue_feed_qex_submenu_callback_data():
          "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 22.7},
         {"id": 70, "street": "flop", "decision_idx": 0, "spot_category": "flop",
          "spot_leaf": "flop:SRP:SBvBB:OOP:[b-c]:first_to_act", "hero_cat": "SB",
-         "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 0.0},
+         "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 0.0,
+         "taken_freq": 0.023, "correctness": "INACCURACY"},
     ]
     rows = qf.qex_submenu(decs, 123456)
     assert_eq(rows[0]["callback_data"], "qad:123456:70")        # flop first (street order)
     assert_eq(rows[1]["callback_data"], "qad:123456:71")
     assert_true(all(len(r["callback_data"]) <= 64 for r in rows))
     assert_true(all(len(r["text"]) <= 60 for r in rows))
-    assert_in("打對", rows[0]["text"])                          # 0-loss decision surfaced
+    assert_in("低頻分支 2.3%", rows[0]["text"])
+    assert_not_in("打對", rows[0]["text"])
     assert_in("−22.7bb", rows[1]["text"])
+    import inspect
+    from telegram_bot.bot import PokerWizardBot
+    src = inspect.getsource(PokerWizardBot._queue_expand_review)
+    assert_in("taken_freq", src)
+    assert_not_in("含打對的決策", src)
+    assert_not_in("EV 差小不代表它是主要策略", src)
 
 
 @test

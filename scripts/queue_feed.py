@@ -259,14 +259,23 @@ def qex_submenu(decisions: list[dict], queue_id: int) -> list[dict]:
     rows = []
     for d in sorted(decisions, key=lambda d: (st_order.get(d.get("street"), 9),
                                               d.get("decision_idx") or 0)):
-        ev = d.get("ev_loss_bb")
-        ev_txt = f"−{ev:.1f}bb" if ev else "打對✓"
+        ev = float(d.get("ev_loss_bb") or 0.0)
+        freq = d.get("taken_freq")
+        if ev > 0:
+            verdict = f"−{ev:.1f}bb"
+        elif freq is not None and float(freq) <= LOW_FREQUENCY_BRANCH:
+            verdict = f"低頻分支 {float(freq) * 100:.1f}%"
+        elif freq is not None:
+            kind = "主要策略" if d.get("correctness") == "BEST_MOVE" else "GTO 頻率"
+            verdict = f"{kind} {float(freq) * 100:.1f}%"
+        else:
+            verdict = "EV 差小"
         desc = spot_desc_zh({
             "spot_category": d.get("spot_category"), "spot_leaf": d.get("spot_leaf"),
             "hero_cat": d.get("hero_cat"), "villain_cat": d.get("villain_cat"),
             "ip_oop": d.get("ip_oop"), "hero_pos": d.get("position"),
             "street": d.get("spot_category")})
-        rows.append({"text": f"➕ {d.get('street')} {desc} {ev_txt}"[:60],
+        rows.append({"text": f"➕ {d.get('street')} {desc} {verdict}"[:60],
                      "callback_data": f"qad:{queue_id}:{d['id']}"})
     return rows
 
