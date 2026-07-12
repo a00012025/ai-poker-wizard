@@ -49,9 +49,15 @@ PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vsCold3b
 # moves it, so focus picking and readback would be blind to change.
 def leader_sql(since=None) -> str:
     win = " AND played_at >= $3" if since else ""
+    # n_clean/avg_ev_clean re-aggregate WITHOUT the off-tree-approximated rows
+    # (sizing_snap / depth_snap_gap) — the honesty layer's soft flags get a
+    # consumer: a spot whose avg moves a lot without them is `fragile`
+    # (§5.2 敏感度旗標), i.e. its magnitude leans on approximation error.
     return f"""
 SELECT spot_leaf, spot_category,
        count(*) n, sum(ev_loss_bb) total_ev, avg(ev_loss_bb) avg_ev,
+       count(*) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap'])) n_clean,
+       avg(ev_loss_bb) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap'])) avg_ev_clean,
        mode() WITHIN GROUP (ORDER BY hero_cat)   hero_cat,
        mode() WITHIN GROUP (ORDER BY villain_cat) villain_cat,
        mode() WITHIN GROUP (ORDER BY ip_oop)     ip_oop,
@@ -123,6 +129,17 @@ def _drill_url(r, depths) -> str | None:
         return None
 
 
+def is_fragile(row: dict, rel_threshold: float = 0.30, min_clean_n: int = 10) -> bool:
+    """§5.2 sensitivity flag: the spot's avg EV loss moves >30% once the
+    off-tree-approximated samples (sizing_snap/depth_snap_gap) are removed —
+    its magnitude leans on approximation error; read it conservatively."""
+    n_clean = row.get("n_clean") or 0
+    avg_clean, avg_all = row.get("avg_ev_clean"), row.get("avg_ev")
+    if n_clean < min_clean_n or avg_clean is None or not avg_all or avg_all <= 1e-9:
+        return False
+    return abs(float(avg_clean) - float(avg_all)) / float(avg_all) > rel_threshold
+
+
 async def leaderboard(conn, min_n=50, top=5, since=None):
     """since=None → all-history (CLI/preview); a datetime restricts every
     aggregate (ranking, bands, samples) to that window."""
@@ -133,8 +150,9 @@ async def leaderboard(conn, min_n=50, top=5, since=None):
         bands = [dict(b) for b in await conn.fetch(band_sql(since), r["spot_leaf"], *extra)]
         restrict, depths = choose_depths(bands)
         samples = await conn.fetch(sample_sql(since), r["spot_leaf"], *extra)
-        out.append({"row": r, "url": _drill_url(r, depths), "samples": samples,
-                    "bands": bands, "restrict": restrict})
+        row = dict(r)
+        out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
+                    "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
     return out
 
 
@@ -150,6 +168,11 @@ def _render(items, min_n) -> str:
                  f"（每決策 {r['avg_ev']:.3f}bb）· n={r['n']} · 總損失 {r['total_ev']:.1f}bb")
         L.append(f"- 情境：{r['spot_category']} · hero_cat={r['hero_cat']} · "
                  f"villain_cat={r['villain_cat']} · {r['ip_oop'] or '-'}")
+        if it.get("fragile"):
+            ac = r.get("avg_ev_clean")
+            L.append(f"- ⚠️ **fragile**：排除尺寸/深度樹外樣本後 avg 變為 "
+                     f"{(ac or 0)*100:.2f} bb/100（n={r.get('n_clean')}）— "
+                     f"此 spot 的量級對近似敏感，保守解讀")
         # stack-band breakdown
         bands = sorted(it["bands"], key=lambda b: -b["avg_ev"])
         bd = " · ".join(f"{BAND_ZH.get(b['eff_stack'], b['eff_stack'])} "
