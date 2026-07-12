@@ -15120,19 +15120,23 @@ def test_queue_feed_qex_submenu_callback_data():
 
 @test
 def test_queue_feed_review_and_manual_items():
-    """Review label format (+⚠近似 on approx-sensitive worst decisions), review
-    URL fallback, and the manual drill item (kind/added_by/source, ev may be 0)."""
+    """Review label (combo w/ suits + spot + ⚠近似), review URL fallback, and the
+    manual drill item (kind/added_by/source, ev may be 0)."""
     from datetime import datetime, timezone
     import queue_feed as qf
+    assert_eq(qf.pretty_hand("Qh8c"), "Q♥8♣")                   # suits -> glyphs
+    assert_eq(qf.pretty_hand("AsKd"), "A♠K♦")
+    assert_eq(qf.pretty_hand("T9s"), "T9s")                     # odd/non-exact passes through
     row = {"spot_category": "river", "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet",
            "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP", "hero_pos": "SB",
-           "max_ev": 22.7, "approx_flags": ["chipev_grading"],
+           "hero_hand": "Qh8c", "max_ev": 22.7, "approx_flags": ["chipev_grading"],
            "played_at": datetime(2026, 6, 1, 3, 0, tzinfo=timezone.utc), "ref_hand_id": "abc"}
     lbl = qf.review_label(row)
-    assert_true(lbl.startswith("復盤 6/1 "))
+    assert_true(lbl.startswith("復盤 6/1 Q♥8♣ "))                # exact combo in the label
     assert_in("−22.7bb", lbl)
     assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
     assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))
+    # no raw_path -> Study link can't build -> day-range Analyze fallback
     assert_true(qf.review_url(row).startswith("https://app.gtowizard.com/analyze"))
     assert_true(qf.review_url({"ref_hand_id": "x"}) is None)   # no played_at -> no link
     dec = {"gtow_hand_id": "h9", "street": "flop", "decision_idx": 1, "spot_category": "flop",
@@ -15145,6 +15149,46 @@ def test_queue_feed_review_and_manual_items():
     assert_eq(it["total_ev_loss_bb"], 0.0)                      # drilling a spot played right
     assert_true(it["drill_url"] and it["label"])
     assert_eq(it["source_hands"][0]["src"], "manual")
+
+
+@test
+def test_build_hand_solution_url_from_archive():
+    """The /solutions Study URL is built straight from an archived hand detail's
+    solved_action_sequence — pins the exact node the review decision was at, and
+    refuses (None) when the node is absent, un-solved, or a first-to-act RFI
+    (empty action line) so the caller falls back."""
+    from gtow_solution_url import build_hand_solution_url
+
+    def gp(street, pos, sas, has_solution=True, selected=True):
+        return {"real_game_action": {"position": pos},
+                "real_game": {"current_street": {"type": street.upper()},
+                              "board": "Kh6h4hQs8s"},
+                "analysis_solved": {"available_actions": [{"selected": selected}]},
+                "has_solution": has_solution, "depth": 34.692, "gametype": "MTTGeneral",
+                "solved_action_sequence": sas}
+
+    sas = {"preflop_actions": ["F", "F", "F", "F", "F", "F", "R3.5", "C"],
+           "flop_actions": ["R2", "C"], "turn_actions": ["X", "R9", "C"],
+           "river_actions": ["X", "R16.65"]}
+    detail = {"game_analysis": {"game_points": [
+        gp("preflop", "BB", {"preflop_actions": ["F"], "flop_actions": [],
+                             "turn_actions": [], "river_actions": []}, selected=False),
+        gp("river", "SB", sas)]}}
+
+    url = build_hand_solution_url(detail, "SB", "river", 0)
+    assert_true(url and url.startswith("https://app.gtowizard.com/solutions?"))
+    assert_in("soltab=strategy", url)
+    assert_in("preflop_actions=F-F-F-F-F-F-R3.5-C", url)
+    assert_in("river_actions=X-R16.65", url)                    # exact node: hero faces the bet
+    assert_in("board=Kh6h4hQs8s", url)
+    assert_in("history_spot=15", url)                           # 8+2+3+2 actions into the node
+    assert_true(build_hand_solution_url(detail, "BB", "river", 0) is None)   # wrong hero
+    assert_true(build_hand_solution_url(detail, "SB", "turn", 0) is None)    # no such decision
+    nosol = {"game_analysis": {"game_points": [gp("river", "SB", sas, has_solution=False)]}}
+    assert_true(build_hand_solution_url(nosol, "SB", "river", 0) is None)    # unsolved node
+    rfi = {"game_analysis": {"game_points": [gp("preflop", "UTG",
+        {"preflop_actions": [], "flop_actions": [], "turn_actions": [], "river_actions": []})]}}
+    assert_true(build_hand_solution_url(rfi, "UTG", "preflop", 0) is None)   # first-in RFI: no line
 
 
 @test
