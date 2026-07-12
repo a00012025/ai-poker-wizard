@@ -4,9 +4,9 @@ This module produces the precise `fh_start_spot=custom_spot` deep-links used
 by the weekly leak report, replacing the coarse bucket shortcuts emitted by
 gtow_trainer_url.build_trainer_url.
 
-Fallback contract: any exception raised from build_custom_spot_url is the
-caller's cue to fall back to the bucket URL. The builder itself never catches;
-callers that want soft failure wrap in try/except.
+Honesty contract: any exception raised from build_custom_spot_url means the
+caller must omit the Trainer link.  Falling back to a coarse bucket would point
+at a different action line, which is worse than having no button.
 """
 from __future__ import annotations
 
@@ -154,7 +154,29 @@ _POT_TYPE_TO_FH_ACTIONS: dict[str, str] = {
 
 
 class CustomSpotBuildError(ValueError):
-    """Raised when the custom-spot URL can't be built — caller should fall back."""
+    """Raised when the custom-spot URL can't be built faithfully."""
+
+
+def _validate_action_sequence(name: str, sequence: str) -> None:
+    """Reject resolver tokens the Trainer cannot preserve.
+
+    CDP verification showed that generic ``B``/``R`` tokens make GTOW discard
+    the custom history.  A faithful custom spot uses fold/call/check/all-in or
+    a numeric raise code (``R2.3``).  Empty later-street sequences are valid.
+    """
+    if not sequence:
+        return
+    for token in sequence.split("-"):
+        valid = token in {"F", "C", "X", "RAI"}
+        if not valid and token.startswith("R") and token != "R":
+            try:
+                float(token[1:])
+                valid = True
+            except ValueError:
+                valid = False
+        if not valid:
+            raise CustomSpotBuildError(
+                f"{name} contains unsupported Trainer action token {token!r}")
 
 
 def build_custom_spot_url(
@@ -184,6 +206,9 @@ def build_custom_spot_url(
 
     if not resolved.get("villain_pos"):
         raise CustomSpotBuildError("could not identify HU villain (multiway or RFI)")
+
+    for key in ("preflop_actions", "flop_actions", "turn_actions", "river_actions"):
+        _validate_action_sequence(key, resolved.get(key) or "")
 
     # Board classification: full board across all played streets
     streets = hand_data.get("streets") or []

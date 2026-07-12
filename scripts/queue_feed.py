@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,7 @@ import spot_leaderboard as lb
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
+log = logging.getLogger(__name__)
 
 # ── scan thresholds (all tunable; owner-approved defaults) ────────────────────
 QUEUE_SCAN_WINDOW_DAYS = 60     # rolling window (owner's "past two months"; kept
@@ -280,17 +282,21 @@ def qex_submenu(decisions: list[dict], queue_id: int) -> list[dict]:
     return rows
 
 
-def manual_drill_item(dec: dict) -> dict:
+_URL_UNSET = object()
+
+
+def manual_drill_item(dec: dict, drill_url=_URL_UNSET) -> dict:
     """Build a manual drill queue item from a single ledger_decisions row (qad).
 
     Reuses the ONE drill-URL + label policy (§5.3); ev may be 0 (owner wants to
     drill a spot they played right but felt unsure about)."""
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
     depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
-    url = drill_url_for_spot(
+    url = (drill_url_for_spot(
         dec.get("spot_category"), hero_pos=dec.get("position"),
         hero_cat=dec.get("hero_cat"), villain_cat=dec.get("villain_cat"),
         ip_oop=dec.get("ip_oop"), pot_type=dec.get("pot_type"), depths=depths)
+        if drill_url is _URL_UNSET else drill_url)
     ev = dec.get("ev_loss_bb")
     return {
         "kind": "drill", "added_by": "manual", "source": "manual",
@@ -306,6 +312,149 @@ def manual_drill_item(dec: dict) -> dict:
                           "ev_loss_bb": float(ev) if ev is not None else 0.0,
                           "src": "manual"}],
     }
+
+
+_QUEUE_DECISION_SQL = """
+SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
+       d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
+       d.pot_type, d.eff_stack, d.ev_loss_bb, d.gametype,
+       h.source hand_source, h.raw_path, h.parsed_json,
+       h.position hand_position, h.preflop_depth_bb
+FROM ledger_decisions d
+JOIN ledger_hands h ON h.gtow_hand_id=d.gtow_hand_id
+WHERE d.gtow_hand_id=$1 AND d.street=$2 AND d.decision_idx=$3
+"""
+
+_QUEUE_DECISIONS_BY_STREET_SQL = _QUEUE_DECISION_SQL.replace(
+    " AND d.decision_idx=$3", " ORDER BY d.decision_idx")
+
+_EXACT_SOURCE_CATEGORIES = {"flop", "turn", "river", "vsCold3bet", "vsCold4bet"}
+
+
+def _load_source_hand(dec: dict) -> dict:
+    """Reconstruct the parsed-hand shape required by the custom URL builder."""
+    source = dec.get("hand_source")
+    if source == "live":
+        parsed = dec.get("parsed_json")
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+        if not isinstance(parsed, dict):
+            raise ValueError("live ledger hand has no parsed_json")
+        return parsed
+
+    raw_path = dec.get("raw_path")
+    depth = dec.get("preflop_depth_bb")
+    hero_pos = dec.get("hand_position") or dec.get("position")
+    if not (raw_path and depth is not None and hero_pos):
+        raise ValueError("online ledger hand is missing archive/depth/position")
+    import gzip
+    from gtow_solution_url import _parsed_hand_from_analyze
+    p = Path(raw_path) if os.path.isabs(raw_path) else (ROOT / raw_path)
+    opener = gzip.open if str(p).endswith(".gz") else open
+    with opener(p, "rb") as fh:
+        detail = json.loads(fh.read())
+    return _parsed_hand_from_analyze(
+        detail, hero_pos, float(depth), dec.get("gametype") or "MTTGeneral")
+
+
+def _exact_pot_type(dec: dict) -> str:
+    category = dec.get("spot_category")
+    if category == "vsCold3bet":
+        return "3bet"
+    if category == "vsCold4bet":
+        return "4bet"
+    return dec.get("pot_type") or ""
+
+
+def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> str | None:
+    """Faithful queue Trainer URL for one joined ledger decision.
+
+    Postflop and cold-raise spots require the source action history.  Failure is
+    honest ``None`` — never a nearby shortcut.  Supported preflop categories
+    continue to use CDP-verified shortcuts.
+    """
+    category = dec.get("spot_category")
+    if category in _EXACT_SOURCE_CATEGORIES:
+        try:
+            from gtow_custom_url import build_custom_spot_url
+            hand = _load_source_hand(dec)
+            return build_custom_spot_url(
+                hand, dec.get("street") or "preflop",
+                int(dec.get("decision_idx") or 0), _exact_pot_type(dec))
+        except Exception as exc:
+            log.warning(
+                "queue Trainer exact URL failed (%s %s[%s]): %s",
+                dec.get("gtow_hand_id"), dec.get("street"),
+                dec.get("decision_idx"), exc)
+            return None
+
+    from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
+    if depths is None:
+        depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
+    return drill_url_for_spot(
+        category, hero_pos=dec.get("position"), hero_cat=dec.get("hero_cat"),
+        villain_cat=dec.get("villain_cat"), ip_oop=dec.get("ip_oop"),
+        pot_type=dec.get("pot_type"), depths=depths)
+
+
+async def _source_decisions(conn, entries: list[dict]) -> list[dict]:
+    out = []
+    for entry in entries:
+        if not (entry.get("hand_id") and entry.get("street")):
+            continue
+        if entry.get("decision_idx") is not None:
+            row = await conn.fetchrow(
+                _QUEUE_DECISION_SQL, entry["hand_id"], entry["street"],
+                int(entry["decision_idx"]))
+        else:
+            # Rows created before the unified queue migration omitted the
+            # decision index.  Repair them by matching the stored EV on the
+            # same hand/street (or the sole decision on that street).
+            candidates = [dict(r) for r in await conn.fetch(
+                _QUEUE_DECISIONS_BY_STREET_SQL, entry["hand_id"], entry["street"])]
+            if len(candidates) == 1:
+                row = candidates[0]
+            elif candidates and entry.get("ev_loss_bb") is not None:
+                target = float(entry["ev_loss_bb"])
+                row = min(candidates, key=lambda d: abs(
+                    float(d.get("ev_loss_bb") or 0.0) - target))
+                if abs(float(row.get("ev_loss_bb") or 0.0) - target) > 0.001:
+                    row = None
+            else:
+                row = None
+        if row:
+            out.append(dict(row))
+    return out
+
+
+async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
+    """Backfill legacy source_hands decision_idx/src without changing identity."""
+    normalized = []
+    for entry in entries:
+        fixed = dict(entry)
+        if fixed.get("decision_idx") is None:
+            matches = await _source_decisions(conn, [fixed])
+            if matches:
+                fixed["decision_idx"] = int(matches[0]["decision_idx"])
+                fixed.setdefault("src", matches[0].get("hand_source") or "online")
+        normalized.append(fixed)
+    return normalized
+
+
+async def queue_drill_url_from_sources(conn, entries: list[dict],
+                                       depths: list[int] | None = None) -> str | None:
+    """Use the first source decision that can produce a faithful URL."""
+    for dec in await _source_decisions(conn, entries):
+        if dec.get("spot_category") in _EXACT_SOURCE_CATEGORIES:
+            # Exact resolution may query GTOW while snapping real bet sizes;
+            # keep Telegram callbacks and weekly jobs off the event loop.
+            url = await asyncio.to_thread(
+                queue_drill_url_for_decision, dec, depths)
+        else:
+            url = queue_drill_url_for_decision(dec, depths=depths)
+        if url:
+            return url
+    return None
 
 
 # ── shared upsert policy (the ONE enqueue; live_flow imports this) ────────────
@@ -454,11 +603,13 @@ async def _build_drill_items(conn, since) -> list[dict]:
         row = dict(r)
         bands = [dict(b) for b in await conn.fetch(lb.band_sql(since), leaf, since)]
         _restrict, depths = lb.choose_depths(bands)
+        entries = _as_list(row["source_hands"])
+        url = await queue_drill_url_from_sources(conn, entries, depths=depths)
         items.append({
             "kind": "drill", "added_by": "auto", "source": "online",
             "spot_leaf": leaf, "spot_category": row["spot_category"],
-            "label": drill_label(row), "drill_url": lb._drill_url(row, depths),
-            "source_hands": _as_list(row["source_hands"]),
+            "label": drill_label(row), "drill_url": url,
+            "source_hands": entries,
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
         })
     return items
@@ -570,18 +721,22 @@ async def refresh_review_links(conn, include_all: bool = False) -> dict:
 
 
 async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
-    """Apply current global Trainer defaults to persisted drill queue URLs."""
-    from gtow_trainer_url import apply_trainer_defaults
+    """Semantically rebuild persisted links from their ledger source decisions."""
     status = "" if include_all else "AND status IN ('pending', 'prescribed')"
     rows = await conn.fetch(
-        f"SELECT id, drill_url FROM drill_queue WHERE kind='drill' "
-        f"AND drill_url IS NOT NULL {status} ORDER BY id")
-    tally = {"checked": len(rows), "updated": 0}
+        f"SELECT id, drill_url, source_hands FROM drill_queue WHERE kind='drill' "
+        f"{status} ORDER BY id")
+    tally = {"checked": len(rows), "updated": 0, "unresolved": 0}
     for row in rows:
-        rebuilt = apply_trainer_defaults(row["drill_url"])
-        if rebuilt != row["drill_url"]:
-            await conn.execute("UPDATE drill_queue SET drill_url=$2 WHERE id=$1",
-                               row["id"], rebuilt)
+        entries = _as_list(row["source_hands"])
+        normalized = await normalize_source_entries(conn, entries)
+        rebuilt = await queue_drill_url_from_sources(conn, normalized)
+        if not rebuilt:
+            tally["unresolved"] += 1
+        if rebuilt != row["drill_url"] or normalized != entries:
+            await conn.execute(
+                "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb WHERE id=$1",
+                row["id"], rebuilt, json.dumps(normalized))
             tally["updated"] += 1
     return tally
 
@@ -666,9 +821,9 @@ def main():
     ap.add_argument("--refresh-review-links", action="store_true",
                     help="rebuild persisted review links from real Analyze actions")
     ap.add_argument("--refresh-trainer-links", action="store_true",
-                    help="apply current global defaults to persisted Trainer links")
+                    help="rebuild persisted Trainer links from source decisions")
     ap.add_argument("--all-statuses", action="store_true",
-                    help="with --refresh-review-links, include cleared rows")
+                    help="with either refresh command, include cleared rows")
     ap.add_argument("--window-days", type=int, default=QUEUE_SCAN_WINDOW_DAYS)
     ap.add_argument("--dry-run", action="store_true", help="print candidates, no DB writes")
     a = ap.parse_args()

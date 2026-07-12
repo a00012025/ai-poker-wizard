@@ -8783,44 +8783,52 @@ def test_build_url_is_parseable():
 
 @test
 def test_build_url_postflop_srp():
-    """build_trainer_url: flop + SRP → fh_actions=SRP, fh_start_spot=flop"""
-    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="SRP")
-    qs = parse_qs(urlparse(url).query)
-    assert_eq(qs["fh_actions"], ["SRP"])
-    assert_eq(qs["fh_start_spot"], ["flop"])
+    """build_trainer_url: coarse postflop links are rejected."""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30, pot_type="SRP")
+        assert_true(False, "must require custom_spot")
+    except SpotNotSupportedError:
+        pass
 
 
 @test
 def test_build_url_postflop_3bet_pot():
-    """build_trainer_url: flop + 3bet pot → fh_actions=3bet"""
-    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="3bet")
-    qs = parse_qs(urlparse(url).query)
-    assert_eq(qs["fh_actions"], ["3bet"])
+    """build_trainer_url: 3bet-pot flop also requires custom_spot."""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30, pot_type="3bet")
+        assert_true(False, "must require custom_spot")
+    except SpotNotSupportedError:
+        pass
 
 
 @test
 def test_build_url_postflop_squeezed():
-    """build_trainer_url: flop + squeezed pot → fh_actions=Squeeze"""
-    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="squeezed")
-    qs = parse_qs(urlparse(url).query)
-    assert_eq(qs["fh_actions"], ["Squeeze"])
+    """build_trainer_url: squeezed-pot flop requires custom_spot."""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30, pot_type="squeezed")
+        assert_true(False, "must require custom_spot")
+    except SpotNotSupportedError:
+        pass
 
 
 @test
 def test_build_url_postflop_4bet_falls_back_to_3bet():
-    """build_trainer_url: flop + 4bet pot → fh_actions=3bet (closest)"""
-    url = build_trainer_url("cbet_ip", "flop", 30, pot_type="4bet")
-    qs = parse_qs(urlparse(url).query)
-    assert_eq(qs["fh_actions"], ["3bet"])
+    """build_trainer_url: 4bet must never fall back to a 3bet-pot link."""
+    try:
+        build_trainer_url("cbet_ip", "flop", 30, pot_type="4bet")
+        assert_true(False, "must not alias 4bet to 3bet")
+    except SpotNotSupportedError:
+        pass
 
 
 @test
 def test_build_url_turn_srp_keeps_turn_start():
-    """build_trainer_url: turn + SRP → fh_actions=SRP, fh_start_spot=turn"""
-    url = build_trainer_url("cbet_ip", "turn", 30, pot_type="SRP")
-    qs = parse_qs(urlparse(url).query)
-    assert_eq(qs["fh_actions"], ["SRP"])
-    assert_eq(qs["fh_start_spot"], ["turn"])
+    """build_trainer_url: GTOW rewrites turn starts, so reject them."""
+    try:
+        build_trainer_url("cbet_ip", "turn", 30, pot_type="SRP")
+        assert_true(False, "turn must use custom_spot")
+    except SpotNotSupportedError:
+        pass
 
 
 @test
@@ -9804,7 +9812,7 @@ def test_build_custom_spot_url_raises_on_multiway_postflop():
 
 @test
 def test_build_custom_spot_url_raises_on_unmapped_pot_type():
-    """gtow_custom_url: unknown pot_type → CustomSpotBuildError (bucket fallback)."""
+    """gtow_custom_url: unknown pot_type → CustomSpotBuildError (no wrong fallback)."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
 
     hand_data = {"gametype": "MTTGeneral", "effective_bb": 30.0,
@@ -9817,6 +9825,34 @@ def test_build_custom_spot_url_raises_on_unmapped_pot_type():
         assert_true(False, "expected CustomSpotBuildError")
     except CustomSpotBuildError:
         pass
+
+
+@test
+def test_build_custom_spot_url_rejects_generic_action_tokens():
+    """GTOW discards a custom history containing generic B/R action tokens.
+
+    Regression for persisted queue id 26: the URL looked like a custom spot,
+    but CDP showed a blank action history because ``flop_actions=X-B-C`` was
+    not a valid Trainer action sequence.
+    """
+    import gtow_action_resolver
+    from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
+
+    old = gtow_action_resolver.resolve_actions_for_deviation
+    gtow_action_resolver.resolve_actions_for_deviation = lambda *_args: {
+        "villain_pos": "BB", "hero_pos": "BTN", "depth": 25,
+        "gametype": "MTTGeneral", "preflop_actions": "F-F-R2.3-F-C",
+        "flop_actions": "X-B-C", "turn_actions": "", "river_actions": "",
+        "history_spot": 8,
+    }
+    try:
+        try:
+            build_custom_spot_url({"streets": []}, "flop", 0, "SRP")
+            assert_true(False, "generic B must not produce a misleading URL")
+        except CustomSpotBuildError as exc:
+            assert_in("unsupported Trainer action token 'B'", str(exc))
+    finally:
+        gtow_action_resolver.resolve_actions_for_deviation = old
 
 
 @test
@@ -13850,13 +13886,24 @@ def test_build_drill_url_pins_position():
     assert_in("fh_hero=BTN", u)
     assert_in("fh_opponent=UTG%2CUTG%2B1", u)
     assert_in("fh_start_spot=preflop", u)
-    # postflop SRP with IP
-    u2 = build_drill_url("flop", "flop", 30, ["BB"], opponent_positions=["SB"],
-                         rel_position="IP", pot_type="SRP")
-    assert_in("fh_actions=SRP", u2)
-    assert_in("fh_hero=BB", u2)
-    assert_in("fh_rel_positions=IP", u2)
-    assert_in("fh_start_spot=flop", u2)
+    # postflop action-line links require exact source-hand custom spots; a
+    # coarse pot-family shortcut is intentionally rejected.
+    try:
+        build_drill_url("flop", "flop", 30, ["BB"],
+                        opponent_positions=["SB"], rel_position="IP", pot_type="SRP")
+        assert_true(False, "coarse postflop link must not be emitted")
+    except SpotNotSupportedError:
+        pass
+    # our raise+caller taxonomy maps to GTOW's verified possibleSqueeze name.
+    squeeze = build_drill_url("vsRaiseCall", "preflop", 20, ["BB"])
+    assert_in("fh_actions=possibleSqueeze", squeeze)
+    # cold-facing categories have no GTOW shortcut and require a source hand.
+    for category in ("vsCold3bet", "vsCold4bet"):
+        try:
+            build_drill_url(category, "preflop", 20, ["BB"])
+            assert_true(False, f"{category} must not alias a different shortcut")
+        except SpotNotSupportedError:
+            pass
     # unmapped category raises
     try:
         build_drill_url("bogus", "preflop", 20, ["BTN"])
@@ -14817,7 +14864,18 @@ def test_live_queue_selection_and_report():
         dict(base, gtow_hand_id="live:d:4", ev_loss_bb=0.50, limp_origin=True),  # limp -> out
         dict(base, gtow_hand_id="live:d:5", ev_loss_bb=None, excluded=True),     # ungraded -> out
     ]
-    items = select_queue_items(rows)
+    # Live postflop drills only expose a button when their exact source hand
+    # can build a custom spot; never fall back to a broad turn shortcut.
+    import gtow_custom_url
+    old = gtow_custom_url.build_custom_spot_url
+    gtow_custom_url.build_custom_spot_url = lambda *_args: (
+        "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot&fh_hero=BB")
+    for row in rows:
+        row["_hand"] = {"hero_position": "BB"}
+    try:
+        items = select_queue_items(rows)
+    finally:
+        gtow_custom_url.build_custom_spot_url = old
     assert_eq(len(items), 1)
     assert_eq(items[0]["spot_leaf"], base["spot_leaf"])
     assert_eq(len(items[0]["source_hands"]), 2)
@@ -14910,10 +14968,116 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
             "villain_cat": "SB", "ip_oop": "IP", "pot_type": "squeezed",
             "eff_stack": "medium", "_hand": {"hero_position": "CO"},
         })
+        cold_url = drill_url_for({
+            "gtow_hand_id": "live:y", "street": "preflop", "decision_idx": 0,
+            "spot_category": "vsCold3bet", "position": "BB", "hero_cat": "BB",
+            "villain_cat": "SB", "pot_type": "Preflop",
+            "eff_stack": "short", "_hand": {"hero_position": "BB"},
+        })
     finally:
         gtow_custom_url.build_custom_spot_url = old
     assert_in("fh_start_spot=custom_spot", url)
+    assert_in("fh_start_spot=custom_spot", cold_url)
     assert_eq(calls[0][1:], ("turn", 0, "squeezed"))
+    assert_eq(calls[1][1:], ("preflop", 0, "3bet"))
+
+
+@test
+def test_live_drill_url_omits_failed_exact_postflop_link():
+    """A failed exact build must not fall back to a different/broad spot."""
+    import gtow_custom_url
+    from live_flow import drill_url_for
+
+    old = gtow_custom_url.build_custom_spot_url
+    gtow_custom_url.build_custom_spot_url = lambda *_args: (_ for _ in ()).throw(
+        ValueError("off tree"))
+    try:
+        url = drill_url_for({
+            "street": "turn", "decision_idx": 0, "spot_category": "turn",
+            "position": "CO", "hero_cat": "LP", "villain_cat": "SB",
+            "ip_oop": "IP", "pot_type": "3bet", "_hand": {"x": 1},
+        })
+    finally:
+        gtow_custom_url.build_custom_spot_url = old
+    assert_eq(url, None)
+
+
+@test
+def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
+    """A bad first source must not suppress a valid shared-leaf drill button."""
+    import gtow_custom_url
+    from live_flow import select_queue_items
+
+    old = gtow_custom_url.build_custom_spot_url
+    def fake(hand, *_args):
+        if not hand.get("valid"):
+            raise ValueError("generic action")
+        return "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot"
+    gtow_custom_url.build_custom_spot_url = fake
+    base = {
+        "street": "turn", "decision_idx": 0, "spot_category": "turn",
+        "spot_leaf": "turn:SRP:BBvEP:OOP:[x-x]:first_to_act",
+        "position": "BB", "hero_cat": "BB", "villain_cat": "EP",
+        "ip_oop": "OOP", "pot_type": "SRP", "eff_stack": "medium",
+        "excluded": False, "discarded": False, "limp_origin": False,
+    }
+    try:
+        items = select_queue_items([
+            dict(base, gtow_hand_id="bad", ev_loss_bb=0.2, _hand={"valid": False}),
+            dict(base, gtow_hand_id="good", ev_loss_bb=0.3, _hand={"valid": True}),
+        ])
+    finally:
+        gtow_custom_url.build_custom_spot_url = old
+    assert_in("fh_start_spot=custom_spot", items[0]["drill_url"])
+
+
+@test
+def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
+    """Queue policy uses custom_spot for every source-dependent category."""
+    import queue_feed as qf
+    import gtow_custom_url
+
+    seen = []
+    old_load = qf._load_source_hand
+    old_build = gtow_custom_url.build_custom_spot_url
+    qf._load_source_hand = lambda dec: {"hero_position": dec["position"]}
+    gtow_custom_url.build_custom_spot_url = lambda hand, street, idx, pot: (
+        seen.append((street, idx, pot)) or
+        "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot")
+    try:
+        post = qf.queue_drill_url_for_decision({
+            "spot_category": "turn", "street": "turn", "decision_idx": 1,
+            "position": "UTG+1", "pot_type": "3bet",
+        })
+        cold = qf.queue_drill_url_for_decision({
+            "spot_category": "vsCold3bet", "street": "preflop",
+            "decision_idx": 0, "position": "BB", "pot_type": "Preflop",
+        })
+    finally:
+        qf._load_source_hand = old_load
+        gtow_custom_url.build_custom_spot_url = old_build
+    assert_in("fh_start_spot=custom_spot", post)
+    assert_in("fh_start_spot=custom_spot", cold)
+    assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "3bet")])
+
+
+@test
+def test_queue_source_normalization_repairs_legacy_missing_decision_index():
+    """Old live queue rows omitted decision_idx/src; refresh backfills both."""
+    import asyncio
+    import queue_feed as qf
+
+    class Conn:
+        async def fetch(self, sql, hand_id, street):
+            assert_eq((hand_id, street), ("live:x", "turn"))
+            return [{"decision_idx": 1, "ev_loss_bb": 0.42,
+                     "hand_source": "live", "gtow_hand_id": hand_id,
+                     "street": street}]
+
+    entries = [{"hand_id": "live:x", "street": "turn", "ev_loss_bb": 0.42}]
+    fixed = asyncio.run(qf.normalize_source_entries(Conn(), entries))
+    assert_eq(fixed[0]["decision_idx"], 1)
+    assert_eq(fixed[0]["src"], "live")
 
 
 @test
@@ -15089,10 +15253,11 @@ def test_shared_drill_url_policy():
     assert_true(u_row and u_dec)
     assert_eq(u_row, u_dec)
     assert_in("fh_hero=BTN", u_row)          # RFI/vsOpen pin the exact seat
-    # postflop: pot_type flows through; unsupported category -> None
+    # postflop/cold spots require a source hand; unsupported category -> None
     u_pf = drill_url_for_spot("flop", hero_cat="BB", villain_cat="LP",
                               ip_oop="OOP", pot_type="SRP")
-    assert_true(u_pf and "fh_actions=SRP" in u_pf)
+    assert_eq(u_pf, None)
+    assert_eq(drill_url_for_spot("vsCold3bet", hero_cat="BB"), None)
     assert_eq(drill_url_for_spot("discarded"), None)
 
 
@@ -15255,11 +15420,13 @@ def test_queue_feed_review_and_manual_items():
            "spot_leaf": "flop:SRP:BBvLP:OOP:[x-b]:vs_bet", "hero_cat": "BB", "villain_cat": "LP",
            "ip_oop": "OOP", "position": "BB", "pot_type": "SRP", "eff_stack": "medium",
            "ev_loss_bb": 0.0}
-    it = qf.manual_drill_item(dec)
+    exact = "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot"
+    it = qf.manual_drill_item(dec, drill_url=exact)
     assert_eq((it["kind"], it["added_by"], it["source"]), ("drill", "manual", "manual"))
     assert_eq(it["ref_hand_id"], "h9")
     assert_eq(it["total_ev_loss_bb"], 0.0)                      # drilling a spot played right
-    assert_true(it["drill_url"] and it["label"])
+    assert_eq(it["drill_url"], exact)
+    assert_true(it["label"])
     assert_eq(it["source_hands"][0]["src"], "manual")
 
 

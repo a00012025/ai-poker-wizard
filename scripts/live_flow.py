@@ -1121,18 +1121,25 @@ def drill_url_for(dec: dict) -> str | None:
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
 
     hand = dec.get("_hand")
-    if hand and dec.get("street") in {"flop", "turn", "river"}:
+    category = dec.get("spot_category")
+    needs_exact = (dec.get("street") in {"flop", "turn", "river"}
+                   or category in {"vsCold3bet", "vsCold4bet"})
+    if hand and needs_exact:
         try:
             from gtow_custom_url import build_custom_spot_url
+            pot_type = ({"vsCold3bet": "3bet", "vsCold4bet": "4bet"}.get(category)
+                        or dec.get("pot_type") or "")
             return build_custom_spot_url(
                 hand, dec["street"], int(dec.get("decision_idx") or 0),
-                dec.get("pot_type") or "",
+                pot_type,
             )
         except Exception:
-            # Custom links require exact HU/on-tree action resolution. Live
-            # shorthand can still be too approximate, so fall back to the
-            # broader bucket drill instead of dropping the button.
-            pass
+            # A broad pot-family link is not this action line.  Omit the button
+            # rather than silently teaching a different spot.
+            return None
+
+    if needs_exact:
+        return None
 
     depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
     return drill_url_for_spot(
@@ -1150,11 +1157,18 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
         if (ev is None or ev < QUEUE_EV_MIN or d["excluded"]
                 or d["discarded"] or d["limp_origin"]):
             continue
-        it = by_leaf.setdefault(d["spot_leaf"], {
-            "spot_leaf": d["spot_leaf"], "spot_category": d["spot_category"],
-            "drill_url": drill_url_for(d), "label": spot_label_zh(d),
-            "source_hands": [], "total_ev_loss_bb": 0.0,
-            "kind": "drill", "added_by": "auto", "source": "live"})
+        it = by_leaf.get(d["spot_leaf"])
+        if it is None:
+            it = by_leaf[d["spot_leaf"]] = {
+                "spot_leaf": d["spot_leaf"], "spot_category": d["spot_category"],
+                "drill_url": drill_url_for(d), "label": spot_label_zh(d),
+                "source_hands": [], "total_ev_loss_bb": 0.0,
+                "kind": "drill", "added_by": "auto", "source": "live"}
+        elif not it.get("drill_url"):
+            # A leaf may have several source hands.  Keep looking after an
+            # unresolvable first hand so a later faithful custom spot can own
+            # the shared drill button.
+            it["drill_url"] = drill_url_for(d)
         # §5.2 full dedupe key: {hand_id, street, decision_idx, ev_loss_bb, src}
         it["source_hands"].append({"hand_id": d["gtow_hand_id"],
                                    "street": d["street"],

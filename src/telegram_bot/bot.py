@@ -1612,10 +1612,15 @@ class PokerWizardBot:
         if not dec:
             await query.answer("找不到這個決策。")
             return
-        from queue_feed import manual_drill_item, enqueue
+        from queue_feed import (manual_drill_item, enqueue,
+                                queue_drill_url_from_sources)
         from html import escape as _esc
-        item = manual_drill_item(dict(dec))
         async with self.db.pool.acquire() as conn:
+            url = await queue_drill_url_from_sources(conn, [{
+                "hand_id": dec["gtow_hand_id"], "street": dec["street"],
+                "decision_idx": int(dec["decision_idx"]), "src": "manual",
+            }])
+            item = manual_drill_item(dict(dec), drill_url=url)
             await enqueue(conn, [item])
         await query.answer("➕ 已加入練習佇列")
         await context.bot.send_message(
