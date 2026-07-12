@@ -32,7 +32,7 @@ scripts/
   # Phase 1 ledger (GTOW Analyze full ingestion + Version A training loop)
   gtow_analyze_api.py  — GTOW Analyze API client (hand list+detail; throttle/backoff; 404/403/204 soft-skip)
   ledger_ingest.py     — Idempotent resumable ingest (--backfill/--incremental/--verify) → raw archive + ledger_hands/decisions
-  ledger_distill.py    — Pure distiller: raw detail → ledger_decisions rows + honesty flags
+  ledger_distill.py    — Pure distiller: raw detail → ledger_decisions rows + honesty flags（taxonomy 只由 spot_taxonomy/backfill_spots 寫入，legacy family 已停寫）
   spot_taxonomy.py     — Action-line spot classifier (preflop RFI/vsOpen/vs3bet/vsCold3bet/…; postflop pot_type×pos×IP-OOP×facing)
   backfill_spots.py    — Re-distill taxonomy from archived raw onto ledger_decisions (no API)
   ledger_sessions.py   — Session reconstruction (gap>60min clustering + concurrency)
