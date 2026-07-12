@@ -1,0 +1,30 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; width: 360px; background: #0d1117; color: #f2f4f7; }
+main { padding: 18px; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.logo { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: #95f4aa; color: #0b2812; font-size: 25px; font-weight: 800; }
+h1 { margin: 0; font-size: 18px; }
+header p, .card p { margin: 3px 0 0; color: #99a2b3; font-size: 12px; }
+h2 { margin: 0 0 10px; font-size: 15px; }
+.card { padding: 14px; margin-top: 12px; border: 1px solid #293140; border-radius: 14px; background: #151b24; }
+.status-card { display: flex; align-items: center; gap: 10px; }
+.dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: #f4bf50; box-shadow: 0 0 0 4px #f4bf5022; }
+.dot.ok { background: #56d477; box-shadow: 0 0 0 4px #56d47722; }
+.dot.error { background: #ff6b6b; box-shadow: 0 0 0 4px #ff6b6b22; }
+ol { padding-left: 20px; color: #bdc5d2; font-size: 12px; line-height: 1.7; }
+label { display: block; margin: 10px 0 6px; color: #bdc5d2; font-size: 12px; }
+input { width: 100%; padding: 11px 12px; border: 1px solid #354052; border-radius: 9px; background: #0d1117; color: white; font: inherit; letter-spacing: 1px; text-transform: uppercase; }
+button { width: 100%; padding: 11px 12px; margin-top: 10px; border: 0; border-radius: 9px; cursor: pointer; font-weight: 700; }
+button:disabled { cursor: wait; opacity: .55; }
+.primary { background: #95f4aa; color: #102516; }
+.secondary { background: #283343; color: #e8edf5; }
+.link-button, .danger-link { background: transparent; color: #8bb8ff; }
+.danger-link { color: #ff8f8f; }
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #252d39; font-size: 12px; }
+.row strong { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hidden { display: none; }
+#message { min-height: 18px; margin: 12px 2px 0; color: #f4bf50; font-size: 12px; }
+#message.error { color: #ff8f8f; }
+footer { margin-top: 12px; color: #6f7887; text-align: center; font-size: 10px; }
+code { color: #a7f3b7; }

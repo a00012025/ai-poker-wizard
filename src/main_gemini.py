@@ -142,7 +142,11 @@ async def post_init(application):
         base = [
             BotCommand("help", "使用說明"),
             BotCommand("clear", "清除對話上下文"),
-            BotCommand("settoken", "設定 GTO Wizard token"),
+            BotCommand("pair", "配對 Chrome Extension"),
+            BotCommand("devices", "查看同步裝置"),
+            BotCommand("revoke", "撤銷同步裝置"),
+            BotCommand("settoken", "手動設定 GTOW token（備援）"),
+            BotCommand("logout", "解除 GTOW 綁定"),
         ]
         await application.bot.set_my_commands(base)
         owner = os.getenv("ADMIN_CHAT_ID")

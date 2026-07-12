@@ -4,6 +4,7 @@
 Stores refresh token locally, auto-refreshes access tokens.
 Falls back to browser login if refresh fails.
 """
+import hashlib
 import json
 import logging
 import subprocess
@@ -207,7 +208,7 @@ def get_access_token() -> str:
 
 # ── Per-user token management ──
 
-_user_token_cache: dict[int, tuple[str, float]] = {}  # user_id -> (access_token, expiry_ts)
+_user_token_cache: dict[int, tuple[str, float, str]] = {}
 
 
 _user_keypair_cache: dict[int, dict] = {}  # user_id -> signing_keypair
@@ -218,8 +219,9 @@ def get_user_access_token(user_id: int, refresh_token: str) -> str:
 
     Raises TokenExpiredError if the refresh token is invalid/expired.
     """
+    refresh_fingerprint = hashlib.sha256(refresh_token.encode()).hexdigest()
     cached = _user_token_cache.get(user_id)
-    if cached and cached[1] > time.time() + 60:
+    if cached and cached[1] > time.time() + 60 and cached[2] == refresh_fingerprint:
         return cached[0]
 
     keypair = _user_keypair_cache.get(user_id)
@@ -235,7 +237,7 @@ def get_user_access_token(user_id: int, refresh_token: str) -> str:
             "GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
         )
 
-    _user_token_cache[user_id] = (access, _jwt_exp(access))
+    _user_token_cache[user_id] = (access, _jwt_exp(access), refresh_fingerprint)
     return access
 
 

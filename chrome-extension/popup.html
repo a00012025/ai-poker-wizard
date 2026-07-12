@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Poker Wizard Sync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="logo">♠</div>
+        <div><h1>AI Poker Wizard</h1><p>GTOW Token Sync</p></div>
+      </header>
+
+      <section id="status-card" class="card status-card">
+        <span id="status-dot" class="dot"></span>
+        <div><strong id="status-title">檢查狀態中…</strong><p id="status-detail"></p></div>
+      </section>
+
+      <section id="pair-panel" class="card hidden">
+        <h2>配對 Telegram</h2>
+        <ol>
+          <li>在 Telegram bot 輸入 <code>/pair</code></li>
+          <li>把五分鐘配對碼貼到下面</li>
+        </ol>
+        <label for="pair-code">配對碼</label>
+        <input id="pair-code" autocomplete="one-time-code" maxlength="16" placeholder="ABCD-EFGH-JKLM" />
+        <button id="pair-button" class="primary">配對並自動同步</button>
+        <button id="telegram-button" class="link-button">開啟 Telegram Bot</button>
+      </section>
+
+      <section id="paired-panel" class="card hidden">
+        <div class="row"><span>Telegram</span><strong id="telegram-label">—</strong></div>
+        <div class="row"><span>裝置</span><strong id="device-name">—</strong></div>
+        <div class="row"><span>最後同步</span><strong id="last-sync">—</strong></div>
+        <button id="sync-button" class="primary">立即同步目前 GTOW</button>
+        <button id="gtow-button" class="secondary">開啟 GTO Wizard</button>
+        <button id="unpair-button" class="danger-link">解除這台裝置</button>
+      </section>
+
+      <p id="message" role="status"></p>
+      <footer>Token 不會顯示或寫入 Extension log。</footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
