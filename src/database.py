@@ -1,36 +1,64 @@
 # src/database.py
 """Async database layer using asyncpg (Supabase direct connection)."""
+
+import hashlib
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 import asyncpg
 
 logger = logging.getLogger("poker_bot")
 
-_REQUIRED_TABLES = ["users", "hand_histories", "gto_api_cache", "message_logs", "token_usage", "analysis_snapshots", "deviations", "tool_calls", "ledger_hands", "ledger_decisions", "ledger_sessions", "coach_focus", "scorecards", "drill_queue"]
+_REQUIRED_TABLES = [
+    "users",
+    "hand_histories",
+    "gto_api_cache",
+    "message_logs",
+    "token_usage",
+    "analysis_snapshots",
+    "deviations",
+    "tool_calls",
+    "ledger_hands",
+    "ledger_decisions",
+    "ledger_sessions",
+    "coach_focus",
+    "scorecards",
+    "drill_queue",
+    "gtow_device_pairings",
+    "gtow_sync_devices",
+    "gtow_token_sync_events",
+]
 
 
 class Database:
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
 
-    async def connect(self, dsn: str | None = None, retries: int = 3, delay: float = 5.0):
+    async def connect(
+        self, dsn: str | None = None, retries: int = 3, delay: float = 5.0
+    ):
         import asyncio
+
         dsn = dsn or os.getenv("SUPABASE_CONN")
         if not dsn:
             raise ValueError("SUPABASE_CONN environment variable not set")
         for attempt in range(1, retries + 1):
             try:
                 self.pool = await asyncpg.create_pool(
-                    dsn, min_size=2, max_size=10,
+                    dsn,
+                    min_size=2,
+                    max_size=10,
                     statement_cache_size=0,  # Required for Supabase transaction pooler
                 )
                 logger.info("Database pool connected")
                 return
             except (OSError, asyncpg.PostgresError, TimeoutError) as e:
                 if attempt < retries:
-                    logger.warning(f"DB connect attempt {attempt}/{retries} failed: {e}, retrying in {delay}s...")
+                    logger.warning(
+                        f"DB connect attempt {attempt}/{retries} failed: {e}, retrying in {delay}s..."
+                    )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(f"DB connect failed after {retries} attempts: {e}")
@@ -56,8 +84,9 @@ class Database:
                     )
         logger.info("Database tables verified")
 
-    async def save_hands(self, chat_id: int, hands: list[dict],
-                         source_type: str = "file"):
+    async def save_hands(
+        self, chat_id: int, hands: list[dict], source_type: str = "file"
+    ):
         """Batch-insert parsed hands for a chat."""
         if not hands:
             return
@@ -74,9 +103,13 @@ class Database:
             )
         logger.info(f"Saved {len(hands)} hands for chat {chat_id}")
 
-    async def save_hand_returning_id(self, chat_id: int, hand_data: dict,
-                                     source_type: str = "text",
-                                     user_input: str | None = None) -> str:
+    async def save_hand_returning_id(
+        self,
+        chat_id: int,
+        hand_data: dict,
+        source_type: str = "text",
+        user_input: str | None = None,
+    ) -> str:
         """Insert a single hand and return generated hand_id (H{serial_id})."""
         async with self.pool.acquire() as conn:
             row_id = await conn.fetchval(
@@ -85,13 +118,17 @@ class Database:
                 VALUES ($1, '', $2, $3, $4)
                 RETURNING id
                 """,
-                chat_id, json.dumps(hand_data), source_type, user_input,
+                chat_id,
+                json.dumps(hand_data),
+                source_type,
+                user_input,
             )
             hand_id = f"H{row_id}"
             # Update the hand_id column with the generated value
             await conn.execute(
                 "UPDATE hand_histories SET hand_id = $1 WHERE id = $2",
-                hand_id, row_id,
+                hand_id,
+                row_id,
             )
         logger.info(f"Saved hand {hand_id} for chat {chat_id} (source={source_type})")
         return hand_id
@@ -106,7 +143,8 @@ class Database:
                 ORDER BY uploaded_at DESC
                 LIMIT $2
                 """,
-                chat_id, limit,
+                chat_id,
+                limit,
             )
         return [json.loads(row["hand_data"]) for row in rows]
 
@@ -118,30 +156,176 @@ class Database:
                 user_id,
             )
 
-    async def save_user_gto_token(self, user_id: int, refresh_token: str):
+    async def save_user_gto_token(self, user_id: int, refresh_token: str) -> bool:
         """Store user's GTO Wizard refresh token (creates user row if needed)."""
+        import base64
+
+        payload = refresh_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        token_iat = datetime.fromtimestamp(
+            int(json.loads(base64.urlsafe_b64decode(payload))["iat"]),
+            tz=timezone.utc,
+        )
+        fingerprint = hashlib.sha256(refresh_token.encode()).hexdigest()
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 """
-                INSERT INTO users (user_id, gto_refresh_token, is_active)
-                VALUES ($1, $2, TRUE)
-                ON CONFLICT (user_id) DO UPDATE SET gto_refresh_token = $2
+                INSERT INTO users
+                  (user_id, gto_refresh_token, gto_refresh_token_fingerprint,
+                   gto_refresh_token_iat, gto_token_synced_at, is_active)
+                VALUES ($1, $2, $3, $4, NOW(), TRUE)
+                ON CONFLICT (user_id) DO UPDATE
+                SET gto_refresh_token = $2,
+                    gto_refresh_token_fingerprint = $3,
+                    gto_refresh_token_iat = $4,
+                    gto_token_synced_at = NOW()
+                WHERE users.gto_refresh_token_iat IS NULL
+                   OR users.gto_refresh_token_iat <= $4
                 """,
-                user_id, refresh_token,
+                user_id,
+                refresh_token,
+                fingerprint,
+                token_iat,
             )
         logger.info(f"Saved GTO token for user {user_id}")
+        return result != "INSERT 0 0"
 
     async def delete_user_gto_token(self, user_id: int):
         """Remove user's GTO Wizard refresh token."""
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE users SET gto_refresh_token = NULL WHERE user_id = $1",
+                """
+                UPDATE users
+                SET gto_refresh_token = NULL,
+                    gto_refresh_token_fingerprint = NULL,
+                    gto_refresh_token_iat = NULL,
+                    gto_token_synced_at = NULL
+                WHERE user_id = $1
+                """,
                 user_id,
             )
         logger.info(f"Deleted GTO token for user {user_id}")
 
-    async def upsert_user(self, user_id: int, username: str | None = None,
-                          name: str | None = None):
+    async def create_gtow_device_pairing(
+        self,
+        user_id: int,
+        code_hash: str,
+        expires_at: datetime,
+    ) -> None:
+        """Replace outstanding pair codes and create a new one-time code."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    DELETE FROM gtow_device_pairings
+                    WHERE user_id = $1 AND consumed_at IS NULL
+                    """,
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO gtow_device_pairings
+                      (user_id, code_hash, expires_at)
+                    VALUES ($1, $2, $3)
+                    """,
+                    user_id,
+                    code_hash,
+                    expires_at,
+                )
+
+    async def list_gtow_sync_devices(self, user_id: int) -> list[dict]:
+        """List active Chrome devices paired to a Telegram user."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, last_seen_at, last_sync_at, created_at
+                FROM gtow_sync_devices
+                WHERE user_id = $1 AND revoked_at IS NULL
+                ORDER BY created_at DESC
+                """,
+                user_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def revoke_gtow_sync_device(
+        self, user_id: int, device_prefix: str
+    ) -> dict | None:
+        """Revoke one device by its unique UUID prefix."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    """
+                    SELECT id, name
+                    FROM gtow_sync_devices
+                    WHERE user_id = $1
+                      AND revoked_at IS NULL
+                      AND id::text LIKE $2 || '%'
+                    FOR UPDATE
+                    """,
+                    user_id,
+                    device_prefix.lower(),
+                )
+                if len(rows) != 1:
+                    return None
+                row = rows[0]
+                await conn.execute(
+                    "UPDATE gtow_sync_devices SET revoked_at = NOW() WHERE id = $1",
+                    row["id"],
+                )
+        return dict(row)
+
+    async def revoke_all_gtow_sync_devices(self, user_id: int) -> int:
+        """Revoke every active token-sync device for a user."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE gtow_sync_devices
+                SET revoked_at = NOW()
+                WHERE user_id = $1 AND revoked_at IS NULL
+                """,
+                user_id,
+            )
+        return int(result.rsplit(" ", 1)[-1])
+
+    async def logout_gtow_user(self, user_id: int) -> int:
+        """Atomically revoke sync devices and clear the stored GTOW token."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.fetchrow(
+                    "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                await conn.fetch(
+                    """
+                    SELECT id FROM gtow_sync_devices
+                    WHERE user_id = $1 AND revoked_at IS NULL
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                result = await conn.execute(
+                    """
+                    UPDATE gtow_sync_devices SET revoked_at = NOW()
+                    WHERE user_id = $1 AND revoked_at IS NULL
+                    """,
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET gto_refresh_token = NULL,
+                        gto_refresh_token_fingerprint = NULL,
+                        gto_refresh_token_iat = NULL,
+                        gto_token_synced_at = NULL
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+        return int(result.rsplit(" ", 1)[-1])
+
+    async def upsert_user(
+        self, user_id: int, username: str | None = None, name: str | None = None
+    ):
         """Create or update user row with latest username/name."""
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -152,7 +336,9 @@ class Database:
                 SET username = COALESCE($2, users.username),
                     name = COALESCE($3, users.name)
                 """,
-                user_id, username, name,
+                user_id,
+                username,
+                name,
             )
 
     async def log_message(self, chat_id: int, message_type: str = "text"):
@@ -160,14 +346,23 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO message_logs (chat_id, message_type) VALUES ($1, $2)",
-                chat_id, message_type,
+                chat_id,
+                message_type,
             )
 
-    async def log_token_usage(self, chat_id: int, request_type: str, model: str,
-                              prompt_tokens: int, completion_tokens: int,
-                              cached_tokens: int = 0, thinking_tokens: int = 0,
-                              total_tokens: int = 0, api_calls: int = 1,
-                              latency_ms: int | None = None):
+    async def log_token_usage(
+        self,
+        chat_id: int,
+        request_type: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int = 0,
+        thinking_tokens: int = 0,
+        total_tokens: int = 0,
+        api_calls: int = 1,
+        latency_ms: int | None = None,
+    ):
         """Log Gemini API token usage for cost tracking."""
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -177,8 +372,16 @@ class Database:
                    cached_tokens, thinking_tokens, total_tokens, api_calls, latency_ms)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
-                chat_id, request_type, model, prompt_tokens, completion_tokens,
-                cached_tokens, thinking_tokens, total_tokens, api_calls, latency_ms,
+                chat_id,
+                request_type,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                cached_tokens,
+                thinking_tokens,
+                total_tokens,
+                api_calls,
+                latency_ms,
             )
 
     async def get_analytics_metrics(self) -> dict:
@@ -259,7 +462,8 @@ class Database:
                 ORDER BY uploaded_at DESC
                 LIMIT 1
                 """,
-                chat_id, f"%{hand_id_suffix}",
+                chat_id,
+                f"%{hand_id_suffix}",
             )
             if row:
                 hand = json.loads(row["hand_data"])
@@ -275,7 +479,8 @@ class Database:
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                chat_id, f"%{hand_id_suffix}",
+                chat_id,
+                f"%{hand_id_suffix}",
             )
             if row:
                 raw = row["expected_json"] or row["parsed_json"]
@@ -312,12 +517,18 @@ class Database:
         hand = raw if isinstance(raw, dict) else json.loads(raw)
         return {"hand": hand, "hand_id": row["hand_id"]}
 
-    async def save_snapshot(self, hand_id: str, chat_id: int,
-                            source_type: str, user_input: str | None,
-                            image_data: bytes | None,
-                            parsed_json: dict, gto_text: str,
-                            gto_compact: str | None = None,
-                            classifier_conf: float | None = None):
+    async def save_snapshot(
+        self,
+        hand_id: str,
+        chat_id: int,
+        source_type: str,
+        user_input: str | None,
+        image_data: bytes | None,
+        parsed_json: dict,
+        gto_text: str,
+        gto_compact: str | None = None,
+        classifier_conf: float | None = None,
+    ):
         """Save analysis snapshot. Upsert by hand_id (idempotent)."""
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -330,8 +541,14 @@ class Database:
                     parsed_json = $6, gto_text = $7, gto_compact = $8,
                     classifier_conf = COALESCE($9, analysis_snapshots.classifier_conf)
                 """,
-                hand_id, chat_id, source_type, user_input, image_data,
-                json.dumps(parsed_json), gto_text, gto_compact,
+                hand_id,
+                chat_id,
+                source_type,
+                user_input,
+                image_data,
+                json.dumps(parsed_json),
+                gto_text,
+                gto_compact,
                 classifier_conf,
             )
 
@@ -369,7 +586,8 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE analysis_snapshots SET coaching_text = $1 WHERE hand_id = $2",
-                coaching_text, hand_id,
+                coaching_text,
+                hand_id,
             )
 
     async def save_tool_call(
@@ -391,7 +609,10 @@ class Database:
                      tool_args, tool_result, latency_ms)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
-                chat_id, request_id, hand_id, tool_name,
+                chat_id,
+                request_id,
+                hand_id,
+                tool_name,
                 json.dumps(tool_args, ensure_ascii=False),
                 tool_result[:10000] if tool_result else "",
                 latency_ms,
