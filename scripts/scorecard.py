@@ -245,9 +245,13 @@ def weekly_tg_html(week: str, d: dict) -> str:
         for q in dq:
             lbl = q.get("label") or q.get("spot_leaf") or "?"
             cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
+            aging = ""
+            if q.get("status") == "prescribed":
+                wk = q.get("prescribed_week")
+                aging = f"（{wk} 已開過，還沒練 ⏰）" if wk else "（先前已開過，還沒練 ⏰）"
             ev = q.get("total_ev_loss_bb") or 0
             L.append(f"• {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手現場牌，"
-                     f"累計漏 {ev:.1f}bb{cross}")
+                     f"累計漏 {ev:.1f}bb{cross}{aging}")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -350,10 +354,14 @@ WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
   AND played_at >= $2
 """
 
+# prescribed-but-uncleared items KEEP re-surfacing in the plan (§14.2:
+# silently dropping an unpracticed prescription degrades the coaching
+# signal) — pending first, then open prescriptions by EV.
 QUEUE_SQL = """
-SELECT id, spot_leaf, spot_category, drill_url, n_sources, total_ev_loss_bb, source
-FROM drill_queue WHERE status='pending'
-ORDER BY total_ev_loss_bb DESC NULLS LAST LIMIT 5
+SELECT id, spot_leaf, spot_category, drill_url, n_sources, total_ev_loss_bb,
+       source, status, prescribed_week
+FROM drill_queue WHERE status IN ('pending', 'prescribed')
+ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 5
 """
 
 

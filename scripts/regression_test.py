@@ -13767,7 +13767,11 @@ def test_training_plan_focus_and_readback():
         {"id": 1, "spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
          "label": "MP 被 3bet（對手 SB，你 IP）",
          "drill_url": "https://app.gtowizard.com/practice/trainer?fh_actions=vs3bet",
-         "n_sources": 2, "total_ev_loss_bb": 2.4},
+         "n_sources": 2, "total_ev_loss_bb": 2.4, "status": "pending"},
+        {"id": 2, "spot_leaf": "river:SRP:BBvLP:OOP:[x-x]:[b-c]:vs_bet",
+         "spot_category": "river", "label": "河牌面對下注",
+         "drill_url": None, "n_sources": 1, "total_ev_loss_bb": 1.1,
+         "status": "prescribed", "prescribed_week": "2026-W27"},
     ]
     msg = weekly_tg_html("2026-W28", data)
     assert_in("本週該練的地方", msg)
@@ -13779,6 +13783,8 @@ def test_training_plan_focus_and_readback():
     assert_in("樹外近似敏感", msg)                            # fragile focus caveat
     assert_in("solver 樹外", msg)                             # soft-flag count caveat
     assert_in("線上同一個情境也在漏", msg)                    # cross-source flag
+    # queue aging: an uncleared prescription keeps nagging, with its week
+    assert_in("2026-W27 已開過，還沒練 ⏰", msg)
     payload = weekly_tg_payload("2026-W28", data)
     assert_eq(payload["html"], msg)
     urls = [b["url"] for r in payload["buttons"] for b in r]
@@ -14798,6 +14804,41 @@ def test_live_confidence_reflects_repairs():
     hand["_repairs"] = ["r"] * 9
     _, decs = build_hand_rows(hand, "live:x", ts, "raw", {})
     assert_true(all(d["confidence"] == 0.6 for d in decs), "floor at 0.6")
+
+
+@test
+def test_queue_aging_and_merge_sql():
+    """Queue lifecycle fixes: (a) the weekly plan re-surfaces prescribed-but-
+    uncleared items instead of silently dropping them (§14.2); (b) a leaf that
+    re-deviates while a row is still OPEN (pending or prescribed) merges into
+    that row — no duplicate queue rows per leaf; (c) the drain only promotes
+    pending rows."""
+    import inspect
+    from scorecard import QUEUE_SQL
+    import scorecard as sc
+    from live_flow import MERGE_OPEN_SQL, ENQUEUE_SQL
+    assert_in("status IN ('pending', 'prescribed')", QUEUE_SQL)
+    assert_in("prescribed_week", QUEUE_SQL)
+    assert_in("(status = 'pending') DESC", QUEUE_SQL)          # pending first
+    assert_in("status IN ('pending', 'prescribed')", MERGE_OPEN_SQL)
+    assert_in("ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1",
+              MERGE_OPEN_SQL)                                   # single open row
+    assert_in("ON CONFLICT (spot_leaf) WHERE status = 'pending'", ENQUEUE_SQL)
+    drain = inspect.getsource(sc._run)
+    assert_in("AND status='pending'", drain)                    # drain never re-promotes
+
+
+@test
+def test_backfill_spots_incremental_selection():
+    """Daily backfill is incremental: only archive files for hands still
+    missing spot_leaf are read; --full (target_ids=None) keeps the whole
+    archive for taxonomy-evolution re-distills."""
+    from backfill_spots import select_files
+    files = ["/x/2026-06/aaa.json.gz", "/x/2026-06/bbb.json.gz",
+             "/x/2026-07/ccc.json.gz"]
+    assert_eq(select_files(files, None), files)
+    assert_eq(select_files(files, {"bbb"}), ["/x/2026-06/bbb.json.gz"])
+    assert_eq(select_files(files, set()), [])
 
 
 @test

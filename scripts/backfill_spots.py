@@ -3,8 +3,11 @@
 
 Pure re-distill of the taxonomy (no API): reads data/gtow_raw, runs
 spot_taxonomy.walk_spots, and UPDATEs each ledger_decisions row matched by
-(gtow_hand_id, street, decision_idx). Re-runnable — raw stays untouched, so
-when the taxonomy evolves just run this again.
+(gtow_hand_id, street, decision_idx).
+
+Default = INCREMENTAL: only hands whose decisions still lack spot_leaf (the
+daily job's case). `--full` re-reads the whole archive — run that once after
+the taxonomy itself evolves. Raw stays untouched either way.
 """
 from __future__ import annotations
 
@@ -57,11 +60,38 @@ def load_list_index() -> dict:
     return idx
 
 
+def select_files(files: list[str], target_ids: set[str] | None) -> list[str]:
+    """target_ids=None → all files (--full, taxonomy evolution re-distill);
+    otherwise only the archive files for hands still lacking spot columns —
+    the daily job must not re-read the ENTIRE archive (O(history), grows
+    forever) just to classify yesterday's hands."""
+    if target_ids is None:
+        return files
+    return [f for f in files if Path(f).stem.replace(".json", "") in target_ids]
+
+
 async def main() -> int:
-    list_idx = load_list_index()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--full", action="store_true",
+                    help="re-distill ALL archived hands (after taxonomy changes); "
+                         "default = only hands with spot_leaf still NULL")
+    args = ap.parse_args()
+
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
-    files = glob.glob(str(RAW / "detail" / "*" / "*.json.gz"))
-    print(f"list rows={len(list_idx)} detail files={len(files)}", flush=True)
+    target_ids: set[str] | None = None
+    if not args.full:
+        target_ids = {r["gtow_hand_id"] for r in await conn.fetch(
+            "SELECT DISTINCT gtow_hand_id FROM ledger_decisions "
+            "WHERE spot_leaf IS NULL AND source='online'")}
+        if not target_ids:
+            print("SPOTS backfill: nothing to do (no online decisions missing spot_leaf)")
+            await conn.close()
+            return 0
+    list_idx = load_list_index()
+    files = select_files(glob.glob(str(RAW / "detail" / "*" / "*.json.gz")), target_ids)
+    mode = "full" if args.full else f"incremental({len(target_ids)} hands)"
+    print(f"list rows={len(list_idx)} detail files={len(files)} mode={mode}", flush=True)
     batch, n_spots, n_hands, n_missing = [], 0, 0, 0
     try:
         for i, f in enumerate(files):
