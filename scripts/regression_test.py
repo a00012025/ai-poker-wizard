@@ -11720,6 +11720,50 @@ def test_coach_facts_extract_tokens():
 
 
 @test
+def test_expand_range_tokens():
+    """coach_facts: compressed range notation expands to member classes so the
+    initial-verdict whitelist covers interior members (Q3s in Q2s-Q4s)."""
+    import coach_facts as cf
+    assert_eq(cf._expand_range_tokens("防守 Q2s-Q4s 這段"), {"Q2s", "Q3s", "Q4s"})
+    assert_eq(cf._expand_range_tokens("口袋對 22-55"), {"22", "33", "44", "55"})
+    plus = cf._expand_range_tokens("3bet TT+")
+    assert_eq(plus, {"TT", "JJ", "QQ", "KK", "AA"})
+    a_suited = cf._expand_range_tokens("A2s+ 全下")
+    assert_true("A2s" in a_suited and "AKs" in a_suited and len(a_suited) == 12)
+    assert_true("AAs" not in a_suited)
+    k_off = cf._expand_range_tokens("K9o+")
+    assert_eq(k_off, {"K9o", "KTo", "KJo", "KQo"})
+    assert_eq(cf._expand_range_tokens("下注 2-3 bb 都可以"), set())
+
+
+@test
+def test_initial_verdict_verification():
+    """§14.7: the initial coaching verdict is verified against its own
+    grounding — hands the solver text/user/hero/board never mention are
+    violations; whitelisted + range-expanded mentions pass."""
+    import coach_facts as cf
+    from gemini_session import GeminiSessionManager as GSM
+    context = {
+        "text": "UTG open 範圍：TT+ / AQs+。hero 的 AJo 混合跟注 30%。防守 Q2s-Q4s。",
+        "text_compact": "✅ Call 70%",
+        "hand": {"hero_hand": "AdJc"},
+        "solutions": [{"game": {"board": "Qh9s3d"}}],
+    }
+    ok_body = ("你的 AdJc（AJo）在這裡跟注沒問題；對手 TT+ 與 AQs 的組合壓制你，"
+               "但 Q3s 這類防守牌會棄掉。Qh9s3d 的板面偏乾。")
+    v = GSM._initial_claims_verdict(None, ok_body, context, "AJo 這手怎麼打")
+    assert_true(v.ok, f"clean body flagged: {v.violations}")
+    bad_body = "對手這裡的加注範圍主要是 KQs 和 76s 這種牌。"
+    v2 = GSM._initial_claims_verdict(None, bad_body, context, "AJo 這手怎麼打")
+    assert_true(not v2.ok, "invented hands must be flagged")
+    assert_true("KQs" in v2.violations and "76s" in v2.violations, v2.violations)
+    # user-named hands are fair game (question tokens, not invented claims)
+    v3 = GSM._initial_claims_verdict(None, "相比 KTs，你這手更該跟注。",
+                                     context, "如果我拿 KTs 呢")
+    assert_true(v3.ok, f"user-mentioned hand flagged: {v3.violations}")
+
+
+@test
 def test_coach_facts_canonical_forms():
     """coach_facts: canonical_forms normalizes order + derives class from a combo."""
     import coach_facts as cf
