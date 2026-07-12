@@ -14021,6 +14021,61 @@ def test_spot_taxonomy_preflop_lines():
 
 
 @test
+def test_spot_taxonomy_ip_oop_uses_global_position_order():
+    """GTOW keeps absolute position labels when seats are missing (observed
+    7-max hands use UTG+1, not UTG). IP/OOP must therefore depend on button-
+    relative position, not a table-size list that can omit the real label.
+    Heads-up is the one exception: SB is the button and acts last postflop."""
+    from spot_taxonomy import ip_oop
+
+    assert_eq(ip_oop("UTG+1", "SB", 7), "IP")   # production QsTs repro
+    assert_eq(ip_oop("BB", "UTG+1", 7), "OOP")
+    assert_eq(ip_oop("SB", "BB", 2), "IP")      # HU SB is BTN postflop
+    assert_eq(ip_oop("BB", "SB", 2), "OOP")
+
+    order = ["SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN"]
+    for npl in range(3, 10):
+        for i, hero in enumerate(order):
+            for j, villain in enumerate(order):
+                if hero == villain:
+                    continue
+                assert_eq(ip_oop(hero, villain, npl), "IP" if i > j else "OOP",
+                          f"{npl}-max {hero} vs {villain}")
+
+
+@test
+def test_spot_taxonomy_7max_utg1_vs_sb_repro():
+    """Production 5/27 QsTs: 7-max UTG+1 opens, SB 3bets, hero calls;
+    SB acts first on flop/turn, so hero is IP on every affected leaf."""
+    from spot_taxonomy import walk_spots
+
+    def gp(street, pos, code, selected=False):
+        return {
+            "real_game_action": {"position": pos, "code": code},
+            "real_game": {"current_street": {"type": street.upper()}},
+            "analysis_solved": {"available_actions": ([{
+                "selected": True, "correctness": "BEST_MOVE", "ev_loss": 0,
+            }] if selected else [])},
+        }
+
+    detail = {"game_analysis": {"warning_status": "OK", "game_points": [
+        gp("preflop", "UTG+1", "R2", True), gp("preflop", "LJ", "F"),
+        gp("preflop", "HJ", "F"), gp("preflop", "CO", "F"),
+        gp("preflop", "BTN", "F"), gp("preflop", "SB", "R5"),
+        gp("preflop", "BB", "F"), gp("preflop", "UTG+1", "C", True),
+        gp("flop", "SB", "R3.5"), gp("flop", "UTG+1", "C", True),
+        gp("turn", "SB", "RAI"), gp("turn", "UTG+1", "F", True),
+    ]}}
+    row = {"hand_id": "ip-repro", "player_position": "UTG+1", "total_players": 7,
+           "pot_type": "3bet", "preflop_game_depth": 25.125,
+           "solution_status": "OK", "boards": ["Tc9d5d4d"]}
+    spots = list(walk_spots(row, detail))
+    assert_eq(spots[1]["leaf"], "EP_vs3bet_vSB_IP")
+    assert_eq(spots[2]["leaf"], "flop:3bet:EPvSB:IP:vs_bet")
+    assert_eq(spots[3]["leaf"], "turn:3bet:EPvSB:IP:[b-c]:vs_bet")
+
+
+@test
 def test_spot_taxonomy_walk_fixture():
     import json
     from pathlib import Path
