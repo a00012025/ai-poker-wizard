@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spot_categorizer import categorize_spot, compute_pot_type_from_preflop
+# Single official taxonomy (§4.2): action-line spot columns come from
+# spot_taxonomy via backfill_spots; the legacy ~15-bucket family/texture is
+# no longer written. Only the shared pot-type helper remains imported.
+from spot_categorizer import compute_pot_type_from_preflop
 
 STREET_ORDER = ["preflop", "flop", "turn", "river"]
 CHIPEV_FLAG = "chipev_grading"
@@ -45,20 +48,6 @@ def _board_for_street(boards: str, street: str) -> str | None:
     if not boards: return None
     n = {"flop": 6, "turn": 8, "river": 10}.get(street)
     return boards[:n] if n else None
-
-
-def _mk_hand_ctx(list_row: dict, preflop_tokens: list[str], boards: str) -> dict:
-    streets = []
-    if boards and len(boards) >= 6:
-        streets.append({"board": boards[:6]})
-        if len(boards) >= 8: streets.append({"card": boards[6:8]})
-        if len(boards) >= 10: streets.append({"card": boards[8:10]})
-    return {
-        "hero_position": list_row.get("player_position", ""),
-        "preflop_actions": "-".join(preflop_tokens),
-        "players_at_table": list_row.get("total_players") or 8,
-        "streets": streets,
-    }
 
 
 def _facing(street_actions: list[dict]) -> str:
@@ -142,15 +131,6 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
             if best is None:
                 best = max(avail, key=lambda a: float(a.get("ev") or 0))
             idx = hero_count[street]
-            if street == "preflop":
-                fam, tex = categorize_spot(
-                    _mk_hand_ctx(list_row, preflop_tokens + [code], boards),
-                    "preflop", action_index=idx)
-            else:
-                fam, tex = categorize_spot(
-                    _mk_hand_ctx(list_row, preflop_tokens, boards),
-                    street, action_index=idx,
-                    street_actions_before_hero=list(street_actions[street]))
 
             flags = list(hand_flags)
             excluded = hand_excluded
@@ -176,7 +156,7 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
                 "gtow_hand_id": list_row["hand_id"],
                 "street": street, "decision_idx": idx,
                 "source": "online", "grader": "gtow_analyzer",
-                "family": fam, "texture": tex, "gtow_texture": gtow_texture,
+                "gtow_texture": gtow_texture,
                 "depth_band": depth_band(real_depth),
                 "position": hero_pos,
                 "pot_type": compute_pot_type_from_preflop(

@@ -30,11 +30,14 @@ def weekly_series(decisions: list[dict]) -> list[dict]:
     return out
 
 
-def classify_leak(family_decisions: list[dict]) -> tuple[str, str]:
-    total = sum(d["ev_loss_bb"] or 0 for d in family_decisions) or 1e-9
-    for dim in ("depth_band", "texture"):
+def classify_leak(spot_decisions: list[dict]) -> tuple[str, str]:
+    """Boundary vs knowledge split over the OFFICIAL taxonomy's dimensions
+    (§4.2): depth_band + board_suit — the legacy `texture` is no longer
+    written to the ledger."""
+    total = sum(d["ev_loss_bb"] or 0 for d in spot_decisions) or 1e-9
+    for dim in ("depth_band", "board_suit"):
         slices: dict[str, list[dict]] = defaultdict(list)
-        for d in family_decisions:
+        for d in spot_decisions:
             if d.get(dim):
                 slices[d[dim]].append(d)
         # A single populated slice carries no localization signal — the leak
@@ -51,12 +54,14 @@ def classify_leak(family_decisions: list[dict]) -> tuple[str, str]:
 
 def leak_board(decisions: list[dict], min_n: int = 25,
                weeks_window: int = 4) -> dict:
+    """EV-ranked leak cells over the official action-line taxonomy:
+    cell = spot_leaf × depth_band; leak type classified per spot_category."""
     inc = _included(decisions)
     cells: dict[tuple, list[dict]] = defaultdict(list)
-    by_family: dict[str, list[dict]] = defaultdict(list)
+    by_cat: dict[str, list[dict]] = defaultdict(list)
     for d in inc:
-        cells[(d["family"], d["depth_band"])].append(d)
-        by_family[d["family"]].append(d)
+        cells[(d["spot_leaf"], d["depth_band"])].append(d)
+        by_cat[d.get("spot_category")].append(d)
 
     latest = max((d["played_at"] for d in inc), default=datetime.now(timezone.utc))
     cur_lo = latest - timedelta(weeks=weeks_window)
@@ -66,12 +71,12 @@ def leak_board(decisions: list[dict], min_n: int = 25,
         return (sum(d["ev_loss_bb"] or 0 for d in ds) / len(ds) * 100) if ds else 0.0
 
     ranked, insufficient = [], []
-    for (fam, band), ds in cells.items():
+    for (leaf, band), ds in cells.items():
         total = sum(d["ev_loss_bb"] or 0 for d in ds)
         cur = [d for d in ds if d["played_at"] >= cur_lo]
         prev = [d for d in ds if prev_lo <= d["played_at"] < cur_lo]
-        ltype, sdesc = classify_leak(by_family[fam])
-        row = {"family": fam, "depth_band": band, "total_bb": total,
+        ltype, sdesc = classify_leak(by_cat[ds[0].get("spot_category")])
+        row = {"spot_leaf": leaf, "depth_band": band, "total_bb": total,
                "n": len(ds), "per100": per100(ds),
                "trend": per100(cur) - per100(prev),
                "trend_n": (len(cur), len(prev)),

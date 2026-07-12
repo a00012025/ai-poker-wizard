@@ -13565,18 +13565,16 @@ def test_distill_river_blunder_hand():
     assert_eq([d["decision_idx"] for d in decs], [0, 0, 0, 1, 0, 1])
 
     pre = decs[0]
-    assert_eq(pre["family"], "open_raise")
+    assert_true("family" not in pre,
+                "legacy family taxonomy no longer written by distill (§4.2)")
     assert_eq(pre["correctness"], "BEST_MOVE")
     assert_eq(pre["ev_loss_bb"], 0.0)
     assert_eq(pre["depth_band"], "25_40")
 
     flop = decs[1]
-    assert_eq(flop["family"], "cbet_oop")
-    assert_eq(flop["texture"], "monotone")     # Kh6h4h
     assert_eq(flop["correctness"], "CORRECT_MOVE")
 
     riv = decs[5]
-    assert_eq(riv["family"], "check_raise")    # checked, now facing a bet
     assert_eq(riv["taken_code"], "F")
     assert_eq(riv["best_code"], "C")
     assert_eq(riv["correctness"], "BLUNDER")
@@ -13602,7 +13600,6 @@ def test_distill_preflop_fold_hand():
     assert_eq(decs[0]["street"], "preflop")
     assert_eq(decs[0]["taken_code"], "F")
     assert_eq(decs[0]["correctness"], "BEST_MOVE")
-    assert_eq(decs[0]["family"], "open_raise")
     assert_eq(decs[0]["depth_band"], "15_25")
     assert_eq(hand["total_ev_loss_bb"], 0.0)
 
@@ -13674,27 +13671,29 @@ def test_session_clustering():
 
 # ── Phase 1 Ledger: diagnostics ──
 
-def _dec(family="facing_cbet_oop", band="15_25", loss=0.0, week_day="2026-06-01",
-         texture="wet", excluded=False):
+def _dec(leaf="flop:SRP:BBvEP:OOP:vs_bet", cat="flop", band="15_25", loss=0.0,
+         week_day="2026-06-01", board_suit="two_tone", excluded=False):
     from datetime import datetime
-    return {"family": family, "depth_band": band, "ev_loss_bb": loss,
-            "texture": texture, "excluded": excluded,
+    return {"spot_leaf": leaf, "spot_category": cat, "depth_band": band,
+            "ev_loss_bb": loss, "board_suit": board_suit, "excluded": excluded,
             "played_at": datetime.fromisoformat(week_day + "T12:00:00+00:00")}
 
 
 @test
 def test_leak_board_ev_ranking_and_min_n():
+    """Leak board runs on the OFFICIAL action-line taxonomy (§4.2):
+    cell = spot_leaf × depth_band, EV-ranked with a hard n floor."""
     from ledger_diagnostics import leak_board
     decs = ([_dec(loss=1.0)] * 30                                   # 30bb over n=30
-            + [_dec(family="open_raise", band="40plus", loss=5.0)] * 3   # big but n<25
-            + [_dec(family="probe", loss=0.0)] * 40)
+            + [_dec(leaf="UTG_RFI", cat="RFI", band="40plus", loss=5.0)] * 3  # big but n<25
+            + [_dec(leaf="turn:3bet:COvBB:IP:[b-c]:vs_check", loss=0.0)] * 40)
     out = leak_board(decs, min_n=25)
     ranked = out["cells"]
-    assert_eq(ranked[0]["family"], "facing_cbet_oop")
+    assert_eq(ranked[0]["spot_leaf"], "flop:SRP:BBvEP:OOP:vs_bet")
     assert_eq(ranked[0]["n"], 30)
     assert_eq(round(ranked[0]["per100"], 2), round(30 / 30 * 100, 2))
-    assert_true(all(c["family"] != "open_raise" for c in ranked))
-    assert_true(any(c["family"] == "open_raise" for c in out["insufficient"]))
+    assert_true(all(c["spot_leaf"] != "UTG_RFI" for c in ranked))
+    assert_true(any(c["spot_leaf"] == "UTG_RFI" for c in out["insufficient"]))
 
 
 @test

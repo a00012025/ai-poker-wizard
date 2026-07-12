@@ -46,8 +46,8 @@ LIVE_HAND_COLS = [
     "source", "raw_text", "parsed_json", "intent_tag",
 ]
 LIVE_DEC_COLS = [
-    "gtow_hand_id", "street", "decision_idx", "source", "grader", "family",
-    "texture", "depth_band", "position", "pot_type", "facing",
+    "gtow_hand_id", "street", "decision_idx", "source", "grader",
+    "depth_band", "position", "pot_type", "facing",
     "taken_code", "best_code", "ev_loss_bb", "taken_freq",
     "gametype", "confidence", "approx_flags", "excluded", "played_at",
     # taxonomy columns (same set backfill_spots maintains for online rows)
@@ -746,7 +746,7 @@ def _sizing_snap(taken_code: str, requested) -> bool:
 def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                     raw_text: str, devmap: dict) -> tuple[dict, list[dict]]:
     """Assemble the ledger_hands row + ledger_decisions rows (graded + honest)."""
-    from spot_categorizer import categorize_spot, compute_pot_type_from_preflop
+    from spot_categorizer import compute_pot_type_from_preflop
     from spot_taxonomy import walk_spots_from_parsed
     from gto_api import nearest_depth
 
@@ -792,16 +792,10 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             if spot["street"] != "preflop" and _sizing_snap(taken, spot.get("hero_size")):
                 flags.append("sizing_snap")
 
-        fam, tex = categorize_spot(
-            hand, spot["street"],
-            action_index=spot["decision_idx"] if spot["street"] == "preflop" else 0,
-            street_actions_before_hero=spot["acts_before"] or None)
-
         dec_rows.append({
             "gtow_hand_id": hand_id, "street": spot["street"],
             "decision_idx": spot["decision_idx"],
             "source": "live", "grader": "own_pipeline",
-            "family": fam, "texture": tex,
             "depth_band": spot["tags"]["depth_band"], "position": spot["hero_pos"],
             "pot_type": compute_pot_type_from_preflop(hand.get("preflop_actions") or "", npl),
             "facing": spot["facing"], "taken_code": taken, "best_code": best,
