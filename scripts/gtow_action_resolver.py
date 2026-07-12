@@ -10,8 +10,7 @@ Key decisions:
     decision point, snapping raw bb to the closest R* code (absolute distance
     match; same heuristic as find_closest_action).
   - action_index in the deviations table is HERO-SCOPED (counts hero's Nth
-    decision on the street), matching scripts/backfill_ev_loss.py
-    `_walk_to_decision`. The resolver converts it to raw stream index when
+    decision on the street). The resolver converts it to raw stream index when
     truncating the street's actions.
 """
 from __future__ import annotations
@@ -246,8 +245,8 @@ def _hero_action_to_raw_index(
     """Convert a hero-scoped action_index (0 = hero's 1st decision on street)
     to a raw stream index (how many actions on the street precede it).
 
-    action_index semantic matches backfill_ev_loss.py _walk_to_decision:
-    counts occurrences of hero_pos in raw_actions.
+    action_index semantic: counts occurrences of hero_pos in raw_actions
+    (hero-scoped, same convention as gemini_session._extract_deviations).
 
     Returns the RAW index of hero's (hero_action_index)-th occurrence.
     If hero has fewer actions on the street than requested, returns len(raw_actions)

@@ -25,10 +25,8 @@ scripts/
   hh_parser.py         — Parse GGPoker HH files → analyze_hand_full() input JSON
   hh_deviation_check.py — Direct GTO API deviation checking per hand
   hh_deviation_report.py — analyze_hands() + format_deviation_report()
-  spot_categorizer.py  — Classify hero decisions into ~15 spot buckets + board texture
-  leak_service.py      — DB queries for leak detection (shared by LLM tools + weekly job)
-  weekly_report.py     — Weekly leak report generation + session narrative + tilt detection
-  backfill_deviations.py — One-time backfill of deviations from existing hand_histories
+  spot_categorizer.py  — Classify hero decisions into ~15 spot buckets + board texture (legacy taxonomy; still feeds deviations capture)
+  leak_service.py      — Deviation capture for the live coaching flow (insert_deviation + DeviationMeta; the frequency-era query/report layer was retired per North Star §12)
   e2e_test.py          — CLI E2E test (no Telegram needed)
   regression_test.py   — Regression test suite
   # Phase 1 ledger (GTOW Analyze full ingestion + Version A training loop)
@@ -53,19 +51,18 @@ scripts/
 - **Follow-ups**: use `query_gto`/`query_next_actions` tools for LLM to query solver on demand
 - **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
 - **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
-- **Leak Detection**: Deviations extracted after each analysis (fire-and-forget), stored in `deviations` table. LLM has 4 leak tools: `query_my_leaks`, `query_my_stats`, `get_training_plan`, `get_progress`
+- **Training-loop LLM tools** (all ledger-backed, EV-weighted, always with n): `query_ledger_summary`（弱點/統計）, `query_ledger_hands`（最貴的手）, `get_training_plan`（週記分卡）, `get_progress`（週 EV loss 趨勢）. Deviations are still extracted after each live analysis (fire-and-forget) into `deviations` as a capture snapshot, but no stats surface reads that table anymore.
 - **Live flow (線下流 v1)**: `/live` (owner-only) imports live-hand shorthand batches → per-decision solver grading → `ledger_hands/decisions` with `source='live'` + `drill_queue` (deviated action lines ≥0.1bb). `/queue` lists pending/prescribed lines with 🎯 drill URL buttons + ✔ cleared; `/plan` resends the weekly plan. Weekly scorecard drains the queue (pending→prescribed) and sends drill links as URL buttons.
 - **Source isolation (§5.2)**: ALL stats/aggregation queries on ledger tables must filter `source='online'` — live hands are selectively recorded (biased sample) and only ever surface via the queue/線下 sections. `ledger_hands.source` exists since migration 20260711.
 
 ## Leak Detection & Coaching Memory
 
-- **Spot Categories** (~15 buckets): open_raise, facing_open, facing_3bet, squeeze, facing_4bet, limp_pot, cbet_ip, cbet_oop, facing_cbet_ip, facing_cbet_oop, probe, facing_probe, donk, check_raise
-- **Board Texture**: classified as paired > monotone > wet > dry (priority order)
-- **Deviation Extraction**: Fires as `asyncio.create_task()` after coaching response, same pattern as snapshot saving
-- **Weekly Report**: PTB JobQueue runs Sunday 10:00 AM Taipei time, sends to all active users with deviations data
-- **Tilt Detection**: Overall deviation rate across all spots in a moving window (default 10 decisions, minimum 5)
-- **Ranking**: `deviation_rate * sample_count` (no EV numbers in reports)
-- **DB Tables**: `deviations` (UNIQUE on hand_history_id + street + action_index), `leak_reports` (UNIQUE on chat_id + report_period + spot_category)
+- **官方 taxonomy 是 action-line**（spot_taxonomy.py → ledger_decisions.spot_leaf/spot_category）；spot_categorizer 的 ~15 桶是 legacy 分類，只剩 deviations 捕獲快照在用
+- **Board Texture** (legacy): classified as paired > monotone > wet > dry (priority order)
+- **Deviation Extraction**: Fires as `asyncio.create_task()` after coaching response, same pattern as snapshot saving — capture snapshot only, no stats consumer
+- **Weekly surface**: 記分卡（scorecard.py, Sunday 21:00 Taipei）是唯一週報 — EV 加權、分 spot、帶 n；frequency-era weekly report 已退役（North Star §12）
+- **Ranking 不變量**（§7.3）: 一切排序 EV 加權（avg/total ev_loss_bb），禁止頻率計數排序
+- **DB Tables**: `deviations` (UNIQUE on hand_history_id + street + action_index)；`leak_reports` 已無寫入者（表保留歷史資料）
 
 ## GTO Wizard API Details
 
