@@ -66,20 +66,32 @@ def normalize_pos(pos: str) -> str:
     return pos
 
 
-def _postflop_rank(pos: str, npl: int) -> int:
-    """Rank in postflop action order (SB acts first, BTN last). Higher = later = IP."""
-    order = _PREFLOP_ORDER.get(npl)
-    if not order:
-        order = _PREFLOP_ORDER[8]
-    postflop = order[-2:] + order[:-2]        # [SB, BB, UTG, ... BTN]
-    return postflop.index(pos) if pos in postflop else -1
+_POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN"]
+_POS_ALIASES = {"UTG1": "UTG+1", "UTG2": "UTG+2"}
+
+
+def _postflop_rank(pos: str) -> int | None:
+    """Button-relative postflop rank, independent of empty physical seats.
+
+    GTOW keeps absolute labels on short-handed MTT hands (observed 7-max uses
+    UTG+1), so table-size-specific lists can omit a position that is actually
+    present. Missing seats never change who is closer to the button.
+    """
+    p = _POS_ALIASES.get(pos, pos)
+    return _POSTFLOP_ORDER.index(p) if p in _POSTFLOP_ORDER else None
 
 
 def ip_oop(hero: str, villain: str, npl: int) -> str:
     """IP if hero acts after villain postflop, else OOP."""
     if not villain or villain == "multi":
         return "?"
-    return "IP" if _postflop_rank(hero, npl) > _postflop_rank(villain, npl) else "OOP"
+    if npl == 2:
+        # Heads-up exception: SB is also BTN and acts last postflop.
+        return "IP" if hero == "SB" and villain == "BB" else "OOP"
+    hero_rank, villain_rank = _postflop_rank(hero), _postflop_rank(villain)
+    if hero_rank is None or villain_rank is None:
+        return "?"
+    return "IP" if hero_rank > villain_rank else "OOP"
 
 
 # ── board / stack tags ──────────────────────────────────────────────────────
