@@ -14,15 +14,17 @@ python scripts/backfill_spots.py                 # 分類新手到 action-line s
 預期：`INGEST list=<新手> detail=<抓取> decisions=<n> skipped=<已知>`；`rows_with_spot_leaf` 上升。
 TG：對 bot 打 `/ingest` → 回 `✅ INGEST ...`（僅 owner 可用）。
 
-首次部署 decision-depth / hierarchical-family migration 後，必須跑一次全量
-archive re-distill（不呼叫 GTOW API）：
+首次部署 decision-depth / hierarchical-family migration 時，`deploy.sh` 會在
+migration 後、bot 啟動前自動跑可恢復的 archive re-distill（不呼叫 GTOW API）：
 
 ```bash
-python scripts/backfill_spots.py --full
+python scripts/backfill_spots.py
 ```
 
-這會補齊 `played_depth_bb`、`solver_depth_bb`、`spot_parent`、confidence 與
-新的 depth band；完成前 weekly scorecard 不會把尚未分類的舊 rows 當成焦點。
+default selector 會抓取缺少 current leaf/depth/family contract 的手，補齊
+`played_depth_bb`、`solver_depth_bb`、`spot_parent`、confidence 與新的 depth
+band。若仍有 honest row 不完整，deploy 失敗；scorecard 也會 fail closed，
+不寫入或推播部分 backfill 的焦點。`--full` 保留給 taxonomy 本身改版時使用。
 
 ## 2. 對數（保真）
 ```bash

@@ -16,6 +16,12 @@ git pull
 # Run Supabase migrations (project already linked)
 supabase db push
 
+# Resumable post-migration data upgrade.  The default selector only touches
+# hands missing the current taxonomy/depth contract, and exits non-zero if any
+# honest online rows remain partial.  Run before the bot/weekly job can publish
+# a mixed-schema training focus.
+python scripts/backfill_spots.py
+
 # Token 同步是本版 Bot 公開功能；缺少 secret 時禁止部署半套版本。
 : "${GTOW_SYNC_PEPPER:?GTOW_SYNC_PEPPER 未設定，停止部署}"
 if (( ${#GTOW_SYNC_PEPPER} < 32 )); then

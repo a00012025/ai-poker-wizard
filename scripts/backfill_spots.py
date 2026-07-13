@@ -5,9 +5,10 @@ Pure re-distill of the taxonomy (no API): reads data/gtow_raw, runs
 spot_taxonomy.walk_spots, and UPDATEs each ledger_decisions row matched by
 (gtow_hand_id, street, decision_idx).
 
-Default = INCREMENTAL: only hands whose decisions still lack spot_leaf (the
-daily job's case). `--full` re-reads the whole archive — run that once after
-the taxonomy itself evolves. Raw stays untouched either way.
+Default = INCREMENTAL/UPGRADE: hands whose decisions lack the current leaf,
+parent-family or decision-depth contract (the daily/deploy job's case).
+`--full` re-reads the whole archive after taxonomy semantics evolve. Raw stays
+untouched either way.
 """
 from __future__ import annotations
 
@@ -29,6 +30,19 @@ from ledger_distill import distill_hand
 from spot_taxonomy import walk_spots
 
 RAW = ROOT / "data" / "gtow_raw"
+
+INCREMENTAL_MISSING_SQL = """
+SELECT DISTINCT gtow_hand_id FROM ledger_decisions
+WHERE source='online' AND (
+  spot_leaf IS NULL OR spot_parent IS NULL OR played_depth_bb IS NULL
+)
+"""
+
+READINESS_GAP_SQL = """
+SELECT count(*) FROM ledger_decisions
+WHERE source='online' AND NOT excluded AND NOT discarded
+  AND (spot_leaf IS NULL OR spot_parent IS NULL OR played_depth_bb IS NULL)
+"""
 
 UPDATE_SQL = """
 UPDATE ledger_decisions SET
@@ -81,17 +95,15 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true",
                     help="re-distill ALL archived hands (after taxonomy changes); "
-                         "default = only hands with spot_leaf still NULL")
+                         "default = hands missing leaf or current depth/family fields")
     args = ap.parse_args()
 
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     target_ids: set[str] | None = None
     if not args.full:
-        target_ids = {r["gtow_hand_id"] for r in await conn.fetch(
-            "SELECT DISTINCT gtow_hand_id FROM ledger_decisions "
-            "WHERE spot_leaf IS NULL AND source='online'")}
+        target_ids = {r["gtow_hand_id"] for r in await conn.fetch(INCREMENTAL_MISSING_SQL)}
         if not target_ids:
-            print("SPOTS backfill: nothing to do (no online decisions missing spot_leaf)")
+            print("SPOTS backfill: nothing to do (ledger taxonomy/depth fields current)")
             await conn.close()
             return 0
     list_idx = load_list_index()
@@ -124,8 +136,13 @@ async def main() -> int:
         if batch:
             await conn.executemany(UPDATE_SQL, batch)
         classified = await conn.fetchval("SELECT count(*) FROM ledger_decisions WHERE spot_leaf IS NOT NULL")
+        readiness_gap = await conn.fetchval(READINESS_GAP_SQL)
         print(f"SPOTS backfilled: spots={n_spots} hands={n_hands} missing_list={n_missing} "
-              f"rows_with_spot_leaf={classified}")
+              f"rows_with_spot_leaf={classified} readiness_gap={readiness_gap}")
+        if readiness_gap:
+            print("SPOTS backfill incomplete: honest online rows still miss current family/depth fields",
+                  file=sys.stderr)
+            return 2
         return 0
     finally:
         await conn.close()

@@ -83,6 +83,30 @@ def _svg_sparkline(values, w=560, h=80) -> str:
 # diagnosis window for --weekly: recent form, not all-history
 FOCUS_WINDOW_DAYS = 90
 
+TRAINING_READINESS_SQL = """
+SELECT count(*) FILTER (
+         WHERE NOT excluded AND NOT discarded AND confidence >= 0.8) eligible,
+       count(*) FILTER (
+         WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL
+           AND confidence >= 0.8 AND spot_parent IS NOT NULL
+           AND played_depth_bb IS NOT NULL) ready
+FROM ledger_decisions WHERE source='online'
+"""
+
+
+def training_readiness(row) -> tuple[bool, str]:
+    eligible, ready = int(row["eligible"] or 0), int(row["ready"] or 0)
+    ok = eligible == ready
+    return ok, f"ledger hierarchy readiness {ready}/{eligible}"
+
+
+async def ensure_training_ready(conn) -> None:
+    """Fail closed instead of publishing a partial migration/backfill cohort."""
+    row = await conn.fetchrow(TRAINING_READINESS_SQL)
+    ok, note = training_readiness(row)
+    if not ok:
+        raise RuntimeError(f"{note}; run python scripts/backfill_spots.py")
+
 
 # ── pure assembly ──────────────────────────────────────────────────────────
 def compute_training_plan(window_label, weekly_series, spots, top_hands,
@@ -164,7 +188,9 @@ def _trend(v):
 def render_html(d: dict) -> str:
     spark = _svg_sparkline([w["per100"] for w in d["weekly_series"]])
     lb_rows = "".join(
-        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}</td><td>{r['avg_ev']*100:.2f}</td>"
+        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}</td>"
+        f"<td>{r['avg_ev']*100:.2f}</td>"
+        f"<td>{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f}</td>"
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
     focus_html = ""
     for f in d["focus"]:
@@ -179,8 +205,11 @@ def render_html(d: dict) -> str:
         frag = ('<div class="note">⚠️ fragile：排除樹外近似樣本後量級變動 &gt;30%，數字保守解讀</div>'
                 if f.get("fragile") else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
-                       f'<div class="sub">{f["per100"]:.2f} bb/100 · n={f["n"]} · '
+                       f'<div class="sub">觀察 {f["per100"]:.2f} · 收縮排序估計 '
+                       f'{f.get("shrunk_per100", f["per100"]):.2f} bb/100 · n={f["n"]} · '
                        f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
+                       f'<div class="note">代表 action-line：<code>'
+                       f'{escape(f.get("representative_leaf") or f["spot_leaf"])}</code></div>'
                        f'{drill}{band}{frag}{samples}</div>')
     rb = ""
     if d.get("readback"):
@@ -205,8 +234,8 @@ def render_html(d: dict) -> str:
 <div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · 週變化 {_trend(d['delta'])}</span></div>{spark}
 <h2>本週焦點 spot（先作答，再練）</h2>{focus_html or '<div class="sub">無足夠樣本的焦點</div>'}
 {('<h2>上週焦點回讀</h2>'+rb) if rb else ''}
-<h2>Leak 榜（avg EV loss 排序）</h2>
-<table><tr><th>spot</th><th>bb/100</th><th>n</th></tr>{lb_rows}</table>
+<h2>Leak 榜（收縮 EV-loss 估計排序）</h2>
+<table><tr><th>family</th><th>觀察 bb/100</th><th>收縮估計</th><th>n</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
 <h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · low-confidence {hon.get('low_confidence_n', 0)} · chipEV 評分占比 {hon['chipev_share']*100:.0f}% · physical/effective depth 差異 {hon.get('depth_snap_n', 0)}</div>
 <div class="note">低信心決策不進統計；physical/effective depth 差異保留作 audit，但 drill 使用 GTOW decision depth。</div>
@@ -243,7 +272,10 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
                 band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
             frag = "（⚠️ 這格的數字對樹外近似敏感，保守看）" if f.get("fragile") else ""
-            L.append(f"{i}. {escape(f['desc'])} — 漏 {f['per100']:.1f} bb/100，{f['n']} 手{band}{frag}")
+            rep = f.get("representative_leaf") or f.get("spot_leaf") or "?"
+            L.append(f"{i}. {escape(f['desc'])} — 觀察 {f['per100']:.1f}、"
+                     f"收縮排序估計 {f.get('shrunk_per100', f['per100']):.1f} bb/100，"
+                     f"n={f['n']}；代表 action-line <code>{escape(rep)}</code>{band}{frag}")
 
     dq = d.get("drill_queue") or []
     if dq:
@@ -348,15 +380,17 @@ def preview_summary_md(d: dict) -> str:
          f"- 週序列：{len(d['weekly_series'])} 週", "", "## 本週焦點 spot"]
     for f in d["focus"]:
         L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
-        L.append(f"- {f['per100']:.2f} bb/100 · n={f['n']}")
+        L.append(f"- 觀察 {f['per100']:.2f} · 收縮排序估計 "
+                 f"{f.get('shrunk_per100', f['per100']):.2f} bb/100 · n={f['n']}")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
         L.append("")
-    L.append("## Leak 榜（avg EV loss）")
-    L.append("| spot | bb/100 | n |")
-    L.append("|---|---|---|")
+    L.append("## Leak 榜（收縮 EV-loss 估計排序）")
+    L.append("| family | 觀察 bb/100 | 收縮估計 | n |")
+    L.append("|---|---:|---:|---:|")
     for r in d["leaderboard"][:10]:
-        L.append(f"| {r.get('diagnosis_key', r['spot_leaf'])} | {r['avg_ev']*100:.2f} | {r['n']} |")
+        L.append(f"| {r.get('diagnosis_key', r['spot_leaf'])} | {r['avg_ev']*100:.2f} | "
+                 f"{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f} | {r['n']} |")
     L.append("")
     hon = d["honesty"]
     L.append(f"## 誠實層\n- excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · "
@@ -485,6 +519,7 @@ async def _run(mode: str, min_n: int):
     outdir = ROOT / "data" / "scorecards"
     outdir.mkdir(parents=True, exist_ok=True)
     try:
+        await ensure_training_ready(conn)
         if mode == "preview":
             data = await build(conn, "preview-all-history", None, min_n=min_n)
             (outdir / "preview.html").write_text(render_html(data))

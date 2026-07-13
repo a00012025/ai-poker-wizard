@@ -148,18 +148,6 @@ GROUP BY eff_stack
 """
 
 
-def family_sample_sql(since=None) -> str:
-    win = " AND d.played_at >= $2" if since else ""
-    return f"""
-SELECT d.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards,
-       h.total_ev_loss_bb, d.ev_loss_bb, d.correctness, d.spot_leaf
-FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id=d.gtow_hand_id
-WHERE d.spot_parent=$1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND NOT d.discarded
-  AND d.source='online' AND d.confidence >= {MIN_TRAINING_CONFIDENCE}{win}
-ORDER BY d.ev_loss_bb DESC LIMIT 2
-"""
-
-
 def global_avg_sql(since=None) -> str:
     win = " AND played_at >= $1" if since else ""
     return f"""SELECT avg(ev_loss_bb) FROM ledger_decisions
@@ -235,13 +223,21 @@ async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None):
     out = []
     for row in ranked:
         key = row["diagnosis_key"]
-        bands = [dict(b) for b in await conn.fetch(family_band_sql(since), key, *extra)]
-        restrict, depths = choose_depths(bands)
-        samples = await conn.fetch(family_sample_sql(since), key, *extra)
+        family_bands = [dict(b) for b in await conn.fetch(
+            family_band_sql(since), key, *extra)]
+        # Prescription truth stays on the exact child being opened.  Family
+        # bands diagnose the broader skill; they must never constrain a
+        # representative leaf whose depth distribution may differ.
+        prescription_bands = [dict(b) for b in await conn.fetch(
+            band_sql(since), row["representative_leaf"], *extra)]
+        restrict, depths = choose_depths(prescription_bands)
+        samples = await conn.fetch(
+            sample_sql(since), row["representative_leaf"], *extra)
         row["spot_leaf"] = row["representative_leaf"]
         row["diagnosis_level"] = "parent"
         out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
-                    "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
+                    "bands": family_bands, "prescription_bands": prescription_bands,
+                    "restrict": restrict, "fragile": is_fragile(row)})
     return out
 
 

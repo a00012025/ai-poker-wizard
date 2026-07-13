@@ -59,5 +59,10 @@ than adding a premature weekly before/after verdict:
 - Recording practice scores.
 - Implementing the causal/DiD verdict.
 
+Current-state warning: the existing weekly readback is still a descriptive
+single-cohort before/after readout. Any arrow or「有進步」copy is **not** causal
+evidence and must be replaced by the treated/control contract when this P1 is
+designed.
+
 The current P0 work only makes prescriptions honest: decision-level solver
 depth, confidence filtering and hierarchical family diagnosis.

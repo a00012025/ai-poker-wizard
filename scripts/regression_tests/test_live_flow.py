@@ -1620,6 +1620,12 @@ def test_backfill_spots_incremental_selection():
     assert_eq(select_files(files, None), files)
     assert_eq(select_files(files, {"bbb"}), ["/x/2026-06/bbb.json.gz"])
     assert_eq(select_files(files, set()), [])
+    from backfill_spots import INCREMENTAL_MISSING_SQL
+    assert_in("spot_leaf IS NULL", INCREMENTAL_MISSING_SQL)
+    assert_in("spot_parent IS NULL", INCREMENTAL_MISSING_SQL)
+    assert_in("played_depth_bb IS NULL", INCREMENTAL_MISSING_SQL)
+    from backfill_spots import READINESS_GAP_SQL
+    assert_in("spot_leaf IS NULL", READINESS_GAP_SQL)
 
 
 @test
@@ -1658,6 +1664,12 @@ def test_hierarchical_family_ranking_shrinks_sparse_groups():
     assert_eq(ranked[0]["diagnosis_key"], "BB_vsOpen")
     assert_true(ranked[0]["shrunk_avg_ev"] > ranked[1]["shrunk_avg_ev"])
 
+    from spot_taxonomy import _postflop_spot_base
+    oop = _postflop_spot_base("turn", "SRP", "BB", 8, "vs_bet", "BTN", "x-x", None)
+    ip = _postflop_spot_base("turn", "SRP", "BTN", 8, "vs_bet", "BB", "x-x", None)
+    assert_eq(oop["parent"], "turn:SRP:OOP:vs_bet")
+    assert_eq(ip["parent"], "turn:SRP:IP:vs_bet")
+
 
 @test
 def test_hierarchical_sql_uses_parent_and_confidence_gate():
@@ -1668,6 +1680,11 @@ def test_hierarchical_sql_uses_parent_and_confidence_gate():
     assert_in("confidence >= 0.8", sql)
     assert_in("HAVING count(*) >= $1", sql)
     assert_in("spot_parent=$1", family_band_sql(None))
+    import inspect
+    from spot_leaderboard import hierarchical_leaderboard
+    src = inspect.getsource(hierarchical_leaderboard)
+    assert_in('band_sql(since), row["representative_leaf"]', src)
+    assert_in('"prescription_bands"', src)
 
 
 @test
@@ -1678,6 +1695,15 @@ def test_migration_decision_depth_and_parent_columns():
     sql = mig.read_text()
     for col in ("played_depth_bb REAL", "solver_depth_bb REAL", "spot_parent TEXT"):
         assert_in(col, sql)
+
+
+@test
+def test_deploy_runs_resumable_ledger_upgrade_backfill():
+    deploy = (REPO_ROOT / "scripts/deploy.sh").read_text()
+    db_push = deploy.index("supabase db push")
+    backfill = deploy.index("python scripts/backfill_spots.py")
+    docker = deploy.index("docker compose build")
+    assert_true(db_push < backfill < docker)
 
 
 @test

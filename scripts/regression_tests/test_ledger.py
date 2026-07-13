@@ -203,7 +203,7 @@ def test_distill_uses_decision_solver_depth_not_list_depth():
     assert_eq(len(decs), 1)
     d = decs[0]
     assert_eq(d["played_depth_bb"], 54.483)
-    assert_eq(d["solver_depth_bb"], 20.125)
+    assert_eq(d["solver_depth_bb"], 20.0)
     assert_eq(d["depth_band"], "15_25")
     assert_eq(d["confidence"], 1.0,
               "a legitimate binding-effective stack gap is not low confidence")
@@ -212,10 +212,27 @@ def test_distill_uses_decision_solver_depth_not_list_depth():
 
     from spot_taxonomy import walk_spots
     spots = list(walk_spots(lr, det))
-    assert_eq(spots[0]["tags"]["eff_stack"], "medium")
+    assert_eq(spots[0]["tags"]["eff_stack"], "short")
     assert_eq(spots[0]["tags"]["depth_band"], "15_25")
     assert_eq(spots[0]["tags"]["played_depth_bb"], 54.483)
-    assert_eq(spots[0]["tags"]["solver_depth_bb"], 20.125)
+    assert_eq(spots[0]["tags"]["solver_depth_bb"], 20.0)
+    assert_eq(spots[0]["parent"], "SB_RFI")
+
+
+@test
+def test_gtow_canonical_depth_encoding_boundaries():
+    """GTOW encodes canonical tree depths as bb+0.125; stack categories and
+    stored solver depth use human bb, especially at 20/50 boundaries."""
+    from ledger_distill import decode_gtow_depth
+    from spot_taxonomy import eff_stack_cat
+    for encoded, expected in ((10.125, 10), (15.125, 15), (20.125, 20),
+                              (25.125, 25), (40.125, 40), (50.125, 50)):
+        decoded = decode_gtow_depth(encoded)
+        assert_eq(decoded, float(expected))
+    assert_eq(eff_stack_cat(decode_gtow_depth(20.125)), "short")
+    assert_eq(eff_stack_cat(decode_gtow_depth(50.125)), "medium")
+    assert_eq(decode_gtow_depth(34.692), 34.692,
+              "non-canonical decision-local depths remain exact")
 
 
 @test
@@ -934,6 +951,19 @@ def test_leaderboard_sql_time_window():
     assert_true("played_at >=" not in top_hands_sql(None))
     assert_in("played_at >= $2", READBACK_WINDOW_SQL)
     assert_in("source='online'", READBACK_WINDOW_SQL)
+
+
+@test
+def test_scorecard_fails_closed_until_hierarchy_backfill_ready():
+    from scorecard import TRAINING_READINESS_SQL, training_readiness
+    assert_in("spot_parent IS NOT NULL", TRAINING_READINESS_SQL)
+    assert_in("played_depth_bb IS NOT NULL", TRAINING_READINESS_SQL)
+    assert_eq(TRAINING_READINESS_SQL.count("spot_leaf IS NOT NULL"), 1,
+              "null-leaf honest rows belong to eligible but not ready")
+    assert_true(training_readiness({"eligible": 100, "ready": 100})[0])
+    ok, note = training_readiness({"eligible": 100, "ready": 90})
+    assert_true(not ok)
+    assert_in("90/100", note)
 
 
 @test

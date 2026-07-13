@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ledger_distill import _norm_code, _street_of, depth_band
+from ledger_distill import _norm_code, _street_of, decode_gtow_depth, depth_band
 
 # ── positions ──────────────────────────────────────────────────────────────
 _POS_CAT = {
@@ -345,7 +345,7 @@ def _postflop_spot_base(street, pot_type_hand, hero, npl, facing, villain,
             # Stable learning family: street × pot family × decision faced.
             # Exact positions and prior action sequence stay on the leaf used
             # for precise examples/drills, but no longer fragment diagnosis.
-            "parent": f"{street}:{cls['pot_type']}:{facing}",
+            "parent": f"{street}:{cls['pot_type']}:{cls['ip_oop']}:{facing}",
             "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
             "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
             "facing": facing, "note": "",
@@ -402,12 +402,7 @@ def walk_spots(list_row: dict, detail: dict):
             corr = sel.get("correctness")
             ev_loss = float(sel.get("ev_loss") or 0)
             excluded = hand_excluded or corr in (None, "UNSOLVED")
-            raw_solver_depth = gp.get("depth")
-            try:
-                solver_depth = (float(raw_solver_depth)
-                                if raw_solver_depth not in (None, "") else None)
-            except (TypeError, ValueError):
-                solver_depth = None
+            solver_depth = decode_gtow_depth(gp.get("depth"))
             decision_depth = solver_depth or played_depth
             tags = dict(base_tags)
             tags.update({"eff_stack": eff_stack_cat(decision_depth),

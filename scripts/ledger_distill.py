@@ -30,6 +30,24 @@ def depth_band(bb: float) -> str:
     return "40plus"
 
 
+def decode_gtow_depth(value) -> float | None:
+    """Decode GTOW's canonical ``bb + 0.125`` tree identifier to human bb.
+
+    Decision-local effective depths can also be non-canonical decimals (for
+    example 34.692); those are already real bb and must remain untouched.
+    """
+    try:
+        depth = float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    if depth is None:
+        return None
+    whole = round(depth - 0.125)
+    if abs(depth - (whole + 0.125)) < 1e-6:
+        return float(whole)
+    return depth
+
+
 def _street_of(gp: dict) -> str:
     t = (gp.get("real_game") or {}).get("current_street", {}).get("type", "")
     t = (t or "").lower()
@@ -85,16 +103,12 @@ def _decision_depths(played_depth: float, gp: dict) -> tuple[float | None, float
     the decision.  Those are legitimately different in covered/multiway pots;
     drills must follow the latter while retaining the former for audit.
     """
-    raw = gp.get("depth")
-    try:
-        solver_depth = float(raw) if raw not in (None, "") else None
-    except (TypeError, ValueError):
-        solver_depth = None
+    solver_depth = decode_gtow_depth(gp.get("depth"))
     return solver_depth, solver_depth or played_depth
 
 
 def _decision_confidence(flags: list[str], excluded: bool) -> float:
-    """Confidence in using this decision for aggregate training statistics.
+    """Eligibility tier for aggregate training statistics (not a probability).
 
     GTOW's selected action/EV is authoritative at its game point.  A physical
     stack difference alone is therefore not uncertainty.  Missing decision
