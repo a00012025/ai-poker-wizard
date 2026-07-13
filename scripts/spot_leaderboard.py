@@ -25,6 +25,7 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 from gtow_trainer_url import (CAT_POSITIONS, MTT_DEPTHS, DEPTH_BAND_DEPTHS,
                               PREFLOP_CATS, drill_url_for_spot)  # noqa: F401 — PREFLOP_CATS re-exported
+from action_bias import LOSSY_MIN_BB, dominant_action_bias
 
 TPE = ZoneInfo("Asia/Taipei")
 
@@ -159,6 +160,17 @@ WHERE NOT excluded AND NOT discarded AND spot_parent IS NOT NULL
   AND source='online' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}"""
 
 
+def action_bias_sql(level: str = "parent", since=None) -> str:
+    """Material lossy decisions used only to explain an EV-ranked spot."""
+    column = "spot_parent" if level == "parent" else "spot_leaf"
+    win = " AND played_at >= $2" if since else ""
+    return f"""SELECT taken_code, best_code, ev_loss_bb
+FROM ledger_decisions
+WHERE {column}=$1 AND NOT excluded AND NOT discarded AND source='online'
+  AND confidence >= {MIN_TRAINING_CONFIDENCE} AND ev_loss_bb >= {LOSSY_MIN_BB}{win}
+ORDER BY ev_loss_bb DESC"""
+
+
 def rank_hierarchical_rows(rows, global_avg: float, prior_n: int = FAMILY_PRIOR_N):
     """Empirical-Bayes partial pooling toward the honest global EV-loss mean."""
     ranked = []
@@ -234,6 +246,8 @@ async def leaderboard(conn, min_n=50, top=5, since=None):
         restrict, depths = choose_depths(bands)
         samples = await conn.fetch(sample_sql(since), r["spot_leaf"], *extra)
         row = dict(r)
+        bias_rows = await conn.fetch(action_bias_sql("leaf", since), row["spot_leaf"], *extra)
+        row["action_bias"] = dominant_action_bias(bias_rows)
         out.append({"row": row, "url": drill_url_for_item(row, depths, samples), "samples": samples,
                     "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
     return out
@@ -248,6 +262,8 @@ async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None):
     out = []
     for row in ranked:
         key = row["diagnosis_key"]
+        bias_rows = await conn.fetch(action_bias_sql("parent", since), key, *extra)
+        row["action_bias"] = dominant_action_bias(bias_rows)
         family_bands = [dict(b) for b in await conn.fetch(
             family_band_sql(since), key, *extra)]
         # Prescription truth stays on the exact child being opened.  Family

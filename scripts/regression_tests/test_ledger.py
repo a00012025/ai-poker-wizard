@@ -862,6 +862,71 @@ def test_training_plan_focus_and_readback():
 
 
 @test
+def test_action_bias_only_surfaces_a_robust_dominant_direction():
+    """A direction is a sparse EV-backed coaching label, never filler text."""
+    from action_bias import classify_action_bias, dominant_action_bias
+
+    assert_eq(classify_action_bias("F", "C"), "overfold")
+    assert_eq(classify_action_bias("F", "RAI"), "overfold")
+    assert_eq(classify_action_bias("C", "F"), "overcall")
+    assert_eq(classify_action_bias("R8", "C"), "overraise")
+    assert_eq(classify_action_bias("C", "R12"), "too_passive")
+    assert_eq(classify_action_bias("X", "R3.2"), "too_passive")
+    assert_eq(classify_action_bias("R5", "R12"), None)  # sizing is not guessed
+
+    mp = ([{"taken_code": "F", "best_code": "C", "ev_loss_bb": 1.0}] * 9
+          + [{"taken_code": "F", "best_code": "RAI", "ev_loss_bb": 3.69}]
+          + [{"taken_code": "RAI", "best_code": "C", "ev_loss_bb": 2.45}])
+    bias = dominant_action_bias(mp)
+    assert_eq(bias["direction"], "overfold")
+    assert_eq(bias["label"], "棄牌過多")
+    assert_eq(bias["n"], 10)
+    assert_eq(round(bias["ev_loss_bb"], 2), 12.69)
+    assert_eq(round(bias["share"], 3), 0.838)
+
+    # A 50/50 split and a one-hand outlier produce no user-visible label.
+    mixed = ([{"taken_code": "F", "best_code": "C", "ev_loss_bb": 1.0}] * 5
+             + [{"taken_code": "C", "best_code": "F", "ev_loss_bb": 1.0}] * 5)
+    assert_eq(dominant_action_bias(mixed), None)
+    outlier = ([{"taken_code": "F", "best_code": "C", "ev_loss_bb": 0.2}] * 4
+               + [{"taken_code": "F", "best_code": "C", "ev_loss_bb": 9.0}]
+               + [{"taken_code": "C", "best_code": "F", "ev_loss_bb": 0.2}])
+    assert_eq(dominant_action_bias(outlier), None)
+
+
+@test
+def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
+    from scorecard import compute_training_plan, render_html, weekly_tg_html
+
+    row = {"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
+           "diagnosis_key": "MP_vs3bet", "diagnosis_level": "parent",
+           "representative_leaf": "MP_vs3bet_IP", "avg_ev": 0.1499,
+           "shrunk_avg_ev": 0.12, "n": 101, "hero_cat": "MP",
+           "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "HJ",
+           "action_bias": {"direction": "overfold", "label": "棄牌過多",
+                           "n": 10, "ev_loss_bb": 12.69, "share": 0.838}}
+    spot = {"row": row, "url": "https://app.gtowizard.com/practice/trainer?a=1",
+            "samples": [], "restrict": None, "fragile": False}
+    honesty = {"excluded_n": 0, "discarded_n": 0, "chipev_share": 1.0,
+               "total": 101, "depth_snap_n": 0, "low_confidence_n": 0}
+    data = compute_training_plan("2026-W29", [], [spot], [], None, honesty)
+    assert_eq(data["focus"][0]["action_bias"]["label"], "棄牌過多")
+    msg = weekly_tg_html("2026-W29", data)
+    html = render_html(data)
+    for rendered in (msg, html):
+        assert_in("明顯傾向：棄牌過多", rendered)
+        assert_in("10 手，共損失 12.69bb", rendered)
+        assert_true("方向混合" not in rendered)
+    assert_in("MP_vs3bet｜棄牌過多", html)
+
+    no_bias = dict(row)
+    no_bias.pop("action_bias")
+    quiet = compute_training_plan("2026-W29", [], [{**spot, "row": no_bias}], [], None, honesty)
+    quiet_rendered = weekly_tg_html("2026-W29", quiet) + render_html(quiet)
+    assert_true("明顯傾向" not in quiet_rendered and "方向混合" not in quiet_rendered)
+
+
+@test
 def test_build_drill_url_pins_position():
     """Precise drill URL pins fh_hero/fh_opponent/fh_rel_positions/fh_actions
     (params verified live 2026-07-09; see skill gtow-trainer-drill)."""

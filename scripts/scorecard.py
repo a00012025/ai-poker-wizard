@@ -133,6 +133,7 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
             "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
             "restrict": it.get("restrict"),
             "fragile": bool(it.get("fragile")),
+            "action_bias": r.get("action_bias"),
             "samples": [dict(s) for s in it.get("samples", [])],
         })
     return {
@@ -192,7 +193,8 @@ def _trend(v):
 def render_html(d: dict) -> str:
     spark = _svg_sparkline([w["per100"] for w in d["weekly_series"]])
     lb_rows = "".join(
-        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}</td>"
+        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}"
+        f"{('｜' + escape(r['action_bias']['label'])) if r.get('action_bias') else ''}</td>"
         f"<td>{r['avg_ev']*100:.2f}</td>"
         f"<td>{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f}</td>"
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
@@ -208,13 +210,17 @@ def render_html(d: dict) -> str:
             for s in f.get("samples", []))
         frag = ('<div class="note">⚠️ 部分下注尺寸不在 GTOW 標準樹上；排除這些手後結果差超過 30%，先不要過度解讀</div>'
                 if f.get("fragile") else '')
+        bias = f.get("action_bias")
+        bias_html = (f'<div><b>明顯傾向：{escape(bias["label"])}</b>'
+                     f'（{bias["n"]} 手，共損失 {bias["ev_loss_bb"]:.2f}bb）</div>'
+                     if bias else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
                        f'<div class="sub">實戰漏損 {f["per100"]:.2f} bb/100 · 保守估計 '
                        f'{f.get("shrunk_per100", f["per100"]):.2f} bb/100 · 樣本 {f["n"]} 個決策 · '
                        f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
                        f'<div class="note">用來建立練習的代表牌局路線：<code>'
                        f'{escape(f.get("representative_leaf") or f["spot_leaf"])}</code></div>'
-                       f'{drill}{band}{frag}{samples}</div>')
+                       f'{bias_html}{drill}{band}{frag}{samples}</div>')
     rb = ""
     if d.get("readback"):
         for r in d["readback"]:
@@ -281,6 +287,10 @@ def weekly_tg_html(week: str, d: dict) -> str:
             L.append(f"{i}. {escape(f['desc'])} — 實戰漏損 {f['per100']:.1f} bb/100；"
                      f"考慮樣本數後保守估計 {f.get('shrunk_per100', f['per100']):.1f}；"
                      f"樣本 {f['n']} 個決策。代表牌局路線 <code>{escape(rep)}</code>{band}{frag}")
+            bias = f.get("action_bias")
+            if bias:
+                L.append(f"   明顯傾向：{escape(bias['label'])}（{bias['n']} 手，"
+                         f"共損失 {bias['ev_loss_bb']:.2f}bb）")
 
     dq = d.get("drill_queue") or []
     if dq:
@@ -305,7 +315,9 @@ def weekly_tg_html(week: str, d: dict) -> str:
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
     if others:
-        parts = [f"{spot_desc_zh(r)} {r['avg_ev'] * 100:.1f}" for r in others]
+        parts = [f"{spot_desc_zh(r)} {r['avg_ev'] * 100:.1f}"
+                 f"{('（' + r['action_bias']['label'] + '）') if r.get('action_bias') else ''}"
+                 for r in others]
         L.append("")
         L.append("其他也在漏的（bb/100）：" + "、".join(escape(p) for p in parts))
 
@@ -387,6 +399,9 @@ def preview_summary_md(d: dict) -> str:
         L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
         L.append(f"- 實戰漏損 {f['per100']:.2f} bb/100 · 考慮樣本數後保守估計 "
                  f"{f.get('shrunk_per100', f['per100']):.2f} · 樣本 {f['n']} 個決策")
+        if f.get("action_bias"):
+            b = f["action_bias"]
+            L.append(f"- 明顯傾向：{b['label']}（{b['n']} 手，共損失 {b['ev_loss_bb']:.2f}bb）")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
         L.append("")
@@ -396,7 +411,10 @@ def preview_summary_md(d: dict) -> str:
     L.append("| 情境類型 | 實戰漏損 bb/100 | 保守估計 | 樣本決策 |")
     L.append("|---|---:|---:|---:|")
     for r in d["leaderboard"][:10]:
-        L.append(f"| {r.get('diagnosis_key', r['spot_leaf'])} | {r['avg_ev']*100:.2f} | "
+        label = r.get('diagnosis_key', r['spot_leaf'])
+        if r.get("action_bias"):
+            label += f"｜{r['action_bias']['label']}"
+        L.append(f"| {label} | {r['avg_ev']*100:.2f} | "
                  f"{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f} | {r['n']} |")
     L.append("")
     hon = d["honesty"]
