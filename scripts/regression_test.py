@@ -15670,7 +15670,7 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     ]
     html, buttons = _queue_payload(rows[1:])
     assert_in("練習佇列</b>（1 項）", html)
-    assert_in("qcl:13", [b.get("callback_data") for b in buttons[0]])
+    assert_in("qcl:13:0", [b.get("callback_data") for b in buttons[0]])
     assert_in("✔ 1 已練", [b.get("text") for b in buttons[0]])
     empty_html, empty_buttons = _queue_payload([])
     assert_in("已清空", empty_html)
@@ -15685,8 +15685,41 @@ def test_queue_clear_refreshes_message_with_remaining_items():
 
     src = inspect.getsource(PokerWizardBot.handle_live_button)
     assert_in("edit_message_text", src)
-    assert_in("_fetch_queue_rows", src)
+    assert_in("_fetch_queue_page", src)
     assert_not_in("用 /queue 看剩下的", src)
+
+
+@test
+def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
+    """Regression: 12 exact custom-spot URLs produced a 10.8KB inline
+    keyboard and Telegram rejected /queue with `Reply markup is too long`.
+    Render at most six direct-link rows per page and preserve global numbering.
+    """
+    import json
+    from telegram_bot.bot import (_queue_payload, PokerWizardBot,
+                                  QUEUE_PAGE_SIZE)
+    assert_eq(QUEUE_PAGE_SIZE, 6)
+    rows = [{
+        "id": i, "kind": "drill", "label": f"練習 {i}",
+        "spot_leaf": f"leaf-{i}", "drill_url": "https://example.com/?" + "x" * 1150,
+        "status": "pending", "n_sources": 1, "total_ev_loss_bb": 1.0,
+    } for i in range(1, 13)]
+    html1, buttons1 = _queue_payload(rows[:6], page=0, total=12)
+    markup1 = PokerWizardBot._rows_to_markup(buttons1)
+    assert_in("第 1/2 頁", html1)
+    assert_in("qpg:1", [b.get("callback_data") for row in buttons1 for b in row])
+    assert_true(len(markup1.to_json().encode()) < 10_000)
+
+    html2, buttons2 = _queue_payload(rows[6:], page=1, total=12)
+    flat2 = [b for row in buttons2 for b in row]
+    assert_in("🎯 7.", html2)
+    assert_in("qcl:7:1", [b.get("callback_data") for b in flat2])
+    assert_in("qpg:0", [b.get("callback_data") for b in flat2])
+    assert_true(len(PokerWizardBot._rows_to_markup(buttons2).to_json().encode()) < 10_000)
+
+    import inspect
+    src = inspect.getsource(PokerWizardBot.handle_live_button)
+    assert_in('data.startswith("qpg:")', src)
 
 
 @test
