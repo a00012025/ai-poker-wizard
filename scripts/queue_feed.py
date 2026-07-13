@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 import spot_leaderboard as lb
+from action_bias import bias_suffix, dominant_action_bias
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
@@ -181,14 +182,15 @@ def review_label(row: dict) -> str:
     return f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb{hint}{warn}"
 
 
-def drill_label(row: dict) -> str:
+def drill_label(row: dict, action_bias: dict | None = None) -> str:
     """zh label for an online drill leaf (reuses scorecard.spot_desc_zh, §5.3)."""
     from scorecard import spot_desc_zh
-    return spot_desc_zh({
+    base = spot_desc_zh({
         "spot_category": row.get("spot_category"), "spot_leaf": row.get("spot_leaf"),
         "hero_cat": row.get("hero_cat"), "villain_cat": row.get("villain_cat"),
         "ip_oop": row.get("ip_oop"), "hero_pos": row.get("hero_pos"),
         "street": row.get("spot_category")})
+    return base + bias_suffix(action_bias)
 
 
 def review_url(row: dict) -> str | None:
@@ -310,6 +312,8 @@ def manual_drill_item(dec: dict, drill_url=_URL_UNSET) -> dict:
         "source_hands": [{"hand_id": dec.get("gtow_hand_id"), "street": dec.get("street"),
                           "decision_idx": dec.get("decision_idx"),
                           "ev_loss_bb": float(ev) if ev is not None else 0.0,
+                          "taken_code": dec.get("taken_code"),
+                          "best_code": dec.get("best_code"),
                           "src": "manual"}],
     }
 
@@ -317,7 +321,7 @@ def manual_drill_item(dec: dict, drill_url=_URL_UNSET) -> dict:
 _QUEUE_DECISION_SQL = """
 SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
-       d.pot_type, d.eff_stack, d.ev_loss_bb, d.gametype,
+       d.pot_type, d.eff_stack, d.ev_loss_bb, d.taken_code, d.best_code, d.gametype,
        h.source hand_source, h.raw_path, h.parsed_json,
        h.position hand_position, h.preflop_depth_bb
 FROM ledger_decisions d
@@ -428,15 +432,18 @@ async def _source_decisions(conn, entries: list[dict]) -> list[dict]:
 
 
 async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
-    """Backfill legacy source_hands decision_idx/src without changing identity."""
+    """Backfill queue-source identity and action facts from the ledger."""
     normalized = []
     for entry in entries:
         fixed = dict(entry)
-        if fixed.get("decision_idx") is None:
+        if (fixed.get("decision_idx") is None or fixed.get("taken_code") is None
+                or fixed.get("best_code") is None):
             matches = await _source_decisions(conn, [fixed])
             if matches:
                 fixed["decision_idx"] = int(matches[0]["decision_idx"])
                 fixed.setdefault("src", matches[0].get("hand_source") or "online")
+                fixed["taken_code"] = matches[0].get("taken_code")
+                fixed["best_code"] = matches[0].get("best_code")
         normalized.append(fixed)
     return normalized
 
@@ -472,6 +479,11 @@ UPDATE drill_queue SET
   total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + $4,
   drill_url = COALESCE($5, drill_url),
   label = COALESCE($6, label),
+  bias_key = CASE WHEN $7 THEN $8 ELSE bias_key END,
+  bias_direction = CASE WHEN $7 THEN $9 ELSE bias_direction END,
+  bias_n = CASE WHEN $7 THEN $10 ELSE bias_n END,
+  bias_ev_loss_bb = CASE WHEN $7 THEN $11 ELSE bias_ev_loss_bb END,
+  bias_share = CASE WHEN $7 THEN $12 ELSE bias_share END,
   last_added = NOW()
 WHERE id = $1
 """
@@ -480,8 +492,16 @@ _INSERT_SQL = """
 INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url,
                          review_anchor_url, review_anchor_street, source_hands,
                          n_sources, total_ev_loss_bb, kind, added_by, source,
-                         ref_hand_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)
+                         ref_hand_id, bias_direction, bias_n, bias_ev_loss_bb,
+                         bias_share, bias_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13,
+        $14, $15, $16, $17, $18)
+"""
+
+_REFRESH_BIAS_SQL = """
+UPDATE drill_queue SET label=$2, bias_key=$3, bias_direction=$4, bias_n=$5,
+  bias_ev_loss_bb=$6, bias_share=$7, last_added=NOW()
+WHERE id=$1
 """
 
 
@@ -491,25 +511,36 @@ async def enqueue_one(conn, it: dict) -> str:
     review items always insert (the scan guards ref_hand_id uniqueness)."""
     kind = it.get("kind", "drill")
     incoming = dedupe_entries(list(it.get("source_hands") or []))
+    refresh_bias = "action_bias" in it
+    bias = it.get("action_bias") or {}
     if kind == "drill":
         open_row = await conn.fetchrow(_OPEN_DRILL_SQL, it["spot_leaf"])
         if open_row:
             existing = _as_list(open_row["source_hands"])
             fresh, add_ev = diff_new_entries(existing, incoming)
             if not fresh:
+                if refresh_bias:
+                    await conn.execute(
+                        _REFRESH_BIAS_SQL, open_row["id"], it.get("label"),
+                        it.get("bias_key"), bias.get("direction"), bias.get("n"),
+                        bias.get("ev_loss_bb"), bias.get("share"))
                 return "noop"
             merged = existing + fresh
             await conn.execute(
                 _MERGE_SQL, open_row["id"], json.dumps(merged),
                 (open_row["n_sources"] or 0) + len(fresh), add_ev,
-                it.get("drill_url"), it.get("label"))
+                it.get("drill_url"), it.get("label"), refresh_bias,
+                it.get("bias_key"), bias.get("direction"), bias.get("n"),
+                bias.get("ev_loss_bb"), bias.get("share"))
             return "merged"
     await conn.execute(
         _INSERT_SQL, it.get("spot_leaf"), it.get("spot_category"), it.get("label"),
         it.get("drill_url"), it.get("review_anchor_url"),
         it.get("review_anchor_street"), json.dumps(incoming), len(incoming),
         it.get("total_ev_loss_bb"), kind, it.get("added_by", "auto"),
-        it.get("source", "online"), it.get("ref_hand_id"))
+        it.get("source", "online"), it.get("ref_hand_id"),
+        bias.get("direction"), bias.get("n"), bias.get("ev_loss_bb"),
+        bias.get("share"), it.get("bias_key"))
     return "inserted"
 
 
@@ -526,6 +557,7 @@ def _drill_scan_sql(win_col: str = "$1") -> str:
     return f"""
 SELECT spot_leaf, spot_category,
        count(*) n, sum(ev_loss_bb) total_ev,
+       mode() WITHIN GROUP (ORDER BY spot_parent)  spot_parent,
        mode() WITHIN GROUP (ORDER BY hero_cat)    hero_cat,
        mode() WITHIN GROUP (ORDER BY villain_cat) villain_cat,
        mode() WITHIN GROUP (ORDER BY ip_oop)      ip_oop,
@@ -533,6 +565,7 @@ SELECT spot_leaf, spot_category,
        jsonb_agg(jsonb_build_object(
            'hand_id', gtow_hand_id, 'street', street,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
+           'taken_code', taken_code, 'best_code', best_code,
            'src', source) ORDER BY played_at) source_hands,
        array_agg(played_at ORDER BY played_at) played_ats
 FROM ledger_decisions
@@ -605,11 +638,19 @@ async def _build_drill_items(conn, since) -> list[dict]:
         bands = [dict(b) for b in await conn.fetch(lb.band_sql(since), leaf, since)]
         _restrict, depths = lb.choose_depths(bands)
         entries = _as_list(row["source_hands"])
+        bias_key = row.get("spot_parent") or leaf
+        if row.get("spot_parent"):
+            bias_rows = await conn.fetch(
+                lb.action_bias_sql("parent", since), bias_key, since)
+            action_bias = dominant_action_bias(bias_rows)
+        else:
+            action_bias = dominant_action_bias(entries)
         url = await queue_drill_url_from_sources(conn, entries, depths=depths)
         items.append({
             "kind": "drill", "added_by": "auto", "source": "online",
             "spot_leaf": leaf, "spot_category": row["spot_category"],
-            "label": drill_label(row), "drill_url": url,
+            "label": drill_label(row, action_bias), "drill_url": url,
+            "action_bias": action_bias, "bias_key": bias_key,
             "source_hands": entries,
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
         })

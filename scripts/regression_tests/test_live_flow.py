@@ -1160,7 +1160,8 @@ def test_queue_feed_scan_sql_shape():
     assert_in("ev_loss_bb >= $2", ds)                           # lossy floor
     assert_in("HAVING count(*) >= $3 AND sum(ev_loss_bb) >= $4", ds)
     assert_in("ORDER BY sum(ev_loss_bb) DESC", ds)              # EV-weighted, never freq (§7.3)
-    for k in ("'hand_id'", "'street'", "'decision_idx'", "'ev_loss_bb'", "'src'"):
+    for k in ("'hand_id'", "'street'", "'decision_idx'", "'ev_loss_bb'",
+              "'taken_code'", "'best_code'", "'src'"):
         assert_in(k, ds)
     assert_in("array_agg(played_at ORDER BY played_at) played_ats", ds)  # for re-open gate
     rs = qf._REVIEW_SCAN_SQL
@@ -1171,6 +1172,30 @@ def test_queue_feed_scan_sql_shape():
     assert_eq(qf.QUEUE_DRILL_MIN_TOTAL_BB, 3.0)
     assert_eq(qf.QUEUE_REVIEW_MIN_BB, 5.0)
     assert_eq(qf.QUEUE_SCAN_WINDOW_DAYS, 60)
+
+
+@test
+def test_queue_label_only_adds_a_dominant_action_tendency():
+    """Queue remains terse: one suffix when useful, no mixed/unclear filler."""
+    import queue_feed as qf
+    row = {"spot_leaf": "HJ_vs3bet_SB_IP", "spot_category": "vs3bet",
+           "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP",
+           "hero_pos": "HJ"}
+    bias = {"direction": "overfold", "label": "棄牌過多", "n": 10,
+            "ev_loss_bb": 12.69, "share": 0.838}
+    assert_true(qf.drill_label(row, bias).endswith("｜棄牌過多"))
+    plain = qf.drill_label(row, None)
+    assert_true("明顯傾向" not in plain and "方向混合" not in plain and "｜" not in plain)
+
+
+@test
+def test_action_bias_queue_migration_is_sparse_and_auditable():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    sql = (root / "supabase/migrations/20260713150000_drill_queue_action_bias.sql").read_text()
+    for col in ("bias_key", "bias_direction", "bias_n", "bias_ev_loss_bb", "bias_share"):
+        assert_in(col, sql)
+    assert_in("bias_direction IS NULL", sql)
 
 
 @test
