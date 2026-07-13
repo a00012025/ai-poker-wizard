@@ -5,6 +5,12 @@ cd /home/harry/ai-poker-wizard
 # Source env for Supabase access token
 set -a && source .env && set +a
 
+# The Supabase v2 shim and its Go CLI must travel together. Resolve the
+# companion before git/database/container side effects so a broken install
+# fails closed instead of interrupting deployment halfway through.
+source scripts/supabase_cli.sh
+configure_supabase_cli
+
 git pull
 
 # Run Supabase migrations (project already linked)
