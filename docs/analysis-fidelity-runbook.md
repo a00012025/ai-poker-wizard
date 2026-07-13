@@ -72,6 +72,10 @@ The default seed is `20260713`; pass `--seed` for a separate reproducible cohort
 
 ## Current validation evidence (2026-07-13)
 
+See [`analysis-fidelity-findings-2026-07-13.md`](analysis-fidelity-findings-2026-07-13.md)
+for the mismatch distribution, root-cause discussion, fixes, and EV-weighted
+follow-up priorities.
+
 - Initial fixed 100-hand cohort: `95/164` comparable decisions matched (58%).
 - After root-cause fixes, the same 100-hand cohort: `141/163` matched (86.5%),
   with 0 hand errors.
