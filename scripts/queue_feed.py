@@ -56,8 +56,8 @@ LOW_FREQUENCY_BRANCH = 0.05     # path hint only; NEVER used for EV ordering (§
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
 _HONEST = ("NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL "
-           "AND source='online'")
-_APPROX_KEYS = ("sizing_snap", "depth_snap_gap")
+           "AND source='online' AND confidence >= 0.8")
+_APPROX_KEYS = ("sizing_snap", "missing_solver_depth", "analyzer_approximation")
 
 
 # ── pure helpers (unit-tested; no DB) ─────────────────────────────────────────
@@ -577,6 +577,7 @@ SELECT street, decision_idx, taken_freq, spot_category, spot_leaf, hero_cat,
        villain_cat, ip_oop, position, ev_loss_bb, approx_flags
 FROM ledger_decisions
 WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded
+  AND confidence >= 0.8
 ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1
          WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx
 """

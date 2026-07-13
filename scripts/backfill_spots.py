@@ -25,28 +25,34 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
+from ledger_distill import distill_hand
 from spot_taxonomy import walk_spots
 
 RAW = ROOT / "data" / "gtow_raw"
 
 UPDATE_SQL = """
 UPDATE ledger_decisions SET
-  spot_category=$4, spot_leaf=$5, spot_keys=$6, hero_cat=$7, villain_cat=$8,
-  ip_oop=$9, flop_seq=$10, turn_seq=$11, eff_stack=$12, board_suit=$13,
-  board_conn=$14, board_paired=$15, discarded=$16, limp_origin=$17
+  spot_category=$4, spot_leaf=$5, spot_parent=$6, spot_keys=$7,
+  hero_cat=$8, villain_cat=$9, ip_oop=$10, flop_seq=$11, turn_seq=$12,
+  eff_stack=$13, depth_band=$14, played_depth_bb=$15, solver_depth_bb=$16,
+  board_suit=$17, board_conn=$18, board_paired=$19,
+  discarded=$20, limp_origin=$21, confidence=$22, approx_flags=$23
 WHERE gtow_hand_id=$1 AND street=$2 AND decision_idx=$3
 """
 
 
-def _row(s: dict):
+def _row(s: dict, decision: dict):
     t = s.get("tags", {})
     return (
         s["gtow_hand_id"], s["street"], s["decision_idx"],
-        s["category"], s["leaf"], json.dumps(s["keys"]),
+        s["category"], s["leaf"], s.get("parent"), json.dumps(s["keys"]),
         s.get("hero_cat"), s.get("villain_cat"), s.get("ip_oop"),
         s.get("flop_seq"), s.get("turn_seq"),
-        t.get("eff_stack"), t.get("board_suit"), t.get("board_conn"), t.get("board_paired"),
+        t.get("eff_stack"), t.get("depth_band"),
+        decision.get("played_depth_bb"), decision.get("solver_depth_bb"),
+        t.get("board_suit"), t.get("board_conn"), t.get("board_paired"),
         bool(s.get("discarded")), bool(s.get("limp_origin")),
+        decision.get("confidence", 0.0), json.dumps(decision.get("approx_flags") or []),
     )
 
 
@@ -103,8 +109,13 @@ async def main() -> int:
             with gzip.open(f, "rt") as fh:
                 det = json.load(fh)
             n_hands += 1
+            _hand, decisions = distill_hand(lr, det)
+            by_node = {(d["street"], d["decision_idx"]): d for d in decisions}
             for s in walk_spots(lr, det):
-                batch.append(_row(s))
+                decision = by_node.get((s["street"], s["decision_idx"]))
+                if decision is None:
+                    continue
+                batch.append(_row(s, decision))
                 n_spots += 1
             if len(batch) >= 2000:
                 await conn.executemany(UPDATE_SQL, batch); batch = []

@@ -20,6 +20,7 @@ STREET_ORDER = ["preflop", "flop", "turn", "river"]
 CHIPEV_FLAG = "chipev_grading"
 DEPTH_GAP_BB = 3.0
 SIZING_SNAP_REL = 0.25
+MIN_STATS_CONFIDENCE = 0.8
 
 
 def depth_band(bb: float) -> str:
@@ -72,8 +73,43 @@ def _hand_flags(list_row: dict, ga: dict) -> tuple[list[str], bool]:
         flags.append(f"warning:{ws}"); excluded = True
     ar = ga.get("approximation_reason")
     if ar:
-        flags.append(f"approx:{ar}")
+        flags.extend(["analyzer_approximation", f"approx:{ar}"])
     return flags, excluded
+
+
+def _decision_depths(played_depth: float, gp: dict) -> tuple[float | None, float]:
+    """Return (authoritative solver depth, depth used for classification).
+
+    GTOW list rows describe the player's physical/preflop stack.  A game point
+    carries the binding effective stack of the solution that actually graded
+    the decision.  Those are legitimately different in covered/multiway pots;
+    drills must follow the latter while retaining the former for audit.
+    """
+    raw = gp.get("depth")
+    try:
+        solver_depth = float(raw) if raw not in (None, "") else None
+    except (TypeError, ValueError):
+        solver_depth = None
+    return solver_depth, solver_depth or played_depth
+
+
+def _decision_confidence(flags: list[str], excluded: bool) -> float:
+    """Confidence in using this decision for aggregate training statistics.
+
+    GTOW's selected action/EV is authoritative at its game point.  A physical
+    stack difference alone is therefore not uncertainty.  Missing decision
+    depth or a large size snap changes the represented node and is gated out;
+    a declared Analyzer approximation remains visible at the confidence floor.
+    """
+    if excluded:
+        return 0.0
+    if "missing_solver_depth" in flags:
+        return 0.6
+    if "sizing_snap" in flags:
+        return 0.75
+    if any(f.startswith("approx:") for f in flags):
+        return MIN_STATS_CONFIDENCE
+    return 1.0
 
 
 def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
@@ -81,7 +117,7 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
     gps = ga.get("game_points") or []
     hero_pos = list_row.get("player_position", "")
     boards = (list_row.get("boards") or [""])[0]
-    real_depth = float(list_row.get("preflop_game_depth") or 0)
+    played_depth = float(list_row.get("preflop_game_depth") or 0)
 
     hand_row = {
         "gtow_hand_id": list_row["hand_id"],
@@ -96,7 +132,7 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
         "boards": boards,
         "pot_type": list_row.get("pot_type"),
         "total_players": list_row.get("total_players"),
-        "preflop_depth_bb": real_depth,
+        "preflop_depth_bb": played_depth,
         "total_ev_loss_bb": float(list_row.get("total_ev_loss") or 0),
         "total_ev_loss_pct_pot": float(list_row.get("total_ev_loss_as_pot") or 0),
         "avg_gto_score": float(list_row["avg_gto_score"]) if list_row.get("avg_gto_score") is not None else None,
@@ -137,9 +173,13 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
             corr = sel.get("correctness")
             if corr in (None, "UNSOLVED"):
                 flags.append("unsolved"); excluded = True
-            gp_depth = float(gp.get("depth") or 0)
-            if real_depth and gp_depth and abs(real_depth - gp_depth) > DEPTH_GAP_BB:
-                flags.append("depth_snap_gap")
+            solver_depth, decision_depth = _decision_depths(played_depth, gp)
+            if solver_depth is None:
+                flags.append("missing_solver_depth")
+            elif played_depth and abs(played_depth - solver_depth) > DEPTH_GAP_BB:
+                # Audit-only: often a legitimate binding effective opponent,
+                # not an approximation and not a reason to reject the grade.
+                flags.append("played_solver_depth_gap")
             gametype = gp.get("gametype") or ""
             if "ICM" not in gametype.upper():
                 flags.append(CHIPEV_FLAG)
@@ -157,7 +197,9 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
                 "street": street, "decision_idx": idx,
                 "source": "online", "grader": "gtow_analyzer",
                 "gtow_texture": gtow_texture,
-                "depth_band": depth_band(real_depth),
+                "depth_band": depth_band(decision_depth),
+                "played_depth_bb": played_depth or None,
+                "solver_depth_bb": solver_depth,
                 "position": hero_pos,
                 "pot_type": compute_pot_type_from_preflop(
                     "-".join(preflop_tokens), list_row.get("total_players") or 8),
@@ -173,7 +215,7 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
                 "hand_eq": float(sol.get("hand_eq") or 0) or None,
                 "pot_bb": float(rg.get("pot") or 0) or None,
                 "gametype": gametype,
-                "confidence": 1.0,
+                "confidence": _decision_confidence(flags, excluded),
                 "approx_flags": flags,
                 "excluded": excluded,
                 "played_at": list_row["played_at"],

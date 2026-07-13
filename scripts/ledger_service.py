@@ -30,7 +30,7 @@ def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
     source='online' only (§5.2): live hands are selectively recorded, so their
     averages are biased — they must never blend into the summary stats."""
     where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
-             "source='online'"]
+             "source='online'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -44,8 +44,8 @@ def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
 
 
 def _top_spots_sql(category: str | None, hero_cat: str | None, days: int | None, limit: int):
-    where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
-             "source='online'"]
+    where = ["NOT excluded", "NOT discarded", "spot_parent IS NOT NULL",
+             "source='online'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -54,9 +54,9 @@ def _top_spots_sql(category: str | None, hero_cat: str | None, days: int | None,
     if days:
         args.append(days); where.append(f"played_at >= now() - make_interval(days => ${len(args)})")
     args.append(limit)
-    sql = (f"SELECT spot_leaf, count(*) n, sum(ev_loss_bb) total_bb, avg(ev_loss_bb)*100 per100 "
+    sql = (f"SELECT spot_parent spot_leaf, count(*) n, sum(ev_loss_bb) total_bb, avg(ev_loss_bb)*100 per100 "
            f"FROM ledger_decisions WHERE {' AND '.join(where)} "
-           f"GROUP BY spot_leaf HAVING count(*) >= 25 ORDER BY sum(ev_loss_bb) DESC LIMIT ${len(args)}")
+           f"GROUP BY spot_parent HAVING count(*) >= 25 ORDER BY sum(ev_loss_bb) DESC LIMIT ${len(args)}")
     return sql, args
 
 
@@ -98,7 +98,7 @@ def progress_sql(category: str | None, spot_leaf: str | None):
     (§7.3). Returns (sql, args) with the LIMIT (weeks) as the LAST positional
     parameter, to be appended by the caller."""
     where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
-             "source='online'"]
+             "source='online'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -141,7 +141,7 @@ def _hands_sql(category: str | None, spot: str | None, min_ev_loss: float,
     queue / 線下 sections, never blended into this list (their Analyze review
     links would be meaningless anyway)."""
     where = ["NOT d.excluded", "NOT d.discarded", "d.source='online'",
-             "d.ev_loss_bb >= $1"]
+             "d.confidence >= 0.8", "d.ev_loss_bb >= $1"]
     args: list = [float(min_ev_loss)]
     if category:
         args.append(category); where.append(f"d.spot_category = ${len(args)}")

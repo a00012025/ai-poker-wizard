@@ -138,7 +138,7 @@ def session_correlations(decisions, hands, sessions) -> dict:
 async def fetch_decisions(conn, since=None):
     # source isolation (§5.2): diagnostics/weekly series are online-only —
     # live hands are selectively recorded and would bias every aggregate.
-    q = ("SELECT * FROM ledger_decisions WHERE source='online'"
+    q = ("SELECT * FROM ledger_decisions WHERE source='online' AND confidence >= 0.8"
          + (" AND played_at >= $1" if since else ""))
     rows = await (conn.fetch(q, since) if since else conn.fetch(q))
     out = []

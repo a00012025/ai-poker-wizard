@@ -315,6 +315,7 @@ def _preflop_spot_base(hero: str, before: list[tuple[str, str]], npl: int) -> di
         "OOP" if l2 and l2.endswith("_OOP") else None)
     return {"street": "preflop", "category": cls["category"],
             "l1": cls["l1"], "l2": l2, "leaf": l2 or cls["l1"],
+            "parent": cls["l1"],
             "keys": keys, "hero_cat": pos_cat(hero),
             "villain_cat": pos_cat(cls["villain"]) if cls["villain"] else None,
             "ip_oop": pre_ip, "facing": None, "pot_type": None,
@@ -341,6 +342,10 @@ def _postflop_spot_base(street, pot_type_hand, hero, npl, facing, villain,
                             facing, flop_seq, turn_seq)
     return {"street": street, "category": street, "l1": None, "l2": None,
             "leaf": cls["leaf"], "keys": cls["keys"],
+            # Stable learning family: street × pot family × decision faced.
+            # Exact positions and prior action sequence stay on the leaf used
+            # for precise examples/drills, but no longer fragment diagnosis.
+            "parent": f"{street}:{cls['pot_type']}:{facing}",
             "pot_type": cls["pot_type"], "hero_cat": cls["hero_cat"],
             "villain_cat": cls["villain_cat"], "ip_oop": cls["ip_oop"],
             "facing": facing, "note": "",
@@ -362,11 +367,9 @@ def walk_spots(list_row: dict, detail: dict):
     boards = (list_row.get("boards") or [""])[0]
     flop3 = boards[:6] if boards and len(boards) >= 6 else None
     pot_type_hand = list_row.get("pot_type")
-    depth = float(list_row.get("preflop_game_depth") or 0)
+    played_depth = float(list_row.get("preflop_game_depth") or 0)
 
-    tags = {
-        "eff_stack": eff_stack_cat(depth),
-        "depth_band": depth_band(depth),
+    base_tags = {
         "board_suit": board_suit(flop3),
         "board_conn": list_row.get("board_flop_connectedness") or None,
         "board_paired": list_row.get("board_flop_pairedness") or None,
@@ -399,6 +402,18 @@ def walk_spots(list_row: dict, detail: dict):
             corr = sel.get("correctness")
             ev_loss = float(sel.get("ev_loss") or 0)
             excluded = hand_excluded or corr in (None, "UNSOLVED")
+            raw_solver_depth = gp.get("depth")
+            try:
+                solver_depth = (float(raw_solver_depth)
+                                if raw_solver_depth not in (None, "") else None)
+            except (TypeError, ValueError):
+                solver_depth = None
+            decision_depth = solver_depth or played_depth
+            tags = dict(base_tags)
+            tags.update({"eff_stack": eff_stack_cat(decision_depth),
+                         "depth_band": depth_band(decision_depth),
+                         "played_depth_bb": played_depth or None,
+                         "solver_depth_bb": solver_depth})
 
             if street == "preflop":
                 spot = _preflop_spot_base(hero, preflop_before, npl)
@@ -413,7 +428,7 @@ def walk_spots(list_row: dict, detail: dict):
                          "decision_idx": hero_count[street],
                          "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
                          "ev_loss_bb": ev_loss, "correctness": corr,
-                         "excluded": excluded, "tags": dict(tags),
+                         "excluded": excluded, "tags": tags,
                          "played_at": list_row.get("played_at")})
             hero_count[street] += 1
             yield spot

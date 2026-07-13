@@ -49,6 +49,9 @@ FACING_ZH = {"first_to_act": "首動", "vs_bet": "面對下注", "vs_check": "�
 # ── human-readable spot description (pure) ─────────────────────────────────
 def spot_desc_zh(row: dict) -> str:
     cat = row["spot_category"]
+    if row.get("diagnosis_level") == "parent":
+        key = row.get("diagnosis_key") or "?"
+        return f"{CAT_ZH.get(cat, cat)}能力族群 `{key}`"
     hc, vc, rel = row.get("hero_cat"), row.get("villain_cat"), row.get("ip_oop")
     if cat in ("flop", "turn", "river"):
         parts = row["spot_leaf"].split(":")
@@ -93,7 +96,11 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
         r = it["row"]
         focus.append({
             "spot_leaf": r["spot_leaf"], "spot_category": r["spot_category"],
+            "diagnosis_key": r.get("diagnosis_key", r["spot_leaf"]),
+            "diagnosis_level": r.get("diagnosis_level", "leaf"),
+            "representative_leaf": r.get("representative_leaf", r["spot_leaf"]),
             "desc": spot_desc_zh(r), "per100": r["avg_ev"] * 100, "n": r["n"],
+            "shrunk_per100": r.get("shrunk_avg_ev", r["avg_ev"]) * 100,
             "hero_cat": r.get("hero_cat"), "villain_cat": r.get("villain_cat"),
             "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
             "restrict": it.get("restrict"),
@@ -157,7 +164,7 @@ def _trend(v):
 def render_html(d: dict) -> str:
     spark = _svg_sparkline([w["per100"] for w in d["weekly_series"]])
     lb_rows = "".join(
-        f"<tr><td>{escape(r['spot_leaf'])}</td><td>{r['avg_ev']*100:.2f}</td>"
+        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}</td><td>{r['avg_ev']*100:.2f}</td>"
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
     focus_html = ""
     for f in d["focus"]:
@@ -172,7 +179,8 @@ def render_html(d: dict) -> str:
         frag = ('<div class="note">⚠️ fragile：排除樹外近似樣本後量級變動 &gt;30%，數字保守解讀</div>'
                 if f.get("fragile") else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
-                       f'<div class="sub">{f["per100"]:.2f} bb/100 · n={f["n"]} · <code>{escape(f["spot_leaf"])}</code></div>'
+                       f'<div class="sub">{f["per100"]:.2f} bb/100 · n={f["n"]} · '
+                       f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
                        f'{drill}{band}{frag}{samples}</div>')
     rb = ""
     if d.get("readback"):
@@ -200,8 +208,8 @@ def render_html(d: dict) -> str:
 <h2>Leak 榜（avg EV loss 排序）</h2>
 <table><tr><th>spot</th><th>bb/100</th><th>n</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
-<h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · chipEV 評分占比 {hon['chipev_share']*100:.0f}% · 尺寸樹外 {hon.get('sizing_snap_n', 0)} · 深度樹外 {hon.get('depth_snap_n', 0)}</div>
-<div class="note">chipEV 評分：後期/泡沫手含 ICM 近似誤差（Phase 3 處理）；limp 相關 spot 已捨棄。</div>
+<h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · low-confidence {hon.get('low_confidence_n', 0)} · chipEV 評分占比 {hon['chipev_share']*100:.0f}% · physical/effective depth 差異 {hon.get('depth_snap_n', 0)}</div>
+<div class="note">低信心決策不進統計；physical/effective depth 差異保留作 audit，但 drill 使用 GTOW decision depth。</div>
 </body></html>"""
 
 
@@ -283,10 +291,13 @@ def weekly_tg_html(week: str, d: dict) -> str:
              "泡沫、單桌決賽的手會有 ICM 誤差，之後才會校正。")
     L.append(f"• 你的 limp 手（約 {hon.get('discarded_n', 0)} 個決策）直接沒算進去——"
              "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
-    snap_n = (hon.get("sizing_snap_n") or 0) + (hon.get("depth_snap_n") or 0)
-    if snap_n:
-        L.append(f"• 有 {snap_n} 個決策的尺寸或深度在 solver 樹外（用最近的解近似）——"
-                 "已標記，量級對這些近似敏感的 spot 會註明 fragile。")
+    low_n = hon.get("low_confidence_n") or 0
+    if low_n:
+        L.append(f"• 有 {low_n} 個低信心決策未納入統計（例如尺寸樹外或缺 decision depth）。")
+    gap_n = hon.get("depth_snap_n") or 0
+    if gap_n:
+        L.append(f"• 有 {gap_n} 個決策的牌桌 stack 與 GTOW binding effective depth 不同；"
+                 "這是 audit 訊號，練習深度已改用實際評分的 decision depth。")
     L.append("• 只看得到你有上傳 GTOW Analyzer 的手 + 用 /live 記的現場手，其他不在裡面。")
     return "\n".join(L)
 
@@ -336,7 +347,7 @@ def preview_summary_md(d: dict) -> str:
          f"## 主指標", f"- EV loss/100 決策：**{d['per100']:.2f} bb**（週變化 {d['delta']:+.2f}）",
          f"- 週序列：{len(d['weekly_series'])} 週", "", "## 本週焦點 spot"]
     for f in d["focus"]:
-        L.append(f"### {f['desc']}  `{f['spot_leaf']}`")
+        L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
         L.append(f"- {f['per100']:.2f} bb/100 · n={f['n']}")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
@@ -345,7 +356,7 @@ def preview_summary_md(d: dict) -> str:
     L.append("| spot | bb/100 | n |")
     L.append("|---|---|---|")
     for r in d["leaderboard"][:10]:
-        L.append(f"| {r['spot_leaf']} | {r['avg_ev']*100:.2f} | {r['n']} |")
+        L.append(f"| {r.get('diagnosis_key', r['spot_leaf'])} | {r['avg_ev']*100:.2f} | {r['n']} |")
     L.append("")
     hon = d["honesty"]
     L.append(f"## 誠實層\n- excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · "
@@ -362,14 +373,20 @@ SELECT to_char((played_at AT TIME ZONE 'Asia/Taipei'), 'IYYY-"W"IW') week,
        count(*) n, avg(ev_loss_bb)*100 per100, sum(ev_loss_bb) total_bb
 FROM ledger_decisions
 WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
+  AND confidence >= 0.8
 GROUP BY 1 ORDER BY 1
 """
 def top_hands_sql(since=None) -> str:
     win = " AND played_at >= $1" if since else ""
     return f"""
-SELECT gtow_hand_id, played_at, hero_hand, position, boards, total_ev_loss_bb
-FROM ledger_hands WHERE total_ev_loss_bb > 0 AND source='online'{win}
-ORDER BY total_ev_loss_bb DESC LIMIT 3
+SELECT h.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards,
+       sum(d.ev_loss_bb) total_ev_loss_bb
+FROM ledger_hands h JOIN ledger_decisions d ON d.gtow_hand_id=h.gtow_hand_id
+WHERE h.source='online' AND d.source='online' AND NOT d.excluded AND NOT d.discarded
+  AND d.confidence >= 0.8{win.replace('played_at', 'h.played_at')}
+GROUP BY h.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards
+HAVING sum(d.ev_loss_bb) > 0
+ORDER BY sum(d.ev_loss_bb) DESC LIMIT 3
 """
 
 
@@ -378,8 +395,9 @@ READBACK_WINDOW_SQL = """
 SELECT count(*) n, avg(ev_loss_bb)*100 per100
 FROM ledger_decisions
 WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
-  AND played_at >= $2
+  AND confidence >= 0.8 AND played_at >= $2
 """
+READBACK_WINDOW_SQL_PARENT = READBACK_WINDOW_SQL.replace("spot_leaf=$1", "spot_parent=$1")
 
 # prescribed-but-uncleared items KEEP re-surfacing in the plan (§14.2:
 # silently dropping an unpracticed prescription degrades the coaching
@@ -404,19 +422,23 @@ async def _honesty(conn) -> dict:
     exc = await conn.fetchval(f"SELECT count(*) FROM ledger_decisions WHERE excluded AND {src}")
     dis = await conn.fetchval(f"SELECT count(*) FROM ledger_decisions WHERE discarded AND {src}")
     inc = await conn.fetchval(
-        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded AND {src}")
-    chip = await conn.fetchval(
         f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
+        f"AND confidence >= 0.8 AND {src}")
+    low = await conn.fetchval(
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
+        f"AND confidence < 0.8 AND {src}")
+    chip = await conn.fetchval(
+        f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded AND confidence >= 0.8 "
         f"AND approx_flags::text LIKE '%chipev_grading%' AND {src}")
     snap = await conn.fetchval(
         f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
         f"AND approx_flags ? 'sizing_snap' AND {src}")
     dgap = await conn.fetchval(
         f"SELECT count(*) FROM ledger_decisions WHERE NOT excluded AND NOT discarded "
-        f"AND approx_flags ? 'depth_snap_gap' AND {src}")
+        f"AND approx_flags ? 'played_solver_depth_gap' AND {src}")
     return {"excluded_n": exc, "discarded_n": dis,
             "chipev_share": (chip / inc) if inc else 0.0, "total": tot,
-            "sizing_snap_n": snap, "depth_snap_n": dgap}
+            "sizing_snap_n": snap, "depth_snap_n": dgap, "low_confidence_n": low}
 
 
 async def fetch_drill_queue(conn) -> list[dict]:
@@ -431,11 +453,13 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
     """{leaf: {n, per100}} over the post-prescription window (played_at >= prev_at)."""
     out = {}
     for f in prev_focus or []:
-        leaf = f.get("spot_leaf")
-        if not leaf:
+        key = f.get("diagnosis_key") or f.get("spot_leaf")
+        if not key:
             continue
-        r = await conn.fetchrow(READBACK_WINDOW_SQL, leaf, prev_at)
-        out[leaf] = {"n": r["n"] or 0,
+        sql = (READBACK_WINDOW_SQL_PARENT
+               if f.get("diagnosis_level") == "parent" else READBACK_WINDOW_SQL)
+        r = await conn.fetchrow(sql, key, prev_at)
+        out[f.get("spot_leaf") or key] = {"n": r["n"] or 0,
                      "per100": float(r["per100"]) if r["per100"] is not None else None}
     return out
 
@@ -443,7 +467,8 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
 async def build(conn, window_label, prev_focus, min_n=50, top=8,
                 since=None, prev_at=None):
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
-    spots = await lb.leaderboard(conn, min_n=min_n, top=top, since=since)
+    spots = await lb.hierarchical_leaderboard(
+        conn, min_n=max(25, min_n // 2), top=top, since=since)
     top_hands = [dict(r) for r in await conn.fetch(
         top_hands_sql(since), *([since] if since else []))]
     honesty = await _honesty(conn)
@@ -490,7 +515,10 @@ async def _run(mode: str, min_n: int):
         data = await build(conn, week, prev_focus, min_n=min_n, since=since, prev_at=prev_at)
         html = render_html(data)
         (outdir / f"{week}.html").write_text(html)
-        fam_payload = [{"spot_leaf": f["spot_leaf"], "per100": f["per100"], "n": f["n"],
+        fam_payload = [{"spot_leaf": f["spot_leaf"],
+                        "diagnosis_key": f.get("diagnosis_key"),
+                        "diagnosis_level": f.get("diagnosis_level"),
+                        "per100": f["per100"], "n": f["n"],
                         "drill_url": f["drill_url"]} for f in data["focus"]]
         presc = [{"label": f["desc"], "url": f["drill_url"]} for f in data["focus"] if f["drill_url"]]
         await conn.execute(
