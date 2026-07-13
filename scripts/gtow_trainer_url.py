@@ -4,15 +4,9 @@ This module builds deep-link URLs to the GTOW practice trainer so users
 can jump into targeted drills for their leaks. It has no I/O and no
 dependencies beyond the standard library.
 
-Option Y limitation (see design doc harry-main-design-20260413-215833.md):
-    The builder maps a spot_category / pot_type to GTOW's coarse
-    `fh_actions` shortcut taxonomy (RFI, vsSRP, vs3bet, ...). It does
-    NOT pin the exact position pair (e.g. LJ-vs-HJ); the trainer will
-    drop the user into the general shortcut and they may need to pick
-    the exact spot within the UI.
-
-    Option Z (precise reverse-engineering of position-pair params) is
-    tracked as a future TODO — see TODOS.md.
+Preflop shortcut links pin the supported GTOW action filter plus known seat
+filters.  Exact postflop/cold-raise links are source-hand custom spots and are
+built by ``gtow_custom_url``; this module refuses misleading approximations.
 
 Reference URL shape (verified working, preflop vs3bet at 20bb):
 
@@ -26,10 +20,11 @@ Reference URL shape (verified working, preflop vs3bet at 20bb):
         &fh_actions=vs3bet
         &dialogs=
 
-Turn/river note: GTOW's flop shortcut taxonomy is pot-type based and has
-no dedicated turn/river shortcuts. For street="turn"/"river" we reuse
-the flop pot_type mapping but emit `fh_start_spot=<street>` so the
-trainer starts from the requested street.
+Postflop note: GTOW's public shortcuts only select a pot family.  They do not
+pin the action history represented by an action-line leaf, and GTOW rewrites
+turn/river starts back to preflop.  Queue links therefore build postflop spots
+from a source hand via ``gtow_custom_url``; this module deliberately refuses
+to present a coarse postflop shortcut as a precise drill.
 """
 
 from __future__ import annotations
@@ -54,19 +49,6 @@ _PREFLOP_SPOT_TO_FH_ACTIONS: dict[str, str] = {
     "vs_squeeze":       "vsSqueeze",
     "possible_squeeze": "possibleSqueeze",
     "limp_pot":         "vsLimp",
-}
-
-# Pot type → GTOW flop shortcut type
-# GTOW flop taxonomy is by pot type, not by action (cbet/probe/donk).
-# 4bet pots have no dedicated GTOW flop shortcut; closest is 3bet pot.
-_POT_TYPE_TO_FH_ACTIONS_FLOP: dict[str, str] = {
-    "SRP":      "SRP",
-    "3bet":     "3bet",
-    "4bet":     "3bet",
-    "squeezed": "Squeeze",
-    "squeeze":  "Squeeze",
-    "limp":     "limp",
-    "iso":      "iso",
 }
 
 # Baseline trainer UI flags (copied from reference URL). Preserved as
@@ -127,12 +109,13 @@ class SpotNotSupportedError(ValueError):
 _CAT_TO_FH_ACTIONS: dict[str, str] = {
     "RFI": "RFI",
     "vsOpen": "vsSRP",
-    "vsRaiseCall": "vsRaiseCall",
+    # Verified against /available-shortcuts and in the Trainer UI by CDP on
+    # 2026-07-13.  "vsRaiseCall" is our taxonomy name; GTOW calls the state in
+    # which hero can squeeze after raise+call "possibleSqueeze".
+    "vsRaiseCall": "possibleSqueeze",
     "vsSqueeze": "vsSqueeze",
     "vs3bet": "vs3bet",
-    "vsCold3bet": "vs3bet",     # GTOW has no cold-3bet drill; nearest is vs3bet
     "vs4bet": "vs4bet",
-    "vsCold4bet": "vs4bet",     # GTOW has no cold-4bet drill; nearest is vs4bet
 }
 
 CAT_POSITIONS: dict[str, list[str]] = {
@@ -192,12 +175,8 @@ def build_drill_url(
             raise SpotNotSupportedError(f"preflop category {category!r} has no GTOW shortcut")
         start_spot = "preflop"
     else:
-        if pot_type is None:
-            raise SpotNotSupportedError(f"postflop street {street!r} requires pot_type")
-        fh_actions = _POT_TYPE_TO_FH_ACTIONS_FLOP.get(pot_type)
-        if fh_actions is None:
-            raise SpotNotSupportedError(f"postflop pot_type {pot_type!r} has no GTOW shortcut")
-        start_spot = street  # trainer starts from the requested street
+        raise SpotNotSupportedError(
+            "postflop action-line drills require an exact custom_spot source hand")
 
     depth_str, depth_list_str = _depth_params(depth_bb, depths)
     params: list[tuple[str, str]] = [
@@ -271,27 +250,24 @@ def build_trainer_url(
     """Build a GTOW trainer deep-link URL.
 
     Args:
-        spot_category: Leak detection spot bucket. For preflop, maps via
+        spot_category: Preflop leak bucket mapped via
             _PREFLOP_SPOT_TO_FH_ACTIONS (open_raise, facing_3bet, ...).
-            Ignored on postflop (pot_type drives the mapping instead).
         street: "preflop" | "flop" | "turn" | "river".
         effective_bb: Stack depth in bb; will be snapped to nearest
             GTOW-supported depth.
-        pot_type: Required for postflop. One of SRP/3bet/4bet/squeezed/
-            limp/iso. Maps via _POT_TYPE_TO_FH_ACTIONS_FLOP.
+        pot_type: Retained for call compatibility; postflop shortcuts are no
+            longer emitted because they do not identify an action line.
         gametype: GTOW gametype code, default MTTGeneral.
 
     Returns:
         Fully-formed URL string.
 
     Raises:
-        SpotNotSupportedError: if the spot_category (preflop) or pot_type
-            (postflop) cannot be mapped, or postflop pot_type is missing.
+        SpotNotSupportedError: if the preflop category cannot be mapped or a
+            postflop caller has not supplied an exact source-hand custom spot.
         ValueError: if street is not one of the four valid streets.
 
-    Turn/river note: GTOW has no dedicated turn/river shortcuts, so the
-    pot_type mapping falls back to flop taxonomy but fh_start_spot is
-    still set to the requested street.
+    Postflop links belong in ``gtow_custom_url.build_custom_spot_url``.
     """
     if street not in _VALID_STREETS:
         raise ValueError(
@@ -305,15 +281,8 @@ def build_trainer_url(
                 f"preflop spot_category {spot_category!r} has no GTOW shortcut"
             )
     else:
-        if pot_type is None:
-            raise SpotNotSupportedError(
-                f"postflop street {street!r} requires pot_type"
-            )
-        fh_actions = _POT_TYPE_TO_FH_ACTIONS_FLOP.get(pot_type)
-        if fh_actions is None:
-            raise SpotNotSupportedError(
-                f"postflop pot_type {pot_type!r} has no GTOW shortcut"
-            )
+        raise SpotNotSupportedError(
+            "postflop action-line drills require an exact custom_spot source hand")
 
     depth_bb = snap_depth(effective_bb)
     depth_str = _format_depth(depth_bb)
@@ -343,8 +312,7 @@ def build_trainer_url(
 # ── shared spot→drill-URL policy ─────────────────────────────────────────────
 # One place for the "classified spot → Trainer deep link" rules; the
 # leaderboard rows and the live-flow queue items previously each had a copy.
-PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet",
-                "vsCold3bet", "vs4bet", "vsCold4bet"}
+PREFLOP_CATS = {"RFI", "vsOpen", "vsRaiseCall", "vsSqueeze", "vs3bet", "vs4bet"}
 
 
 def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
@@ -354,8 +322,9 @@ def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
     """Trainer deep link for a classified spot, or None when unsupported.
 
     RFI/vsOpen pin hero's exact seat when known (frequent lines, exact-seat
-    leaves); other preflop lines use the hero position CATEGORY; postflop
-    adds pot_type. Unsupported configurations return None instead of raising.
+    leaves); other preflop lines use the hero position CATEGORY.  Postflop and
+    cold-raise categories require an exact source-hand custom spot and return
+    None here instead of linking to a different spot.
     """
     depths = list(MTT_DEPTHS) if depths is None else depths
     opp = CAT_POSITIONS.get(villain_cat) if villain_cat in CAT_POSITIONS else None
@@ -366,11 +335,6 @@ def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
             return build_drill_url(category, "preflop", 20, hero,
                                    opponent_positions=opp, rel_position=ip_oop,
                                    depths=depths)
-        if category in ("flop", "turn", "river"):
-            hero = CAT_POSITIONS.get(hero_cat, [])
-            return build_drill_url(category, category, 20, hero,
-                                   opponent_positions=opp, rel_position=ip_oop,
-                                   pot_type=pot_type, depths=depths)
     except (SpotNotSupportedError, ValueError):
         return None
     return None
