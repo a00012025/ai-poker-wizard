@@ -409,8 +409,15 @@ def resolve_actions_for_deviation(
     if street == "preflop":
         tokens = padded_preflop.split("-") if padded_preflop else []
         positions = POSITION_ORDERS[MTT_TREE_SIZE] if not _is_cash(gametype) else POSITION_ORDERS[players]
-        hero_slot = positions.index(hero_pos_8)
-        truncated = "-".join(tokens[:hero_slot + action_index]) if action_index else "-".join(tokens[:hero_slot])
+        actors = _replay_preflop_actors(tokens, positions)
+        hero_actions = [i for i, actor in enumerate(actors) if actor == hero_pos_8]
+        if action_index >= len(hero_actions):
+            raise ValueError(
+                f"hero preflop decision {action_index} not found for {hero_pos_8}")
+        # Stop immediately before hero's Nth decision.  Hero's response to a
+        # 3bet/4bet is not adjacent to their opening seat in the token stream;
+        # locate it by replaying the betting order instead of hero_slot + N.
+        truncated = "-".join(tokens[:hero_actions[action_index]])
         preflop_codes = _resolve_preflop_codes(gametype, depth, truncated, 0)
         flop_codes = turn_codes = river_codes = ""
     else:
