@@ -30,7 +30,51 @@ In the 300-hand cohort, 179 GTOW-unknown decisions and 6 GTOW-ungraded
 decisions were skipped. They are reported separately and are not counted as
 matches or failures.
 
-## Remaining mismatch distribution
+## Top-three follow-up (2026-07-14)
+
+The three highest-impact inconsistency groups were frozen and re-investigated
+against archived Analyze detail plus the current live solver tree:
+
+1. **River numeric raise versus all-in:** `eef0b07b`, `9ffc1fb8`, and
+   `c1e29db3` are archived/current tree-semantic boundaries. In one case the
+   historical non-all-in 75% branch no longer exists in the current tree; in
+   two cases a physical all-in was historically stored as a numeric raise but
+   is now represented as `RAI`. These decisions are now explicit
+   `skipped_solver_tree_semantic_drift`, not node-parity failures and not
+   silently rewritten to create a false match.
+2. **High-loss exact-combo reach:** `a54afc05` and `104beb84` reach their later
+   turn decisions only after hero takes a zero-frequency action in the current
+   equilibrium. The subsequent exact-combo EV arrays are therefore all zero;
+   this is not a 1326-combo index defect. Such downstream decisions are now
+   `skipped_own_offtree_continuation` and excluded from exact EV parity while
+   remaining visible in the report.
+3. **Physical-pot sizing selection:** in `22e96bc8`, a physical 14bb turn bet is
+   111% of the 12.6bb real pot. The old absolute-bb shortcut selected the
+   current tree's 83% `R13.7` branch; pot-ratio matching now selects the 125%
+   `R20.6` branch, matching GTOW. The downstream river node now aligns; its
+   remaining `3.414bb` versus `3.542bb` loss is a same-node solver-EV drift.
+
+The implementation deliberately does not globally canonicalize archived
+numeric raises to `AI`: that attempted shortcut regressed seven previously
+matching frozen hands. Physical semantics and action-tree identity remain
+separate evidence.
+
+Re-running the identical 300-hand, seed-`20260714` cohort produced:
+
+- 633 decisions and 0 hand errors;
+- 179 GTOW-unknown and 6 GTOW-ungraded decisions;
+- 5 zero-frequency continuations and 4 semantic-tree drifts, all explicit and
+  outside the exact parity denominator;
+- `402/439` exact comparable matches (91.6%), versus the historical
+  `401/448` (89.5%);
+- no transition from a previously matching decision to a mismatch.
+
+The status transitions were: four `node_mismatch` decisions became explicit
+semantic-tree boundaries, five `own_combo_off_range` decisions became explicit
+zero-frequency continuations, one sizing mismatch became an exact match, and
+its downstream mismatch became a same-node `ev_mismatch`.
+
+## Historical mismatch distribution (before the top-three follow-up)
 
 Of 448 comparable decisions, 47 did not meet the strict fidelity assertions:
 
@@ -155,16 +199,17 @@ The fixed 100-hand cohort improved from `95/164` matches (58.0%) to `141/163`
 
 No existing `simplify multiway` behavior was deleted.
 
-## Prioritization for the next audit
+## Prioritization after the top-three follow-up
 
 North Star ranking is EV-weighted, so follow-up work should not be ordered by
 raw mismatch frequency alone.
 
-1. Freeze and investigate material node mismatches with GTOW EV loss at or
-   above `3bb`, starting with the river cases.
-2. Investigate high-loss exact-combo off-range cases (`13.18bb`, `5.81bb`, then
-   the remaining cases).
-3. Resolve best-action and taken-action direction disagreements.
+1. Resolve remaining best-action and taken-action direction disagreements,
+   starting with high-loss case `ac0550cd` (`7.462bb`).
+2. Freeze the remaining material node mismatches after excluding the explicit
+   numeric/all-in tree boundaries.
+3. Separate material same-node EV-array drift from calculation defects; keep
+   `22e96bc8` as the sizing-correct / EV-drift reference case.
 4. Re-run the same frozen cohorts after each root-cause fix.
 5. Expand with new deterministic seeds only after the material frozen cases are
    stable.
@@ -186,5 +231,5 @@ The fidelity check is considered healthy when:
 - multiway approximation remains clearly labeled rather than presented as an
   exact GTOW result.
 
-The current 89.5% exact decision match is a useful baseline, not a reason to
-silently accept the remaining 10.5%.
+The current 91.6% exact decision match is a useful baseline, not a reason to
+silently accept the remaining 8.4%.

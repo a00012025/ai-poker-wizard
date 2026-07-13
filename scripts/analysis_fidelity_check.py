@@ -99,6 +99,26 @@ def _action_lines_compatible(a: str | None, b: str | None,
     )
 
 
+def _has_allin_numeric_drift(gtow: dict, own: dict) -> bool:
+    """True when one tree stores a numeric raise where the other stores AI.
+
+    This intentionally compares the archived solved sequence as stored. Blindly
+    rewriting historical numeric codes to AI changed otherwise matching nodes;
+    a remaining numeric/AI split is therefore treated as a versioned-tree
+    semantic boundary, not parity evidence that local reconstruction can repair.
+    """
+    for field in ("preflop_actions", "flop_actions", "turn_actions", "river_actions"):
+        ga = [normalize_code(x) for x in str(gtow.get(field) or "").split("-") if x]
+        oa = [normalize_code(x) for x in str(own.get(field) or "").split("-") if x]
+        if len(ga) != len(oa):
+            continue
+        for left, right in zip(ga, oa):
+            if (left == "AI" and right.startswith("R")) or (
+                    right == "AI" and left.startswith("R")):
+                return True
+    return False
+
+
 def _float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -512,6 +532,7 @@ def compare_decisions(gtow: list[dict], own: list[dict],
     gtow_by = {d["key"]: d for d in gtow}
     own_by = {d["key"]: d for d in own}
     rows: list[dict] = []
+    prior_zero_frequency_action = False
     for key in sorted(set(gtow_by) | set(own_by), key=_decision_sort_key):
         g, o = gtow_by.get(key), own_by.get(key)
         if g is None:
@@ -576,7 +597,18 @@ def compare_decisions(gtow: list[dict], own: list[dict],
         elif not taken_match:
             status = "taken_action_mismatch"
         elif o.get("in_range") is False:
-            status = "own_combo_off_range"
+            status = (
+                "skipped_own_offtree_continuation"
+                if prior_zero_frequency_action else "own_combo_off_range"
+            )
+        elif (
+            node_diffs
+            and set(node_diffs) <= {
+                "preflop_actions", "flop_actions", "turn_actions", "river_actions"
+            }
+            and _has_allin_numeric_drift(g, o)
+        ):
+            status = "skipped_solver_tree_semantic_drift"
         elif node_diffs:
             status = "node_mismatch"
         elif not best_compatible:
@@ -595,6 +627,9 @@ def compare_decisions(gtow: list[dict], own: list[dict],
             "ev_delta_bb": ev_delta, "frequency_delta": freq_delta,
             "gtow": g, "own": o,
         })
+        taken_freq = o.get("taken_freq")
+        if taken_freq is not None and float(taken_freq) <= 1e-12:
+            prior_zero_frequency_action = True
     return rows
 
 
@@ -778,7 +813,12 @@ def render_report(results: Iterable[dict]) -> str:
     matched = statuses.get("match", 0)
     skipped_unknown = statuses.get("skipped_gtow_unknown", 0)
     skipped_ungraded = statuses.get("skipped_gtow_ungraded", 0)
-    comparable = total_decisions - skipped_unknown - skipped_ungraded
+    skipped_offtree = statuses.get("skipped_own_offtree_continuation", 0)
+    skipped_tree_drift = statuses.get("skipped_solver_tree_semantic_drift", 0)
+    comparable = (
+        total_decisions - skipped_unknown - skipped_ungraded
+        - skipped_offtree - skipped_tree_drift
+    )
     lines = [
         "# GTOW Analyzer vs analyze_hand fidelity",
         "",
@@ -787,6 +827,8 @@ def render_report(results: Iterable[dict]) -> str:
         f"- decisions: {total_decisions}",
         f"- GTOW-unknown decisions skipped: {skipped_unknown}",
         f"- GTOW-ungraded decisions skipped: {skipped_ungraded}",
+        f"- local zero-frequency continuations skipped: {skipped_offtree}",
+        f"- archived/current semantic tree drifts skipped: {skipped_tree_drift}",
         f"- exact comparable matches: {matched}/{comparable}",
         "",
         "## Statuses",
