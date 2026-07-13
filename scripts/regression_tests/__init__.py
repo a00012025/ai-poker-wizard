@@ -16,6 +16,7 @@ TEST_MODULES = (
     "test_validation",
     "test_ledger",
     "test_live_flow",
+    "test_deployment",
 )
 
 
