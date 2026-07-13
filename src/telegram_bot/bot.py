@@ -1603,8 +1603,7 @@ class PokerWizardBot:
             return
         rows = await self.db.pool.fetch(
             "SELECT id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
-            "villain_cat, ip_oop, position, ev_loss_bb, taken_freq, freq_diff, "
-            "correctness "
+            "villain_cat, ip_oop, position, ev_loss_bb "
             "FROM ledger_decisions "
             "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
             "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "

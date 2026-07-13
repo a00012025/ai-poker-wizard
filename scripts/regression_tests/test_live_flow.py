@@ -1248,8 +1248,8 @@ def test_queue_feed_quota_mix():
 @test
 def test_queue_feed_qex_submenu_callback_data():
     """qex sub-menu: numeric decision ids in callback_data (never the spot_leaf
-    string — 64-byte limit), street order, and low-frequency zero-EV branches
-    must never be mislabeled as simply '打對'."""
+    string — 64-byte limit), street order, and only material EV loss appears.
+    Solver frequency / BEST_MOVE metadata belongs in Study, not this picker."""
     import queue_feed as qf
     decs = [
         {"id": 71, "street": "river", "decision_idx": 0, "spot_category": "river",
@@ -1265,13 +1265,16 @@ def test_queue_feed_qex_submenu_callback_data():
     assert_eq(rows[1]["callback_data"], "qad:123456:71")
     assert_true(all(len(r["callback_data"]) <= 64 for r in rows))
     assert_true(all(len(r["text"]) <= 60 for r in rows))
-    assert_in("低頻分支 2.3%", rows[0]["text"])
-    assert_not_in("打對", rows[0]["text"])
-    assert_in("−22.7bb", rows[1]["text"])
+    assert_true(all(term not in rows[0]["text"] for term in
+                    ("2.3%", "低頻分支", "主要策略", "GTO 頻率", "EV 差小", "打對")))
+    assert_not_in("bb", rows[0]["text"])
+    assert_in("損失 22.7bb", rows[1]["text"])
     import inspect
     from telegram_bot.bot import PokerWizardBot
     src = inspect.getsource(PokerWizardBot._queue_expand_review)
-    assert_in("taken_freq", src)
+    assert_not_in("taken_freq", src)
+    assert_not_in("freq_diff", src)
+    assert_not_in("correctness", src)
     assert_not_in("含打對的決策", src)
     assert_not_in("EV 差小不代表它是主要策略", src)
 
