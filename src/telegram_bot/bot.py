@@ -32,6 +32,7 @@ ANALYSIS_TIMEOUT = 1800
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
+QUEUE_PAGE_SIZE = 6
 
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 
@@ -49,14 +50,24 @@ def _estimate_live_batch_minutes(hand_count: int) -> tuple[int, int]:
     return low, high
 
 
-def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
+def _queue_payload(rows, *, page: int = 0,
+                   total: int | None = None) -> tuple[str, list[list[dict]]]:
     """Render the current practice queue for both /queue and qcl refresh."""
-    if not rows:
+    total = len(rows) if total is None else int(total)
+    if total <= 0:
         return "📥 練習佇列已清空 — 沒有待練的行動線。", []
     from html import escape as _esc
-    L = [f"📥 <b>練習佇列</b>（{len(rows)} 項）", ""]
+    pages = max(1, (total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    if pages > 1:
+        heading = f"📥 <b>練習佇列</b>（{total} 項，第 {page + 1}/{pages} 頁）"
+    else:
+        heading = f"📥 <b>練習佇列</b>（{total} 項）"
+    L = [heading, ""]
     buttons: list[list[dict]] = []
-    for i, r in enumerate(rows, 1):
+    start = page * QUEUE_PAGE_SIZE
+    for local_i, r in enumerate(rows, 1):
+        i = start + local_i
         lbl = r["label"] or r["spot_leaf"]
         st = "（本週課表內）" if r["status"] == "prescribed" else ""
         if r["kind"] == "review":
@@ -71,7 +82,7 @@ def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
                 text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
                 row_btns.append({"text": text, "url": r["drill_url"]})
             actions = [
-                {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}"},
+                {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}:{page}"},
                 {"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"},
             ]
             if anchor and row_btns:
@@ -85,8 +96,17 @@ def _queue_payload(rows) -> tuple[str, list[list[dict]]]:
             row_btns = []
             if r["drill_url"]:
                 row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
-            row_btns.append({"text": f"✔ {i} 已練", "callback_data": f"qcl:{r['id']}"})
+            row_btns.append({"text": f"✔ {i} 已練",
+                             "callback_data": f"qcl:{r['id']}:{page}"})
         buttons.append(row_btns)
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append({"text": "⬅ 上一頁", "callback_data": f"qpg:{page - 1}"})
+        if page + 1 < pages:
+            nav.append({"text": "下一頁 ➡", "callback_data": f"qpg:{page + 1}"})
+        if nav:
+            buttons.append(nav)
     return "\n".join(L), buttons
 
 
@@ -1517,13 +1537,20 @@ class PokerWizardBot:
                 except OSError:
                     pass
 
-    async def _fetch_queue_rows(self):
-        return await self.db.pool.fetch(
+    async def _fetch_queue_page(self, page: int = 0):
+        total = await self.db.pool.fetchval(
+            "SELECT count(*) FROM drill_queue "
+            "WHERE status IN ('pending','prescribed')")
+        pages = max(1, (int(total) + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
+        page = max(0, min(int(page), pages - 1))
+        rows = await self.db.pool.fetch(
             "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
             "review_anchor_street, status, n_sources, "
             "total_ev_loss_bb, kind, ref_hand_id "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
-            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 12")
+            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST "
+            "LIMIT $1 OFFSET $2", QUEUE_PAGE_SIZE, page * QUEUE_PAGE_SIZE)
+        return rows, int(total), page
 
     async def queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/queue — owner-only: pending/prescribed practice queue with buttons."""
@@ -1532,7 +1559,8 @@ class PokerWizardBot:
         if not (self.db and self.db.pool):
             await update.message.reply_text("Database not connected.")
             return
-        html, buttons = _queue_payload(await self._fetch_queue_rows())
+        rows, total, page = await self._fetch_queue_page(0)
+        html, buttons = _queue_payload(rows, page=page, total=total)
         await update.message.reply_text(
             html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(buttons))
@@ -1642,12 +1670,29 @@ class PokerWizardBot:
             await query.answer()
             return
 
+        if data.startswith("qpg:"):
+            if self.db and self.db.pool:
+                page = int(data.split(":", 1)[1])
+                rows, total, page = await self._fetch_queue_page(page)
+                html, buttons = _queue_payload(rows, page=page, total=total)
+                await query.answer()
+                await query.edit_message_text(
+                    html, parse_mode="HTML", disable_web_page_preview=True,
+                    reply_markup=self._rows_to_markup(buttons))
+            else:
+                await query.answer("Database not connected.")
+            return
+
         if data.startswith("qcl:"):
             if self.db and self.db.pool:
+                parts = data.split(":")
+                queue_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 0
                 await self.db.pool.execute(
                     "UPDATE drill_queue SET status='cleared', cleared_at=NOW() "
-                    "WHERE id=$1", int(data[4:]))
-                html, buttons = _queue_payload(await self._fetch_queue_rows())
+                    "WHERE id=$1", queue_id)
+                rows, total, page = await self._fetch_queue_page(page)
+                html, buttons = _queue_payload(rows, page=page, total=total)
                 await query.answer("✔ 已標記為完成")
                 try:
                     await query.edit_message_text(
@@ -1898,7 +1943,7 @@ class PokerWizardBot:
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         # pattern handlers must precede the generic follow-up handler
         self.application.add_handler(
-            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl|qex|qad):"))
+            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl|qpg|qex|qad):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
