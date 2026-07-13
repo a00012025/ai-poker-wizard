@@ -1698,8 +1698,12 @@ class PokerWizardBot:
                     await query.edit_message_text(
                         html, parse_mode="HTML", disable_web_page_preview=True,
                         reply_markup=self._rows_to_markup(buttons))
-                except Exception:
-                    await context.bot.send_message(chat_id, "✔ 已清掉；用 /queue 可查看最新清單。")
+                except telegram.error.BadRequest as exc:
+                    # Completion is an in-place queue interaction.  Never add
+                    # a separate chat message as a fallback; that makes review
+                    # clears noisy and leaves the stale queue above it.
+                    if "Message is not modified" not in str(exc):
+                        self.log.exception("Failed to refresh queue after qcl")
             else:
                 await query.answer("Database not connected.")
             return

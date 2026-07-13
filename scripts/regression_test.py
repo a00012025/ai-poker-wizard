@@ -15687,6 +15687,10 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     assert_in("edit_message_text", src)
     assert_in("_fetch_queue_page", src)
     assert_not_in("用 /queue 看剩下的", src)
+    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
+        'if data.startswith("qex:"):', 1)[0]
+    assert_not_in("send_message", qcl_src)
+    assert_in("Failed to refresh queue after qcl", qcl_src)
 
 
 @test
