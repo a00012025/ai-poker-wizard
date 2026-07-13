@@ -260,7 +260,14 @@ def _structure_issues(hand: dict) -> list[Issue]:
 
     if pos_order:
         tokens = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
-        if len(tokens) < len(pos_order):
+        # A complete walk contains N-1 folds: BB wins automatically and never
+        # receives an action token. Other short first rounds still mean a seat
+        # or action was dropped.
+        is_complete_walk = (
+            len(tokens) == len(pos_order) - 1
+            and all(t == "F" for t in tokens)
+        )
+        if len(tokens) < len(pos_order) and not is_complete_walk:
             issues.append(Issue("PREFLOP_LEN", "hard", "preflop", None, [],
                                 f"翻牌前動作數 {len(tokens)} 少於 {players} 人桌的座位數，"
                                 "可能漏掉了某位玩家的動作",

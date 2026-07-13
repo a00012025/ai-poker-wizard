@@ -50,7 +50,7 @@ def _jam_total(code, stacks, order, actor_idx):
 
 
 def resolve_preflop_nodes(*, preflop_actions, hero_position, position_order,
-                          hero_start, stacks, is_icm):
+                          hero_start, stacks, is_icm, default_effective=None):
     """Return [ {node, eff, depth_bucket, caveat, aggressor_code} ] for every
     hero preflop decision node, or None when the resolver opts out (ICM /
     hero unknown / no hero action)."""
@@ -62,20 +62,60 @@ def resolve_preflop_nodes(*, preflop_actions, hero_position, position_order,
         return None
 
     nodes = []
-    # ---- open node ----
-    live_cover = [
-        (stacks or {}).get(p)
-        for i, p in enumerate(position_order)
-        if p != hero_position
-        and (i > hidx or (i < len(parts) and parts[i] not in ("F", "")))
-        and (stacks or {}).get(p)
-    ]
-    open_eff = min(hero_start, max(live_cover)) if live_cover else hero_start
-    nodes.append({
-        "node": "open", "eff": round(open_eff, 1),
-        "depth_bucket": int(nearest_depth(open_eff)),
-        "caveat": None, "aggressor_code": None,
-    })
+    # ---- first hero node ----
+    # A first voluntary hero action may already face an open/jam. Resolve the
+    # aggressor instead of assigning hero/list-row depth to every first node.
+    first_aggressor = None
+    involved_before_hero = set()
+    for actor, code, _prefix in _replay(parts, position_order):
+        if actor == hidx:
+            break
+        if code not in ("F", ""):
+            involved_before_hero.add(actor)
+        if code.startswith("R") or code.startswith("AI"):
+            first_aggressor = (code, actor)
+    if first_aggressor is not None:
+        a_code, a_idx = first_aggressor
+        if a_code.startswith("AI"):
+            total = _jam_total(a_code, stacks, position_order, a_idx)
+            kind = "facing_allin"
+        else:
+            total = (stacks or {}).get(position_order[a_idx])
+            kind = "facing_raise"
+        # In a side-pot/multiway node a short all-in is not necessarily the
+        # solver avatar binding hero's decision (cd23771b: opener + 2.5bb AI +
+        # caller, hero squeezes 16bb on the 17bb tree). Keep the known played
+        # effective when multiple opponents already entered the pot.
+        if len(involved_before_hero) > 1 and default_effective:
+            total = None
+        fallback = default_effective or hero_start
+        eff = round(min(hero_start, total), 1) if total else round(fallback, 1)
+        nodes.append({
+            "node": kind, "eff": eff,
+            "depth_bucket": int(nearest_depth(eff)),
+            "caveat": None, "aggressor_code": a_code,
+        })
+    else:
+        live_cover = [
+            (stacks or {}).get(p)
+            for i, p in enumerate(position_order)
+            if p != hero_position
+            and (i > hidx or (i < len(parts) and parts[i] not in ("F", "")))
+            and (stacks or {}).get(p)
+        ]
+        # ``effective_bb`` supplied by the parser/importer already identifies
+        # the binding played opponent. Prefer it when available; max-live-cover
+        # remains the fallback for callers that only know physical stacks.
+        open_eff = (
+            default_effective
+            if default_effective
+            else (min(hero_start, max(live_cover)) if live_cover else hero_start)
+        )
+        nodes.append({
+            "node": "open", "eff": round(open_eff, 1),
+            "depth_bucket": int(nearest_depth(open_eff)),
+            "caveat": None, "aggressor_code": None,
+        })
 
     # ---- facing nodes: every action by another player AFTER hero's first
     # voluntary action that raises the level (R/AI) creates a hero decision ----

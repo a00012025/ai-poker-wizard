@@ -59,6 +59,7 @@ Hero AJo 牌型: 頂對 (A)
 
 【SB AsJh（AJo）】
   策略: Check 15%, Bet 7（25% pot） 35%, Bet 13.95（50% pot） 49%（EV 25.92bb）
+⚠ EV 損失 0.16bb（All-in 25.78bb vs Bet 7（25% pot） 25.94bb）
   → 實際行動: SB R24.5 24.5bb（solver code: RAI）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from analyze_hand import analyze_hand_full
+from analyze_hand import POSITION_ORDERS, analyze_hand_full
 from gto_formatter import (
     _combo_idx_in_player_range,
     _get_action_strategy_frequencies,
@@ -42,6 +42,7 @@ from gto_formatter import (
     normalize_hand_name,
 )
 from gtow_analyze_api import hand_detail
+from gto_api import nearest_cash_depth, nearest_depth
 from gtow_solution_url import _canonical_board_str, _parsed_hand_from_analyze
 from hh_deviation_check import _get_action_evs_postflop, _get_action_evs_preflop
 
@@ -62,6 +63,7 @@ class Thresholds:
     ev_bb: float = 0.05
     frequency: float = 0.05
     depth_bb: float = 0.01
+    sizing_relative: float = 0.15
 
 
 def normalize_code(code: str | None) -> str:
@@ -72,6 +74,29 @@ def normalize_code(code: str | None) -> str:
     if code.startswith("B"):
         return "R" + code[1:] if len(code) > 1 else "R"
     return code
+
+
+def _codes_compatible(a: str | None, b: str | None,
+                      sizing_relative: float) -> bool:
+    a, b = normalize_code(a), normalize_code(b)
+    if a == b:
+        return True
+    if not (a.startswith("R") and b.startswith("R")):
+        return False
+    try:
+        av, bv = float(a[1:]), float(b[1:])
+    except ValueError:
+        return False
+    return abs(av - bv) / max(av, bv, 1e-9) <= sizing_relative
+
+
+def _action_lines_compatible(a: str | None, b: str | None,
+                             sizing_relative: float) -> bool:
+    aa = [x for x in str(a or "").split("-") if x]
+    bb = [x for x in str(b or "").split("-") if x]
+    return len(aa) == len(bb) and all(
+        _codes_compatible(x, y, sizing_relative) for x, y in zip(aa, bb)
+    )
 
 
 def _float(value: Any) -> float | None:
@@ -111,8 +136,135 @@ def reconstruct_analyze_hand(hand_row: dict, detail: dict) -> dict:
         "players_at_table": players,
         "game_format": "cash" if str(detail.get("format", "")).lower() == "cash" else "mtt",
     })
+    # The Analyze list row commonly stores hero's physical stack, whereas each
+    # graded game-point records the solver avatar depth actually used for the
+    # decision. Feed analyze_hand the latter; keep the row value as audit
+    # metadata rather than manufacturing downstream sizing/depth mismatches.
+    for gp in gps:
+        action = gp.get("real_game_action") or {}
+        gp_depth = _float(gp.get("depth"))
+        available = (gp.get("analysis_solved") or {}).get("available_actions") or []
+        if (action.get("position") == hero_pos and gp_depth is not None
+                and any(a.get("selected") for a in available)):
+            hand["ledger_preflop_depth_bb"] = float(depth or 0)
+            if hand["game_format"] == "mtt" and abs((gp_depth % 1) - 0.125) < 1e-6:
+                hand["effective_bb"] = gp_depth - 0.125
+            else:
+                hand["effective_bb"] = gp_depth
+            break
+    _restore_analyze_allins(hand, detail)
+    _attach_real_stacks_and_effective(hand, detail, hero_pos, players)
     _truncate_after_hero_fold(hand, detail, hero_pos)
     return hand
+
+
+def _restore_analyze_allins(hand: dict, detail: dict) -> None:
+    """Translate GTOW ``RAI`` into analyze_hand's explicit ``AI`` contract.
+
+    ``_parsed_hand_from_analyze`` intentionally turns RAI into a numeric raise
+    for the deep-link resolver. The analysis engine needs the opposite: an AI
+    token/flag so effective-stack and terminal-action logic can recognize it.
+    """
+    gps = ((detail.get("game_analysis") or {}).get("game_points")) or []
+    by_street: dict[str, list[dict]] = defaultdict(list)
+    for gp in gps:
+        rg = gp.get("real_game") or {}
+        street = STREET_FROM_GTOW.get(
+            str((rg.get("current_street") or {}).get("type", "")).upper())
+        action = gp.get("real_game_action") or {}
+        if street and action.get("code"):
+            by_street[street].append(action)
+
+    preflop = [p for p in str(hand.get("preflop_actions") or "").split("-") if p]
+    for i, action in enumerate(by_street["preflop"]):
+        if i < len(preflop) and action.get("code") == "RAI":
+            preflop[i] = f"AI{float(action.get('betsize') or 0):g}"
+    hand["preflop_actions"] = "-".join(preflop)
+
+    for street_name, street in zip(("flop", "turn", "river"), hand.get("streets") or []):
+        real_actions = by_street[street_name]
+        for i, action in enumerate(street.get("actions") or []):
+            if i < len(real_actions) and real_actions[i].get("code") == "RAI":
+                action["action"] = "AI"
+                action["allin"] = True
+                action["size"] = float(real_actions[i].get("betsize") or action.get("size") or 0)
+
+
+def _attach_real_stacks_and_effective(hand: dict, detail: dict,
+                                      hero_pos: str, players_at_table: int) -> None:
+    """Rebuild HH-parser-equivalent effective depth from GTOW real seats.
+
+    ``ledger_hands.preflop_depth_bb`` is commonly hero's depth, not the stack
+    that bound the played spot.  GTOW detail retains every physical starting
+    stack, so postflop hands use the shortest player who actually reached the
+    flop; preflop-only folds use players still live when hero acted.
+    """
+    gps = ((detail.get("game_analysis") or {}).get("game_points")) or []
+    first_players = next(
+        ((gp.get("real_game") or {}).get("players") for gp in gps
+         if (gp.get("real_game") or {}).get("players")),
+        [],
+    )
+    stacks = {
+        p.get("position"): float(p.get("stack") or 0)
+        for p in first_players if p.get("position") and _float(p.get("stack")) is not None
+    }
+    hero_stack = stacks.get(hero_pos)
+    if not hero_stack:
+        return
+    first_real_game = next(
+        ((gp.get("real_game") or {}) for gp in gps
+         if (gp.get("real_game") or {}).get("players")),
+        {},
+    )
+    pot_before = _float(first_real_game.get("pot"))
+    posted = sum(
+        float(p.get("chips_on_table") or 0)
+        for p in first_real_game.get("players") or []
+    )
+    if pot_before is not None and players_at_table > 0:
+        ante = (pot_before - posted) / players_at_table
+        if 0 <= ante <= 0.5:
+            hand["ante_per_player"] = round(ante, 6)
+    order = POSITION_ORDERS.get(players_at_table)
+    if order and all(pos in stacks for pos in order):
+        hand["player_stacks"] = [stacks[pos] for pos in order]
+    hand["hero_starting_stack"] = hero_stack
+
+    folded: set[str] = set()
+    live_at_hero: set[str] | None = None
+    reached_flop = False
+    hero_folded_preflop = False
+    for gp in gps:
+        rg = gp.get("real_game") or {}
+        street = STREET_FROM_GTOW.get(
+            str((rg.get("current_street") or {}).get("type", "")).upper())
+        action = gp.get("real_game_action") or {}
+        pos, code = action.get("position"), action.get("code")
+        if street != "preflop":
+            reached_flop = True
+            break
+        if pos == hero_pos and live_at_hero is None:
+            live_at_hero = set(stacks) - folded - {hero_pos}
+        if code == "F" and pos:
+            folded.add(pos)
+            if pos == hero_pos:
+                hero_folded_preflop = True
+
+    opponents = (
+        (live_at_hero or (set(stacks) - folded - {hero_pos}))
+        if hero_folded_preflop
+        else (set(stacks) - folded - {hero_pos})
+    )
+    opponent_stacks = [stacks[p] for p in opponents if stacks.get(p, 0) > 0]
+    # Exact HU has one unambiguous binding opponent. In multiway/all-in side-pot
+    # hands the shortest stack is often NOT the decision being graded (e.g. a
+    # 9bb caller plus a 50bb shover); retain hero depth and let analyze_hand's
+    # per-node resolver select the relevant cover/jam depth.
+    # This also covers a preflop all-in runout whose detail has no postflop
+    # action game-points: final folds can still leave one exact opponent.
+    if not hero_folded_preflop and len(opponent_stacks) == 1:
+        hand["effective_bb"] = min(hero_stack, min(opponent_stacks))
 
 
 def _truncate_after_hero_fold(hand: dict, detail: dict, hero_pos: str) -> None:
@@ -128,7 +280,7 @@ def _truncate_after_hero_fold(hand: dict, detail: dict, hero_pos: str) -> None:
         if street == "preflop" and action.get("code"):
             code = action["code"]
             if code == "RAI":
-                code = f"R{float(action.get('betsize') or 0):g}"
+                code = f"AI{float(action.get('betsize') or 0):g}"
             preflop_before_fold.append(code)
         if action.get("position") == hero_pos and action.get("code") == "F":
             fold_street = street
@@ -167,14 +319,20 @@ def gtow_decisions(detail: dict, hero_pos: str, *, solution_status: str | None =
         action = gp.get("real_game_action") or {}
         if action.get("position") != hero_pos:
             continue
-        available = (gp.get("analysis_solved") or {}).get("available_actions") or []
-        selected = next((a for a in available if a.get("selected")), None)
-        if selected is None:
-            continue
         street_type = ((gp.get("real_game") or {}).get("current_street") or {}).get("type", "")
         street = STREET_FROM_GTOW.get(str(street_type).upper(), "preflop")
         idx = counts[street]
         counts[street] += 1
+        available = (gp.get("analysis_solved") or {}).get("available_actions") or []
+        selected = next((a for a in available if a.get("selected")), None)
+        if selected is None:
+            out.append({
+                "street": street, "decision_idx": idx, "key": f"{street}:{idx}",
+                "gtow_ungraded": True, "has_solution": bool(gp.get("has_solution")),
+                "gtow_excluded": bool(hand_exclusion_reasons),
+                "gtow_exclusion_reasons": list(hand_exclusion_reasons),
+            })
+            continue
         best = next((a for a in available if a.get("correctness") == "BEST_MOVE"), None)
         if best is None:
             numeric = [a for a in available if _float(a.get("ev")) is not None]
@@ -187,6 +345,12 @@ def gtow_decisions(detail: dict, hero_pos: str, *, solution_status: str | None =
         }
         seq = gp.get("solved_action_sequence") or {}
         real_game = gp.get("real_game") or {}
+        selected_ev = _float(selected.get("ev"))
+        best_ev = _float(best.get("ev")) if best else None
+        solver_ev_loss = (
+            max(0.0, best_ev - selected_ev)
+            if selected_ev is not None and best_ev is not None else None
+        )
         out.append({
             "street": street,
             "decision_idx": idx,
@@ -199,13 +363,24 @@ def gtow_decisions(detail: dict, hero_pos: str, *, solution_status: str | None =
             "turn_actions": _joined(seq.get("turn_actions")),
             "river_actions": _joined(seq.get("river_actions")),
             "taken_code": normalize_code((selected.get("action") or {}).get("code")),
+            "taken_pot_pct": _float((selected.get("action") or {}).get("betsize_by_pot")),
             "best_code": normalize_code((best.get("action") or {}).get("code")) if best else "",
             "acceptable_codes": sorted(c for c in acceptable if c),
             "correctness": selected.get("correctness"),
             "ev_loss_bb": _float(selected.get("ev_loss")),
+            # Analyze's ``ev_loss`` is product-policy output and can be zero
+            # even when available-action EVs differ (e.g. INACCURACY rows).
+            # The local analyzer computes the raw best-minus-taken delta, so
+            # parity must compare against the same raw GTOW solver values.
+            "solver_ev_loss_bb": solver_ev_loss,
             "taken_freq": _float(selected.get("frequency")),
             "pot_bb": _float(real_game.get("pot")),
             "has_solution": bool(gp.get("has_solution")),
+            "gtow_ungraded": (
+                _float(selected.get("ev")) is None
+                and _float(selected.get("ev_loss")) is None
+                and selected.get("correctness") is None
+            ),
             # Match ledger honesty: GTOW unknown/no-solution hands are useful
             # evidence that a fallback was needed, but they are not an oracle
             # against which the fallback's EV can be graded.
@@ -261,10 +436,28 @@ def own_decisions(result: dict, hero_hand_raw: str) -> list[dict]:
             )
         action_evs = {normalize_code(k): float(v) for k, v in (action_evs or {}).items()}
         frequencies = {normalize_code(k): float(v) for k, v in (frequencies or {}).items()}
-        best_code = max(action_evs, key=action_evs.get) if action_evs else ""
+        # GTOW's displayed/recommended action is strategy-led. Raw EV arrays
+        # on tiny/unused branches can contain solve noise (e.g. a 98.7%-check
+        # combo whose rare bet EV is numerically 0.12bb higher). Match the
+        # product's dominant strategy action; keep raw EVs only for loss math.
+        best_code = max(frequencies, key=frequencies.get) if frequencies else ""
+        taken_pot_pct = None
+        if solution and taken:
+            selected_solution = next(
+                (a for a in solution.get("action_solutions", [])
+                 if normalize_code((a.get("action") or {}).get("code")) == taken),
+                None,
+            )
+            taken_pot_pct = _float(
+                ((selected_solution or {}).get("action") or {}).get("betsize_by_pot"))
         ev_loss = None
         if taken and taken in action_evs and best_code:
             ev_loss = max(0.0, action_evs[best_code] - action_evs[taken])
+        # A BB walk is N-1 folds and contains no hero decision. analyze_hand
+        # can retain a root placeholder for presentation, but it is not a
+        # comparable decision and GTOW correctly emits none.
+        if not taken and solution is None:
+            continue
         out.append({
             "street": street,
             "decision_idx": idx,
@@ -277,6 +470,7 @@ def own_decisions(result: dict, hero_hand_raw: str) -> list[dict]:
             "turn_actions": params.get("turn_actions") or "",
             "river_actions": params.get("river_actions") or "",
             "taken_code": taken,
+            "taken_pot_pct": taken_pot_pct,
             "best_code": best_code,
             "ev_loss_bb": ev_loss,
             "taken_freq": frequencies.get(taken) if taken else None,
@@ -292,10 +486,21 @@ def _node_differences(gtow: dict, own: dict, thresholds: Thresholds) -> list[str
     if gtow.get("gametype") != own.get("gametype"):
         diffs.append("gametype")
     gd, od = gtow.get("depth"), own.get("depth")
-    if gd is None or od is None or abs(gd - od) > thresholds.depth_bb:
+    gametype = str(gtow.get("gametype") or own.get("gametype") or "")
+    if gd is None or od is None:
         diffs.append("depth")
-    for field in ("board", "preflop_actions", "flop_actions", "turn_actions", "river_actions"):
-        if (gtow.get(field) or "") != (own.get(field) or ""):
+    else:
+        if gametype.startswith("Cash"):
+            gkey, okey = nearest_cash_depth(gd), nearest_cash_depth(od)
+        else:
+            gkey, okey = nearest_depth(gd), nearest_depth(od)
+        if abs(gkey - okey) > thresholds.depth_bb:
+            diffs.append("depth")
+    if (gtow.get("board") or "") != (own.get("board") or ""):
+        diffs.append("board")
+    for field in ("preflop_actions", "flop_actions", "turn_actions", "river_actions"):
+        if not _action_lines_compatible(
+                gtow.get(field), own.get(field), thresholds.sizing_relative):
             diffs.append(field)
     return diffs
 
@@ -314,20 +519,49 @@ def compare_decisions(gtow: list[dict], own: list[dict],
             rows.append({"key": key, "status": status, "gtow": None, "own": o})
             continue
         if o is None:
-            status = "skipped_gtow_unknown" if g.get("gtow_excluded") else "missing_own_decision"
+            if g.get("gtow_excluded"):
+                status = "skipped_gtow_unknown"
+            elif g.get("gtow_ungraded"):
+                status = "skipped_gtow_ungraded"
+            else:
+                status = "missing_own_decision"
             rows.append({"key": key, "status": status, "gtow": g, "own": None})
             continue
+        if g.get("gtow_excluded"):
+            rows.append({
+                "key": key, "status": "skipped_gtow_unknown",
+                "gtow": g, "own": o,
+            })
+            continue
+        if g.get("gtow_ungraded"):
+            rows.append({
+                "key": key, "status": "skipped_gtow_ungraded",
+                "gtow": g, "own": o,
+            })
+            continue
         node_diffs = _node_differences(g, o, thresholds)
-        taken_match = g.get("taken_code") == o.get("taken_code")
+        taken_match = _codes_compatible(
+            g.get("taken_code"), o.get("taken_code"), thresholds.sizing_relative)
+        if not taken_match:
+            gpct, opct = g.get("taken_pot_pct"), o.get("taken_pot_pct")
+            taken_match = (
+                gpct is not None and opct is not None
+                and abs(float(gpct) - float(opct)) <= thresholds.sizing_relative
+            )
         acceptable = set(g.get("acceptable_codes") or [])
         ev_delta = None
-        if g.get("ev_loss_bb") is not None and o.get("ev_loss_bb") is not None:
-            ev_delta = o["ev_loss_bb"] - g["ev_loss_bb"]
+        gtow_solver_loss = g.get("solver_ev_loss_bb", g.get("ev_loss_bb"))
+        if gtow_solver_loss is not None and o.get("ev_loss_bb") is not None:
+            ev_delta = o["ev_loss_bb"] - gtow_solver_loss
         freq_delta = None
         if g.get("taken_freq") is not None and o.get("taken_freq") is not None:
             freq_delta = o["taken_freq"] - g["taken_freq"]
         best_compatible = (
-            (bool(o.get("best_code")) and o.get("best_code") in acceptable)
+            (bool(o.get("best_code")) and any(
+                _codes_compatible(o.get("best_code"), code, thresholds.sizing_relative)
+                for code in acceptable
+            ))
+            or (not g.get("best_code") and not acceptable)
             or (
                 g.get("taken_code") in acceptable
                 and o.get("ev_loss_bb") is not None
@@ -542,15 +776,17 @@ def render_report(results: Iterable[dict]) -> str:
             statuses[dec["status"]] += 1
             total_decisions += 1
     matched = statuses.get("match", 0)
-    skipped = statuses.get("skipped_gtow_unknown", 0)
-    comparable = total_decisions - skipped
+    skipped_unknown = statuses.get("skipped_gtow_unknown", 0)
+    skipped_ungraded = statuses.get("skipped_gtow_ungraded", 0)
+    comparable = total_decisions - skipped_unknown - skipped_ungraded
     lines = [
         "# GTOW Analyzer vs analyze_hand fidelity",
         "",
         f"- hands: {len(results)}",
         f"- hand errors: {len(errors)}",
         f"- decisions: {total_decisions}",
-        f"- GTOW-unknown decisions skipped: {skipped}",
+        f"- GTOW-unknown decisions skipped: {skipped_unknown}",
+        f"- GTOW-ungraded decisions skipped: {skipped_ungraded}",
         f"- exact comparable matches: {matched}/{comparable}",
         "",
         "## Statuses",

@@ -6,14 +6,14 @@ GTO: Fold 100%
 ─── Flop: 9dQs3h ───
 🎯 口袋對 (22) < 牌面
 GTO: 此手牌 0% 到達此節點
-→ Hero bet 22% pot ✅
+→ Hero bet 23% pot ⚪（off-tree:此線無 solver 對照,非對錯判定）
 
 ─── Turn: 6d ───
 🎯 口袋對 (22) < 牌面
 GTO: 此手牌 0% 到達此節點
-→ Hero check ✅
+→ Hero check ⚪（off-tree:此線無 solver 對照,非對錯判定）
 
 ─── River: 9c ───
 🎯 口袋對 (22) < 牌面
 GTO: 此手牌 0% 到達此節點
-→ Hero fold ✅
+→ Hero fold ⚪（off-tree:此線無 solver 對照,非對錯判定）
