@@ -200,7 +200,10 @@ def _get_action_evs_postflop(solution: dict, hero_hand: str, hero_pos: str,
     # Direct combo lookup
     if combo_idx is not None and combo_idx < len(range_arr):
         rng = range_arr[combo_idx]
-        if rng < 0.005:
+        # Exact-combo decisions remain meaningful at very low but non-zero
+        # reach frequencies. The old 0.5% display cutoff discarded GTOW-graded
+        # rare branches (d8622ce7 had range 0.012%) and hid their EV entirely.
+        if rng < 1e-12:
             return None
         evs = {}
         for asol in action_solutions:

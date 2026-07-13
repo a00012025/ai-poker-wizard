@@ -2092,7 +2092,8 @@ def test_chip_ev_depth_mapping():
     from gto_api import nearest_depth
     assert_eq(nearest_depth(32), 30.125)
     assert_eq(nearest_depth(50), 50.125)
-    assert_eq(nearest_depth(7), 8.125)
+    assert_eq(nearest_depth(7), 7.125)
+    assert_eq(nearest_depth(3.2), 3.125)
     assert_eq(nearest_depth(100), 100.125)
     assert_eq(nearest_depth(15), 14.125)
 
@@ -2198,6 +2199,28 @@ def test_multiway_2way_flop_unchanged():
     # This is actually heads-up (only 2 non-fold), no multiway note expected
     # The point is this should still work and have flop data
     assert_in("Flop", result["text"])
+
+
+@test
+def test_multiway_coldcaller_folds_preflop_keeps_real_squeeze_node():
+    """A continuation fold that leaves HU is already a solved real GTOW node."""
+    from analyze_hand import _simplify_multiway
+    from gto_api import nearest_depth
+    hand = {
+        # UTG opens, CO calls, BTN squeezes, UTG calls, CO folds -> UTG/BTN HU.
+        "preflop_actions": "R2-F-F-F-C-R5.5-F-F-C-F",
+        "effective_bb": 30, "players_at_table": 8,
+        "streets": [{"board": "7d5d4s", "actions": [
+            {"position": "UTG", "action": "X"},
+            {"position": "BTN", "action": "X"},
+        ]}],
+    }
+    pf, depth, note, positions = _simplify_multiway(
+        hand, "BTN", "MTTGeneral", nearest_depth(30))
+    assert_eq(pf, hand["preflop_actions"])
+    assert_eq(depth, nearest_depth(30))
+    assert_eq(note, "")
+    assert_eq(positions, None)
 
 
 @test
@@ -6694,6 +6717,38 @@ def test_preflop_open_uses_hero_stack():
     assert_in("RAISE", text, "A3s from LJ at hero's 21bb depth should show RAISE")
     assert_true("Call" not in text.split("【LJ A3s】")[1].split("==")[0],
                 "A3s should NOT show Call (limp) when hero stack maps to raise depth")
+
+
+@test
+def test_preflop_facing_open_uses_effective_stack_not_hero_stack():
+    """A call/3bet decision is already opponent-bound, unlike an unopened RFI."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral", "effective_bb": 30,
+        "players_at_table": 8, "hero_position": "BTN", "hero_hand": "AsKs",
+        "hero_starting_stack": 50,
+        "player_stacks": [30, 40, 40, 40, 40, 50, 40, 40],
+        "preflop_actions": "R2-F-F-F-F-R7-F-F-C", "streets": [],
+    }
+    result = analyze_hand_full(hand)
+    assert_eq(result["hero_spots"][0]["params"]["depth"], 30.125,
+              "facing an open uses the 30bb opponent-bound node, not hero's 50bb stack")
+
+
+@test
+def test_preflop_threebet_then_faces_shove_uses_shover_depth_for_both_decisions():
+    """Hero's first action is not an RFI; a later covering shove binds the line."""
+    from analyze_hand import analyze_hand_full
+    hand = {
+        "gametype": "MTTGeneral", "effective_bb": 59.357,
+        "players_at_table": 8, "hero_position": "LJ", "hero_hand": "AsKd",
+        "hero_starting_stack": 59.357,
+        "player_stacks": [11.862, 8.805, 59.357, 72.083, 8.91, 50.824, 31.346, 66.13],
+        "preflop_actions": "F-R2-R6-F-F-AI50.681-F-F-C-C", "streets": [],
+    }
+    result = analyze_hand_full(hand)
+    depths = [s["params"]["depth"] for s in result["hero_spots"] if s["street"] == "preflop"]
+    assert_eq(depths, [50.125, 50.125])
 
 
 @test
@@ -13332,6 +13387,70 @@ def test_node_depth_facing_allin_uses_jammer_commitment():
 
 
 @test
+def test_node_depth_first_action_facing_allin_uses_jammer_commitment():
+    """A first hero decision can already face a shove. BB calling a 31.8bb
+    HJ jam must query the 30bb tree, not BB/list-row 40bb (a622f880)."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-AI31.779-C-F-F-C",
+        hero_position="BB",
+        position_order=["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=43.346, stacks={}, is_icm=False,
+    )
+    assert_eq(len(nodes), 1)
+    assert_eq(nodes[0]["node"], "facing_allin")
+    assert_eq(nodes[0]["eff"], 31.8)
+    assert_eq(nodes[0]["depth_bucket"], 30)
+
+
+@test
+def test_node_depth_first_facing_raise_without_stacks_uses_known_effective():
+    """If the opener's physical stack is absent, retain the already-known
+    effective depth rather than silently substituting hero's deeper stack."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="R2-F-F-F-F-F-C",
+        hero_position="BB",
+        position_order=["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=91.255, stacks={}, is_icm=False, default_effective=52.405,
+    )
+    assert_eq(nodes[0]["node"], "facing_raise")
+    assert_eq(nodes[0]["depth_bucket"], 50)
+
+
+@test
+def test_node_depth_short_allin_sidepot_keeps_known_played_effective():
+    """A short all-in plus another caller before hero must not collapse hero's
+    squeeze node onto the short stack (cd23771b: 17bb tree, not 3bb)."""
+    from node_depth import resolve_preflop_nodes
+    nodes = resolve_preflop_nodes(
+        preflop_actions="F-F-F-R2-AI2.521-F-C-AI16.403-F-C",
+        hero_position="BB",
+        position_order=["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+        hero_start=16.559, stacks={}, is_icm=False, default_effective=17.0,
+    )
+    assert_eq(nodes[0]["depth_bucket"], 17)
+
+
+@test
+def test_mtt_hu_depth_below_eight_bb_is_not_clamped_to_general_floor():
+    """MTTHUGeneral has sub-8bb trees. A 4.34bb shove/call must stay on 4.125
+    and normalize the SB shove to RAI (0495200d), not query 8.125/R2."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTHUGeneral", "players_at_table": 2,
+        "hero_position": "BB", "hero_hand": "Qh8c",
+        "effective_bb": 4.343, "hero_starting_stack": 4.343,
+        "player_stacks": [11.707, 4.343],
+        "preflop_actions": "AI4.243-C",
+        "streets": [{"board": "QdJh2d", "actions": []}],
+    })
+    preflop = next(s for s in result["hero_spots"] if s["street"] == "preflop")
+    assert_eq(preflop["params"]["depth"], 4.125)
+    assert_eq(preflop["params"]["preflop_actions"], "RAI")
+
+
+@test
 def test_node_depth_same_bucket_no_caveat():
     """No caveat when consecutive nodes land in the SAME depth bucket —
     don't spam the user with a meaningless warning."""
@@ -13400,6 +13519,90 @@ def test_analyze_per_node_depths_split():
     assert_eq(spots["open"]["depth"], "30.125")
     assert_eq(spots["facing"]["depth"], "17.125")
     assert_true(spots["facing"]["caveat"] is not None)
+
+
+@test
+def test_sized_allin_raise_never_normalizes_to_call():
+    """A short RAI is still a raise. Numeric nearest-action matching must not
+    choose C just because the call amount is closer than the solver raise."""
+    import analyze_hand as ah
+    old = ah.get_next_actions
+    ah.get_next_actions = lambda **_kw: {"next_actions": {"available_actions": [
+        {"action": {"code": "C", "betsize": 2.0, "allin": False}},
+        {"action": {"code": "R5", "betsize": 5.0, "allin": False}},
+    ]}}
+    try:
+        normalized = ah._normalize_preflop_actions(
+            "F-F-F-R2-AI2.521-F-C", "MTTGeneral", 17.125)
+    finally:
+        ah.get_next_actions = old
+    assert_eq(normalized.split("-")[4], "R5")
+
+
+@test
+def test_postflop_raise_matches_gtow_raise_increment_pot_fraction():
+    """GTOW maps a real 75%-pot raise to its 79%-pot all-in branch rather
+    than the numerically closer 33%-pot small raise (d8622ce7)."""
+    from analyze_hand import _find_action_by_pot_pct
+    available = [
+        {"action": {"code": "C", "betsize": "4.65", "betsize_by_pot": None,
+                    "allin": False}},
+        {"action": {"code": "R13.85", "betsize": "13.85",
+                    "betsize_by_pot": "0.3297491", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "26.7",
+                    "betsize_by_pot": "0.7903226", "allin": True}},
+    ]
+    code = _find_action_by_pot_pct(
+        available, bet_size=17.625, actual_pot=16.5, target_pct=0.75)
+    assert_eq(code, "RAI")
+
+
+@test
+def test_postflop_pot_fraction_midpoint_snaps_up_like_gtow():
+    """GTOW chooses the upper sizing at an exact midpoint: 50% between its
+    37.5% and 62.5% branches maps to 62.5% (b3734adc)."""
+    from analyze_hand import _find_action_by_pot_pct
+    available = [
+        {"action": {"code": "R1.8", "betsize": "1.8",
+                    "betsize_by_pot": "0.375", "allin": False}},
+        {"action": {"code": "R3", "betsize": "3",
+                    "betsize_by_pot": "0.625", "allin": False}},
+    ]
+    assert_eq(_find_action_by_pot_pct(
+        available, bet_size=2.4, actual_pot=4.8), "R3")
+
+
+@test
+def test_actual_pot_uses_physical_table_not_padded_solver_seats():
+    """A 5-max hand padded to MTTGeneral's 8 seats still has only five antes.
+    Over-counting three phantom antes shifts check-raise sizing (2b6c62db)."""
+    from analyze_hand import _compute_preflop_pot
+    assert_eq(round(_compute_preflop_pot(
+        "R2-F-F-F-C", 40, num_players=5, ante_per_player=0.129), 3), 5.145)
+
+
+@test
+def test_postflop_exact_combo_evs_keep_rare_nonzero_range():
+    """Rare exact combos below the old 0.5% display cutoff still have valid
+    solver EV arrays and are graded by GTOW (d8622ce7)."""
+    from hh_deviation_check import _get_action_evs_postflop
+    idx = 17
+    rng = [0.0] * 1326
+    rng[idx] = 0.00012
+    fold = [0.0] * 1326
+    call = [0.0] * 1326
+    call[idx] = 15.315
+    solution = {
+        "players_info": [{"player": {"position": "SB"}, "range": rng}],
+        "action_solutions": [
+            {"action": {"code": "F"}, "evs": fold},
+            {"action": {"code": "C"}, "evs": call},
+        ],
+    }
+    assert_eq(
+        _get_action_evs_postflop(solution, "AJo", "SB", combo_idx=idx),
+        {"F": 0.0, "C": 15.315},
+    )
 
 
 @test
@@ -13702,6 +13905,375 @@ def test_distill_honesty_rules():
     lr2 = copy.deepcopy(lr); lr2["solution_status"] = "NO_SOLUTION"
     _, decs = distill_hand(lr2, _load_fix("detail_eef0b07b.json"))
     assert_true(all(d["excluded"] for d in decs))
+
+
+# ── GTOW Analyzer vs analyze_hand fidelity ──
+
+@test
+def test_fidelity_reconstructs_exact_real_action_stream_and_suits():
+    """The comparator must start from GTOW real actions, not ledger summaries."""
+    from analysis_fidelity_check import reconstruct_analyze_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    row = {
+        "gtow_hand_id": lr["hand_id"], "position": lr["player_position"],
+        "hero_hand": lr["hero_hand"], "total_players": lr["total_players"],
+        "preflop_depth_bb": lr["preflop_game_depth"],
+    }
+    hand = reconstruct_analyze_hand(row, _load_fix("detail_eef0b07b.json"))
+    assert_eq(hand["hero_hand"], "Qh8c")
+    assert_eq(round(hand["effective_bb"], 3), 34.692,
+              "effective depth comes from real hero/villain stacks, not list-row hero depth")
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-R2.5-C")
+    assert_eq(hand["streets"][0]["board"], "Kh6h4h")
+    assert_eq([(a["position"], a["action"], a["size"])
+               for a in hand["streets"][2]["actions"]],
+              [("SB", "X", 0.0), ("BB", "R16.642", 16.642), ("SB", "F", 0.0)])
+
+
+@test
+def test_fidelity_reconstructs_variable_gtow_ante_from_initial_pot():
+    """GTOW real hands can use 0.15bb ante. Reconstruct it from the pot before
+    the first action instead of forcing MTTGeneral's 0.125 default."""
+    from analysis_fidelity_check import _attach_real_stacks_and_effective
+    order = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    players = [
+        {"position": pos, "stack": "30", "chips_on_table": str(posted)}
+        for pos, posted in zip(order, [0, 0, 0, 0, 0, 0, 0.5, 1.0])
+    ]
+    detail = {"game_analysis": {"game_points": [{
+        "real_game": {"current_street": {"type": "PREFLOP"},
+                      "pot": "2.7", "players": players},
+        "real_game_action": {"position": "UTG", "code": "F"},
+    }]}}
+    hand = {}
+    _attach_real_stacks_and_effective(hand, detail, "BB", 8)
+    assert_eq(hand["ante_per_player"], 0.15)
+
+
+@test
+def test_fidelity_reconstruction_stops_when_hero_folds():
+    """Villain action after hero exits must not be replayed into invalid solver nodes."""
+    from analysis_fidelity_check import reconstruct_analyze_hand
+    def gp(street, pos, code, size=0):
+        return {"gametype": "MTTGeneral", "real_game": {
+                    "current_street": {"type": street}, "board": "Kc6c2d"},
+                "real_game_action": {"position": pos, "code": code, "betsize": str(size)}}
+    detail = {"players_dealt": 6, "boards": ["Kc6c2d"], "game_analysis": {"game_points": [
+        gp("PREFLOP", "LJ", "F"), gp("PREFLOP", "HJ", "R2", 2),
+        gp("PREFLOP", "CO", "F"), gp("PREFLOP", "BTN", "F"),
+        gp("PREFLOP", "SB", "F"),
+        gp("PREFLOP", "BB", "R4.5", 4.5), gp("PREFLOP", "HJ", "C", 4.5),
+        gp("FLOP", "BB", "X"), gp("FLOP", "HJ", "X"),
+    ]}}
+    row = {"gtow_hand_id": "folded", "position": "SB", "hero_hand": "9c6h",
+           "total_players": 6, "preflop_depth_bb": 35.125}
+    hand = reconstruct_analyze_hand(row, detail)
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F")
+    assert_eq(hand["streets"], [])
+
+    rows = _load_fix("list_rows.json")
+    lr = rows["bed8860a-442b-4478-a9b4-8acfd52b6143"]
+    folded = reconstruct_analyze_hand({
+        "gtow_hand_id": lr["hand_id"], "position": lr["player_position"],
+        "hero_hand": lr["hero_hand"], "total_players": lr["total_players"],
+        "preflop_depth_bb": lr["preflop_game_depth"],
+    }, _load_fix("detail_bed8860a.json"))
+    assert_eq(folded["effective_bb"], 20.0,
+              "analysis replay uses GTOW's graded solver-avatar depth")
+    assert_eq(folded["ledger_preflop_depth_bb"], 22.222,
+              "the list-row/physical depth remains available as audit metadata")
+
+
+@test
+def test_analyze_unopened_fold_keeps_effective_depth_not_hero_stack():
+    """Only an actual RFI uses hero's own open depth. Folding in an unopened
+    pot stays on the imported/effective decision tree (1d2180ab et al.)."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "hero_position": "SB", "hero_hand": "72o",
+        "effective_bb": 25.0, "hero_starting_stack": 58.0,
+        "preflop_actions": "F-F-F-F-F-F-F", "streets": [],
+    })
+    preflop = next(s for s in result["hero_spots"] if s["street"] == "preflop")
+    assert_eq(preflop["params"]["depth"], 25.125)
+
+
+@test
+def test_fidelity_reconstruction_preserves_allin_semantics_for_analyze():
+    from analysis_fidelity_check import _restore_analyze_allins
+    hand = {"preflop_actions": "F-R20-C", "streets": [
+        {"board": "AsKd2c", "actions": [{"position": "BB", "action": "R10", "size": 10}]}
+    ]}
+    detail = {"game_analysis": {"game_points": [
+        {"real_game": {"current_street": {"type": "PREFLOP"}},
+         "real_game_action": {"position": "BTN", "code": "F", "betsize": "0"}},
+        {"real_game": {"current_street": {"type": "PREFLOP"}},
+         "real_game_action": {"position": "SB", "code": "RAI", "betsize": "20"}},
+        {"real_game": {"current_street": {"type": "PREFLOP"}},
+         "real_game_action": {"position": "BB", "code": "C", "betsize": "20"}},
+        {"real_game": {"current_street": {"type": "FLOP"}},
+         "real_game_action": {"position": "BB", "code": "RAI", "betsize": "10"}},
+    ]}}
+    _restore_analyze_allins(hand, detail)
+    assert_eq(hand["preflop_actions"], "F-AI20-C")
+    assert_eq(hand["streets"][0]["actions"][0]["action"], "AI")
+    assert_eq(hand["streets"][0]["actions"][0]["allin"], True)
+
+
+@test
+def test_fidelity_extracts_gtow_decisions_and_acceptable_actions():
+    from analysis_fidelity_check import gtow_decisions
+    decs = gtow_decisions(
+        _load_fix("detail_eef0b07b.json"), "SB", solution_status="OK")
+    assert_eq([d["key"] for d in decs],
+              ["preflop:0", "flop:0", "turn:0", "turn:1", "river:0", "river:1"])
+    river = decs[-1]
+    assert_eq(round(river["ev_loss_bb"], 4), 22.6627)
+    assert_eq(river["taken_code"], "F")
+    assert_true("C" in river["acceptable_codes"])
+    assert_true("AI" in river["acceptable_codes"])
+    assert_eq(river["gtow_excluded"], False)
+
+
+@test
+def test_fidelity_preserves_rare_nine_max_squeeze_truth():
+    """Frozen real case: physical UTG+2 and hero's BTN squeeze must survive ingestion."""
+    from analysis_fidelity_check import reconstruct_analyze_hand, gtow_decisions
+    detail = _load_fix("detail_bee60039.json")
+    row = {
+        "gtow_hand_id": "bee60039-cf87-4beb-8443-3b1d73b59a51",
+        "position": "BTN", "hero_hand": "AsKs", "total_players": 9,
+        "preflop_depth_bb": 54.483,
+    }
+    hand = reconstruct_analyze_hand(row, detail)
+    assert_eq(hand["players_at_table"], 9)
+    assert_eq(round(hand["effective_bb"], 3), 28.260,
+              "UTG+1 is the binding postflop opponent, so GTOW grades the 30bb tree")
+    assert_eq(len(hand["player_stacks"]), 9)
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F-C-R5.5-F-F-C-F")
+    assert_true(any(a["position"] == "UTG+1" for a in hand["streets"][0]["actions"]))
+    decs = gtow_decisions(detail, "BTN", solution_status="OK")
+    assert_eq([d["key"] for d in decs], ["preflop:0", "flop:0", "turn:0"])
+    assert_eq(decs[0]["taken_code"], "R7.4")
+    assert_eq(decs[-1]["best_code"], "AI")
+    assert_eq(round(decs[-1]["ev_loss_bb"], 3), 7.884)
+
+
+@test
+def test_analyze_maps_safe_nine_max_hand_to_mtt_tree_without_losing_display_seat():
+    from analyze_hand import _map_9max_mtt_to_solver_tree
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 9, "num_players": 9,
+        "hero_position": "UTG+1", "preflop_actions": "F-R2-F-F-F-F-F-F-C",
+        "player_stacks": list(range(10, 19)),
+    }
+    streets = [{"board": "AsKd2c", "actions": [
+        {"position": "UTG+1", "action": "X"},
+        {"position": "BB", "action": "X"},
+    ]}]
+    hand["streets"] = streets
+    mapped, mapped_streets, meta = _map_9max_mtt_to_solver_tree(hand, streets)
+    assert_eq(mapped["preflop_actions"], "R2-F-F-F-F-F-F-C")
+    assert_eq(mapped["hero_position"], "UTG")
+    assert_eq(mapped["players_at_table"], 8)
+    assert_eq(mapped["player_stacks"], list(range(11, 19)))
+    assert_eq(mapped_streets[0]["actions"][0]["position"], "UTG")
+    assert_eq(mapped["streets"][0]["actions"][0]["position"], "UTG")
+    assert_eq(meta["physical_hero"], "UTG+1")
+    unsafe = {**hand, "preflop_actions": "R2-F-F-F-F-F-F-F-C"}
+    untouched, _, unsafe_meta = _map_9max_mtt_to_solver_tree(unsafe, streets)
+    assert_eq(untouched["preflop_actions"], unsafe["preflop_actions"])
+    assert_eq(unsafe_meta, None, "a voluntary physical-UTG action cannot be erased")
+
+
+@test
+def test_fidelity_gtow_unknown_is_skipped_not_failed():
+    import copy
+    from analysis_fidelity_check import compare_decisions, compare_hand, gtow_decisions
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+    det["game_analysis"]["warning_status"] = "NO_GTO_SOLUTION"
+    gtow = gtow_decisions(det, "SB", solution_status="NO_GTO_SOLUTION")
+    own = [{
+        **{k: gtow[0].get(k) for k in ("street", "decision_idx", "key", "gametype", "depth",
+                                        "board", "preflop_actions", "flop_actions",
+                                        "turn_actions", "river_actions", "taken_code")},
+        "best_code": "F", "ev_loss_bb": 99.0, "taken_freq": 0.0,
+        "has_solution": True, "in_range": True,
+    }]
+    own.append({**own[0], "street": "flop", "decision_idx": 0, "key": "flop:0"})
+    rows = compare_decisions([gtow[0]], own, gtow_hand_unknown=True)
+    assert_eq(rows[0]["status"], "skipped_gtow_unknown")
+    assert_eq(rows[1]["status"], "skipped_gtow_unknown",
+              "fallback-only streets are skipped when GTOW could not grade the hand")
+    lr = _load_fix("list_rows.json")["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    hand_row = {
+        "gtow_hand_id": lr["hand_id"], "position": "SB", "hero_hand": "Qh8c",
+        "total_players": 7, "preflop_depth_bb": 35.125,
+        "solution_status": "NO_GTO_SOLUTION",
+    }
+    def must_not_run(_hand):
+        raise AssertionError("analyze fallback must not run when GTOW has no oracle")
+    checked = compare_hand(hand_row, det, analyze_fn=must_not_run)
+    assert_true(checked["decisions"])
+    assert_true(all(d["status"] == "skipped_gtow_unknown" for d in checked["decisions"]))
+
+
+@test
+def test_fidelity_gtow_ungraded_terminal_action_is_skipped_not_extra():
+    """GTOW sometimes retains a real terminal all-in/call game-point without
+    a selected Analyze action. It is ungraded evidence, not an invented local
+    decision or an unknown-spot failure."""
+    from analysis_fidelity_check import compare_decisions, gtow_decisions
+    detail = {"game_analysis": {"game_points": [{
+        "real_game": {"current_street": {"type": "FLOP"}},
+        "real_game_action": {"position": "BB", "code": "C"},
+        "analysis_solved": {"available_actions": []},
+        "has_solution": True,
+    }]}}
+    gtow = gtow_decisions(detail, "BB")
+    assert_true(gtow[0]["gtow_ungraded"])
+    own = [{"key": "flop:0", "street": "flop", "decision_idx": 0}]
+    assert_eq(compare_decisions(gtow, own)[0]["status"], "skipped_gtow_ungraded")
+
+    detail["game_analysis"]["game_points"][0]["analysis_solved"] = {
+        "available_actions": [{
+            "selected": True, "frequency": "0.33", "correctness": None,
+            "ev": None, "ev_loss": None, "action": {"code": "F"},
+        }]
+    }
+    selected_but_ungraded = gtow_decisions(detail, "BB")
+    assert_true(selected_but_ungraded[0]["gtow_ungraded"])
+    assert_eq(compare_decisions(selected_but_ungraded, own)[0]["status"],
+              "skipped_gtow_ungraded")
+
+
+@test
+def test_fidelity_compare_requires_same_node_before_ev_parity():
+    from analysis_fidelity_check import compare_decisions
+    base = {
+        "street": "river", "decision_idx": 0, "key": "river:0",
+        "gametype": "MTTGeneral", "depth": 35.125, "board": "Kh6h4hQs8s",
+        "preflop_actions": "F-F-F-F-F-F-R3.5-C", "flop_actions": "R2-C",
+        "turn_actions": "X-R9-C", "river_actions": "X-R16.65",
+        "taken_code": "F", "best_code": "C", "acceptable_codes": ["C", "AI"],
+        "ev_loss_bb": 0.0, "taken_freq": 0.20, "gtow_excluded": False,
+    }
+    own = {**base, "best_code": "C", "ev_loss_bb": 0.02, "taken_freq": 0.21,
+           "has_solution": True, "in_range": True}
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match",
+              "GTOW zeroed mixed-action loss remains within the 0.05bb tolerance")
+    own["depth"] = 30.125
+    row = compare_decisions([base], [own])[0]
+    assert_eq(row["status"], "node_mismatch")
+    assert_in("depth", row["node_differences"])
+    own["depth"] = 35.125
+    base["depth"] = 34.692
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match",
+              "raw GTOW depth and canonical 35bb tree are the same solver bucket")
+
+    # GTOW Analyzer may zero its reported product EV loss for an INACCURACY,
+    # while the available solver actions still differ. Fidelity compares raw
+    # solver delta to raw local delta, not two different loss policies.
+    base["solver_ev_loss_bb"] = 0.17
+    base["ev_loss_bb"] = 0.0
+    own["ev_loss_bb"] = 0.17
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match")
+
+    # Archived Analyze raw-depth sizing and current canonical-tree sizing may
+    # differ slightly while representing the same bucket.
+    base["river_actions"] = "X-R10"
+    own["river_actions"] = "X-R9.5"
+    base["taken_code"] = own["taken_code"] = "F"
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match")
+    own["river_actions"] = "X-R5"
+    assert_eq(compare_decisions([base], [own])[0]["status"], "node_mismatch")
+
+    # Raw-depth Analyze and the canonical current tree can label the same
+    # pot-fraction action with very different bb codes (R11.45 vs R30).
+    base["river_actions"] = own["river_actions"] = "X"
+    base["taken_code"], own["taken_code"] = "R11.45", "R30"
+    base["taken_pot_pct"], own["taken_pot_pct"] = 0.50, 0.604
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match")
+
+
+@test
+def test_fidelity_own_metrics_read_preflop_strategy_arrays():
+    from analysis_fidelity_check import own_decisions
+    from hh_deviation_check import HAND_TO_169
+    idx = HAND_TO_169["53o"]
+    rng = [0.0] * 169; rng[idx] = 1.0
+    fold_ev = [0.0] * 169; call_ev = [0.0] * 169; call_ev[idx] = -0.5
+    fold_strategy = [0.0] * 169; fold_strategy[idx] = 1.0
+    call_strategy = [0.0] * 169
+    solution = {
+        "players_info": [{"player": {"position": "SB"}, "range": rng,
+                          "simple_hand_counters": {"53o": {
+                              "actions_total_frequencies": {"F": 1.0, "C": 0.0}}}}],
+        "action_solutions": [
+            {"action": {"code": "F"}, "evs": fold_ev, "strategy": fold_strategy},
+            {"action": {"code": "C"}, "evs": call_ev, "strategy": call_strategy},
+        ],
+    }
+    result = {
+        "hero_position": "SB",
+        "preflop_actions": "F-F-F-F-F-F-F",
+        "hero_spots": [{"street": "preflop",
+                        "solver_hero_pos": "SB", "params": {
+                            "gametype": "MTTGeneral", "depth": 20.125,
+                            "preflop_actions": "F-F-F-F-F-F"}}],
+        "solutions": [solution],
+    }
+    dec = own_decisions(result, "5c3d")[0]
+    assert_eq(dec["best_code"], "F")
+    assert_eq(dec["taken_code"], "F", "initial action is derived from full line after params prefix")
+    assert_eq(dec["ev_loss_bb"], 0.0)
+    assert_eq(dec["taken_freq"], 1.0)
+
+
+@test
+def test_fidelity_sample_is_deterministic_and_rare_first():
+    from analysis_fidelity_check import select_sample
+    rows = [
+        {"gtow_hand_id": "five", "pot_type": "5bet", "total_players": 8},
+        {"gtow_hand_id": "hu", "pot_type": "SRP", "total_players": 2},
+        {"gtow_hand_id": "nine", "pot_type": "SRP", "total_players": 9},
+        {"gtow_hand_id": "four", "pot_type": "4bet", "total_players": 8},
+        {"gtow_hand_id": "sq", "pot_type": "Squeeze", "total_players": 8},
+        {"gtow_hand_id": "ai", "pot_type": "SRP", "total_players": 8, "has_allin": True},
+        {"gtow_hand_id": "multi", "pot_type": "SRP", "total_players": 8,
+         "has_multi_decision": True},
+        {"gtow_hand_id": "base", "pot_type": "SRP", "total_players": 8,
+         "total_ev_loss_bb": 9.0},
+    ]
+    a = select_sample(rows, 8, 7)
+    b = select_sample(rows, 8, 7)
+    assert_eq([r["gtow_hand_id"] for r in a], [r["gtow_hand_id"] for r in b])
+    assert_true({"fivebet", "heads_up", "nine_max", "fourbet", "squeeze", "allin"}
+                <= {r["sample_reason"] for r in a})
+
+
+@test
+def test_fidelity_resume_and_report_exclude_gtow_unknown_from_denominator():
+    import tempfile
+    from pathlib import Path
+    from analysis_fidelity_check import append_result, load_completed, render_report
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "results.jsonl"
+        append_result(path, {"gtow_hand_id": "h1", "decisions": [
+            {"key": "preflop:0", "status": "match", "gtow": {}, "own": {}}]})
+        with path.open("a") as fh:
+            fh.write("not-json\n")
+        assert_eq(load_completed(path), {"h1"})
+    report = render_report([
+        {"gtow_hand_id": "h1", "decisions": [
+            {"key": "preflop:0", "status": "match", "gtow": {}, "own": {}}]},
+        {"gtow_hand_id": "h2", "decisions": [
+            {"key": "flop:0", "status": "skipped_gtow_unknown", "gtow": {}, "own": {}}]},
+    ])
+    assert_in("GTOW-unknown decisions skipped: 1", report)
+    assert_in("exact comparable matches: 1/1", report)
 
 
 @test
@@ -15780,6 +16352,37 @@ def test_leaderboard_fragile_flag():
     assert_true(not is_fragile(dict(base, n_clean=30, avg_ev_clean=None)))
     assert_true(not is_fragile({"n": 60, "avg_ev": 0.0, "n_clean": 30,
                                 "avg_ev_clean": 0.05}), "zero avg guarded")
+
+
+@test
+def test_validator_accepts_complete_bb_walk():
+    """Eight-player action ends after seven folds; BB wins without acting, so
+    N-1 folds is complete rather than a dropped-seat PREFLOP_LEN error."""
+    from hand_validator import validate_hand
+    result = validate_hand({
+        "players_at_table": 8, "effective_bb": 20,
+        "hero_position": "BB", "hero_hand": "9c6s",
+        "preflop_actions": "F-F-F-F-F-F-F", "streets": [],
+    })
+    assert_true(result.ok, repr(result))
+    assert_true(not any(i.code == "PREFLOP_LEN" for i in result.hard))
+
+
+@test
+def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
+    """The fidelity comparator must not invent an extra hero decision when
+    analyze_hand retains a no-action/no-solution presentation placeholder."""
+    from analysis_fidelity_check import own_decisions
+    own = own_decisions({
+        "hero_position": "BB",
+        "preflop_actions": "F-F-F-F-F-F-F",
+        "hero_spots": [{
+            "street": "preflop", "solver_hero_pos": "BB",
+            "params": {"depth": 20.125, "preflop_actions": "F-F-F-F-F-F-F"},
+        }],
+        "solutions": [None],
+    }, "9c6s")
+    assert_eq(own, [])
 
 
 if __name__ == "__main__":

@@ -77,6 +77,11 @@ POSITION_ORDERS = {
 }
 
 
+def _nearest_depth_for_gametype(bb: float, gametype: str) -> float:
+    """Snap tournament depth; AVAILABLE_DEPTHS includes HU short-stack trees."""
+    return nearest_depth(bb)
+
+
 def _hero_hand_for_solver_detail(
     hero_hand: str,
     hero_hand_raw: str,
@@ -136,6 +141,56 @@ CASH_GAMETYPES = {
 def _get_position_order(num_players: int = 8) -> list[str]:
     """Get position order for given table size."""
     return POSITION_ORDERS.get(num_players, POSITION_ORDER)
+
+
+def _map_9max_mtt_to_solver_tree(hand: dict, streets: list) -> tuple[dict, list, dict | None]:
+    """Map a safely representable physical 9-max hand onto MTTGeneral's 8-max tree.
+
+    GTOW uses the same mapping in Analyze/deep-links: only a leading physical
+    UTG fold may be removed; UTG+1/UTG+2 then become solver UTG/UTG+1.  A
+    voluntary UTG action is left untouched so the caller fails loudly instead
+    of silently changing the spot.
+    """
+    players = int(hand.get("players_at_table") or hand.get("num_players") or 0)
+    if players != 9 or hand.get("gametype", "MTTGeneral") != "MTTGeneral":
+        return hand, streets, None
+    from gtow_action_resolver import _pad_preflop_to_mtt_tree
+    physical_hero = hand.get("hero_position", "")
+    raw_preflop = hand.get("preflop_actions", "")
+    try:
+        mapped_pf, mapped_hero, _ = _pad_preflop_to_mtt_tree(
+            raw_preflop, 9, physical_hero)
+    except ValueError:
+        return hand, streets, None
+
+    pos_map = {"UTG+1": "UTG", "UTG+2": "UTG+1"}
+    mapped_streets = []
+    for street in streets:
+        mapped_streets.append({
+            **street,
+            "actions": [
+                {**action, "position": pos_map.get(action.get("position"), action.get("position"))}
+                for action in street.get("actions", [])
+            ],
+        })
+    mapped = dict(hand)
+    mapped["preflop_actions"] = mapped_pf
+    mapped["hero_position"] = mapped_hero
+    mapped["players_at_table"] = 8
+    mapped["num_players"] = 8
+    if "streets" in mapped:
+        mapped["streets"] = mapped_streets
+    if "postflop_actions" in mapped:
+        mapped["postflop_actions"] = mapped_streets
+    if len(mapped.get("player_stacks") or []) == 9:
+        mapped["player_stacks"] = list(mapped["player_stacks"])[1:]
+    meta = {
+        "physical_hero": physical_hero,
+        "solver_hero": mapped_hero,
+        "raw_preflop": raw_preflop,
+        "raw_players": 9,
+    }
+    return mapped, mapped_streets, meta
 
 
 # Position alias mapping: common poker client names → GTO Wizard names
@@ -234,7 +289,16 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
                     corrected.append(allin_code)
                 else:
                     target = float(code[2:])  # AI10 → 10.0
-                    correct_code = find_closest_action(avail, target)
+                    # A sized AI remains an aggressive action. Searching every
+                    # option can map a short all-in raise to C merely because
+                    # the call amount is numerically closer (cd23771b).
+                    raise_avail = [
+                        a for a in avail
+                        if a["action"]["code"].startswith("R")
+                        or a["action"].get("allin")
+                    ]
+                    correct_code = find_closest_action(
+                        raise_avail if raise_avail else avail, target)
                     corrected.append(correct_code)
             except Exception:
                 corrected.append(code)
@@ -349,6 +413,7 @@ def _build_hero_spot_depths(hand: dict, *, is_icm: bool, is_cash: bool,
         preflop_actions=hand.get("preflop_actions", ""),
         hero_position=hero_pos, position_order=pos_order,
         hero_start=hero_start, stacks=stacks, is_icm=is_icm,
+        default_effective=hand.get("effective_bb"),
     )
     if not nodes:
         return None
@@ -356,7 +421,7 @@ def _build_hero_spot_depths(hand: dict, *, is_icm: bool, is_cash: bool,
     def _depth_str(eff: float, bucket: int) -> str:
         if is_cash:
             return f"{nearest_cash_depth(eff):.3f}"
-        return f"{bucket}.125"
+        return f"{int(nearest_depth(eff) - 0.125)}.125"
 
     out: dict = {"nodes": []}
     for nd in nodes:
@@ -543,7 +608,8 @@ def _compute_preflop_pot(
     return sum(investments) + (ante_per_player * num_players)
 
 
-def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot: float) -> str:
+def _find_action_by_pot_pct(available_actions: list, bet_size: float,
+                            actual_pot: float, *, target_pct: float | None = None) -> str:
     """Find closest action by pot percentage rather than absolute size.
 
     Computes the hero/villain bet as a fraction of the actual pot, then
@@ -569,7 +635,7 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
     if postflop_code in allin_codes:
         return postflop_code
 
-    target_pct = bet_size / actual_pot
+    target_pct = target_pct if target_pct is not None else bet_size / actual_pot
 
     # Guard: bet_size that looks like a percentage rather than raw bb.
     # Real raw-bb bets top out around 100%-200% pot (overbets); anything
@@ -615,6 +681,27 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float, actual_pot
                 return code
 
     if solver_pot:
+        # Compare the same dimension GTOW Analyze records: betsize_by_pot.
+        # This is especially important for raises, where the raw target is a
+        # total-to amount but the percentage is raise increment / pot after
+        # calling. Absolute-bb matching picks the wrong branch after earlier
+        # off-tree sizing drift (d8622ce7).
+        pct_actions = [
+            a for a in available_actions
+            if a.get("action", {}).get("betsize_by_pot") not in (None, "")
+            and a.get("action", {}).get("code") not in ("X", "C", "F")
+        ]
+        if pct_actions:
+            return min(
+                pct_actions,
+                # GTOW resolves exact percentage midpoints upward (real 50%
+                # between 37.5% and 62.5% -> 62.5%, b3734adc). Stable explicit
+                # tie-break avoids list-order/float-dependent lower snapping.
+                key=lambda a: (
+                    round(abs(float(a["action"]["betsize_by_pot"]) - target_pct), 12),
+                    -float(a["action"]["betsize_by_pot"]),
+                ),
+            )["action"]["code"]
         solver_bet = target_pct * solver_pot
         return find_closest_action(available_actions, solver_bet)
 
@@ -948,6 +1035,13 @@ def _simplify_multiway(hand: dict, hero_pos: str, gametype: str, depth: float) -
     # Count non-fold actions in first 8 positions
     non_fold = [i for i in range(min(len(parts), 8)) if parts[i] not in ("F", "")]
     if len(non_fold) <= 2:
+        return preflop, depth, "", None
+    # More than two players entered initially, but continuation folds may have
+    # already left a genuine HU flop. GTOW's tree supports that full preflop
+    # history (e.g. open + cold-call + squeeze, cold-caller folds), so keep the
+    # real node instead of collapsing/recasting and changing ranges/depth.
+    flop_reachers = _reaches_flop(preflop)
+    if streets and hero_pos in flop_reachers and len(flop_reachers) == 2:
         return preflop, depth, "", None
 
     # Multiway — find earliest point where hand becomes HU involving hero.
@@ -1358,7 +1452,7 @@ def _run_analysis(hand: dict) -> dict:
                     pass
         hand["effective_bb"] = max(max_raise * 10, 20) if max_raise > 0 else 20
 
-    depth = nearest_depth(hand["effective_bb"])
+    depth = _nearest_depth_for_gametype(hand["effective_bb"], gametype)
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
     hero_hand = normalize_hand_name(hero_hand_raw)
@@ -1366,6 +1460,9 @@ def _run_analysis(hand: dict) -> dict:
     # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
     hero_combo_idx = combo_index_for_hand(hero_hand_raw)
     hand, streets, board_approx_notes = _canonicalize_hand_board_cards(hand)
+    hand, streets, nine_max_meta = _map_9max_mtt_to_solver_tree(hand, streets)
+    hero_pos = hand["hero_position"]
+    display_hero_pos = nine_max_meta["physical_hero"] if nine_max_meta else hero_pos
 
     # Determine position order based on number of players
     # Prefer players_at_table (explicitly set) over len(player_stacks)
@@ -1426,14 +1523,16 @@ def _run_analysis(hand: dict) -> dict:
     node_depths = _build_hero_spot_depths(
         hand, is_icm=is_icm, is_cash=is_cash, num_players=num_players,
     )
+    physical_num_players = num_players
+    actual_preflop_for_pot = hand["preflop_actions"]
 
     hero_preflop_idx_override = None
     # Un-padded line kept for the GTOW deep-link resolver, which pads to the
     # 8-max tree itself from players_at_table. Feeding it the padded preflop +
     # the physical players_at_table makes it pad a SECOND time and misplace every
     # actor (H3490). None when no padding happened (the line is already raw).
-    deeplink_raw_preflop = None
-    deeplink_raw_players = None
+    deeplink_raw_preflop = nine_max_meta["raw_preflop"] if nine_max_meta else None
+    deeplink_raw_players = nine_max_meta["raw_players"] if nine_max_meta else None
     if target_players > num_players:
         pad_count = target_players - num_players
         original_pos_order = _get_position_order(num_players)
@@ -1460,7 +1559,8 @@ def _run_analysis(hand: dict) -> dict:
     if allin_effective and allin_effective < float(hand["effective_bb"]) - 0.5:
         hand = dict(hand)
         hand["effective_bb"] = allin_effective
-        depth = nearest_cash_depth(allin_effective) if is_cash else nearest_depth(allin_effective)
+        depth = (nearest_cash_depth(allin_effective) if is_cash
+                 else _nearest_depth_for_gametype(allin_effective, gametype))
 
     # ICM support: resolve gametype and stacks
     icm_stacks = ""
@@ -1521,8 +1621,9 @@ def _run_analysis(hand: dict) -> dict:
         chipev_gametype = gametype
         chipev_depth = depth
     else:
-        chipev_gametype = "MTTGeneral"
-        chipev_depth = nearest_depth(hand["effective_bb"])
+        chipev_gametype = gametype if gametype == "MTTHUGeneral" else "MTTGeneral"
+        chipev_depth = _nearest_depth_for_gametype(
+            hand["effective_bb"], chipev_gametype)
 
     # Detect multiway and simplify to heads-up if needed
     raw_preflop = hand["preflop_actions"]
@@ -1592,11 +1693,14 @@ def _run_analysis(hand: dict) -> dict:
     # own pot context (which assumes 12.5% ante). Without it, a 67%-pot cbet
     # on a real 5.4bb pot reads as 80% against a 4.5bb actual_pot and lands
     # in the wrong solver bucket (H3432 regression).
-    ante_per_player = 0.0 if is_cash else 0.125
+    ante_per_player = (
+        0.0 if is_cash
+        else float(hand.get("ante_per_player", hand.get("ante_bb", 0.125)))
+    )
     actual_pot = _compute_preflop_pot(
-        hand["preflop_actions"],
+        actual_preflop_for_pot,
         hand["effective_bb"],
-        num_players=num_players,
+        num_players=physical_num_players,
         ante_per_player=ante_per_player,
     )
     display_pot = actual_pot
@@ -1616,16 +1720,30 @@ def _run_analysis(hand: dict) -> dict:
     # when deciding to open. The solver models uniform stacks, so hero's stack is the best proxy.
     # Fall back to original_depth (from effective_bb) when player_stacks unavailable.
     preflop_before = _preflop_before_index(preflop_actions, hero_preflop_idx)
+    hero_is_opening = all(
+        token in ("F", "") for token in preflop_before.split("-") if token
+    )
     preflop_depth = original_depth if multiway_note else depth
     pf_parts = preflop_actions.split("-")
+    verdict_pf_parts = pf_parts
     hero_idx = hero_preflop_idx
+    hero_opened_unopened = (
+        hero_is_opening
+        and hero_idx < len(pf_parts)
+        and pf_parts[hero_idx].startswith(("R", "AI"))
+    )
+    if (not is_icm and not multiway_note and node_depths
+            and node_depths.get("nodes")):
+        # The first hero action may face an open/jam rather than be an RFI.
+        # Use its resolved aggressor-bound depth as well as continuation depths.
+        preflop_depth = float(node_depths["nodes"][0]["depth"])
     # D1: a preflop all-in that reopens to hero no longer drags the OPEN node to
     # jam depth. The global `allin_effective` override still caps the hand-wide
     # `depth`/`effective_bb` (so the FACING node + header read the jam stack), but
     # the open decision is its own node played at the hero/cover depth. Example:
     # CO opens 30bb, SB jams 17bb — the open is a 30bb decision, the call a 17bb
     # one. (Non-multiway only; multiway keeps its own depth machinery.)
-    if (not is_icm and allin_effective and node_depths
+    if (hero_opened_unopened and not is_icm and allin_effective and node_depths
             and not multiway_note and node_depths.get("open")):
         open_depth = float(node_depths["open"]["depth"])
         if open_depth != preflop_depth:
@@ -1636,7 +1754,7 @@ def _run_analysis(hand: dict) -> dict:
             except Exception:
                 pass  # fall back to original preflop_before
             preflop_depth = open_depth
-    elif not is_icm and not allin_effective:
+    elif not is_icm and not allin_effective and not node_depths:
         hero_stack_bb = hand.get("hero_starting_stack")
         if not hero_stack_bb and hand.get("player_stacks"):
             stacks = hand["player_stacks"]
@@ -1644,7 +1762,7 @@ def _run_analysis(hand: dict) -> dict:
             if len(stacks) == num_players:
                 if hero_preflop_idx < len(stacks) and stacks[hero_preflop_idx] > 0:
                     hero_stack_bb = stacks[hero_preflop_idx]
-        if hero_stack_bb and hero_stack_bb > hand.get("effective_bb", 0):
+        if hero_opened_unopened and hero_stack_bb and hero_stack_bb > hand.get("effective_bb", 0):
             hero_depth = nearest_depth(hero_stack_bb)
             if hero_depth != preflop_depth:
                 # Re-normalize preflop actions for the new depth — raise sizes
@@ -1690,6 +1808,7 @@ def _run_analysis(hand: dict) -> dict:
             real_before = collapsed_before = None
         if real_before and collapsed_before and real_before != collapsed_before:
             preflop_before = real_before
+            verdict_pf_parts = real_norm.split("-")
             preflop_hu_fallback = dict(
                 gametype=gametype, depth=preflop_depth, stacks=icm_stacks,
                 preflop_actions=collapsed_before)
@@ -1759,7 +1878,7 @@ def _run_analysis(hand: dict) -> dict:
                     "params": dict(gametype=gametype, depth=depth, stacks=icm_stacks,
                                    preflop_actions=prefix),
                     "solver_hero_pos": solver_hero_pos,
-                    "action_desc": f"  → 實際行動: {hero_pos} {code}（solver code: {code}）",
+                    "action_desc": f"  → 實際行動: {display_hero_pos} {code}（solver code: {code}）",
                     "taken_code": code,
                     "depth_caveat": (_facing_caveats[_facing_caveat_i]
                                      if _facing_caveat_i < len(_facing_caveats)
@@ -2056,9 +2175,28 @@ def _run_analysis(hand: dict) -> dict:
                 else:
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    if actual_pot > 0 and outstanding_bet == 0:
-                        # First bet of street in multiway — use pot-pct matching
-                        taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
+                    if bool(act.get("allin")) or action_type.startswith("AI"):
+                        # A real short-stack shove can map to a numeric raise
+                        # in a deeper solver avatar (GTOW does this rather than
+                        # forcing the tree's larger RAI; c1e29db3). Keep the
+                        # explicit all-in flag separately for response logic.
+                        # Explicit all-in is an absolute bb amount, never an
+                        # LLM percentage token; bypass percentage auto-detect.
+                        taken_code = find_closest_action(avail, target_size)
+                    elif actual_pot > 0:
+                        # GTOW sizes both bets and raises by pot fraction. For
+                        # raises the fraction is increment / pot after calling,
+                        # not the raw total-to amount / current pot.
+                        actor_prev = street_investments.get(pos, 0)
+                        call_needed = max(0.0, outstanding_bet - actor_prev)
+                        pct = (
+                            max(0.0, target_size - outstanding_bet)
+                            / max(actual_pot + call_needed, 1e-9)
+                            if outstanding_bet > 0
+                            else target_size / actual_pot
+                        )
+                        taken_code = _find_action_by_pot_pct(
+                            avail, target_size, actual_pot, target_pct=pct)
                     else:
                         # When action is a raise/bet but size is unknown (0), restrict
                         # matching to raise actions only — otherwise C/X wins by proximity
@@ -2096,7 +2234,7 @@ def _run_analysis(hand: dict) -> dict:
                     "header": street_header if street_first_hero else None,
                     "params": params,
                     "solver_hero_pos": solver_hero_pos,
-                    "action_desc": f"  → 實際行動: {pos} {action_type}{size_str}（solver code: {taken_code}）{snap_warn}",
+                    "action_desc": f"  → 實際行動: {display_hero_pos} {action_type}{size_str}（solver code: {taken_code}）{snap_warn}",
                     "taken_code": taken_code,
                     "actual_pot_pct": actual_pot_pct,
                     # True when the immediately preceding action was an
@@ -2124,9 +2262,19 @@ def _run_analysis(hand: dict) -> dict:
                     )
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
-                    if actual_pot > 0 and outstanding_bet == 0:
-                        # First bet of street in multiway — use pot-pct matching
-                        taken_code = _find_action_by_pot_pct(avail, target_size, actual_pot)
+                    if bool(act.get("allin")) or action_type.startswith("AI"):
+                        taken_code = find_closest_action(avail, target_size)
+                    elif actual_pot > 0:
+                        actor_prev = street_investments.get(pos, 0)
+                        call_needed = max(0.0, outstanding_bet - actor_prev)
+                        pct = (
+                            max(0.0, target_size - outstanding_bet)
+                            / max(actual_pot + call_needed, 1e-9)
+                            if outstanding_bet > 0
+                            else target_size / actual_pot
+                        )
+                        taken_code = _find_action_by_pot_pct(
+                            avail, target_size, actual_pot, target_pct=pct)
                     else:
                         # When action is a raise/bet but size is unknown (0), restrict
                         # matching to raise actions only — otherwise C/X wins by proximity
@@ -2683,11 +2831,11 @@ def _run_analysis(hand: dict) -> dict:
     # hand was played as a limp/call even though preflop_actions has R.
     if not no_hero_hand and hero_spots and solutions and solutions[0]:
         actual_first = (
-            pf_parts[hero_idx]
-            if hero_idx < len(pf_parts)
+            verdict_pf_parts[hero_idx]
+            if hero_idx < len(verdict_pf_parts)
             else ""
         )
-        all_fold_before_hero = all(p == "F" for p in pf_parts[:hero_idx])
+        all_fold_before_hero = all(p == "F" for p in verdict_pf_parts[:hero_idx])
         actual_solver_code = "RAI" if actual_first.startswith("AI") else actual_first
         action_codes = {
             asol.get("action", {}).get("code")
@@ -2714,7 +2862,7 @@ def _run_analysis(hand: dict) -> dict:
         ):
             hero_spots[0]["taken_code"] = actual_solver_code
             hero_spots[0]["action_desc"] = (
-                f"  → 實際行動: {hero_pos} {actual_first}"
+                f"  → 實際行動: {display_hero_pos} {actual_first}"
                 f"（solver code: {actual_solver_code}）"
             )
 
@@ -2726,7 +2874,7 @@ def _run_analysis(hand: dict) -> dict:
         # leaving the coach to guess severity from frequency alone and
         # over-dramatise a near-indifferent jam (H3510). Grade it explicitly.
         raise_before_hero = any(
-            p.startswith(("R", "AI")) for p in pf_parts[:hero_idx]
+            p.startswith(("R", "AI")) for p in verdict_pf_parts[:hero_idx]
         )
         if (
             "taken_code" not in hero_spots[0]
@@ -2738,7 +2886,7 @@ def _run_analysis(hand: dict) -> dict:
         ):
             hero_spots[0]["taken_code"] = actual_solver_code
             hero_spots[0]["action_desc"] = (
-                f"  → 實際行動: {hero_pos} {actual_first}"
+                f"  → 實際行動: {display_hero_pos} {actual_first}"
                 f"（solver code: {actual_solver_code}）"
             )
 
@@ -2747,7 +2895,8 @@ def _run_analysis(hand: dict) -> dict:
     # ── Phase 3: Format results ──
     results = []
     results.append("=" * 50)
-    hero_label = f"Hero: {hero_pos}" if no_hero_hand else f"Hero: {hero_pos} {hero_hand}"
+    hero_label = (f"Hero: {display_hero_pos}" if no_hero_hand
+                  else f"Hero: {display_hero_pos} {hero_hand}")
     if is_icm:
         depth_display = depth if isinstance(depth, str) else f"{depth}"
         results.append(hero_label)
@@ -2762,8 +2911,10 @@ def _run_analysis(hand: dict) -> dict:
     else:
         results.append(f"籌碼深度: {hand['effective_bb']}bb（使用 {depth - 0.125:.0f}bb solver）")
         results.append(hero_label)
-    if solver_hero_pos != hero_pos:
-        results.append(f"座位映射: 使用者顯示 {hero_pos} = solver {solver_hero_pos}（因 {num_players}-max solver padding）")
+    if solver_hero_pos != display_hero_pos:
+        reason = "9-max → 8-max solver tree" if nine_max_meta else f"{num_players}-max solver padding"
+        results.append(
+            f"座位映射: 使用者顯示 {display_hero_pos} = solver {solver_hero_pos}（因 {reason}）")
     if icm_fallback_note:
         results.append(icm_fallback_note)
     if multiway_note:
@@ -2784,7 +2935,8 @@ def _run_analysis(hand: dict) -> dict:
         for idx, (raw_code, norm_code) in enumerate(zip(raw_parts, norm_parts)):
             if raw_code == norm_code:
                 continue
-            pos_name = hero_pos if idx == hero_preflop_idx else (pos_order[idx] if idx < len(pos_order) else f"pos{idx}")
+            pos_name = (display_hero_pos if idx == hero_preflop_idx
+                        else (pos_order[idx] if idx < len(pos_order) else f"pos{idx}"))
             if raw_code.startswith("AI") and norm_code == "RAI":
                 # Any all-in → solver all-in is the same thing, not a real correction
                 continue
@@ -2889,7 +3041,8 @@ def _run_analysis(hand: dict) -> dict:
         mode_str = f"Cash {num_players}-max"
     else:
         mode_str = "MTT"
-    compact_hero = f"♠ {hero_pos} | {eff_str} {mode_str}" if no_hero_hand else f"♠ {hero_pos} {hero_hand} | {eff_str} {mode_str}"
+    compact_hero = (f"♠ {display_hero_pos} | {eff_str} {mode_str}" if no_hero_hand
+                    else f"♠ {display_hero_pos} {hero_hand} | {eff_str} {mode_str}")
     compact = [compact_hero]
     if multiway_note:
         # multiway_note already starts with ⚠ — don't double it
@@ -3136,7 +3289,7 @@ def _run_analysis(hand: dict) -> dict:
         "depth": depth,
         "stacks": icm_stacks,
         "is_icm": is_icm,
-        "hero_position": hero_pos,
+        "hero_position": display_hero_pos,
         "hero_hand": hero_hand,
         "no_hero_hand": no_hero_hand,
         "preflop_actions": preflop_actions,

@@ -17,7 +17,8 @@ from gto_cache import get as cache_get, put as cache_put, SENTINEL
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
-AVAILABLE_DEPTHS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9, 8]
+AVAILABLE_DEPTHS = [100, 80, 60, 50, 40, 35, 30, 25, 20, 17, 14, 12, 10, 9,
+                    8, 7, 6, 5, 4, 3, 2, 1]
 AVAILABLE_CASH_DEPTHS = [300, 200, 100, 60, 50, 40, 30, 25, 20]
 _TIMEOUT = 15
 _MAX_RETRIES = 2

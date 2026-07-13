@@ -55,11 +55,11 @@ Hero 22 牌型: 口袋對 (22) < 牌面
 ==================================================
 【River: 9c（Board: 9dQs3h6d9c）】
 Hero 22 牌型: 口袋對 (22) < 牌面
-【LJ 在 River Qs9d3h6d9c】底池 13.000bb
-  Fold: 42.0%（22 combos）
-  Call: 43.9%（23 combos）
-  RAISE 15（56% pot）: 1.6%（1 combos）
-  All-in 21.750: 12.4%（7 combos）
+【LJ 在 River Qs9d3h6d9c】底池 15.000bb
+  Fold: 50.9%（27 combos）
+  Call: 35.8%（19 combos）
+  RAISE 14.5（34% pot）: 4.4%（2 combos）
+  All-in 21.750: 8.9%（5 combos）
 
 【LJ 22】
   Range 頻率: 0.0%（0.0/6 combos）
