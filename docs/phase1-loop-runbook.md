@@ -18,7 +18,12 @@ TG：對 bot 打 `/ingest` → 回 `✅ INGEST ...`（僅 owner 可用）。
 ```bash
 python scripts/ledger_ingest.py --verify         # 期望 VERIFY OK api==db
 python scripts/ledger_fidelity_check.py          # 期望 mismatches: 0/20
+python scripts/analysis_fidelity_check.py --sample-size 30  # GTOW Analyzer vs 自建 analyze pilot
 ```
+
+前兩項驗證 API → Ledger；第三項重建原始下注線並逐 decision 驗證
+`analyze_hand_full()`。GTOW 自己標記 unknown/no-solution 的 spot 會跳過，不進
+fidelity 分母。完整用法與 status 定義見 `docs/analysis-fidelity-runbook.md`。
 
 ## 3. 追問帳本（TG）
 對 bot 打：「這三個月我在哪些 spot 漏最多 EV？特別是 3bet pot」

@@ -13704,6 +13704,217 @@ def test_distill_honesty_rules():
     assert_true(all(d["excluded"] for d in decs))
 
 
+# ── GTOW Analyzer vs analyze_hand fidelity ──
+
+@test
+def test_fidelity_reconstructs_exact_real_action_stream_and_suits():
+    """The comparator must start from GTOW real actions, not ledger summaries."""
+    from analysis_fidelity_check import reconstruct_analyze_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    row = {
+        "gtow_hand_id": lr["hand_id"], "position": lr["player_position"],
+        "hero_hand": lr["hero_hand"], "total_players": lr["total_players"],
+        "preflop_depth_bb": lr["preflop_game_depth"],
+    }
+    hand = reconstruct_analyze_hand(row, _load_fix("detail_eef0b07b.json"))
+    assert_eq(hand["hero_hand"], "Qh8c")
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-R2.5-C")
+    assert_eq(hand["streets"][0]["board"], "Kh6h4h")
+    assert_eq([(a["position"], a["action"], a["size"])
+               for a in hand["streets"][2]["actions"]],
+              [("SB", "X", 0.0), ("BB", "R16.642", 16.642), ("SB", "F", 0.0)])
+
+
+@test
+def test_fidelity_reconstruction_stops_when_hero_folds():
+    """Villain action after hero exits must not be replayed into invalid solver nodes."""
+    from analysis_fidelity_check import reconstruct_analyze_hand
+    def gp(street, pos, code, size=0):
+        return {"gametype": "MTTGeneral", "real_game": {
+                    "current_street": {"type": street}, "board": "Kc6c2d"},
+                "real_game_action": {"position": pos, "code": code, "betsize": str(size)}}
+    detail = {"players_dealt": 6, "boards": ["Kc6c2d"], "game_analysis": {"game_points": [
+        gp("PREFLOP", "LJ", "F"), gp("PREFLOP", "HJ", "R2", 2),
+        gp("PREFLOP", "CO", "F"), gp("PREFLOP", "BTN", "F"),
+        gp("PREFLOP", "SB", "F"),
+        gp("PREFLOP", "BB", "R4.5", 4.5), gp("PREFLOP", "HJ", "C", 4.5),
+        gp("FLOP", "BB", "X"), gp("FLOP", "HJ", "X"),
+    ]}}
+    row = {"gtow_hand_id": "folded", "position": "SB", "hero_hand": "9c6h",
+           "total_players": 6, "preflop_depth_bb": 35.125}
+    hand = reconstruct_analyze_hand(row, detail)
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F")
+    assert_eq(hand["streets"], [])
+
+
+@test
+def test_fidelity_extracts_gtow_decisions_and_acceptable_actions():
+    from analysis_fidelity_check import gtow_decisions
+    decs = gtow_decisions(
+        _load_fix("detail_eef0b07b.json"), "SB", solution_status="OK")
+    assert_eq([d["key"] for d in decs],
+              ["preflop:0", "flop:0", "turn:0", "turn:1", "river:0", "river:1"])
+    river = decs[-1]
+    assert_eq(round(river["ev_loss_bb"], 4), 22.6627)
+    assert_eq(river["taken_code"], "F")
+    assert_true("C" in river["acceptable_codes"])
+    assert_true("AI" in river["acceptable_codes"])
+    assert_eq(river["gtow_excluded"], False)
+
+
+@test
+def test_fidelity_preserves_rare_nine_max_squeeze_truth():
+    """Frozen real case: physical UTG+2 and hero's BTN squeeze must survive ingestion."""
+    from analysis_fidelity_check import reconstruct_analyze_hand, gtow_decisions
+    detail = _load_fix("detail_bee60039.json")
+    row = {
+        "gtow_hand_id": "bee60039-cf87-4beb-8443-3b1d73b59a51",
+        "position": "BTN", "hero_hand": "AsKs", "total_players": 9,
+        "preflop_depth_bb": 54.483,
+    }
+    hand = reconstruct_analyze_hand(row, detail)
+    assert_eq(hand["players_at_table"], 9)
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F-C-R5.5-F-F-C-F")
+    assert_true(any(a["position"] == "UTG+1" for a in hand["streets"][0]["actions"]))
+    decs = gtow_decisions(detail, "BTN", solution_status="OK")
+    assert_eq([d["key"] for d in decs], ["preflop:0", "flop:0", "turn:0"])
+    assert_eq(decs[0]["taken_code"], "R7.4")
+    assert_eq(decs[-1]["best_code"], "AI")
+    assert_eq(round(decs[-1]["ev_loss_bb"], 3), 7.884)
+
+
+@test
+def test_fidelity_gtow_unknown_is_skipped_not_failed():
+    import copy
+    from analysis_fidelity_check import compare_decisions, compare_hand, gtow_decisions
+    det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+    det["game_analysis"]["warning_status"] = "NO_GTO_SOLUTION"
+    gtow = gtow_decisions(det, "SB", solution_status="NO_GTO_SOLUTION")
+    own = [{
+        **{k: gtow[0].get(k) for k in ("street", "decision_idx", "key", "gametype", "depth",
+                                        "board", "preflop_actions", "flop_actions",
+                                        "turn_actions", "river_actions", "taken_code")},
+        "best_code": "F", "ev_loss_bb": 99.0, "taken_freq": 0.0,
+        "has_solution": True, "in_range": True,
+    }]
+    own.append({**own[0], "street": "flop", "decision_idx": 0, "key": "flop:0"})
+    rows = compare_decisions([gtow[0]], own, gtow_hand_unknown=True)
+    assert_eq(rows[0]["status"], "skipped_gtow_unknown")
+    assert_eq(rows[1]["status"], "skipped_gtow_unknown",
+              "fallback-only streets are skipped when GTOW could not grade the hand")
+    lr = _load_fix("list_rows.json")["eef0b07b-23b6-4fe0-bcc6-41d83629583c"]
+    hand_row = {
+        "gtow_hand_id": lr["hand_id"], "position": "SB", "hero_hand": "Qh8c",
+        "total_players": 7, "preflop_depth_bb": 35.125,
+        "solution_status": "NO_GTO_SOLUTION",
+    }
+    def must_not_run(_hand):
+        raise AssertionError("analyze fallback must not run when GTOW has no oracle")
+    checked = compare_hand(hand_row, det, analyze_fn=must_not_run)
+    assert_true(checked["decisions"])
+    assert_true(all(d["status"] == "skipped_gtow_unknown" for d in checked["decisions"]))
+
+
+@test
+def test_fidelity_compare_requires_same_node_before_ev_parity():
+    from analysis_fidelity_check import compare_decisions
+    base = {
+        "street": "river", "decision_idx": 0, "key": "river:0",
+        "gametype": "MTTGeneral", "depth": 35.125, "board": "Kh6h4hQs8s",
+        "preflop_actions": "F-F-F-F-F-F-R3.5-C", "flop_actions": "R2-C",
+        "turn_actions": "X-R9-C", "river_actions": "X-R16.65",
+        "taken_code": "F", "best_code": "C", "acceptable_codes": ["C", "AI"],
+        "ev_loss_bb": 0.0, "taken_freq": 0.20, "gtow_excluded": False,
+    }
+    own = {**base, "best_code": "C", "ev_loss_bb": 0.02, "taken_freq": 0.21,
+           "has_solution": True, "in_range": True}
+    assert_eq(compare_decisions([base], [own])[0]["status"], "match",
+              "GTOW zeroed mixed-action loss remains within the 0.05bb tolerance")
+    own["depth"] = 30.125
+    row = compare_decisions([base], [own])[0]
+    assert_eq(row["status"], "node_mismatch")
+    assert_in("depth", row["node_differences"])
+
+
+@test
+def test_fidelity_own_metrics_read_preflop_strategy_arrays():
+    from analysis_fidelity_check import own_decisions
+    from hh_deviation_check import HAND_TO_169
+    idx = HAND_TO_169["53o"]
+    rng = [0.0] * 169; rng[idx] = 1.0
+    fold_ev = [0.0] * 169; call_ev = [0.0] * 169; call_ev[idx] = -0.5
+    fold_strategy = [0.0] * 169; fold_strategy[idx] = 1.0
+    call_strategy = [0.0] * 169
+    solution = {
+        "players_info": [{"player": {"position": "SB"}, "range": rng,
+                          "simple_hand_counters": {"53o": {
+                              "actions_total_frequencies": {"F": 1.0, "C": 0.0}}}}],
+        "action_solutions": [
+            {"action": {"code": "F"}, "evs": fold_ev, "strategy": fold_strategy},
+            {"action": {"code": "C"}, "evs": call_ev, "strategy": call_strategy},
+        ],
+    }
+    result = {
+        "hero_position": "SB",
+        "preflop_actions": "F-F-F-F-F-F-F",
+        "hero_spots": [{"street": "preflop",
+                        "solver_hero_pos": "SB", "params": {
+                            "gametype": "MTTGeneral", "depth": 20.125,
+                            "preflop_actions": "F-F-F-F-F-F"}}],
+        "solutions": [solution],
+    }
+    dec = own_decisions(result, "5c3d")[0]
+    assert_eq(dec["best_code"], "F")
+    assert_eq(dec["taken_code"], "F", "initial action is derived from full line after params prefix")
+    assert_eq(dec["ev_loss_bb"], 0.0)
+    assert_eq(dec["taken_freq"], 1.0)
+
+
+@test
+def test_fidelity_sample_is_deterministic_and_rare_first():
+    from analysis_fidelity_check import select_sample
+    rows = [
+        {"gtow_hand_id": "five", "pot_type": "5bet", "total_players": 8},
+        {"gtow_hand_id": "hu", "pot_type": "SRP", "total_players": 2},
+        {"gtow_hand_id": "nine", "pot_type": "SRP", "total_players": 9},
+        {"gtow_hand_id": "four", "pot_type": "4bet", "total_players": 8},
+        {"gtow_hand_id": "sq", "pot_type": "Squeeze", "total_players": 8},
+        {"gtow_hand_id": "ai", "pot_type": "SRP", "total_players": 8, "has_allin": True},
+        {"gtow_hand_id": "multi", "pot_type": "SRP", "total_players": 8,
+         "has_multi_decision": True},
+        {"gtow_hand_id": "base", "pot_type": "SRP", "total_players": 8,
+         "total_ev_loss_bb": 9.0},
+    ]
+    a = select_sample(rows, 8, 7)
+    b = select_sample(rows, 8, 7)
+    assert_eq([r["gtow_hand_id"] for r in a], [r["gtow_hand_id"] for r in b])
+    assert_true({"fivebet", "heads_up", "nine_max", "fourbet", "squeeze", "allin"}
+                <= {r["sample_reason"] for r in a})
+
+
+@test
+def test_fidelity_resume_and_report_exclude_gtow_unknown_from_denominator():
+    import tempfile
+    from pathlib import Path
+    from analysis_fidelity_check import append_result, load_completed, render_report
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "results.jsonl"
+        append_result(path, {"gtow_hand_id": "h1", "decisions": [
+            {"key": "preflop:0", "status": "match", "gtow": {}, "own": {}}]})
+        with path.open("a") as fh:
+            fh.write("not-json\n")
+        assert_eq(load_completed(path), {"h1"})
+    report = render_report([
+        {"gtow_hand_id": "h1", "decisions": [
+            {"key": "preflop:0", "status": "match", "gtow": {}, "own": {}}]},
+        {"gtow_hand_id": "h2", "decisions": [
+            {"key": "flop:0", "status": "skipped_gtow_unknown", "gtow": {}, "own": {}}]},
+    ])
+    assert_in("GTOW-unknown decisions skipped: 1", report)
+    assert_in("exact comparable matches: 1/1", report)
+
+
 @test
 def test_depth_band_boundaries():
     from ledger_distill import depth_band
