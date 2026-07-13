@@ -808,6 +808,10 @@ def test_training_plan_focus_and_readback():
     html = render_html(data)
     assert_in("MP_vs3bet_IP", html)
     assert_in("<svg", html)
+    assert_in("保守估計", html)
+    assert_in("最燒錢情境排行", html)
+    assert_in("實戰漏損 13.50 bb/100", html)
+    assert_true("收縮" not in html and "誠實層" not in html)
     assert_true("<script src" not in html)
     # readback is computed from the POST-PRESCRIPTION window stats, not the
     # cumulative leaderboard (§2.2: cumulative averages hide the treatment)
@@ -842,9 +846,9 @@ def test_training_plan_focus_and_readback():
     assert_in("chipEV", msg)                                 # honesty caveat
     assert_in("limp", msg)
     assert_in("練習佇列", msg)                                # live queue section
-    assert_in("樹外近似敏感", msg)                            # fragile focus caveat
+    assert_in("下注尺寸不在 GTOW 標準樹", msg)                 # player-readable caveat
     assert_in("低信心決策未納入統計", msg)                     # confidence gate caveat
-    assert_in("decision depth", msg)                          # physical vs solver depth truth
+    assert_in("GTOW 實際評分深度", msg)                        # physical vs solver depth truth
     assert_in("線上同一個情境也在漏", msg)                    # cross-source flag
     # queue aging: an uncleared prescription keeps nagging, with its week
     assert_in("2026-W27 已開過，還沒練 ⏰", msg)
@@ -892,6 +896,26 @@ def test_build_drill_url_pins_position():
         assert_true(False, "should have raised")
     except SpotNotSupportedError:
         pass
+
+
+@test
+def test_postflop_leaderboard_uses_exact_source_hand_custom_trainer():
+    """River/turn/flop focus can open a faithful GTOW Custom Trainer URL."""
+    from spot_leaderboard import drill_url_for_item, sample_sql
+    row = {"spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet",
+           "spot_category": "river", "hero_pos": "SB", "hero_cat": "SB",
+           "villain_cat": "BB", "ip_oop": "OOP"}
+    sample = {"gtow_hand_id": "h1", "street": "river", "decision_idx": 1}
+    expected = "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot"
+    seen = []
+    got = drill_url_for_item(row, [35], [sample],
+                             exact_builder=lambda d: seen.append(d) or expected)
+    assert_eq(got, expected)
+    assert_eq(seen[0]["decision_idx"], 1)
+    sql = sample_sql(None)
+    assert_in("d.decision_idx", sql)
+    assert_in("h.raw_path", sql)
+    assert_in("h.preflop_depth_bb", sql)
 
 
 @test
