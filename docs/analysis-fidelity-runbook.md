@@ -31,6 +31,18 @@ GTOW may also retain a real terminal action (usually an all-in/call) without a
 selected Analyze action. Those are `skipped_gtow_ungraded`, also outside the
 denominator: the local replay is real, but GTOW supplied no EV oracle.
 
+Two current-tree boundaries are likewise reported but excluded from parity:
+
+- `skipped_own_offtree_continuation`: an earlier hero action has exactly zero
+  frequency in the current equilibrium, so later exact-combo EV arrays are all
+  zero and cannot grade the historical continuation;
+- `skipped_solver_tree_semantic_drift`: the archived solved sequence and the
+  current live tree disagree on numeric-raise versus all-in representation.
+
+Neither status is a match. They are explicit missing-oracle boundaries: EVs
+from an unreachable combo or a different action tree must not enter the exact
+fidelity denominator.
+
 ## Commands
 
 ```bash
@@ -70,7 +82,7 @@ The selector is deterministic for a given seed and intentionally over-samples:
 
 The default seed is `20260713`; pass `--seed` for a separate reproducible cohort.
 
-## Current validation evidence (2026-07-13)
+## Current validation evidence (2026-07-14)
 
 See [`analysis-fidelity-findings-2026-07-13.md`](analysis-fidelity-findings-2026-07-13.md)
 for the mismatch distribution, root-cause discussion, fixes, and EV-weighted
@@ -82,14 +94,21 @@ follow-up priorities.
 - Expanded rare-first cohort (`--sample-size 300 --seed 20260714`): 300 hands,
   633 replayed decisions, 0 hand errors; 179 GTOW-unknown and 6 GTOW-ungraded
   decisions skipped; `401/448` comparable decisions matched (89.5%).
+- After the top-three follow-up, the same `20260714` cohort has 5
+  zero-frequency continuations and 4 archived/current semantic-tree drifts
+  explicitly excluded; `402/439` comparable decisions match (91.6%), with 0
+  hand errors and no previously matching decision regressed.
+- An additional 300-hand run with seed `20260713` produced `410/448`
+  comparable matches (91.5%), also with 0 hand errors.
 - The 100- and 300-hand cohorts overlap by 33 hands, covering 367 unique hands.
 - Expanded strata include 9-max, heads-up, 4bet/5bet, squeeze, all-in,
   multi-decision, sizing/depth snaps, high-loss, baseline, and no-solution.
 
 Remaining non-matches stay explicit in `report.md`; they are not silently
 accepted. Most are archived raw-depth/current-tree action-label or solver-data
-drift, exact-combo off-range nodes, or material node/EV differences requiring a
-future frozen-case investigation.
+drift, or material node/EV differences requiring a future frozen-case
+investigation. Exact-combo continuations after a current-tree zero-frequency
+action are visible as non-comparable rather than misreported as index defects.
 
 ## Status interpretation
 
@@ -98,6 +117,8 @@ future frozen-case investigation.
 | `match` | Same canonical node/action and EV/frequency within tolerance |
 | `skipped_gtow_unknown` | GTOW cannot grade the hand; fallback is not judged |
 | `skipped_gtow_ungraded` | Real action exists, but GTOW emitted no selected/graded action |
+| `skipped_own_offtree_continuation` | Earlier hero action has zero current-tree frequency; later exact combo is unreachable |
+| `skipped_solver_tree_semantic_drift` | Archived/current trees disagree on numeric raise versus all-in semantics |
 | `node_mismatch` | Gametype/depth/board/action sequence differs |
 | `taken_action_mismatch` | Repository mapped the real action to another code |
 | `own_combo_off_range` | Exact suited combo does not reach the repository node |
@@ -136,8 +157,10 @@ Frozen fixtures cover:
 - strategy-array extraction;
 - deterministic rare-first sampling;
 - resume checkpoints and report denominators;
+- zero-frequency continuation and archived/current semantic-tree exclusions;
 - first-action shove depth, short all-in side pots, and sub-8bb MTT/HU trees;
 - 9-max safe mapping and fail-closed physical-UTG handling;
 - postflop raise-increment/pot-fraction sizing;
+- explicit non-all-in sizing and physical-pot versus solver-pot branch choice;
 - rare non-zero exact-combo EV rows;
 - BB walks and GTOW-ungraded terminal decisions.

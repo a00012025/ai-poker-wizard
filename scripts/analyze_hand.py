@@ -609,7 +609,8 @@ def _compute_preflop_pot(
 
 
 def _find_action_by_pot_pct(available_actions: list, bet_size: float,
-                            actual_pot: float, *, target_pct: float | None = None) -> str:
+                            actual_pot: float, *, target_pct: float | None = None,
+                            allow_allin_snap: bool = True) -> str:
     """Find closest action by pot percentage rather than absolute size.
 
     Computes the hero/villain bet as a fraction of the actual pot, then
@@ -626,15 +627,15 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float,
     This guard is shared by the deep-link resolver (gtow_action_resolver) so the
     two pipelines snap shoves identically (H3480).
     """
-    postflop_code = find_closest_action_postflop(available_actions, bet_size)
-    allin_codes = {
-        a["action"]["code"]
-        for a in available_actions
-        if a.get("action", {}).get("allin")
-    }
-    if postflop_code in allin_codes:
-        return postflop_code
-
+    if allow_allin_snap:
+        postflop_code = find_closest_action_postflop(available_actions, bet_size)
+        allin_codes = {
+            a["action"]["code"]
+            for a in available_actions
+            if a.get("action", {}).get("allin")
+        }
+        if postflop_code in allin_codes:
+            return postflop_code
     target_pct = target_pct if target_pct is not None else bet_size / actual_pot
 
     # Guard: bet_size that looks like a percentage rather than raw bb.
@@ -676,8 +677,19 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float,
             code = action["code"]
             if code in ("X", "F"):
                 continue
+            if not allow_allin_snap and action.get("allin"):
+                continue
             size = float(action.get("betsize") or 0)
-            if size > 0 and abs(size - bet_size) / max(size, bet_size) < 0.05:
+            action_pct_raw = action.get("betsize_by_pot")
+            action_pct = (
+                float(action_pct_raw)
+                if action_pct_raw not in (None, "") else None
+            )
+            pct_is_compatible = (
+                action_pct is None or abs(action_pct - target_pct) <= 0.20
+            )
+            if (size > 0 and pct_is_compatible
+                    and abs(size - bet_size) / max(size, bet_size) < 0.05):
                 return code
 
     if solver_pot:
@@ -2196,7 +2208,8 @@ def _run_analysis(hand: dict) -> dict:
                             else target_size / actual_pot
                         )
                         taken_code = _find_action_by_pot_pct(
-                            avail, target_size, actual_pot, target_pct=pct)
+                            avail, target_size, actual_pot, target_pct=pct,
+                            allow_allin_snap=False)
                     else:
                         # When action is a raise/bet but size is unknown (0), restrict
                         # matching to raise actions only — otherwise C/X wins by proximity
@@ -2274,7 +2287,8 @@ def _run_analysis(hand: dict) -> dict:
                             else target_size / actual_pot
                         )
                         taken_code = _find_action_by_pot_pct(
-                            avail, target_size, actual_pot, target_pct=pct)
+                            avail, target_size, actual_pot, target_pct=pct,
+                            allow_allin_snap=False)
                     else:
                         # When action is a raise/bet but size is unknown (0), restrict
                         # matching to raise actions only — otherwise C/X wins by proximity

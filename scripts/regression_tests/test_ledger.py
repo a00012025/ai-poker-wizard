@@ -319,6 +319,63 @@ def test_fidelity_extracts_gtow_decisions_and_acceptable_actions():
 
 
 @test
+def test_fidelity_skips_downstream_combo_after_zero_frequency_action():
+    """A current equilibrium cannot grade the next decision after hero took a
+    zero-frequency branch. Keep the gap explicit, but do not call it a combo
+    index/reach bug (a54afc05 and 104beb84)."""
+    from analysis_fidelity_check import compare_decisions
+    common = {
+        "gametype": "MTTGeneral", "depth": 30.125, "board": "Kc5d3h",
+        "preflop_actions": "F-F-F-F-R2.1-F-F-R8.2-C",
+        "flop_actions": "R8.95", "turn_actions": "", "river_actions": "",
+    }
+    gtow = [
+        {**common, "street": "flop", "decision_idx": 0, "key": "flop:0",
+         "taken_code": "C", "best_code": "C", "acceptable_codes": ["C"],
+         "solver_ev_loss_bb": 0.0, "taken_freq": 0.0},
+        {**common, "street": "turn", "decision_idx": 0, "key": "turn:0",
+         "board": "Kc5d3h2c", "flop_actions": "R8.95-C", "turn_actions": "AI",
+         "taken_code": "F", "best_code": "C", "acceptable_codes": ["C"],
+         "solver_ev_loss_bb": 13.18, "taken_freq": 0.0},
+    ]
+    own = [
+        {**gtow[0], "has_solution": True, "in_range": True,
+         "best_code": "C", "ev_loss_bb": 0.0},
+        {**gtow[1], "has_solution": True, "in_range": False,
+         "best_code": "", "ev_loss_bb": None, "taken_freq": None},
+    ]
+    rows = compare_decisions(gtow, own)
+    assert_eq(rows[0]["status"], "match")
+    assert_eq(rows[1]["status"], "skipped_own_offtree_continuation")
+
+
+@test
+def test_fidelity_skips_unrepresentable_numeric_vs_allin_tree_drift():
+    """A historical non-all-in 75% branch may exceed the current tree's shove.
+    That is explicit solver-tree drift, not EV parity evidence (eef0b07b)."""
+    from analysis_fidelity_check import compare_decisions
+    gtow = [{
+        "street": "river", "decision_idx": 0, "key": "river:0",
+        "gametype": "MTTGeneral", "depth": 35.125, "board": "Kh6h4hQs8s",
+        "preflop_actions": "R3.5-C", "flop_actions": "R2-C",
+        "turn_actions": "X-R9-C", "river_actions": "X-R16.65",
+        "taken_code": "F", "best_code": "C", "acceptable_codes": ["C"],
+        "solver_ev_loss_bb": 22.66, "taken_freq": 0.0,
+    }]
+    own = [{
+        **gtow[0], "river_actions": "X-AI", "has_solution": True,
+        "in_range": True, "best_code": "C", "ev_loss_bb": 18.1,
+    }]
+    row = compare_decisions(gtow, own)[0]
+    assert_eq(row["status"], "skipped_solver_tree_semantic_drift")
+
+    own[0]["depth"] = 30.125
+    row = compare_decisions(gtow, own)[0]
+    assert_eq(row["status"], "node_mismatch",
+              "action semantic drift must not hide an independent depth mismatch")
+
+
+@test
 def test_fidelity_preserves_rare_nine_max_squeeze_truth():
     """Frozen real case: physical UTG+2 and hero's BTN squeeze must survive ingestion."""
     from analysis_fidelity_check import reconstruct_analyze_hand, gtow_decisions
@@ -536,7 +593,7 @@ def test_fidelity_sample_is_deterministic_and_rare_first():
 
 
 @test
-def test_fidelity_resume_and_report_exclude_gtow_unknown_from_denominator():
+def test_fidelity_resume_and_report_exclude_noncomparable_from_denominator():
     import tempfile
     from pathlib import Path
     from analysis_fidelity_check import append_result, load_completed, render_report
@@ -552,8 +609,16 @@ def test_fidelity_resume_and_report_exclude_gtow_unknown_from_denominator():
             {"key": "preflop:0", "status": "match", "gtow": {}, "own": {}}]},
         {"gtow_hand_id": "h2", "decisions": [
             {"key": "flop:0", "status": "skipped_gtow_unknown", "gtow": {}, "own": {}}]},
+        {"gtow_hand_id": "h3", "decisions": [
+            {"key": "turn:0", "status": "skipped_own_offtree_continuation",
+             "gtow": {}, "own": {}}]},
+        {"gtow_hand_id": "h4", "decisions": [
+            {"key": "river:0", "status": "skipped_solver_tree_semantic_drift",
+             "gtow": {}, "own": {}}]},
     ])
     assert_in("GTOW-unknown decisions skipped: 1", report)
+    assert_in("local zero-frequency continuations skipped: 1", report)
+    assert_in("archived/current semantic tree drifts skipped: 1", report)
     assert_in("exact comparable matches: 1/1", report)
 
 

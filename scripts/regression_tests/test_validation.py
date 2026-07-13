@@ -681,6 +681,47 @@ def test_postflop_pot_fraction_midpoint_snaps_up_like_gtow():
 
 
 @test
+def test_postflop_explicit_non_allin_is_not_promoted_to_nearby_shove():
+    """A real 75%-pot bet marked non-all-in must stay on the numeric branch.
+
+    Frozen fidelity case eef0b07b: the physical 16.642bb river bet is explicitly
+    non-all-in. Absolute proximity to the current tree's shove must not override
+    that stronger semantic evidence.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+    available = [
+        {"action": {"code": "R8.3", "betsize": "8.3",
+                    "betsize_by_pot": "0.375", "allin": False}},
+        {"action": {"code": "R15", "betsize": "15",
+                    "betsize_by_pot": "0.75", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "16.65",
+                    "betsize_by_pot": "0.90", "allin": True}},
+    ]
+    assert_eq(_find_action_by_pot_pct(
+        available, 16.642, 22.189, allow_allin_snap=False), "R15")
+
+
+@test
+def test_postflop_exact_bb_shortcut_requires_same_physical_and_solver_pot():
+    """Do not let an accidental absolute-bb match override the real pot ratio.
+
+    Frozen fidelity case 22e96bc8: a physical 14bb turn bet is 111% of the
+    12.6bb pot. The canonical tree pot is 16.5bb, where R13.7 happens to be an
+    almost exact absolute match but represents only 83%. GTOW correctly maps
+    the real action to the 125% R20.6 branch.
+    """
+    from analyze_hand import _find_action_by_pot_pct
+    available = [
+        {"action": {"code": "R13.7", "betsize": "13.7",
+                    "betsize_by_pot": "0.830303", "allin": False}},
+        {"action": {"code": "R20.6", "betsize": "20.6",
+                    "betsize_by_pot": "1.248485", "allin": False}},
+    ]
+    assert_eq(_find_action_by_pot_pct(
+        available, 14.0, 12.6, allow_allin_snap=False), "R20.6")
+
+
+@test
 def test_actual_pot_uses_physical_table_not_padded_solver_seats():
     """A 5-max hand padded to MTTGeneral's 8 seats still has only five antes.
     Over-counting three phantom antes shifts check-raise sizing (2b6c62db)."""
