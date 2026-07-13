@@ -41,6 +41,8 @@ def analyze_table_url(day_start_taipei: str, day_end_taipei: str) -> str:
 
 BAND_MID = {"le15": 12, "15_25": 20, "25_40": 32, "40plus": 50}
 BAND_ZH = {"short": "短籌(≤20)", "medium": "中籌(20-50)", "large": "深籌(>50)"}
+MIN_TRAINING_CONFIDENCE = 0.8
+FAMILY_PRIOR_N = 100
 
 # All three queries take an optional time window (§2.2 歸因): an unwindowed
 # leaderboard is a cumulative average — recent improvement/regression barely
@@ -54,8 +56,8 @@ def leader_sql(since=None) -> str:
     return f"""
 SELECT spot_leaf, spot_category,
        count(*) n, sum(ev_loss_bb) total_ev, avg(ev_loss_bb) avg_ev,
-       count(*) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap'])) n_clean,
-       avg(ev_loss_bb) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap'])) avg_ev_clean,
+       count(*) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','missing_solver_depth','analyzer_approximation'])) n_clean,
+       avg(ev_loss_bb) FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','missing_solver_depth','analyzer_approximation'])) avg_ev_clean,
        mode() WITHIN GROUP (ORDER BY hero_cat)   hero_cat,
        mode() WITHIN GROUP (ORDER BY villain_cat) villain_cat,
        mode() WITHIN GROUP (ORDER BY ip_oop)     ip_oop,
@@ -63,7 +65,8 @@ SELECT spot_leaf, spot_category,
        mode() WITHIN GROUP (ORDER BY depth_band) depth_band,
        mode() WITHIN GROUP (ORDER BY street)     street
 FROM ledger_decisions
-WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'{win}
+WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
+  AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
 GROUP BY spot_leaf, spot_category
 HAVING count(*) >= $1
 ORDER BY avg(ev_loss_bb) DESC
@@ -78,6 +81,7 @@ SELECT d.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards, h.total_e
        d.ev_loss_bb, d.correctness
 FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
 WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='online'{win}
+  AND d.confidence >= {MIN_TRAINING_CONFIDENCE}
 ORDER BY d.ev_loss_bb DESC LIMIT 2
 """
 
@@ -88,9 +92,80 @@ def band_sql(since=None) -> str:
 SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
 FROM ledger_decisions
 WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
-  AND source='online'{win}
+  AND source='online' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
 GROUP BY eff_stack
 """
+
+
+def family_sql(since=None) -> str:
+    """Stable parent-family diagnosis with one exact representative leaf.
+
+    Parent aggregation recovers repeated skill errors split across exact action
+    lines.  The representative is the member leaf with the greatest total EV
+    loss, so the family diagnosis remains anchored to a concrete example/drill.
+    """
+    win = " AND played_at >= $2" if since else ""
+    return f"""
+WITH base AS (
+  SELECT * FROM ledger_decisions
+  WHERE NOT excluded AND NOT discarded AND spot_parent IS NOT NULL
+    AND spot_leaf IS NOT NULL AND source='online'
+    AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
+), parent_stats AS (
+  SELECT spot_parent diagnosis_key, spot_category,
+         count(*) n, sum(ev_loss_bb) total_ev, avg(ev_loss_bb) avg_ev,
+         count(*) FILTER (WHERE NOT (approx_flags ? 'analyzer_approximation')) n_clean,
+         avg(ev_loss_bb) FILTER (WHERE NOT (approx_flags ? 'analyzer_approximation')) avg_ev_clean
+  FROM base GROUP BY spot_parent, spot_category
+  HAVING count(*) >= $1
+), leaf_stats AS (
+  SELECT spot_parent, spot_leaf representative_leaf, sum(ev_loss_bb) leaf_total_ev,
+         count(*) leaf_n,
+         mode() WITHIN GROUP (ORDER BY hero_cat) hero_cat,
+         mode() WITHIN GROUP (ORDER BY villain_cat) villain_cat,
+         mode() WITHIN GROUP (ORDER BY ip_oop) ip_oop,
+         mode() WITHIN GROUP (ORDER BY position) hero_pos,
+         mode() WITHIN GROUP (ORDER BY depth_band) depth_band,
+         mode() WITHIN GROUP (ORDER BY street) street,
+         row_number() OVER (PARTITION BY spot_parent
+                            ORDER BY sum(ev_loss_bb) DESC, count(*) DESC, spot_leaf) rn
+  FROM base GROUP BY spot_parent, spot_leaf
+)
+SELECT p.*, l.representative_leaf, l.leaf_total_ev, l.leaf_n,
+       l.hero_cat, l.villain_cat, l.ip_oop, l.hero_pos, l.depth_band, l.street
+FROM parent_stats p JOIN leaf_stats l ON l.spot_parent=p.diagnosis_key AND l.rn=1
+"""
+
+
+def family_band_sql(since=None) -> str:
+    win = " AND played_at >= $2" if since else ""
+    return f"""
+SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
+FROM ledger_decisions
+WHERE spot_parent=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
+  AND source='online' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
+GROUP BY eff_stack
+"""
+
+
+def global_avg_sql(since=None) -> str:
+    win = " AND played_at >= $1" if since else ""
+    return f"""SELECT avg(ev_loss_bb) FROM ledger_decisions
+WHERE NOT excluded AND NOT discarded AND spot_parent IS NOT NULL
+  AND source='online' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}"""
+
+
+def rank_hierarchical_rows(rows, global_avg: float, prior_n: int = FAMILY_PRIOR_N):
+    """Empirical-Bayes partial pooling toward the honest global EV-loss mean."""
+    ranked = []
+    for raw in rows:
+        r = dict(raw)
+        n, total = int(r.get("n") or 0), float(r.get("total_ev") or 0)
+        r["shrunk_avg_ev"] = ((total + prior_n * float(global_avg or 0)) /
+                              (n + prior_n))
+        ranked.append(r)
+    return sorted(ranked, key=lambda r: (-r["shrunk_avg_ev"], -float(r.get("total_ev") or 0),
+                                         str(r.get("diagnosis_key") or "")))
 
 
 def choose_depths(bands) -> tuple[str | None, list[int]]:
@@ -136,6 +211,33 @@ async def leaderboard(conn, min_n=50, top=5, since=None):
         row = dict(r)
         out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
                     "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
+    return out
+
+
+async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None):
+    """Parent-family focus ranking + exact representative evidence."""
+    extra = [since] if since else []
+    rows = await conn.fetch(family_sql(since), min_n, *extra)
+    global_avg = await conn.fetchval(global_avg_sql(since), *extra)
+    ranked = rank_hierarchical_rows(rows, float(global_avg or 0))[:top]
+    out = []
+    for row in ranked:
+        key = row["diagnosis_key"]
+        family_bands = [dict(b) for b in await conn.fetch(
+            family_band_sql(since), key, *extra)]
+        # Prescription truth stays on the exact child being opened.  Family
+        # bands diagnose the broader skill; they must never constrain a
+        # representative leaf whose depth distribution may differ.
+        prescription_bands = [dict(b) for b in await conn.fetch(
+            band_sql(since), row["representative_leaf"], *extra)]
+        restrict, depths = choose_depths(prescription_bands)
+        samples = await conn.fetch(
+            sample_sql(since), row["representative_leaf"], *extra)
+        row["spot_leaf"] = row["representative_leaf"]
+        row["diagnosis_level"] = "parent"
+        out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
+                    "bands": family_bands, "prescription_bands": prescription_bands,
+                    "restrict": restrict, "fragile": is_fragile(row)})
     return out
 
 

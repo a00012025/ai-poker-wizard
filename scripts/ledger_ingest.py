@@ -39,6 +39,7 @@ HAND_COLS = [
 DEC_COLS = [
     "gtow_hand_id", "street", "decision_idx", "source", "grader",
     "gtow_texture", "depth_band", "position", "pot_type", "facing",
+    "played_depth_bb", "solver_depth_bb",
     "taken_code", "best_code", "correctness", "ev_loss_bb", "ev_loss_pct_pot",
     "taken_freq", "freq_diff", "gto_score", "hand_eq", "pot_bb", "gametype",
     "confidence", "approx_flags", "excluded", "played_at",

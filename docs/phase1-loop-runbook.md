@@ -14,6 +14,18 @@ python scripts/backfill_spots.py                 # 分類新手到 action-line s
 預期：`INGEST list=<新手> detail=<抓取> decisions=<n> skipped=<已知>`；`rows_with_spot_leaf` 上升。
 TG：對 bot 打 `/ingest` → 回 `✅ INGEST ...`（僅 owner 可用）。
 
+首次部署 decision-depth / hierarchical-family migration 時，`deploy.sh` 會在
+migration 後、bot 啟動前自動跑可恢復的 archive re-distill（不呼叫 GTOW API）：
+
+```bash
+python scripts/backfill_spots.py
+```
+
+default selector 會抓取缺少 current leaf/depth/family contract 的手，補齊
+`played_depth_bb`、`solver_depth_bb`、`spot_parent`、confidence 與新的 depth
+band。若仍有 honest row 不完整，deploy 失敗；scorecard 也會 fail closed，
+不寫入或推播部分 backfill 的焦點。`--full` 保留給 taxonomy 本身改版時使用。
+
 ## 2. 對數（保真）
 ```bash
 python scripts/ledger_ingest.py --verify         # 期望 VERIFY OK api==db
@@ -34,7 +46,10 @@ fidelity 分母。完整用法與 status 定義見 `docs/analysis-fidelity-runbo
 python scripts/scorecard.py --weekly             # 寫 scorecards + coach_focus，輸出 data/scorecards/<week>.html
 python scripts/spot_leaderboard.py --min-n 50 --top 5   # 看焦點榜 + drill 連結
 ```
-預期：TG 收到「📊 週訓練計畫」摘要 + 每個焦點 spot（描述 + 精準多深度 drill 連結）+ HTML 附件。drill 本身即 retrieval 練習（GTOW Trainer 先出手才顯示 GTO）。
+預期：TG 收到「📊 週訓練計畫」摘要 + 每個 parent learning family（帶 exact
+representative leaf／樣本與可用的精準多深度 drill）+ HTML 附件。Parent 排名用
+EV-loss empirical-Bayes shrinkage；exact leaf 榜仍供 drill/queue 使用。drill 本身
+即 retrieval 練習（GTOW Trainer 先出手才顯示 GTO）。
 驗收：點 drill 連結 → GTOW Trainer 落在描述的那個 spot（hero/opponent 位置、動作、IP/OOP、多深度 badge 正確）。
 
 ## 5. 隔週回讀
@@ -47,4 +62,7 @@ python scripts/spot_leaderboard.py --min-n 50 --top 5   # 看焦點榜 + drill �
 ## 誠實層自檢
 - limp 相關 spot 已捨棄（`discarded=true`），不進統計。
 - chipEV 評分占比（記分卡誠實層附註）——後期/泡沫手含 ICM 近似誤差，Phase 3 處理。
-- 每筆決策帶 `approx_flags` 與 `excluded`；統計一律排除 `excluded` + `discarded`。
+- 每筆決策帶 `played_depth_bb`（牌桌/list stack）與 `solver_depth_bb`（實際評分
+  game point）；taxonomy、stack band 與 drill 使用後者。
+- 每筆決策帶 `confidence`、`approx_flags` 與 `excluded`；統計一律排除
+  `excluded` + `discarded` + `confidence < 0.8`。

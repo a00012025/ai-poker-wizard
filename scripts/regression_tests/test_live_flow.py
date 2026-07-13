@@ -1156,6 +1156,7 @@ def test_queue_feed_scan_sql_shape():
     ds = qf._drill_scan_sql()
     assert_in("NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL "
               "AND source='online'", ds)
+    assert_in("confidence >= 0.8", ds)
     assert_in("ev_loss_bb >= $2", ds)                           # lossy floor
     assert_in("HAVING count(*) >= $3 AND sum(ev_loss_bb) >= $4", ds)
     assert_in("ORDER BY sum(ev_loss_bb) DESC", ds)              # EV-weighted, never freq (§7.3)
@@ -1619,6 +1620,12 @@ def test_backfill_spots_incremental_selection():
     assert_eq(select_files(files, None), files)
     assert_eq(select_files(files, {"bbb"}), ["/x/2026-06/bbb.json.gz"])
     assert_eq(select_files(files, set()), [])
+    from backfill_spots import INCREMENTAL_MISSING_SQL
+    assert_in("spot_leaf IS NULL", INCREMENTAL_MISSING_SQL)
+    assert_in("spot_parent IS NULL", INCREMENTAL_MISSING_SQL)
+    assert_in("played_depth_bb IS NULL", INCREMENTAL_MISSING_SQL)
+    from backfill_spots import READINESS_GAP_SQL
+    assert_in("spot_leaf IS NULL", READINESS_GAP_SQL)
 
 
 @test
@@ -1627,7 +1634,10 @@ def test_leaderboard_fragile_flag():
     samples marks the spot fragile; small clean-n or tiny moves don't."""
     from spot_leaderboard import is_fragile, leader_sql
     sql = leader_sql(None)
-    assert_in("FILTER (WHERE NOT (approx_flags ?| array['sizing_snap','depth_snap_gap']))", sql)
+    assert_in("confidence >= 0.8", sql)
+    assert_true("played_solver_depth_gap" not in sql,
+                "physical-vs-binding depth is audit metadata, not dirty grading")
+    assert_true("depth_snap_gap" not in sql)
     assert_in("avg_ev_clean", sql)
     base = {"n": 60, "avg_ev": 0.10}
     assert_true(is_fragile(dict(base, n_clean=30, avg_ev_clean=0.05)))   # -50%
@@ -1637,6 +1647,63 @@ def test_leaderboard_fragile_flag():
     assert_true(not is_fragile(dict(base, n_clean=30, avg_ev_clean=None)))
     assert_true(not is_fragile({"n": 60, "avg_ev": 0.0, "n_clean": 30,
                                 "avg_ev_clean": 0.05}), "zero avg guarded")
+
+
+@test
+def test_hierarchical_family_ranking_shrinks_sparse_groups():
+    """Parent families recover sparse leaves, but partial pooling prevents a
+    barely-qualified noisy family from winning on one inflated raw average."""
+    from spot_leaderboard import rank_hierarchical_rows
+    rows = [
+        {"diagnosis_key": "turn:SRP:vs_bet", "n": 25,
+         "total_ev": 5.0, "avg_ev": 0.20},
+        {"diagnosis_key": "BB_vsOpen", "n": 100,
+         "total_ev": 10.0, "avg_ev": 0.10},
+    ]
+    ranked = rank_hierarchical_rows(rows, global_avg=0.02, prior_n=100)
+    assert_eq(ranked[0]["diagnosis_key"], "BB_vsOpen")
+    assert_true(ranked[0]["shrunk_avg_ev"] > ranked[1]["shrunk_avg_ev"])
+
+    from spot_taxonomy import _postflop_spot_base
+    oop = _postflop_spot_base("turn", "SRP", "BB", 8, "vs_bet", "BTN", "x-x", None)
+    ip = _postflop_spot_base("turn", "SRP", "BTN", 8, "vs_bet", "BB", "x-x", None)
+    assert_eq(oop["parent"], "turn:SRP:OOP:vs_bet")
+    assert_eq(ip["parent"], "turn:SRP:IP:vs_bet")
+
+
+@test
+def test_hierarchical_sql_uses_parent_and_confidence_gate():
+    from spot_leaderboard import family_sql, family_band_sql
+    sql = family_sql(None)
+    assert_in("spot_parent", sql)
+    assert_in("representative_leaf", sql)
+    assert_in("confidence >= 0.8", sql)
+    assert_in("HAVING count(*) >= $1", sql)
+    assert_in("spot_parent=$1", family_band_sql(None))
+    import inspect
+    from spot_leaderboard import hierarchical_leaderboard
+    src = inspect.getsource(hierarchical_leaderboard)
+    assert_in('band_sql(since), row["representative_leaf"]', src)
+    assert_in('"prescription_bands"', src)
+
+
+@test
+def test_migration_decision_depth_and_parent_columns():
+    from pathlib import Path
+    mig = REPO_ROOT / "supabase/migrations/20260713090000_ledger_depth_hierarchy.sql"
+    assert_true(mig.exists())
+    sql = mig.read_text()
+    for col in ("played_depth_bb REAL", "solver_depth_bb REAL", "spot_parent TEXT"):
+        assert_in(col, sql)
+
+
+@test
+def test_deploy_runs_resumable_ledger_upgrade_backfill():
+    deploy = (REPO_ROOT / "scripts/deploy.sh").read_text()
+    db_push = deploy.index("supabase db push")
+    backfill = deploy.index("python scripts/backfill_spots.py")
+    docker = deploy.index("docker compose build")
+    assert_true(db_push < backfill < docker)
 
 
 @test

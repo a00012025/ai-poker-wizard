@@ -188,6 +188,69 @@ def test_distill_honesty_rules():
     assert_true(all(d["excluded"] for d in decs))
 
 
+@test
+def test_distill_uses_decision_solver_depth_not_list_depth():
+    """The list-row depth is audit metadata; taxonomy and drills must use the
+    GTOW game-point depth that actually graded this hero decision."""
+    import copy
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = copy.deepcopy(rows["bed8860a-442b-4478-a9b4-8acfd52b6143"])
+    det = copy.deepcopy(_load_fix("detail_bed8860a.json"))
+    lr["preflop_game_depth"] = 54.483
+
+    _, decs = distill_hand(lr, det)
+    assert_eq(len(decs), 1)
+    d = decs[0]
+    assert_eq(d["played_depth_bb"], 54.483)
+    assert_eq(d["solver_depth_bb"], 20.0)
+    assert_eq(d["depth_band"], "15_25")
+    assert_eq(d["confidence"], 1.0,
+              "a legitimate binding-effective stack gap is not low confidence")
+    assert_true("played_solver_depth_gap" in d["approx_flags"])
+    assert_true("depth_snap_gap" not in d["approx_flags"])
+
+    from spot_taxonomy import walk_spots
+    spots = list(walk_spots(lr, det))
+    assert_eq(spots[0]["tags"]["eff_stack"], "short")
+    assert_eq(spots[0]["tags"]["depth_band"], "15_25")
+    assert_eq(spots[0]["tags"]["played_depth_bb"], 54.483)
+    assert_eq(spots[0]["tags"]["solver_depth_bb"], 20.0)
+    assert_eq(spots[0]["parent"], "SB_RFI")
+
+
+@test
+def test_gtow_canonical_depth_encoding_boundaries():
+    """GTOW encodes canonical tree depths as bb+0.125; stack categories and
+    stored solver depth use human bb, especially at 20/50 boundaries."""
+    from ledger_distill import decode_gtow_depth
+    from spot_taxonomy import eff_stack_cat
+    for encoded, expected in ((10.125, 10), (15.125, 15), (20.125, 20),
+                              (25.125, 25), (40.125, 40), (50.125, 50)):
+        decoded = decode_gtow_depth(encoded)
+        assert_eq(decoded, float(expected))
+    assert_eq(eff_stack_cat(decode_gtow_depth(20.125)), "short")
+    assert_eq(eff_stack_cat(decode_gtow_depth(50.125)), "medium")
+    assert_eq(decode_gtow_depth(34.692), 34.692,
+              "non-canonical decision-local depths remain exact")
+
+
+@test
+def test_distill_confidence_is_not_hardcoded():
+    """Missing decision depth is a real low-confidence fallback and must be
+    distinguishable from authoritative GTOW game-point grading."""
+    import copy
+    from ledger_distill import distill_hand, MIN_STATS_CONFIDENCE
+    rows = _load_fix("list_rows.json")
+    lr = copy.deepcopy(rows["bed8860a-442b-4478-a9b4-8acfd52b6143"])
+    det = copy.deepcopy(_load_fix("detail_bed8860a.json"))
+    for gp in det["game_analysis"]["game_points"]:
+        gp.pop("depth", None)
+    _, decs = distill_hand(lr, det)
+    assert_true(decs[0]["confidence"] < MIN_STATS_CONFIDENCE)
+    assert_true("missing_solver_depth" in decs[0]["approx_flags"])
+
+
 # ── GTOW Analyzer vs analyze_hand fidelity ──
 
 @test
@@ -736,7 +799,7 @@ def test_training_plan_focus_and_readback():
     weekly = [{"week": "2026-W27", "n": 100, "per100": 2.5, "total_bb": 2.5},
               {"week": "2026-W28", "n": 120, "per100": 2.0, "total_bb": 2.4}]
     honesty = {"excluded_n": 5, "discarded_n": 3, "chipev_share": 1.0, "total": 100,
-               "sizing_snap_n": 4, "depth_snap_n": 1}
+               "sizing_snap_n": 4, "depth_snap_n": 1, "low_confidence_n": 4}
     data = compute_training_plan("2026-W28", weekly, spots, [], None, honesty)
     assert_true(data["headline"])
     assert_eq(round(data["delta"], 2), -0.50)
@@ -780,7 +843,8 @@ def test_training_plan_focus_and_readback():
     assert_in("limp", msg)
     assert_in("練習佇列", msg)                                # live queue section
     assert_in("樹外近似敏感", msg)                            # fragile focus caveat
-    assert_in("solver 樹外", msg)                             # soft-flag count caveat
+    assert_in("低信心決策未納入統計", msg)                     # confidence gate caveat
+    assert_in("decision depth", msg)                          # physical vs solver depth truth
     assert_in("線上同一個情境也在漏", msg)                    # cross-source flag
     # queue aging: an uncleared prescription keeps nagging, with its week
     assert_in("2026-W27 已開過，還沒練 ⏰", msg)
@@ -835,11 +899,13 @@ def test_ledger_service_summary_sql():
     from ledger_service import _summary_sql, _top_spots_sql
     sql, args = _summary_sql(None, None, None)
     assert_in("NOT excluded", sql); assert_in("NOT discarded", sql); assert_eq(args, [])
+    assert_in("confidence >= 0.8", sql)
     sql, args = _summary_sql("vs3bet", "MP", 30)
     assert_in("spot_category = $1", sql); assert_in("hero_cat = $2", sql)
     assert_in("make_interval(days => $3)", sql); assert_eq(args, ["vs3bet", "MP", 30])
     tsql, targs = _top_spots_sql("vs3bet", None, None, 10)
-    assert_in("GROUP BY spot_leaf", tsql); assert_in("ORDER BY sum(ev_loss_bb) DESC", tsql)
+    assert_in("GROUP BY spot_parent", tsql); assert_in("ORDER BY sum(ev_loss_bb) DESC", tsql)
+    assert_in("confidence >= 0.8", tsql)
     assert_eq(targs, ["vs3bet", 10])
 
 
@@ -852,6 +918,7 @@ def test_ledger_service_source_isolation():
         assert_in("source='online'", sql)
     hsql, hargs = _hands_sql(None, None, 0.5, 90, 5)
     assert_in("d.source='online'", hsql)
+    assert_in("d.confidence >= 0.8", hsql)
     assert_eq(hargs, [0.5, 90, 5])
     hsql2, hargs2 = _hands_sql("vs3bet", "MP_vs3bet_IP", 1.0, None, 20)
     assert_in("d.source='online'", hsql2)
@@ -887,6 +954,19 @@ def test_leaderboard_sql_time_window():
 
 
 @test
+def test_scorecard_fails_closed_until_hierarchy_backfill_ready():
+    from scorecard import TRAINING_READINESS_SQL, training_readiness
+    assert_in("spot_parent IS NOT NULL", TRAINING_READINESS_SQL)
+    assert_in("played_depth_bb IS NOT NULL", TRAINING_READINESS_SQL)
+    assert_eq(TRAINING_READINESS_SQL.count("spot_leaf IS NOT NULL"), 1,
+              "null-leaf honest rows belong to eligible but not ready")
+    assert_true(training_readiness({"eligible": 100, "ready": 100})[0])
+    ok, note = training_readiness({"eligible": 100, "ready": 90})
+    assert_true(not ok)
+    assert_in("90/100", note)
+
+
+@test
 def test_ledger_tool_declarations_wired():
     """All four training-loop tools are ledger-backed; the frequency-era
     deviations tools (query_my_leaks/query_my_stats) are GONE (§7.3/§12)."""
@@ -915,6 +995,7 @@ def test_progress_sql_ev_weighted():
     sql, args = progress_sql(None, None)
     assert_in("avg(ev_loss_bb)*100", sql)
     assert_in("source='online'", sql)
+    assert_in("confidence >= 0.8", sql)
     assert_in("LIMIT $1", sql)
     assert_eq(args, [])
     sql, args = progress_sql("vs3bet", None)
