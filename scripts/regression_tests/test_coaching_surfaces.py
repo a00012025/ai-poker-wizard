@@ -272,6 +272,36 @@ def test_resolve_3bet_pot_preflop():
 
 
 @test
+def test_resolve_second_preflop_decision_stops_after_threebet():
+    """A hero-scoped preflop index of 1 means the response to a 3bet.
+
+    Regression: the resolver used ``hero_slot + action_index`` and stopped
+    immediately after HJ's open, producing a Study link before SB's 3bet.
+    Replaying actors must keep the entire line through the 3bet and intervening
+    folds, stopping only before HJ's second action.
+    """
+    import gtow_action_resolver as resolver
+
+    hand_data = {
+        "gametype": "MTTGeneral", "effective_bb": 25.0,
+        "hero_position": "HJ", "players_at_table": 8,
+        # UTG F, UTG+1 F, LJ F, HJ open, CO F, BTN F, SB jam, BB F, HJ fold.
+        "preflop_actions": "F-F-F-R2.1-F-F-RAI-F-F", "streets": [],
+    }
+    old = resolver._resolve_preflop_codes
+    resolver._resolve_preflop_codes = lambda _g, _d, actions, _n: actions
+    try:
+        result = resolver.resolve_actions_for_deviation(
+            hand_data, street="preflop", action_index=1)
+    finally:
+        resolver._resolve_preflop_codes = old
+
+    assert_eq(result["preflop_actions"], "F-F-F-R2.1-F-F-RAI-F")
+    assert_eq(result["history_spot"], 8)
+    assert_eq(result["villain_pos"], "SB")
+
+
+@test
 def test_resolve_cash_game_depth_has_no_125():
     """gtow_action_resolver: cash games use nearest_cash_depth without .125 suffix."""
     from gtow_action_resolver import resolve_actions_for_deviation
