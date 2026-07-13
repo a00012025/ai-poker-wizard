@@ -77,8 +77,12 @@ LIMIT $2
 def sample_sql(since=None) -> str:
     win = " AND d.played_at >= $2" if since else ""
     return f"""
-SELECT d.gtow_hand_id, h.played_at, h.hero_hand, h.position, h.boards, h.total_ev_loss_bb,
-       d.ev_loss_bb, d.correctness
+SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
+       d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
+       d.pot_type, d.eff_stack, d.ev_loss_bb, d.correctness, d.gametype,
+       h.played_at, h.hero_hand, h.position hand_position, h.boards,
+       h.total_ev_loss_bb, h.source hand_source, h.raw_path, h.parsed_json,
+       h.preflop_depth_bb
 FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
 WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='online'{win}
   AND d.confidence >= {MIN_TRAINING_CONFIDENCE}
@@ -187,6 +191,27 @@ def _drill_url(r, depths) -> str | None:
         pot_type=parts[1] if len(parts) > 1 else None, depths=depths)
 
 
+def drill_url_for_item(row: dict, depths: list[int], samples,
+                       exact_builder=None) -> str | None:
+    """Build the safest available Trainer link for one ranked item.
+
+    Preflop families use the verified multi-depth shortcuts.  Postflop has no
+    faithful shortcut, so use the highest-loss source hand from the exact
+    representative action line to build a GTOW Custom Trainer URL.  Failure is
+    still honest ``None``; never substitute a nearby but different spot.
+    """
+    url = _drill_url(row, depths)
+    if url or not samples:
+        return url
+    if exact_builder is None:
+        from queue_feed import queue_drill_url_for_decision
+        exact_builder = queue_drill_url_for_decision
+    try:
+        return exact_builder(dict(samples[0]))
+    except Exception:
+        return None
+
+
 def is_fragile(row: dict, rel_threshold: float = 0.30, min_clean_n: int = 10) -> bool:
     """§5.2 sensitivity flag: the spot's avg EV loss moves >30% once the
     off-tree-approximated samples (sizing_snap/depth_snap_gap) are removed —
@@ -209,7 +234,7 @@ async def leaderboard(conn, min_n=50, top=5, since=None):
         restrict, depths = choose_depths(bands)
         samples = await conn.fetch(sample_sql(since), r["spot_leaf"], *extra)
         row = dict(r)
-        out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
+        out.append({"row": row, "url": drill_url_for_item(row, depths, samples), "samples": samples,
                     "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
     return out
 
@@ -235,43 +260,42 @@ async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None):
             sample_sql(since), row["representative_leaf"], *extra)
         row["spot_leaf"] = row["representative_leaf"]
         row["diagnosis_level"] = "parent"
-        out.append({"row": row, "url": _drill_url(row, depths), "samples": samples,
+        out.append({"row": row, "url": drill_url_for_item(row, depths, samples), "samples": samples,
                     "bands": family_bands, "prescription_bands": prescription_bands,
                     "restrict": restrict, "fragile": is_fragile(row)})
     return out
 
 
 def _render(items, min_n) -> str:
-    L = [f"# Action-line spot 排行榜：avg EV loss 最高（n≥{min_n}）", ""]
-    L.append("每個 spot = 一種決策情境（行動線）。avg = 該情境每個決策的平均 EV loss（bb），"
-             "含打對的 0 損失手，所以是「這個情境整體多貴」。")
+    L = [f"# 最燒錢情境排行（至少 {min_n} 個決策）", ""]
+    L.append("每一列是一種牌局情境。漏損包含打對時的 0，所以代表你每遇到 100 次這個情境，"
+             "平均會少贏多少 bb。")
     L.append("")
     for i, it in enumerate(items, 1):
         r = it["row"]
         L.append(f"## {i}. `{r['spot_leaf']}`")
-        L.append(f"- **avg EV loss = {r['avg_ev']*100:.2f} bb/100 決策**"
-                 f"（每決策 {r['avg_ev']:.3f}bb）· n={r['n']} · 總損失 {r['total_ev']:.1f}bb")
+        L.append(f"- **實戰漏損 = {r['avg_ev']*100:.2f} bb/100 決策**"
+                 f"（每次平均 {r['avg_ev']:.3f}bb）· 樣本 {r['n']} 個決策 · 總損失 {r['total_ev']:.1f}bb")
         L.append(f"- 情境：{r['spot_category']} · hero_cat={r['hero_cat']} · "
                  f"villain_cat={r['villain_cat']} · {r['ip_oop'] or '-'}")
         if it.get("fragile"):
             ac = r.get("avg_ev_clean")
-            L.append(f"- ⚠️ **fragile**：排除尺寸/深度樹外樣本後 avg 變為 "
-                     f"{(ac or 0)*100:.2f} bb/100（n={r.get('n_clean')}）— "
-                     f"此 spot 的量級對近似敏感，保守解讀")
+            L.append(f"- ⚠️ 部分下注尺寸不在 GTOW 標準樹上；排除後漏損變為 "
+                     f"{(ac or 0)*100:.2f} bb/100（樣本 {r.get('n_clean')}），先不要過度解讀")
         # stack-band breakdown
         bands = sorted(it["bands"], key=lambda b: -b["avg_ev"])
         bd = " · ".join(f"{BAND_ZH.get(b['eff_stack'], b['eff_stack'])} "
                         f"{b['avg_ev']*100:.1f}bb/100 (n={b['n']})" for b in bands)
-        L.append(f"- stack 細分：{bd}")
+        L.append(f"- 不同籌碼深度：{bd}")
         if it["restrict"]:
             L.append(f"- ⛏ 此 spot 的 EV loss 明顯集中在 **{BAND_ZH.get(it['restrict'])}** → "
-                     f"drill 只勾這個 band（含該 band 全部深度）")
+                     f"練習只選這個籌碼帶")
         else:
-            L.append("- drill **不鎖深度**（涵蓋全部 stack depth，多元訓練）")
+            L.append("- 練習**不鎖籌碼深度**，讓你遇到不同 stack 都能作答")
         if it["url"]:
-            L.append(f"- 🎯 **GTOW Trainer drill**：{it['url']}")
+            L.append(f"- 🎯 **GTOW Trainer 練習**：{it['url']}")
         else:
-            L.append("- ⚠️ 無對應 GTOW drill 捷徑（cold-3bet/4bet 或 postflop 特殊）")
+            L.append("- ⚠️ 目前無法建立準確的 GTOW Trainer 連結，請從樣本手複習")
         if it["samples"]:
             L.append("- 樣本手（點 Analyze 抽查）：")
             for s in it["samples"]:

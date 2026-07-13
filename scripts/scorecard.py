@@ -51,7 +51,11 @@ def spot_desc_zh(row: dict) -> str:
     cat = row["spot_category"]
     if row.get("diagnosis_level") == "parent":
         key = row.get("diagnosis_key") or "?"
-        return f"{CAT_ZH.get(cat, cat)}能力族群 `{key}`"
+        parts = key.split(":")
+        if cat in ("flop", "turn", "river") and len(parts) >= 4:
+            return (f"{parts[1]} 底池，你在 {parts[2]}，"
+                    f"{CAT_ZH[cat]}{FACING_ZH.get(parts[3], parts[3])}")
+        return f"{CAT_ZH.get(cat, cat)}這類情境"
     hc, vc, rel = row.get("hero_cat"), row.get("villain_cat"), row.get("ip_oop")
     if cat in ("flop", "turn", "river"):
         parts = row["spot_leaf"].split(":")
@@ -157,7 +161,7 @@ def prev_focus_readback(prev_focus, current_by_leaf):
         out.append({"spot_leaf": leaf, "prescribed_per100": f.get("per100"),
                     "current_per100": cur["per100"] if has_data else None,
                     "n": cur["n"] if cur else 0,
-                    "note": "處方後實戰窗口讀數，連續 4 週才算數"})
+                    "note": "開始練習後的實戰成績；至少連續看 4 週才判斷是否真的進步"})
     return out
 
 
@@ -194,21 +198,21 @@ def render_html(d: dict) -> str:
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
     focus_html = ""
     for f in d["focus"]:
-        drill = (f'<a class="btn" href="{escape(f["drill_url"])}">🎯 進 GTOW Trainer 練這個 spot</a>'
-                 if f["drill_url"] else '<span class="note">（此 spot 無 Trainer 捷徑，見 Analyze 樣本）</span>')
-        band = f'<div class="note">⛏ 集中在 {lb.BAND_ZH.get(f["restrict"], f["restrict"])} 深度，drill 已鎖此帶</div>' if f.get("restrict") else '<div class="note">drill 涵蓋全部 stack depth</div>'
+        drill = (f'<a class="btn" href="{escape(f["drill_url"])}">🎯 進 GTOW Trainer 練這個情境</a>'
+                 if f["drill_url"] else '<span class="note">（目前無法建立準確的 Trainer 連結，請從下方 Analyze 樣本複習）</span>')
+        band = f'<div class="note">⛏ 錯誤集中在 {lb.BAND_ZH.get(f["restrict"], f["restrict"])}，練習只選這個籌碼深度</div>' if f.get("restrict") else '<div class="note">練習涵蓋各種籌碼深度</div>'
         samples = "".join(
             f'<div class="sub">· {escape(str(s.get("hero_hand") or "?"))} '
             f'{escape(str(s.get("boards") or ""))} 損失 {s.get("ev_loss_bb",0):.1f}bb '
             f'<a href="{analyze_table_url(s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"), s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"))}">Analyze</a></div>'
             for s in f.get("samples", []))
-        frag = ('<div class="note">⚠️ fragile：排除樹外近似樣本後量級變動 &gt;30%，數字保守解讀</div>'
+        frag = ('<div class="note">⚠️ 部分下注尺寸不在 GTOW 標準樹上；排除這些手後結果差超過 30%，先不要過度解讀</div>'
                 if f.get("fragile") else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
-                       f'<div class="sub">觀察 {f["per100"]:.2f} · 收縮排序估計 '
-                       f'{f.get("shrunk_per100", f["per100"]):.2f} bb/100 · n={f["n"]} · '
+                       f'<div class="sub">實戰漏損 {f["per100"]:.2f} bb/100 · 保守估計 '
+                       f'{f.get("shrunk_per100", f["per100"]):.2f} bb/100 · 樣本 {f["n"]} 個決策 · '
                        f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
-                       f'<div class="note">代表 action-line：<code>'
+                       f'<div class="note">用來建立練習的代表牌局路線：<code>'
                        f'{escape(f.get("representative_leaf") or f["spot_leaf"])}</code></div>'
                        f'{drill}{band}{frag}{samples}</div>')
     rb = ""
@@ -218,7 +222,7 @@ def render_html(d: dict) -> str:
             pre = f'{r["prescribed_per100"]:.2f}' if r.get("prescribed_per100") is not None else "—"
             delta = (r["current_per100"] - r["prescribed_per100"]) if (r["current_per100"] is not None and r.get("prescribed_per100") is not None) else 0
             rb += (f'<div class="card">上週焦點 <code>{escape(str(r["spot_leaf"]))}</code>：'
-                   f'處方時 {pre} → 本週 {cur} bb/100 (n={r["n"]}) {_trend(delta)}'
+                   f'開始練習時 {pre} → 目前 {cur} bb/100（樣本 {r["n"]}） {_trend(delta)}'
                    f'<div class="note">{escape(r["note"])}</div></div>')
     hon = d["honesty"]
     top = "".join(
@@ -229,16 +233,17 @@ def render_html(d: dict) -> str:
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>訓練計畫 {escape(d['window'])}</title><style>{_STYLE}</style></head><body>
-<h1>週訓練計畫</h1><div class="sub">窗口：{escape(d['window'])}</div>
+<h1>週訓練計畫</h1><div class="sub">統計期間：{escape(d['window'])}</div>
 <h2>主指標：EV loss / 100 決策</h2>
 <div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · 週變化 {_trend(d['delta'])}</span></div>{spark}
-<h2>本週焦點 spot（先作答，再練）</h2>{focus_html or '<div class="sub">無足夠樣本的焦點</div>'}
-{('<h2>上週焦點回讀</h2>'+rb) if rb else ''}
-<h2>Leak 榜（收縮 EV-loss 估計排序）</h2>
-<table><tr><th>family</th><th>觀察 bb/100</th><th>收縮估計</th><th>n</th></tr>{lb_rows}</table>
+<h2>本週最該練的情境（先作答，再練）</h2>{focus_html or '<div class="sub">目前沒有樣本足夠的焦點</div>'}
+{('<h2>上週練習後的實戰表現</h2>'+rb) if rb else ''}
+<h2>最燒錢情境排行</h2>
+<div class="note">「保守估計」會降低小樣本的權重，避免少數幾個大底池把排名推得太高。</div>
+<table><tr><th>情境類型</th><th>實戰漏損 bb/100</th><th>保守估計</th><th>樣本決策</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
-<h2>誠實層</h2><div class="sub">excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · low-confidence {hon.get('low_confidence_n', 0)} · chipEV 評分占比 {hon['chipev_share']*100:.0f}% · physical/effective depth 差異 {hon.get('depth_snap_n', 0)}</div>
-<div class="note">低信心決策不進統計；physical/effective depth 差異保留作 audit，但 drill 使用 GTOW decision depth。</div>
+<h2>資料範圍與限制</h2><div class="sub">無法可靠評分而排除 {hon['excluded_n']} · limp 未計入 {hon['discarded_n']} · 低信心未計入 {hon.get('low_confidence_n', 0)} · 翻牌後以 chipEV（不計 ICM）評分 {hon['chipev_share']*100:.0f}% · 牌桌籌碼與 GTOW 評分深度不同 {hon.get('depth_snap_n', 0)}</div>
+<div class="note">低信心決策不會影響排行；練習深度以 GTOW 實際拿來評分的籌碼深度為準。</div>
 </body></html>"""
 
 
@@ -271,11 +276,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
             if f.get("restrict"):
                 bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
                 band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
-            frag = "（⚠️ 這格的數字對樹外近似敏感，保守看）" if f.get("fragile") else ""
+            frag = "（⚠️ 部分下注尺寸不在 GTOW 標準樹上，先保守看）" if f.get("fragile") else ""
             rep = f.get("representative_leaf") or f.get("spot_leaf") or "?"
-            L.append(f"{i}. {escape(f['desc'])} — 觀察 {f['per100']:.1f}、"
-                     f"收縮排序估計 {f.get('shrunk_per100', f['per100']):.1f} bb/100，"
-                     f"n={f['n']}；代表 action-line <code>{escape(rep)}</code>{band}{frag}")
+            L.append(f"{i}. {escape(f['desc'])} — 實戰漏損 {f['per100']:.1f} bb/100；"
+                     f"考慮樣本數後保守估計 {f.get('shrunk_per100', f['per100']):.1f}；"
+                     f"樣本 {f['n']} 個決策。代表牌局路線 <code>{escape(rep)}</code>{band}{frag}")
 
     dq = d.get("drill_queue") or []
     if dq:
@@ -325,11 +330,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
              "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
     low_n = hon.get("low_confidence_n") or 0
     if low_n:
-        L.append(f"• 有 {low_n} 個低信心決策未納入統計（例如尺寸樹外或缺 decision depth）。")
+        L.append(f"• 有 {low_n} 個低信心決策未納入統計（例如下注尺寸不在 GTOW 標準樹，或無法確認評分深度）。")
     gap_n = hon.get("depth_snap_n") or 0
     if gap_n:
-        L.append(f"• 有 {gap_n} 個決策的牌桌 stack 與 GTOW binding effective depth 不同；"
-                 "這是 audit 訊號，練習深度已改用實際評分的 decision depth。")
+        L.append(f"• 有 {gap_n} 個決策的牌桌籌碼與 GTOW 實際評分深度不同；"
+                 "練習已採用 GTOW 真正拿來評分的深度。")
     L.append("• 只看得到你有上傳 GTOW Analyzer 的手 + 用 /live 記的現場手，其他不在裡面。")
     return "\n".join(L)
 
@@ -377,24 +382,26 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
 def preview_summary_md(d: dict) -> str:
     L = [f"# 訓練計畫預覽（{d['window']}）", "",
          f"## 主指標", f"- EV loss/100 決策：**{d['per100']:.2f} bb**（週變化 {d['delta']:+.2f}）",
-         f"- 週序列：{len(d['weekly_series'])} 週", "", "## 本週焦點 spot"]
+         f"- 已累積：{len(d['weekly_series'])} 週資料", "", "## 本週最該練的情境"]
     for f in d["focus"]:
         L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
-        L.append(f"- 觀察 {f['per100']:.2f} · 收縮排序估計 "
-                 f"{f.get('shrunk_per100', f['per100']):.2f} bb/100 · n={f['n']}")
+        L.append(f"- 實戰漏損 {f['per100']:.2f} bb/100 · 考慮樣本數後保守估計 "
+                 f"{f.get('shrunk_per100', f['per100']):.2f} · 樣本 {f['n']} 個決策")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
         L.append("")
-    L.append("## Leak 榜（收縮 EV-loss 估計排序）")
-    L.append("| family | 觀察 bb/100 | 收縮估計 | n |")
+    L.append("## 最燒錢情境排行")
+    L.append("保守估計會降低小樣本的權重，避免少數幾個大底池把排名推得太高。")
+    L.append("")
+    L.append("| 情境類型 | 實戰漏損 bb/100 | 保守估計 | 樣本決策 |")
     L.append("|---|---:|---:|---:|")
     for r in d["leaderboard"][:10]:
         L.append(f"| {r.get('diagnosis_key', r['spot_leaf'])} | {r['avg_ev']*100:.2f} | "
                  f"{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f} | {r['n']} |")
     L.append("")
     hon = d["honesty"]
-    L.append(f"## 誠實層\n- excluded {hon['excluded_n']} · discarded(limp) {hon['discarded_n']} · "
-             f"chipEV {hon['chipev_share']*100:.1f}%")
+    L.append(f"## 資料範圍與限制\n- 無法可靠評分而排除 {hon['excluded_n']} · limp 未計入 {hon['discarded_n']} · "
+             f"翻牌後以 chipEV（不計 ICM）評分 {hon['chipev_share']*100:.1f}%")
     return "\n".join(L)
 
 
@@ -521,7 +528,7 @@ async def _run(mode: str, min_n: int):
     try:
         await ensure_training_ready(conn)
         if mode == "preview":
-            data = await build(conn, "preview-all-history", None, min_n=min_n)
+            data = await build(conn, "歷史全部資料（預覽）", None, min_n=min_n)
             (outdir / "preview.html").write_text(render_html(data))
             (outdir / "preview_summary.md").write_text(preview_summary_md(data))
             (outdir / "preview_data.json").write_text(json.dumps(data, default=str, ensure_ascii=False, indent=1))
