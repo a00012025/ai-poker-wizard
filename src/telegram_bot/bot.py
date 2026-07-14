@@ -132,10 +132,9 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
         start = index * QUEUE_SOURCE_HANDS_PER_LINK + 1
         end = start + len(chunk) - 1
         if len(online_urls) == 1:
-            text = f"🌐 線上實際牌局（{len(chunk)}，spot 損失 ↓）"
+            text = f"🌐 線上實際牌局（{len(chunk)}）"
         else:
-            text = (f"🌐 線上實際牌局 {start}–{end} / {len(online_ids)}"
-                    "（spot 損失 ↓）")
+            text = f"🌐 線上實際牌局 {start}–{end} / {len(online_ids)}"
         action_rows.append([{"text": text, "url": url}])
 
     for source in live:
@@ -160,10 +159,10 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
     if missing:
         counts += f"、缺資料 {len(missing)} 手"
     html = (f"{heading}\n{_esc(label or str(queue_id))}\n"
-            f"{counts}\n各來源內依這個 queue item 的 EV loss 由高到低整理。")
+            f"{counts}\n線上以實際來源牌局分組；線下保留原始紀錄。")
     if online_ids:
         html += ("\n線上只列這個項目的實際來源牌局，"
-                 f"依 spot 損失由高到低、每組最多 {QUEUE_SOURCE_HANDS_PER_LINK} 手。")
+                 f"每組最多 {QUEUE_SOURCE_HANDS_PER_LINK} 手。")
     buttons = action_rows[page * QUEUE_SOURCE_PAGE_SIZE:
                           (page + 1) * QUEUE_SOURCE_PAGE_SIZE]
     if pages > 1:

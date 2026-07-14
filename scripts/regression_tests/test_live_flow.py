@@ -1757,7 +1757,9 @@ def test_queue_source_menu_supports_mixed_sources_and_pagination():
     assert_true(all("hand_id__in" in url for url in spot_urls))
     assert_in("線上實際牌局 1–20 / 21", spot_flat[0]["text"])
     assert_in("線上實際牌局 21–21 / 21", spot_flat[1]["text"])
+    assert_true(all("spot 損失" not in button["text"] for button in spot_flat))
     assert_not_in("同 spot", spot_html)
+    assert_not_in("由高到低", spot_html)
 
     html2, buttons2 = _queue_source_payload(123, "混合來源", sources, page=1)
     flat2 = [button for row in buttons2 for button in row]
