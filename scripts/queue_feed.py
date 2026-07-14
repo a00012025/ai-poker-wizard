@@ -24,9 +24,7 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
-from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -58,8 +56,6 @@ REOPEN_MIN_NEW = 2              # cleared drill leaf revives only on >=this many
 LOW_FREQUENCY_BRANCH = 0.05     # path hint only; NEVER used for EV ordering (§7.3)
 QUEUE_SOURCE_HANDS_PER_LINK = 20
 GTOW_ANALYZE_HANDS_URL = "https://app.gtowizard.com/analyze/v4/hands/table"
-GTOW_ANALYZE_ORDERING = ["-total_ev_loss"]
-GTOW_SPOT_LOOKBACK_MONTHS = 3
 
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
@@ -165,105 +161,21 @@ def resolve_queue_source_hands(entries: list[dict], ledger_rows,
 def gtow_analyze_hands_urls(hand_ids: list[str],
                             chunk_size: int = QUEUE_SOURCE_HANDS_PER_LINK
                             ) -> list[tuple[str, list[str]]]:
-    """Chunk exact GTOW Analyze hand filters into Telegram-safe URLs."""
+    """Chunk ranked exact-hand filters into Telegram-safe URLs.
+
+    ``hand_ids`` already arrive ordered by this queue item's attributed EV
+    loss.  Do not ask GTOW to re-sort by whole-hand total EV: that would let
+    unrelated later-street losses override the queue item's spot ranking.
+    """
     unique_ids = list(dict.fromkeys(hand_id for hand_id in hand_ids if hand_id))
     urls = []
     for start in range(0, len(unique_ids), chunk_size):
         chunk = unique_ids[start:start + chunk_size]
         filters = json.dumps({"hand_id__in": chunk}, separators=(",", ":"))
         url = (f"{GTOW_ANALYZE_HANDS_URL}?filters={quote(filters)}"
-               "&preselectGamemode=TOURNAMENT"
-               f"&ordering={quote(json.dumps(GTOW_ANALYZE_ORDERING))}")
+               "&preselectGamemode=TOURNAMENT")
         urls.append((url, chunk))
     return urls
-
-
-_EXACT_RFI_LEAF = re.compile(
-    r"^(?P<hero>UTG\+1|UTG|LJ|HJ|CO|BTN|SB|BB)_RFI$")
-_EXACT_VS_OPEN_LEAF = re.compile(
-    r"^(?P<hero>UTG\+1|UTG|LJ|HJ|CO|BTN|SB|BB)_vsOpen_"
-    r"(?P<opener>EP|MP|LP|SB|BB)$")
-_GTOW_POSITION_CATEGORY = {
-    "EP": ["UTG", "UTG+1", "UTG+2"],
-    "MP": ["LJ", "HJ"],
-    "LP": ["CO", "BTN"],
-    "SB": ["SB"],
-    "BB": ["BB"],
-}
-
-
-def _calendar_months_ago(day, months: int):
-    month_index = day.year * 12 + day.month - 1 - months
-    year, zero_month = divmod(month_index, 12)
-    month = zero_month + 1
-    return day.replace(year=year, month=month,
-                       day=min(day.day, monthrange(year, month)[1]))
-
-
-def _gtow_date_filters(now: datetime | None = None) -> dict:
-    """GTOW's CDP-observed UTC + local date-range pair for three months."""
-    now = now or datetime.now(TPE)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=TPE)
-    local_now = now.astimezone(TPE)
-    start_day = _calendar_months_ago(
-        local_now.date(), GTOW_SPOT_LOOKBACK_MONTHS)
-    start_local = datetime.combine(start_day, datetime.min.time(), tzinfo=TPE)
-    end_local = datetime.combine(
-        local_now.date(), datetime.max.time().replace(microsecond=999000),
-        tzinfo=TPE)
-
-    def utc_text(value: datetime) -> str:
-        return (value.astimezone(timezone.utc).isoformat(timespec="milliseconds")
-                .replace("+00:00", "Z"))
-
-    def local_text(value: datetime) -> str:
-        return value.replace(tzinfo=None).isoformat(timespec="milliseconds") + "Z"
-
-    return {
-        "played_at__range": [utc_text(start_local), utc_text(end_local)],
-        "played_at__local_range": [local_text(start_local), local_text(end_local)],
-    }
-
-
-def gtow_spot_hands_url(spot_leaf: str | None, spot_category: str | None,
-                        *, now: datetime | None = None) -> str | None:
-    """Return one exact 3-month GTOW spot URL, or ``None`` if not lossless.
-
-    CDP verification shows GTOW can express our RFI and vsOpen leaves exactly:
-    hero/opener positions plus its Hero Preflop Action predicate.  Later
-    preflop nodes and postflop facing buckets are deliberately not broadened;
-    those retain exact source-hand IDs in the Telegram menu.
-    """
-    filters = None
-    if spot_category == "RFI":
-        match = _EXACT_RFI_LEAF.fullmatch(spot_leaf or "")
-        if match:
-            filters = {
-                "player_position__in": [match.group("hero")],
-                "hero_preflop_action": [
-                    {"action_type": "ACTION", "stat_type": "RFI"},
-                ],
-            }
-    elif spot_category == "vsOpen":
-        match = _EXACT_VS_OPEN_LEAF.fullmatch(spot_leaf or "")
-        if match:
-            filters = {
-                "player_position__in": [match.group("hero")],
-                "hero_preflop_action": [
-                    {"action_type": "FACING", "stat_type": "RFI"},
-                ],
-                "opponent_position__in":
-                    _GTOW_POSITION_CATEGORY[match.group("opener")],
-            }
-    if filters is None:
-        return None
-    filters.update(_gtow_date_filters(now))
-    encoded_filters = quote(json.dumps(filters, separators=(",", ":")))
-    encoded_order = quote(json.dumps(GTOW_ANALYZE_ORDERING))
-    return (f"{GTOW_ANALYZE_HANDS_URL}?filters={encoded_filters}"
-            "&preselectGamemode=TOURNAMENT"
-            f"&ordering={encoded_order}")
 
 
 def diff_new_entries(existing: list[dict], incoming: list[dict]) -> tuple[list[dict], float]:
