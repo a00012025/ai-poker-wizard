@@ -134,6 +134,59 @@ def test_live_split_batch_bare_eff_header_continues_to_seat_line():
 
 
 @test
+def test_live_split_batch_near_bubble_prefix_starts_each_hand():
+    """Tournament-stage qualifiers can replace the stack/header prefix.
+
+    Regression: three preflop-only notes were merged because the latter two
+    began with ``Near bubble`` rather than Eff / Hero / a seat.
+    """
+    from live_flow import parse_simple_preflop_block, split_batch
+
+    text = (
+        "Eff 18bb near bubble btn open (cover me) hero bb fold Q5o\n"
+        "Near bubble UTG raise co (cl) raise to 6bb hero sb has 17bb fold JJ\n"
+        "Near bubble hero co 13bb fold k9o"
+    )
+    blocks = split_batch(text)
+
+    assert_eq(len(blocks), 3)
+    assert_eq(blocks[0], "Eff 18bb near bubble btn open (cover me) hero bb fold Q5o")
+    assert_true(blocks[1].startswith("Near bubble UTG raise"))
+    assert_true(blocks[2].startswith("Near bubble hero co"))
+
+    parsed = [parse_simple_preflop_block(block) for block in blocks]
+    assert_eq(
+        [(h["effective_bb"], h["hero_position"], h["hero_hand"]) for h in parsed],
+        [(18.0, "BB", "Q5o"), (17.0, "SB", "JJ"), (13.0, "CO", "K9o")],
+    )
+
+
+@test
+def test_live_split_batch_bubble_stage_aliases_are_case_insensitive():
+    """Common English/Chinese bubble labels are complete hand headers."""
+    from live_flow import _is_header, split_batch
+
+    text = (
+        "Eff 18bb hero bb fold Q5o\n"
+        "STONE BUBBLE hero sb 17bb fold JJ\n"
+        "soft BuBbLe hero co 13bb fold K9o\n"
+        "泡泡時間 hero btn 12bb fold A5o\n"
+        "正泡 hero hj 11bb fold 77\n"
+        "軟泡 hero lj 10bb fold QJo"
+    )
+    blocks = split_batch(text)
+
+    assert_eq(len(blocks), 6)
+    assert_eq(
+        [block.splitlines()[0].split(" hero", 1)[0] for block in blocks[1:]],
+        ["STONE BUBBLE", "soft BuBbLe", "泡泡時間", "正泡", "軟泡"],
+    )
+    assert_true(_is_header("Near The BUBBLE hero co 13bb fold K9o"))
+    assert_true(_is_header("Stone Bubble hero co 13bb fold K9o"))
+    assert_true(_is_header("SOFT BUBBLE hero co 13bb fold K9o"))
+
+
+@test
 def test_live_card_literal_repair_locks_raw_ranks():
     """Gemini may produce a structurally legal but wrong card literal
     (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading

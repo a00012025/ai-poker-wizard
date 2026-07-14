@@ -68,6 +68,16 @@ _POS_TOKENS = {
     "sb", "bb", "mp", "ep", "+1", "+2",
 }
 _HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOKENS
+# A tournament-stage qualifier can be the only preamble before a complete
+# preflop note.  Keep this deliberately phrase-based: matching a bare word
+# such as "near" would turn ordinary postflop annotations into phantom hands.
+_STAGE_HEADER_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:(?:near(?:\s+the)?|stone|soft)\s+bubble)\b"
+    r"|(?:泡泡時間|正泡|軟泡)(?=\s|[:：,，.;；。!?！？-]|$)"
+    r")",
+    re.IGNORECASE,
+)
 # a whole line that is only a hand result / annotation — never a decision
 _RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
                         r"(\s+(to\s+)?\S.*)?$", re.IGNORECASE)
@@ -89,7 +99,8 @@ def _is_noise(line: str) -> bool:
 def _is_header(line: str) -> bool:
     tok = _first_token(line)
     # exact seat/keyword, or a glued stack form: "Eff17"/"eff50bb"/"有效50bb"
-    return (tok in _HEADER_FIRST or bool(re.match(r"eff\d", tok))
+    return (bool(_STAGE_HEADER_RE.match(line))
+            or tok in _HEADER_FIRST or bool(re.match(r"eff\d", tok))
             or tok.startswith("有效") or bool(re.match(r"(utg|u)\d+$", tok))
             or bool(re.match(r"\d+(?:\.\d+)?bb$", tok)))
 
@@ -124,11 +135,12 @@ def _starts_stack_header(line: str) -> bool:
 def split_batch(text: str) -> list[str]:
     """Split a pasted batch into hand blocks.
 
-    A header line (leads with Eff / Hero / a seat) starts a new hand; any other
-    content line is a street of the current hand; result/noise lines are
-    dropped. Handles batches where only the first hand says "Eff" and later
-    hands lead with "Hero …" / a seat, plus quick preflop-only notes stacked
-    back to back.
+    A header line (leads with Eff / Hero / a seat / a recognized tournament
+    stage such as ``Near bubble``) starts a new hand; any other content line is
+    a street of the current hand; result/noise lines are dropped. Handles
+    batches where only the first hand says "Eff" and later hands lead with
+    "Hero …" / a seat / a stage qualifier, plus quick preflop-only notes
+    stacked back to back.
     """
     blocks: list[list[str]] = []
     for line in text.splitlines():
@@ -202,6 +214,43 @@ def _bb_number_with_unit(tok: str) -> str | None:
     t = _clean_word(tok)
     m = re.match(r"^(\d+(?:\.\d+)?)bb$", t)
     return m.group(1) if m else None
+
+
+def _effective_bb_from_preflop_tokens(
+        toks: list[str], hero_idx: int | None) -> str | None:
+    """Pick the stack depth without confusing a raise size for effective BB.
+
+    Explicit Eff headers win.  Otherwise prefer hero-scoped forms such as
+    ``hero sb has 17bb`` and ``hero co 13bb`` before falling back to the first
+    BB literal for legacy terse rows.  This matters when an opponent's
+    ``raise to 6bb`` appears before the hero stack in the same line.
+    """
+    if not toks:
+        return None
+    clean = [_clean_word(tok) for tok in toks]
+
+    glued = re.match(r"^(?:eff|effective|有效)(\d+(?:\.\d+)?)bb$", clean[0])
+    if glued:
+        return glued.group(1)
+    if clean[0] in {"eff", "eff.", "effective", "有效"} and len(toks) > 1:
+        explicit = _bb_number_with_unit(toks[1])
+        if explicit is not None:
+            return explicit
+
+    if hero_idx is not None:
+        for i in range(hero_idx + 1, len(toks) - 1):
+            if clean[i] in {"has", "stack", "eff", "effective"}:
+                scoped = _bb_number_with_unit(toks[i + 1])
+                if scoped is not None:
+                    return scoped
+        # The standard compact form is ``hero <position> <stack> ...``.
+        stack_i = hero_idx + 2
+        if stack_i < len(toks) and _norm_pos(toks[hero_idx + 1]):
+            scoped = _bb_number_with_unit(toks[stack_i])
+            if scoped is not None:
+                return scoped
+
+    return next((_bb_number(t) for t in toks if _bb_number(t) is not None), None)
 
 
 def _canon_hand_token(tok: str) -> str | None:
@@ -771,7 +820,7 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     order = POSITION_ORDERS.get(8)
     if not pos or not order or pos not in order:
         return None
-    eff = next((_bb_number(t) for t in toks if _bb_number(t) is not None), None)
+    eff = _effective_bb_from_preflop_tokens(toks, hero_idx)
     hero_hand, _street_hints = _extract_literal_hints(block)
     if not eff or not hero_hand:
         return None
