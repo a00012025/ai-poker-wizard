@@ -134,6 +134,34 @@ def test_live_split_batch_bare_eff_header_continues_to_seat_line():
 
 
 @test
+def test_live_split_batch_near_bubble_prefix_starts_each_hand():
+    """Tournament-stage qualifiers can replace the stack/header prefix.
+
+    Regression: three preflop-only notes were merged because the latter two
+    began with ``Near bubble`` rather than Eff / Hero / a seat.
+    """
+    from live_flow import parse_simple_preflop_block, split_batch
+
+    text = (
+        "Eff 18bb near bubble btn open (cover me) hero bb fold Q5o\n"
+        "Near bubble UTG raise co (cl) raise to 6bb hero sb has 17bb fold JJ\n"
+        "Near bubble hero co 13bb fold k9o"
+    )
+    blocks = split_batch(text)
+
+    assert_eq(len(blocks), 3)
+    assert_eq(blocks[0], "Eff 18bb near bubble btn open (cover me) hero bb fold Q5o")
+    assert_true(blocks[1].startswith("Near bubble UTG raise"))
+    assert_true(blocks[2].startswith("Near bubble hero co"))
+
+    parsed = [parse_simple_preflop_block(block) for block in blocks]
+    assert_eq(
+        [(h["effective_bb"], h["hero_position"], h["hero_hand"]) for h in parsed],
+        [(18.0, "BB", "Q5o"), (17.0, "SB", "JJ"), (13.0, "CO", "K9o")],
+    )
+
+
+@test
 def test_live_card_literal_repair_locks_raw_ranks():
     """Gemini may produce a structurally legal but wrong card literal
     (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading
