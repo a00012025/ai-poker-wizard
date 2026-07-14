@@ -71,7 +71,13 @@ _HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOK
 # A tournament-stage qualifier can be the only preamble before a complete
 # preflop note.  Keep this deliberately phrase-based: matching a bare word
 # such as "near" would turn ordinary postflop annotations into phantom hands.
-_STAGE_HEADER_RE = re.compile(r"^\s*near\s+(?:the\s+)?bubble\b", re.IGNORECASE)
+_STAGE_HEADER_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:(?:near(?:\s+the)?|stone|soft)\s+bubble)\b"
+    r"|(?:泡泡時間|正泡|軟泡)(?=\s|[:：,，.;；。!?！？-]|$)"
+    r")",
+    re.IGNORECASE,
+)
 # a whole line that is only a hand result / annotation — never a decision
 _RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
                         r"(\s+(to\s+)?\S.*)?$", re.IGNORECASE)

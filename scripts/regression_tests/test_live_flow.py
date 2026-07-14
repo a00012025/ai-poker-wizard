@@ -162,6 +162,31 @@ def test_live_split_batch_near_bubble_prefix_starts_each_hand():
 
 
 @test
+def test_live_split_batch_bubble_stage_aliases_are_case_insensitive():
+    """Common English/Chinese bubble labels are complete hand headers."""
+    from live_flow import _is_header, split_batch
+
+    text = (
+        "Eff 18bb hero bb fold Q5o\n"
+        "STONE BUBBLE hero sb 17bb fold JJ\n"
+        "soft BuBbLe hero co 13bb fold K9o\n"
+        "泡泡時間 hero btn 12bb fold A5o\n"
+        "正泡 hero hj 11bb fold 77\n"
+        "軟泡 hero lj 10bb fold QJo"
+    )
+    blocks = split_batch(text)
+
+    assert_eq(len(blocks), 6)
+    assert_eq(
+        [block.splitlines()[0].split(" hero", 1)[0] for block in blocks[1:]],
+        ["STONE BUBBLE", "soft BuBbLe", "泡泡時間", "正泡", "軟泡"],
+    )
+    assert_true(_is_header("Near The BUBBLE hero co 13bb fold K9o"))
+    assert_true(_is_header("Stone Bubble hero co 13bb fold K9o"))
+    assert_true(_is_header("SOFT BUBBLE hero co 13bb fold K9o"))
+
+
+@test
 def test_live_card_literal_repair_locks_raw_ranks():
     """Gemini may produce a structurally legal but wrong card literal
     (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading
