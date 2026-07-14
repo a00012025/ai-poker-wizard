@@ -27,6 +27,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -53,6 +54,8 @@ QUEUE_REVIEW_MIN_BB = 5.0       # single-decision disaster threshold
 LOSSY_MIN_BB = 0.10             # a decision counts as "lossy" at/above this (== live QUEUE_EV_MIN)
 REOPEN_MIN_NEW = 2              # cleared drill leaf revives only on >=this many post-clear lossy decisions
 LOW_FREQUENCY_BRANCH = 0.05     # path hint only; NEVER used for EV ordering (§7.3)
+QUEUE_SOURCE_HANDS_PER_LINK = 20
+GTOW_ANALYZE_HANDS_URL = "https://app.gtowizard.com/analyze/v4/hands/table"
 
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
@@ -92,6 +95,82 @@ def dedupe_entries(entries: list[dict]) -> list[dict]:
             seen.add(k)
             out.append(e)
     return out
+
+
+def queue_source_hand_ids(entries: list[dict], ref_hand_id: str | None = None) -> list[str]:
+    """Unique source hand ids in their persisted order, plus review fallback."""
+    out = []
+    seen = set()
+    for entry in _as_list(entries):
+        hand_id = entry.get("hand_id")
+        if hand_id and hand_id not in seen:
+            seen.add(hand_id)
+            out.append(hand_id)
+    if ref_hand_id and ref_hand_id not in seen:
+        out.append(ref_hand_id)
+    return out
+
+
+def resolve_queue_source_hands(entries: list[dict], ledger_rows,
+                               ref_hand_id: str | None = None) -> list[dict]:
+    """Resolve queue provenance against ``ledger_hands`` and rank by EV loss.
+
+    ``source_hands.src`` records how a queue entry was added; it is not a
+    reliable hand-source discriminator (manual drills commonly point at online
+    hands).  Only ``ledger_hands.source`` decides whether a hand is online or
+    live.  Duplicate decision snapshots are ignored so a merged queue row
+    cannot inflate the displayed per-hand EV.
+    """
+    ids = queue_source_hand_ids(entries, ref_hand_id)
+    by_id = {dict(row).get("gtow_hand_id"): dict(row) for row in (ledger_rows or [])}
+    aggregates = {hand_id: {"ev_loss_bb": 0.0, "order": index}
+                  for index, hand_id in enumerate(ids)}
+    seen_decisions = set()
+    for entry in _as_list(entries):
+        hand_id = entry.get("hand_id")
+        if hand_id not in aggregates:
+            continue
+        ev = float(entry.get("ev_loss_bb") or 0.0)
+        decision_key = (hand_id, entry.get("street"), entry.get("decision_idx"),
+                        round(ev, 4))
+        if decision_key in seen_decisions:
+            continue
+        seen_decisions.add(decision_key)
+        aggregates[hand_id]["ev_loss_bb"] += ev
+
+    resolved = []
+    for hand_id in ids:
+        meta = by_id.get(hand_id, {})
+        source = meta.get("source")
+        if source not in {"online", "live"}:
+            source = "missing"
+        row = dict(meta)
+        row.update({
+            "hand_id": hand_id,
+            "source": source,
+            "ev_loss_bb": round(aggregates[hand_id]["ev_loss_bb"], 4),
+            "_source_order": aggregates[hand_id]["order"],
+        })
+        resolved.append(row)
+    resolved.sort(key=lambda row: (-row["ev_loss_bb"], row["_source_order"]))
+    for row in resolved:
+        row.pop("_source_order", None)
+    return resolved
+
+
+def gtow_analyze_hands_urls(hand_ids: list[str],
+                            chunk_size: int = QUEUE_SOURCE_HANDS_PER_LINK
+                            ) -> list[tuple[str, list[str]]]:
+    """Chunk exact GTOW Analyze hand filters into Telegram-safe URLs."""
+    unique_ids = list(dict.fromkeys(hand_id for hand_id in hand_ids if hand_id))
+    urls = []
+    for start in range(0, len(unique_ids), chunk_size):
+        chunk = unique_ids[start:start + chunk_size]
+        filters = json.dumps({"hand_id__in": chunk}, separators=(",", ":"))
+        url = (f"{GTOW_ANALYZE_HANDS_URL}?filters={quote(filters)}"
+               "&preselectGamemode=TOURNAMENT")
+        urls.append((url, chunk))
+    return urls
 
 
 def diff_new_entries(existing: list[dict], incoming: list[dict]) -> tuple[list[dict], float]:

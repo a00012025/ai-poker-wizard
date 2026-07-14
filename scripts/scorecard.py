@@ -354,9 +354,9 @@ def weekly_tg_html(week: str, d: dict) -> str:
 def weekly_tg_payload(week: str, d: dict) -> dict:
     """Weekly TG message + inline buttons: {"html": str, "buttons": rows}.
 
-    Buttons: 🎯 focus-spot drills, then the practice-queue quota — drill items
-    ride a 🎯 URL button; review items ride 🔗 復盤 (URL) + ✔ 完成 (qcl) + ➕ 加練
-    (qex) callbacks (§7/§6.2). Rows may carry url OR callback_data entries.
+    Buttons: 🎯 focus-spot drills, then the practice-queue quota. Every queue
+    item exposes 📚 exact source hands (qsrc); review items additionally carry
+    🔗 復盤 + ✔ 完成 (qcl) + ➕ 加練 (qex) (§7/§6.2).
     """
     buttons: list[list[dict]] = []
     for i, f in enumerate(d.get("focus", []), 1):
@@ -377,6 +377,7 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
                 row.append({"text": text, "url": q["drill_url"]})
             actions: list[dict] = []
             if qid is not None:
+                actions.append({"text": "📚 來源", "callback_data": f"qsrc:{qid}"})
                 actions.append({"text": "✔ 完成", "callback_data": f"qcl:{qid}"})
                 actions.append({"text": "➕ 加練", "callback_data": f"qex:{qid}"})
             if anchor and row:
@@ -386,8 +387,14 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
                 row.extend(actions)
             if row:
                 buttons.append(row)
-        elif q.get("drill_url"):
-            buttons.append([{"text": f"📥 佇列：{lbl}", "url": q["drill_url"]}])
+        else:
+            row = []
+            if q.get("drill_url"):
+                row.append({"text": f"📥 佇列：{lbl}", "url": q["drill_url"]})
+            if qid is not None:
+                row.append({"text": "📚 來源", "callback_data": f"qsrc:{qid}"})
+            if row:
+                buttons.append(row)
     return {"html": weekly_tg_html(week, d), "buttons": buttons}
 
 
