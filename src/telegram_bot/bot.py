@@ -115,39 +115,28 @@ def _queue_payload(rows, *, page: int = 0,
 
 
 def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
-                          *, page: int = 0, kind: str | None = None,
-                          spot_leaf: str | None = None,
-                          spot_category: str | None = None,
-                          now=None) -> tuple[str, list[list[dict]]]:
+                          *, page: int = 0) -> tuple[str, list[list[dict]]]:
     """Render exact online links + lightweight live-hand callbacks."""
     from html import escape as _esc
     from queue_feed import (QUEUE_SOURCE_HANDS_PER_LINK,
-                            gtow_analyze_hands_urls,
-                            gtow_spot_hands_url)
+                            gtow_analyze_hands_urls)
 
     online = [source for source in sources if source.get("source") == "online"]
     live = [source for source in sources if source.get("source") == "live"]
     missing = [source for source in sources if source.get("source") == "missing"]
     action_rows: list[list[dict]] = []
 
-    spot_url = (gtow_spot_hands_url(
-        spot_leaf, spot_category, now=now) if kind == "drill" else None)
     online_ids = [source["hand_id"] for source in online]
-    if spot_url and online_ids:
-        action_rows.append([{
-            "text": "🌐 同 spot・近 3 個月（總 EV loss ↓）",
-            "url": spot_url,
-        }])
-    else:
-        online_urls = gtow_analyze_hands_urls(online_ids)
-        for index, (url, chunk) in enumerate(online_urls):
-            start = index * QUEUE_SOURCE_HANDS_PER_LINK + 1
-            end = start + len(chunk) - 1
-            if len(online_urls) == 1:
-                text = f"🌐 線上實際牌局（{len(chunk)}）"
-            else:
-                text = f"🌐 線上實際牌局 {start}–{end} / {len(online_ids)}"
-            action_rows.append([{"text": text, "url": url}])
+    online_urls = gtow_analyze_hands_urls(online_ids)
+    for index, (url, chunk) in enumerate(online_urls):
+        start = index * QUEUE_SOURCE_HANDS_PER_LINK + 1
+        end = start + len(chunk) - 1
+        if len(online_urls) == 1:
+            text = f"🌐 線上實際牌局（{len(chunk)}，spot 損失 ↓）"
+        else:
+            text = (f"🌐 線上實際牌局 {start}–{end} / {len(online_ids)}"
+                    "（spot 損失 ↓）")
+        action_rows.append([{"text": text, "url": url}])
 
     for source in live:
         played_at = source.get("played_at")
@@ -172,10 +161,9 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
         counts += f"、缺資料 {len(missing)} 手"
     html = (f"{heading}\n{_esc(label or str(queue_id))}\n"
             f"{counts}\n各來源內依這個 queue item 的 EV loss 由高到低整理。")
-    if spot_url and online_ids:
-        html += ("\n同 spot 連結涵蓋近 3 個月全部線上牌局，"
-                 "GTOW 表格按整手總 EV loss 排序；"
-                 f"目前項目另記錄 {len(online_ids)} 手直接來源。")
+    if online_ids:
+        html += ("\n線上只列這個項目的實際來源牌局，"
+                 f"依 spot 損失由高到低、每組最多 {QUEUE_SOURCE_HANDS_PER_LINK} 手。")
     buttons = action_rows[page * QUEUE_SOURCE_PAGE_SIZE:
                           (page + 1) * QUEUE_SOURCE_PAGE_SIZE]
     if pages > 1:
@@ -1655,7 +1643,7 @@ class PokerWizardBot:
             await query.answer("Database not connected.")
             return
         item = await self.db.pool.fetchrow(
-            "SELECT label, kind, spot_leaf, spot_category, source_hands, ref_hand_id "
+            "SELECT label, source_hands, ref_hand_id "
             "FROM drill_queue WHERE id=$1",
             queue_id)
         if not item:
@@ -1674,9 +1662,7 @@ class PokerWizardBot:
         sources = resolve_queue_source_hands(
             entries, ledger_rows, ref_hand_id=item["ref_hand_id"])
         html, buttons = _queue_source_payload(
-            queue_id, item["label"] or str(queue_id), sources, page=page,
-            kind=item["kind"], spot_leaf=item["spot_leaf"],
-            spot_category=item["spot_category"])
+            queue_id, item["label"] or str(queue_id), sources, page=page)
         markup = self._rows_to_markup(buttons)
         await query.answer()
         if edit:

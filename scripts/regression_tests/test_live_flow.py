@@ -1674,7 +1674,6 @@ def test_queue_source_hands_resolve_ledger_source_and_exact_analyze_urls():
     Analyze links.  Duplicate decision entries must not double-count EV.
     """
     import json
-    from datetime import datetime
     from urllib.parse import parse_qs, urlparse
     import queue_feed as qf
 
@@ -1714,44 +1713,7 @@ def test_queue_source_hands_resolve_ledger_source_and_exact_analyze_urls():
     assert_eq(decoded, {"hand_id__in": [f"hand-{i:02d}" for i in range(20)]})
     assert_eq(parse_qs(urlparse(urls[0][0]).query)["preselectGamemode"],
               ["TOURNAMENT"])
-    assert_eq(json.loads(parse_qs(urlparse(urls[0][0]).query)["ordering"][0]),
-              ["-total_ev_loss"])
-
-    # CDP-verified exact mapping: our BB_vsOpen_LP leaf is Hero=BB,
-    # Opponent=CO/BTN, Faced RFI.  GTOW also accepts date + ordering in URL.
-    now = datetime(2026, 7, 14, 12, tzinfo=qf.TPE)
-    spot_url = qf.gtow_spot_hands_url(
-        "BB_vsOpen_LP", "vsOpen", now=now)
-    spot_qs = parse_qs(urlparse(spot_url).query)
-    spot_filters = json.loads(spot_qs["filters"][0])
-    assert_eq(spot_filters["player_position__in"], ["BB"])
-    assert_eq(spot_filters["opponent_position__in"], ["CO", "BTN"])
-    assert_eq(spot_filters["hero_preflop_action"], [
-        {"action_type": "FACING", "stat_type": "RFI"},
-    ])
-    assert_eq(spot_filters["played_at__range"], [
-        "2026-04-13T16:00:00.000Z", "2026-07-14T15:59:59.999Z",
-    ])
-    assert_eq(spot_filters["played_at__local_range"], [
-        "2026-04-14T00:00:00.000Z", "2026-07-14T23:59:59.999Z",
-    ])
-    assert_eq(json.loads(spot_qs["ordering"][0]), ["-total_ev_loss"])
-
-    rfi_url = qf.gtow_spot_hands_url("CO_RFI", "RFI", now=now)
-    rfi_filters = json.loads(parse_qs(urlparse(rfi_url).query)["filters"][0])
-    assert_eq(rfi_filters["player_position__in"], ["CO"])
-    assert_eq(rfi_filters["hero_preflop_action"], [
-        {"action_type": "ACTION", "stat_type": "RFI"},
-    ])
-    assert_true("opponent_position__in" not in rfi_filters)
-
-    # GTOW cannot express every official leaf without broadening it.  These
-    # stay on exact hand ids instead of silently presenting an approximation.
-    assert_eq(qf.gtow_spot_hands_url(
-        "EP_vs3bet_vSB_IP", "vs3bet", now=now), None)
-    assert_eq(qf.gtow_spot_hands_url(
-        "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet", "turn", now=now), None)
-
+    assert_true("ordering" not in parse_qs(urlparse(urls[0][0]).query))
 
 @test
 def test_queue_source_menu_supports_mixed_sources_and_pagination():
@@ -1784,21 +1746,18 @@ def test_queue_source_menu_supports_mixed_sources_and_pagination():
                     for button in flat1))
     assert_eq(QUEUE_SOURCE_PAGE_SIZE, 8)
 
-    # Exact-mappable drill spots get one compact 90-day spot link rather than
-    # hand-id chunks.  Direct live sources remain individually recallable.
-    from datetime import datetime
-    from queue_feed import TPE
+    # Regression: even exact-mappable RFI/vsOpen spots must stay on the queue
+    # item's exact source hand ids.  A broad spot filter sorted by whole-hand
+    # EV loss lets unrelated later-street losses dominate the list.
     spot_html, spot_buttons = _queue_source_payload(
-        123, "BB 面對 LP 開池", sources, page=0, kind="drill",
-        spot_leaf="BB_vsOpen_LP", spot_category="vsOpen",
-        now=datetime(2026, 7, 14, 12, tzinfo=TPE))
+        123, "BB 面對 LP 開池", sources, page=0)
     spot_flat = [button for row in spot_buttons for button in row]
     spot_urls = [button["url"] for button in spot_flat if button.get("url")]
-    assert_eq(len(spot_urls), 1)
-    assert_in("同 spot・近 3 個月", spot_flat[0]["text"])
-    assert_not_in("hand_id__in", spot_urls[0])
-    assert_in("ordering=", spot_urls[0])
-    assert_in("近 3 個月全部線上牌局", spot_html)
+    assert_eq(len(spot_urls), 2)
+    assert_true(all("hand_id__in" in url for url in spot_urls))
+    assert_in("線上實際牌局 1–20 / 21", spot_flat[0]["text"])
+    assert_in("線上實際牌局 21–21 / 21", spot_flat[1]["text"])
+    assert_not_in("同 spot", spot_html)
 
     html2, buttons2 = _queue_source_payload(123, "混合來源", sources, page=1)
     flat2 = [button for row in buttons2 for button in row]
@@ -1925,8 +1884,8 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     assert_eq(query.answers, [None])
     markup = tg.sent[0][1]["reply_markup"].to_dict()
     flat = [button for row in markup["inline_keyboard"] for button in row]
-    assert_true(any("hero_preflop_action" in button.get("url", "")
-                    and "ordering=" in button.get("url", "") for button in flat))
+    assert_true(any("hand_id__in" in button.get("url", "")
+                    and "online-1" in button.get("url", "") for button in flat))
     assert_true(any(button.get("callback_data") == "qraw:live:2026-07-14:abc"
                     for button in flat))
 
