@@ -854,11 +854,14 @@ def test_training_plan_focus_and_readback():
     assert_in("2026-W27 已開過，還沒練 ⏰", msg)
     payload = weekly_tg_payload("2026-W28", data)
     assert_eq(payload["html"], msg)
-    urls = [b["url"] for r in payload["buttons"] for b in r]
+    urls = [b["url"] for r in payload["buttons"] for b in r if b.get("url")]
     assert_true(urls and all(u.startswith("https://app.gtowizard.com/") for u in urls))
     texts = [b["text"] for r in payload["buttons"] for b in r]
     assert_true(any(t.startswith("🎯") for t in texts))      # focus drill button
     assert_true(any(t.startswith("📥") for t in texts))      # queue drill button
+    callbacks = [b["callback_data"] for r in payload["buttons"] for b in r
+                 if b.get("callback_data")]
+    assert_true(any(c.startswith("qsrc:") for c in callbacks))  # source hands menu
 
 
 @test

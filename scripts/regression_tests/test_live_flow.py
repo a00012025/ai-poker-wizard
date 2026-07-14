@@ -1613,6 +1613,276 @@ def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
 
 
 @test
+def test_queue_source_hands_resolve_ledger_source_and_exact_analyze_urls():
+    """Queue provenance is per unique hand, EV-desc, and ledger-backed.
+
+    ``src='manual'`` is an enqueue origin, not the hand's real source; the
+    ledger join must resolve it back to online before building exact GTOW
+    Analyze links.  Duplicate decision entries must not double-count EV.
+    """
+    import json
+    from datetime import datetime
+    from urllib.parse import parse_qs, urlparse
+    import queue_feed as qf
+
+    entries = [
+        {"hand_id": "online-low", "street": "flop", "decision_idx": 0,
+         "ev_loss_bb": 1.0, "src": "online"},
+        {"hand_id": "live-high", "street": "turn", "decision_idx": 0,
+         "ev_loss_bb": 4.0, "src": "live"},
+        {"hand_id": "manual-online", "street": "river", "decision_idx": 0,
+         "ev_loss_bb": 2.0, "src": "manual"},
+        {"hand_id": "live-high", "street": "turn", "decision_idx": 0,
+         "ev_loss_bb": 4.0, "src": "live"},              # duplicate
+    ]
+    ledger = [
+        {"gtow_hand_id": "online-low", "source": "online"},
+        {"gtow_hand_id": "live-high", "source": "live",
+         "raw_text": "Eff 30bb ..."},
+        {"gtow_hand_id": "manual-online", "source": "online"},
+    ]
+    sources = qf.resolve_queue_source_hands(entries, ledger)
+    assert_eq([s["hand_id"] for s in sources],
+              ["live-high", "manual-online", "online-low"])
+    assert_eq(sources[0]["ev_loss_bb"], 4.0)                  # duplicate ignored
+    assert_eq(sources[1]["source"], "online")               # never "manual"
+    assert_eq(sources[0]["raw_text"], "Eff 30bb ...")
+    fallback = qf.resolve_queue_source_hands(
+        [], [{"gtow_hand_id": "review-only", "source": "online"}],
+        ref_hand_id="review-only")
+    assert_eq([(s["hand_id"], s["source"]) for s in fallback],
+              [("review-only", "online")])
+
+    urls = qf.gtow_analyze_hands_urls(
+        [f"hand-{i:02d}" for i in range(45)])
+    assert_eq(len(urls), 3)
+    assert_eq([len(ids) for _url, ids in urls], [20, 20, 5])
+    decoded = json.loads(parse_qs(urlparse(urls[0][0]).query)["filters"][0])
+    assert_eq(decoded, {"hand_id__in": [f"hand-{i:02d}" for i in range(20)]})
+    assert_eq(parse_qs(urlparse(urls[0][0]).query)["preselectGamemode"],
+              ["TOURNAMENT"])
+    assert_eq(json.loads(parse_qs(urlparse(urls[0][0]).query)["ordering"][0]),
+              ["-total_ev_loss"])
+
+    # CDP-verified exact mapping: our BB_vsOpen_LP leaf is Hero=BB,
+    # Opponent=CO/BTN, Faced RFI.  GTOW also accepts date + ordering in URL.
+    now = datetime(2026, 7, 14, 12, tzinfo=qf.TPE)
+    spot_url = qf.gtow_spot_hands_url(
+        "BB_vsOpen_LP", "vsOpen", now=now)
+    spot_qs = parse_qs(urlparse(spot_url).query)
+    spot_filters = json.loads(spot_qs["filters"][0])
+    assert_eq(spot_filters["player_position__in"], ["BB"])
+    assert_eq(spot_filters["opponent_position__in"], ["CO", "BTN"])
+    assert_eq(spot_filters["hero_preflop_action"], [
+        {"action_type": "FACING", "stat_type": "RFI"},
+    ])
+    assert_eq(spot_filters["played_at__range"], [
+        "2026-04-13T16:00:00.000Z", "2026-07-14T15:59:59.999Z",
+    ])
+    assert_eq(spot_filters["played_at__local_range"], [
+        "2026-04-14T00:00:00.000Z", "2026-07-14T23:59:59.999Z",
+    ])
+    assert_eq(json.loads(spot_qs["ordering"][0]), ["-total_ev_loss"])
+
+    rfi_url = qf.gtow_spot_hands_url("CO_RFI", "RFI", now=now)
+    rfi_filters = json.loads(parse_qs(urlparse(rfi_url).query)["filters"][0])
+    assert_eq(rfi_filters["player_position__in"], ["CO"])
+    assert_eq(rfi_filters["hero_preflop_action"], [
+        {"action_type": "ACTION", "stat_type": "RFI"},
+    ])
+    assert_true("opponent_position__in" not in rfi_filters)
+
+    # GTOW cannot express every official leaf without broadening it.  These
+    # stay on exact hand ids instead of silently presenting an approximation.
+    assert_eq(qf.gtow_spot_hands_url(
+        "EP_vs3bet_vSB_IP", "vs3bet", now=now), None)
+    assert_eq(qf.gtow_spot_hands_url(
+        "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet", "turn", now=now), None)
+
+
+@test
+def test_queue_source_menu_supports_mixed_sources_and_pagination():
+    """The source submenu keeps long provenance off the main /queue markup,
+    shows exact online links plus lightweight live raw-text callbacks, and
+    paginates without exceeding Telegram's 64-byte callback limit."""
+    from telegram_bot.bot import (_queue_source_payload, PokerWizardBot,
+                                  QUEUE_SOURCE_PAGE_SIZE)
+
+    sources = [
+        {"hand_id": f"online-{i:02d}", "source": "online",
+         "ev_loss_bb": 20 - i}
+        for i in range(21)
+    ] + [
+        {"hand_id": f"live:2026-07-{i:02d}:abc", "source": "live",
+         "ev_loss_bb": 10 - i, "raw_text": f"raw {i}", "position": "BB",
+         "hero_hand": "AsKd", "played_at": None}
+        for i in range(1, 9)
+    ]
+    html1, buttons1 = _queue_source_payload(123, "混合來源", sources, page=0)
+    flat1 = [button for row in buttons1 for button in row]
+    assert_in("線上 21 手、線下 8 手", html1)
+    assert_true(any(button.get("url") and "線上" in button["text"]
+                    for button in flat1))
+    assert_true(any((button.get("callback_data") or "").startswith("qraw:")
+                    for button in flat1))
+    assert_true(any(button.get("callback_data") == "qsrc:123:1"
+                    for button in flat1))
+    assert_true(all(len(button.get("callback_data", "").encode()) <= 64
+                    for button in flat1))
+    assert_eq(QUEUE_SOURCE_PAGE_SIZE, 8)
+
+    # Exact-mappable drill spots get one compact 90-day spot link rather than
+    # hand-id chunks.  Direct live sources remain individually recallable.
+    from datetime import datetime
+    from queue_feed import TPE
+    spot_html, spot_buttons = _queue_source_payload(
+        123, "BB 面對 LP 開池", sources, page=0, kind="drill",
+        spot_leaf="BB_vsOpen_LP", spot_category="vsOpen",
+        now=datetime(2026, 7, 14, 12, tzinfo=TPE))
+    spot_flat = [button for row in spot_buttons for button in row]
+    spot_urls = [button["url"] for button in spot_flat if button.get("url")]
+    assert_eq(len(spot_urls), 1)
+    assert_in("同 spot・近 3 個月", spot_flat[0]["text"])
+    assert_not_in("hand_id__in", spot_urls[0])
+    assert_in("ordering=", spot_urls[0])
+    assert_in("近 3 個月全部線上牌局", spot_html)
+
+    html2, buttons2 = _queue_source_payload(123, "混合來源", sources, page=1)
+    flat2 = [button for row in buttons2 for button in row]
+    assert_in("第 2/2 頁", html2)
+    assert_true(any(button.get("callback_data") == "qsrc:123:0"
+                    for button in flat2))
+
+    stress = [
+        {"hand_id": f"{i:08d}-1234-1234-1234-123456789012",
+         "source": "online", "ev_loss_bb": 200 - i}
+        for i in range(160)
+    ]
+    _html, stress_buttons = _queue_source_payload(123, "stress", stress)
+    markup = PokerWizardBot._rows_to_markup(stress_buttons)
+    assert_true(len(markup.to_json().encode()) < 10_000,
+                "source-page exact URLs must stay below Telegram markup limit")
+
+
+@test
+def test_every_queue_surface_exposes_source_hands():
+    """Both /queue and the weekly plan expose qsrc for review and drill rows;
+    qraw stays a lightweight raw-text path rather than invoking deep analysis."""
+    import inspect
+    from scorecard import weekly_tg_payload
+    from telegram_bot.bot import _queue_payload, PokerWizardBot
+
+    rows = [
+        {"id": 31, "kind": "review", "label": "復盤 A", "spot_leaf": "a",
+         "drill_url": "https://example.com/review", "review_anchor_url": None,
+         "status": "pending", "n_sources": 1, "total_ev_loss_bb": 9.0},
+        {"id": 32, "kind": "drill", "label": "練習 B", "spot_leaf": "b",
+         "drill_url": "https://example.com/drill", "status": "pending",
+         "n_sources": 3, "total_ev_loss_bb": 3.0},
+    ]
+    _html, buttons = _queue_payload(rows)
+    callbacks = [button.get("callback_data") for row in buttons for button in row]
+    assert_in("qsrc:31", callbacks)
+    assert_in("qsrc:32", callbacks)
+
+    weekly = weekly_tg_payload("2026-W29", {
+        "per100": 0, "delta": 0, "weekly_series": [], "focus": [],
+        "leaderboard": [], "readback": [], "honesty": {},
+        "drill_queue": rows,
+    })
+    weekly_callbacks = [button.get("callback_data")
+                        for row in weekly["buttons"] for button in row]
+    assert_in("qsrc:31", weekly_callbacks)
+    assert_in("qsrc:32", weekly_callbacks)
+
+    src = inspect.getsource(PokerWizardBot.handle_live_button)
+    assert_in('data.startswith("qsrc:")', src)
+    assert_in('data.startswith("qraw:")', src)
+    raw_src = inspect.getsource(PokerWizardBot._queue_send_live_raw)
+    assert_in("raw_text", raw_src)
+    assert_not_in("_analyze_live_parsed_hand", raw_src)
+
+
+@test
+def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
+    """Runtime smoke for qsrc/qraw: source classification comes from the
+    ledger query, and the raw callback sends stored text without parsing it."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    class FakePool:
+        async def fetchrow(self, sql, *args):
+            if "FROM drill_queue" in sql:
+                return {
+                    "label": "mixed",
+                    "kind": "drill",
+                    "spot_leaf": "BB_vsOpen_LP",
+                    "spot_category": "vsOpen",
+                    "ref_hand_id": None,
+                    "source_hands": json.dumps([
+                        {"hand_id": "online-1", "street": "flop",
+                         "decision_idx": 0, "ev_loss_bb": 2.0, "src": "manual"},
+                        {"hand_id": "live:2026-07-14:abc", "street": "turn",
+                         "decision_idx": 0, "ev_loss_bb": 1.0, "src": "live"},
+                    ]),
+                }
+            if "source='live'" in sql:
+                return {"raw_text": "Eff 30bb 原始文字"}
+            raise AssertionError(sql)
+
+        async def fetch(self, sql, *args):
+            assert_in("FROM ledger_hands", sql)
+            assert_eq(args[0], ["online-1", "live:2026-07-14:abc"])
+            return [
+                {"gtow_hand_id": "online-1", "source": "online",
+                 "raw_text": None, "played_at": None, "position": "CO",
+                 "hero_hand": "AsKd"},
+                {"gtow_hand_id": "live:2026-07-14:abc", "source": "live",
+                 "raw_text": "Eff 30bb 原始文字", "played_at": None,
+                 "position": "BB", "hero_hand": "Qh8c"},
+            ]
+
+    class FakeQuery:
+        def __init__(self):
+            self.answers = []
+
+        async def answer(self, text=None):
+            self.answers.append(text)
+
+    class FakeTgBot:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    bot = object.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=FakePool())
+    query = FakeQuery()
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=99),
+    )
+    tg = FakeTgBot()
+    context = SimpleNamespace(bot=tg)
+
+    asyncio.run(bot._queue_show_sources(update, context, 7))
+    assert_eq(query.answers, [None])
+    markup = tg.sent[0][1]["reply_markup"].to_dict()
+    flat = [button for row in markup["inline_keyboard"] for button in row]
+    assert_true(any("hero_preflop_action" in button.get("url", "")
+                    and "ordering=" in button.get("url", "") for button in flat))
+    assert_true(any(button.get("callback_data") == "qraw:live:2026-07-14:abc"
+                    for button in flat))
+
+    asyncio.run(bot._queue_send_live_raw(
+        update, context, "live:2026-07-14:abc"))
+    assert_in("Eff 30bb 原始文字", tg.sent[-1][0][1])
+
+
+@test
 def test_migration_unified_drill_queue():
     """The unified-queue migration exists with the kind/ref_hand_id/added_by/
     cleared_at columns and the per-kind partial unique indexes (§4)."""

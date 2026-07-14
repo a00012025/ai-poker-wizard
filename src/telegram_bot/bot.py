@@ -33,6 +33,7 @@ ANALYSIS_TIMEOUT = 1800
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
 QUEUE_PAGE_SIZE = 6
+QUEUE_SOURCE_PAGE_SIZE = 8
 
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 
@@ -82,6 +83,7 @@ def _queue_payload(rows, *, page: int = 0,
                 text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
                 row_btns.append({"text": text, "url": r["drill_url"]})
             actions = [
+                {"text": f"📚 {i} 來源", "callback_data": f"qsrc:{r['id']}"},
                 {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}:{page}"},
                 {"text": f"➕ {i} 加練", "callback_data": f"qex:{r['id']}"},
             ]
@@ -96,6 +98,8 @@ def _queue_payload(rows, *, page: int = 0,
             row_btns = []
             if r["drill_url"]:
                 row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
+            row_btns.append({"text": f"📚 {i} 來源",
+                             "callback_data": f"qsrc:{r['id']}"})
             row_btns.append({"text": f"✔ {i} 已練",
                              "callback_data": f"qcl:{r['id']}:{page}"})
         buttons.append(row_btns)
@@ -108,6 +112,82 @@ def _queue_payload(rows, *, page: int = 0,
         if nav:
             buttons.append(nav)
     return "\n".join(L), buttons
+
+
+def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
+                          *, page: int = 0, kind: str | None = None,
+                          spot_leaf: str | None = None,
+                          spot_category: str | None = None,
+                          now=None) -> tuple[str, list[list[dict]]]:
+    """Render exact online links + lightweight live-hand callbacks."""
+    from html import escape as _esc
+    from queue_feed import (QUEUE_SOURCE_HANDS_PER_LINK,
+                            gtow_analyze_hands_urls,
+                            gtow_spot_hands_url)
+
+    online = [source for source in sources if source.get("source") == "online"]
+    live = [source for source in sources if source.get("source") == "live"]
+    missing = [source for source in sources if source.get("source") == "missing"]
+    action_rows: list[list[dict]] = []
+
+    spot_url = (gtow_spot_hands_url(
+        spot_leaf, spot_category, now=now) if kind == "drill" else None)
+    online_ids = [source["hand_id"] for source in online]
+    if spot_url and online_ids:
+        action_rows.append([{
+            "text": "🌐 同 spot・近 3 個月（總 EV loss ↓）",
+            "url": spot_url,
+        }])
+    else:
+        online_urls = gtow_analyze_hands_urls(online_ids)
+        for index, (url, chunk) in enumerate(online_urls):
+            start = index * QUEUE_SOURCE_HANDS_PER_LINK + 1
+            end = start + len(chunk) - 1
+            if len(online_urls) == 1:
+                text = f"🌐 線上實際牌局（{len(chunk)}）"
+            else:
+                text = f"🌐 線上實際牌局 {start}–{end} / {len(online_ids)}"
+            action_rows.append([{"text": text, "url": url}])
+
+    for source in live:
+        played_at = source.get("played_at")
+        date_text = played_at.strftime("%-m/%-d") if hasattr(played_at, "strftime") else "線下"
+        detail = " ".join(part for part in (
+            date_text, source.get("position"), source.get("hero_hand")) if part)
+        ev = float(source.get("ev_loss_bb") or 0.0)
+        text = f"🎴 {detail} · 損失 {ev:.1f}bb"[:60]
+        action_rows.append([{
+            "text": text,
+            "callback_data": f"qraw:{source['hand_id']}",
+        }])
+
+    pages = max(1, (len(action_rows) + QUEUE_SOURCE_PAGE_SIZE - 1)
+                // QUEUE_SOURCE_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    heading = "📚 <b>來源牌局</b>"
+    if pages > 1:
+        heading += f"（第 {page + 1}/{pages} 頁）"
+    counts = f"線上 {len(online)} 手、線下 {len(live)} 手"
+    if missing:
+        counts += f"、缺資料 {len(missing)} 手"
+    html = (f"{heading}\n{_esc(label or str(queue_id))}\n"
+            f"{counts}\n各來源內依這個 queue item 的 EV loss 由高到低整理。")
+    if spot_url and online_ids:
+        html += ("\n同 spot 連結涵蓋近 3 個月全部線上牌局，"
+                 "GTOW 表格按整手總 EV loss 排序；"
+                 f"目前項目另記錄 {len(online_ids)} 手直接來源。")
+    buttons = action_rows[page * QUEUE_SOURCE_PAGE_SIZE:
+                          (page + 1) * QUEUE_SOURCE_PAGE_SIZE]
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append({"text": "⬅ 上一頁",
+                        "callback_data": f"qsrc:{queue_id}:{page - 1}"})
+        if page + 1 < pages:
+            nav.append({"text": "下一頁 ➡",
+                        "callback_data": f"qsrc:{queue_id}:{page + 1}"})
+        buttons.append(nav)
+    return html, buttons
 
 
 def _setup_logger() -> logging.Logger:
@@ -1565,6 +1645,69 @@ class PokerWizardBot:
             html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(buttons))
 
+    async def _queue_show_sources(self, update: Update,
+                                  context: ContextTypes.DEFAULT_TYPE,
+                                  queue_id: int, page: int = 0,
+                                  *, edit: bool = False):
+        """Show the exact online/live hands that produced one queue item."""
+        query = update.callback_query
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        item = await self.db.pool.fetchrow(
+            "SELECT label, kind, spot_leaf, spot_category, source_hands, ref_hand_id "
+            "FROM drill_queue WHERE id=$1",
+            queue_id)
+        if not item:
+            await query.answer("找不到這個 queue item。")
+            return
+        from queue_feed import (_as_list, queue_source_hand_ids,
+                                resolve_queue_source_hands)
+        entries = _as_list(item["source_hands"])
+        hand_ids = queue_source_hand_ids(entries, item["ref_hand_id"])
+        ledger_rows = []
+        if hand_ids:
+            ledger_rows = await self.db.pool.fetch(
+                "SELECT gtow_hand_id, source, raw_text, played_at, position, hero_hand "
+                "FROM ledger_hands WHERE gtow_hand_id = ANY($1::text[])",
+                hand_ids)
+        sources = resolve_queue_source_hands(
+            entries, ledger_rows, ref_hand_id=item["ref_hand_id"])
+        html, buttons = _queue_source_payload(
+            queue_id, item["label"] or str(queue_id), sources, page=page,
+            kind=item["kind"], spot_leaf=item["spot_leaf"],
+            spot_category=item["spot_category"])
+        markup = self._rows_to_markup(buttons)
+        await query.answer()
+        if edit:
+            await query.edit_message_text(
+                html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=markup)
+        else:
+            await context.bot.send_message(
+                update.effective_chat.id, html, parse_mode="HTML",
+                disable_web_page_preview=True, reply_markup=markup)
+
+    async def _queue_send_live_raw(self, update: Update,
+                                   context: ContextTypes.DEFAULT_TYPE,
+                                   hand_id: str):
+        """Send stored live shorthand verbatim; do not trigger re-analysis."""
+        query = update.callback_query
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        row = await self.db.pool.fetchrow(
+            "SELECT raw_text FROM ledger_hands "
+            "WHERE gtow_hand_id=$1 AND source='live'", hand_id)
+        raw_text = row["raw_text"] if row else None
+        if not raw_text:
+            await query.answer("找不到這手的原始記錄。")
+            return
+        await query.answer()
+        payload = f"📝 線下原始紀錄\n\n{raw_text}"
+        for chunk in _split_message(payload):
+            await context.bot.send_message(update.effective_chat.id, chunk)
+
     async def plan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/plan — owner-only: resend the latest weekly training plan."""
         if not self._is_owner(update):
@@ -1657,6 +1800,8 @@ class PokerWizardBot:
     async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Practice-queue + live-hand callbacks (all owner-only, §6.3):
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
+        qsrc:<queue_id>[:page] — exact online/live source-hand menu;
+        qraw:<hand_id> — echo stored live shorthand without re-analysis;
         qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
         qex:<queue_id> — expand a review item into its decisions to hand-pick;
         qad:<queue_id>:<decision_id> — add one decision as a manual drill."""
@@ -1667,6 +1812,18 @@ class PokerWizardBot:
 
         if not self._is_owner(update):
             await query.answer()
+            return
+
+        if data.startswith("qsrc:"):
+            parts = data.split(":")
+            queue_id = int(parts[1])
+            source_page = int(parts[2]) if len(parts) > 2 else 0
+            await self._queue_show_sources(
+                update, context, queue_id, source_page, edit=len(parts) > 2)
+            return
+
+        if data.startswith("qraw:"):
+            await self._queue_send_live_raw(update, context, data[5:])
             return
 
         if data.startswith("qpg:"):
@@ -1946,7 +2103,9 @@ class PokerWizardBot:
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         # pattern handlers must precede the generic follow-up handler
         self.application.add_handler(
-            CallbackQueryHandler(self.handle_live_button, pattern=r"^(lvd|qcl|qpg|qex|qad):"))
+            CallbackQueryHandler(
+                self.handle_live_button,
+                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
