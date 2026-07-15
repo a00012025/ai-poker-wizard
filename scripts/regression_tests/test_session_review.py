@@ -109,6 +109,15 @@ def test_session_review_callback_data_telegram_safe():
 
 
 @test
+def test_session_review_auto_send_skips_clean_session():
+    """Sync auto-append fires only when there's something to review (§7-11 依從):
+    non-empty → push, clean/empty → stay silent (manual /review still works)."""
+    assert_true(sr.should_auto_send(_sample()), "non-empty session should auto-push")
+    assert_true(not sr.should_auto_send(_sample(empty=True)),
+                "clean session must NOT auto-push")
+
+
+@test
 def test_session_review_empty_session():
     out = sr.render_tg(_sample(empty=True))
     assert_in("沒有值得復盤的漏損", out["html"])

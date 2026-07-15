@@ -225,6 +225,13 @@ async def compute(conn, session: dict) -> dict:
 
 
 # ── render ─────────────────────────────────────────────────────────────────────
+def should_auto_send(data: dict) -> bool:
+    """Auto-push a session review after a sync only when there's something worth
+    reviewing — skip clean/empty sessions to respect the 依從 / time budget
+    (§7-11). Manual /review still shows the clean digest on demand."""
+    return not data.get("empty", True)
+
+
 def _session_span(started, ended) -> str:
     s = started.astimezone(TPE)
     e = ended.astimezone(TPE)
