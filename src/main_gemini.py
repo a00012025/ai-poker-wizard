@@ -27,30 +27,34 @@ TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
 async def _run_script(*script_args) -> tuple[int, str]:
     """Run a repo script as a subprocess from the repo root; return (rc, tail)."""
-    import asyncio
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, *script_args,
-        cwd=str(Path(__file__).resolve().parent.parent),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    out, _ = await proc.communicate()
-    return proc.returncode, out.decode(errors="replace")[-3000:]
+    from src.ingest_runner import _run_script as _run
+    return await _run(dict(os.environ), *script_args)
 
 
 async def _daily_ledger_ingest_job(context):
-    """Daily 05:00 Taipei: incremental ingest (30d re-sweep) + sessions + verify."""
+    """Daily 05:00 Taipei: enqueue an ingest request for the owner.
+
+    The 5s queue poller runs it with the owner's extension-synced token
+    (users.gto_refresh_token) — same single-flight path as the extension
+    button and /ingest, so it survives a FORCED_LOGOUT of .tokens.json and
+    can't race a user-triggered ingest.
+    """
     from ledger_service import resolve_owner_chat_id
+    from src.ingest_runner import enqueue_request
     try:
-        rc, out = await _run_script("scripts/ledger_ingest.py", "--incremental")
-        logger.info(f"Daily ingest rc={rc}: {out.splitlines()[-1] if out.strip() else ''}")
-        await _run_script("scripts/backfill_spots.py")
-        await _run_script("scripts/ledger_sessions.py", "--rebuild")
-        rc_v, out_v = await _run_script("scripts/ledger_ingest.py", "--verify")
-        if rc_v == 2 and db.pool:
-            owner = await resolve_owner_chat_id(db.pool)
-            if owner:
-                await context.bot.send_message(owner, f"⚠️ Ledger 對數不符\n{out_v.strip()}")
+        owner = await resolve_owner_chat_id(db.pool) if db.pool else None
+        if not owner:
+            raise RuntimeError("no owner chat id (OWNER_CHAT_ID unset / multiple active users)")
+        reused = await enqueue_request(db.pool, owner)
+        logger.info(f"Daily ingest enqueued for owner {owner} (reused_open_request={reused})")
     except Exception as e:
         logger.error(f"Daily ledger ingest job failed: {e}")
+        admin = os.getenv("ADMIN_CHAT_ID")
+        if admin:
+            try:
+                await context.bot.send_message(int(admin), f"⚠️ 每日手牌攝取排程失敗\n{e}")
+            except Exception as notify_err:
+                logger.error(f"Daily ingest failure notify failed: {notify_err}")
 
 
 async def _weekly_scorecard_job(context):
@@ -133,7 +137,13 @@ async def post_init(application):
             _weekly_scorecard_job,
             time=dt_time(hour=21, minute=0, tzinfo=TZ_TAIPEI),
             days=(0,), name="weekly_scorecard")
-        logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) jobs scheduled")
+        # Extension-triggered ingest queue (gtow_ingest_requests via gtow-sync).
+        from src.ingest_runner import poll_job
+        application.job_queue.run_repeating(
+            lambda ctx: poll_job(ctx, db), interval=5, first=10,
+            name="ingest_request_poller")
+        logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) "
+                    "+ ingest poller (5s) jobs scheduled")
 
     # Command menu ("/"): public users get the basics; the owner additionally
     # sees the training-loop commands (live import / practice queue / plan).

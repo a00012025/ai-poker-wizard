@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-07-07-phase1-ledger-design.md §3.
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 import time
@@ -51,9 +52,27 @@ def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
     return cid
 
 
-def _headers() -> dict:
+# Per-request token mode: when GTOW_REFRESH_TOKEN is set (the extension-sync
+# ingest runner passes the requesting user's current token), access tokens are
+# minted from it via gto_token's per-user in-memory cache (exp-aware,
+# fingerprint-checked) and .tokens.json is never read or written. Unset ->
+# legacy global token path (scripts run against the owner's .tokens.json).
+_ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
+
+
+def _get_token(force_remint: bool = False) -> str:
+    refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    if not refresh:
+        return get_access_token()
+    from gto_token import get_user_access_token, invalidate_user_token
+    if force_remint:
+        invalidate_user_token(_ENV_TOKEN_USER)
+    return get_user_access_token(_ENV_TOKEN_USER, refresh)
+
+
+def _headers(force_remint: bool = False) -> dict:
     return {
-        "authorization": f"Bearer {get_access_token()}",
+        "authorization": f"Bearer {_get_token(force_remint)}",
         "gwclientid": get_client_id(),
         "origin": ORIGIN,
         "content-type": "application/json",
@@ -83,14 +102,17 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
     """
     fn = request_fn or requests.request
     reminted = False
+    remint_next = False
     for attempt in range(_MAX_RETRIES + 1):
         if request_fn is None:
             _throttle(_sleep)
-            kw["headers"] = _headers()
+            kw["headers"] = _headers(force_remint=remint_next)
+            remint_next = False      # consume the remint exactly once
             kw["timeout"] = _TIMEOUT
         r = fn(method, url, **kw)
         if r.status_code == 401 and not reminted:
             reminted = True          # token may have just expired; re-mint once
+            remint_next = True
             continue
         if r.status_code in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES:
             _sleep(_backoff_delay(attempt))

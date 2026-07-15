@@ -25,6 +25,8 @@ function errorText(code) {
     REFRESH_TOKEN_REJECTED: "GTOW 拒絕這組 token，請重新登入後再同步。",
     STALE_REFRESH_TOKEN: "這組 token 比伺服器版本舊；請重新整理 GTOW 後再同步。",
     SYNC_RATE_LIMITED: "同步太頻繁，請幾秒後再試。",
+    INGEST_ENQUEUE_FAILED: "無法排入同步佇列，請稍後重試。",
+    REQUEST_NOT_FOUND: "找不到這筆同步請求，請重試。",
     "Failed to fetch": "無法連線同步服務，請檢查網路。",
   }[code] || code;
 }
@@ -73,6 +75,25 @@ $("#pair-button").addEventListener("click", async () => {
     await render();
   } catch (error) { message(errorText(error.message), true); }
   finally { setBusy(button, false); }
+});
+
+$("#ingest-button").addEventListener("click", async () => {
+  const button = $("#ingest-button");
+  setBusy(button, true);
+  message("排隊中…");
+  try {
+    const trigger = await send("INGEST_TRIGGER");
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 30 * 60 * 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const state = await send("INGEST_STATUS", { requestId: trigger.request_id });
+      if (state.status === "done") return message(`✅ ${state.result || "同步完成"}`);
+      if (state.status === "error") return message(`❌ ${state.result || "同步失敗"}`, true);
+      message(state.status === "running" ? `⏳ ${state.progress || "攝取中…"}` : "⏳ 排隊中…");
+    }
+    message("⌛ 等待逾時 — 完成後 Telegram 仍會通知你。", true);
+  } catch (error) { message(errorText(error.message), true); }
+  finally { setBusy(button, false); await render(); }
 });
 
 $("#sync-button").addEventListener("click", async () => {
