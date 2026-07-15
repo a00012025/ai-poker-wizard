@@ -1490,7 +1490,10 @@ def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
         result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
     finally:
         ingest_runner._run_script = orig
-    assert_in("list=2 detail=2", result)
+    assert_in("新增手牌：2", result)
+    assert_in("完整分析：2", result)
+    assert_in("決策紀錄：5", result)
+    assert_in("已在資料庫：8（不是失敗）", result)
     assert_in("全量補齊", result)
     assert_not_in("對數仍不符", result)
     backfills = [c for c in calls if "--backfill" in c]
@@ -1543,7 +1546,8 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
         result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
     finally:
         ingest_runner._run_script = orig
-    assert_in("list=0 detail=0", result)
+    assert_in("新增手牌：0", result)
+    assert_in("完整分析：0", result)
     assert_in("稍後再點一次", result)
     assert_not_in("全量補齊", result)
 
@@ -1682,8 +1686,27 @@ def test_ingest_runner_surfaces_list_only_and_fallback_counts():
         result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
     finally:
         ingest_runner._run_script = orig
-    assert_in("skipped_zeroloss=10", result)
-    assert_in("reconstruct_fallback=1", result)
+    assert_in("新增手牌：12", result)
+    assert_in("完整分析：1", result)
+    assert_in("決策紀錄：14", result)
+    assert_in("已在資料庫：8（不是失敗）", result)
+    assert_in("零損失摘要建檔：10", result)
+    assert_in("摘要不足、改抓完整分析：1", result)
+
+
+@test
+def test_ingest_runner_formats_legacy_skipped_as_known_not_failure():
+    """The pre-#122 summary called already-known hands `skipped`; the user
+    notification must explain that these are existing rows, not failed hands."""
+    from src import ingest_runner
+
+    result = ingest_runner._format_summary(
+        "INGEST list=512 detail=512 decisions=582 skipped=1884")
+    assert_in("新增手牌：512", result)
+    assert_in("完整分析：512", result)
+    assert_in("決策紀錄：582", result)
+    assert_in("已在資料庫：1,884（不是失敗）", result)
+    assert_not_in("skipped", result)
 
 
 @test
