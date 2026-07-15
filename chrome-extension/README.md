@@ -1,11 +1,14 @@
 # AI Poker Wizard — GTOW 自動同步 Extension
 
-Chrome Extension v2 只需與 Telegram bot 配對一次；之後每次開啟
+Chrome Extension 只需與 Telegram bot 配對一次；之後每次開啟
 `app.gtowizard.com`，Extension 都會自動同步目前的 GTO Wizard refresh token。
+v2.1 起，GTOW 頁面右下角有「♠ 同步手牌到 DB」按鈕（popup 裡也有）：一鍵把
+新上傳的 Analyze 手牌攝取進 ledger，頁面上即時顯示進度，完成後 Telegram
+也會收到結果。
 
 ## 安裝
 
-1. 到最新 GitHub Release 下載 `ai-poker-wizard-gtow-sync-v2.0.0.zip`。
+1. 到最新 GitHub Release 下載 `ai-poker-wizard-gtow-sync-v2.1.0.zip`。
 2. 解壓縮下載檔案。
 3. 開啟 `chrome://extensions`，啟用右上角「開發人員模式」。
 4. 點擊「載入未封裝項目」，選擇剛才解壓縮的資料夾。
@@ -17,7 +20,16 @@ Chrome Extension v2 只需與 Telegram bot 配對一次；之後每次開啟
 2. 五分鐘內將 12 碼配對碼貼到 Extension popup。
 3. 正常開啟並登入 GTO Wizard。
 
-Popup 會顯示最後成功同步時間。需要重試時可按「立即同步目前 GTOW」。
+Popup 會顯示最後成功同步時間。需要重試時可按「立即同步目前 GTOW token」。
+
+## 一鍵手牌同步（v2.1）
+
+在 GTOW 上傳手牌後，點頁面右下角「♠ 同步手牌到 DB」：Extension 會先把當前
+token 同步上去（**手動觸發一律強制覆蓋伺服器版本** — 你當下登入中的 token
+必定有效，即使它的 iat 比較舊），再排入攝取佇列；bot 幾秒內接手，用你的
+token 跑 incremental ingest（對數不符時自動全量補齊），全程不碰
+`.tokens.json`。進度顯示在頁面 toast，結果同時發到 Telegram。
+若剛上傳完顯示「沒有新手牌」，是 GTOW 還在處理檔案，稍後再點一次即可。
 Telegram `/devices` 可查看已配對瀏覽器；`/revoke <裝置ID>` 可撤銷單一裝置；
 `/logout` 會移除 GTOW token 並撤銷所有已配對裝置。
 

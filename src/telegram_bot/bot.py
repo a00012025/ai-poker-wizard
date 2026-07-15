@@ -503,14 +503,10 @@ class PokerWizardBot:
                 await update.message.reply_text(msg)
             return
 
-        # Store in DB
+        # Store in DB (manual /settoken force-overrides any stored token —
+        # it was just validated against GTOW above)
         if self.db:
-            saved = await self.db.save_user_gto_token(user_id, token)
-            if not saved:
-                await update.message.reply_text(
-                    "這組 token 比目前同步版本舊，因此未覆蓋。請重新整理 GTO Wizard 後再試。"
-                )
-                return
+            await self.db.save_user_gto_token(user_id, token)
 
         self.log.info(f"[{label}] GTO token bound successfully")
         await update.message.reply_text("GTO Wizard 帳號綁定成功！之後的查詢會使用你的帳號。")
@@ -1493,31 +1489,30 @@ class PokerWizardBot:
             await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
 
     async def ingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /ingest — owner-only: pull newly uploaded GTOW Analyze hands now."""
+        """Handle /ingest — owner-only: queue a GTOW Analyze pull.
+
+        Enqueues a gtow_ingest_requests row; the 5s poller runs the same
+        pipeline as the extension button (per-user token, no .tokens.json)
+        and sends the result as a separate message.
+        """
         user_id = update.effective_user.id
         if not self.admin_chat_id or user_id != self.admin_chat_id:
             return
         self.log.info(f"[{self._user_label(update)}] /ingest")
-        msg = await update.message.reply_text("⏳ 攝取中…")
-        import asyncio
-        import sys as _sys
-        from pathlib import Path as _Path
-        root = _Path(__file__).resolve().parent.parent.parent
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                _sys.executable, "scripts/ledger_ingest.py", "--incremental",
-                cwd=str(root), stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT)
-            out, _ = await proc.communicate()
-            summary = next((l for l in out.decode(errors="replace").splitlines()
-                            if l.startswith("INGEST")), "INGEST（無輸出）")
-            bf = await asyncio.create_subprocess_exec(
-                _sys.executable, "scripts/backfill_spots.py", cwd=str(root),
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            await bf.communicate()
-            await msg.edit_text(f"✅ {summary}")
-        except Exception as e:
-            await msg.edit_text(f"⚠️ 攝取失敗：{e}")
+        if not self.db or not self.db.pool:
+            await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
+            return
+        async with self.db.pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM gtow_ingest_requests "
+                "WHERE user_id=$1 AND status IN ('pending','running') LIMIT 1",
+                user_id)
+            if existing:
+                await update.message.reply_text("⏳ 已有一件同步在跑，完成後會通知你")
+                return
+            await conn.execute(
+                "INSERT INTO gtow_ingest_requests (user_id) VALUES ($1)", user_id)
+        await update.message.reply_text("⏳ 已排入同步佇列，完成後會通知你")
 
     # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
 

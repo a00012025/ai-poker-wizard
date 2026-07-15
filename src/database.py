@@ -157,7 +157,12 @@ class Database:
             )
 
     async def save_user_gto_token(self, user_id: int, refresh_token: str) -> bool:
-        """Store user's GTO Wizard refresh token (creates user row if needed)."""
+        """Store user's GTO Wizard refresh token (creates user row if needed).
+
+        /settoken is a manual trigger, so it force-overrides regardless of
+        stored iat: the user just proved this token works, while the "newer"
+        stored one may be FORCED_LOGOUT-dead.
+        """
         import base64
 
         payload = refresh_token.split(".")[1]
@@ -179,8 +184,6 @@ class Database:
                     gto_refresh_token_fingerprint = $3,
                     gto_refresh_token_iat = $4,
                     gto_token_synced_at = NOW()
-                WHERE users.gto_refresh_token_iat IS NULL
-                   OR users.gto_refresh_token_iat <= $4
                 """,
                 user_id,
                 refresh_token,

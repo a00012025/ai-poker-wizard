@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-07-07-phase1-ledger-design.md §3.
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 import time
@@ -19,7 +20,7 @@ from typing import Iterator
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gto_token import get_access_token
+from gto_token import TokenExpiredError, get_access_token
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
@@ -51,9 +52,30 @@ def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
     return cid
 
 
-def _headers() -> dict:
+# Per-request token mode: when GTOW_REFRESH_TOKEN is set (the extension-sync
+# ingest runner passes the requesting user's current token), access tokens are
+# minted from it in-memory and .tokens.json is never read or written. Unset ->
+# legacy global token path (daily scheduled ingest).
+_override_access: str | None = None
+
+
+def _get_token(force_remint: bool = False) -> str:
+    global _override_access
+    refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    if not refresh:
+        return get_access_token()
+    if _override_access is None or force_remint:
+        from gto_token import _refresh_access
+        access = _refresh_access(refresh)   # ephemeral keypair, no file IO
+        if not access:
+            raise TokenExpiredError("提供的 GTOW refresh token 無效或已過期")
+        _override_access = access
+    return _override_access
+
+
+def _headers(force_remint: bool = False) -> dict:
     return {
-        "authorization": f"Bearer {get_access_token()}",
+        "authorization": f"Bearer {_get_token(force_remint)}",
         "gwclientid": get_client_id(),
         "origin": ORIGIN,
         "content-type": "application/json",
@@ -86,7 +108,7 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
     for attempt in range(_MAX_RETRIES + 1):
         if request_fn is None:
             _throttle(_sleep)
-            kw["headers"] = _headers()
+            kw["headers"] = _headers(force_remint=reminted)
             kw["timeout"] = _TIMEOUT
         r = fn(method, url, **kw)
         if r.status_code == 401 and not reminted:

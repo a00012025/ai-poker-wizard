@@ -273,12 +273,15 @@ async function syncToken(req: Request, pepper: string): Promise<Response> {
     return json(req, { error: "REFRESH_TOKEN_REJECTED" }, 400);
   }
   const fingerprint = await sha256Hex(parsed.token);
+  // Manual triggers force-override the freshness guards: GTOW just validated
+  // this token, whereas the stored "newer" one may be FORCED_LOGOUT-dead.
   const { data, error } = await adminClient().rpc("sync_gtow_refresh_token", {
     p_credential_hash: authenticated.credentialHash,
     p_refresh_token: parsed.token,
     p_token_fingerprint: fingerprint,
     p_token_iat: new Date(parsed.iat * 1000).toISOString(),
     p_token_exp: new Date(parsed.exp * 1000).toISOString(),
+    p_force: body.force === true,
   });
   if (error || !data?.[0]) {
     if (error?.message.includes("DEVICE_UNAUTHORIZED")) {
@@ -309,6 +312,55 @@ async function status(req: Request, pepper: string): Promise<Response> {
     device_name: authenticated.device.name,
     last_seen_at: authenticated.device.last_seen_at,
     last_sync_at: authenticated.device.last_sync_at,
+  });
+}
+
+async function triggerIngest(req: Request, pepper: string): Promise<Response> {
+  const secret = deviceSecret(req);
+  if (!secret) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+  const credentialHash = await hmacHex(pepper, `device:v1:${secret}`);
+  const { data, error } = await adminClient().rpc(
+    "enqueue_gtow_ingest_request",
+    { p_credential_hash: credentialHash },
+  );
+  if (error || !data?.[0]) {
+    if (error?.message.includes("DEVICE_UNAUTHORIZED")) {
+      return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+    }
+    return json(req, { error: "INGEST_ENQUEUE_FAILED" }, 500);
+  }
+  return json(req, {
+    request_id: data[0].request_id,
+    status: data[0].request_status,
+    reused: data[0].reused,
+  });
+}
+
+async function ingestStatus(req: Request, pepper: string): Promise<Response> {
+  const secret = deviceSecret(req);
+  if (!secret) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+  const id = new URL(req.url).searchParams.get("id") || "";
+  if (!/^[0-9a-f-]{36}$/.test(id)) {
+    return json(req, { error: "REQUEST_ID_INVALID" }, 400);
+  }
+  const credentialHash = await hmacHex(pepper, `device:v1:${secret}`);
+  const { data, error } = await adminClient().rpc(
+    "get_gtow_ingest_request",
+    { p_credential_hash: credentialHash, p_request_id: id },
+  );
+  if (error) {
+    if (error.message.includes("DEVICE_UNAUTHORIZED")) {
+      return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+    }
+    return json(req, { error: "INGEST_STATUS_FAILED" }, 500);
+  }
+  if (!data?.[0]) return json(req, { error: "REQUEST_NOT_FOUND" }, 404);
+  return json(req, {
+    status: data[0].request_status,
+    progress: data[0].progress,
+    result: data[0].result,
+    requested_at: data[0].requested_at,
+    finished_at: data[0].finished_at,
   });
 }
 
@@ -347,8 +399,14 @@ Deno.serve(async (req: Request) => {
     if (req.method === "POST" && path.endsWith("/token")) {
       return await syncToken(req, pepper);
     }
+    if (req.method === "GET" && path.endsWith("/ingest/status")) {
+      return await ingestStatus(req, pepper);
+    }
     if (req.method === "GET" && path.endsWith("/status")) {
       return await status(req, pepper);
+    }
+    if (req.method === "POST" && path.endsWith("/ingest")) {
+      return await triggerIngest(req, pepper);
     }
     if (req.method === "DELETE" && path.endsWith("/device")) {
       return await revoke(req, pepper);

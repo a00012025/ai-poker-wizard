@@ -1252,3 +1252,140 @@ def test_spot_taxonomy_walk_fixture():
     assert_eq(riv["leaf"], "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet")
     assert_eq(round(riv["ev_loss_bb"], 3), 22.663)
     assert_eq(riv["tags"]["board_suit"], "monotone")
+
+
+# ── Extension-triggered ingest: per-request token mode ──
+
+@test
+def test_analyze_api_env_token_override_mints_without_tokens_json():
+    """GTOW_REFRESH_TOKEN set -> access minted from it; .tokens.json path unused."""
+    import gtow_analyze_api as gapi
+    import gto_token
+    minted = []
+    orig_refresh, orig_get = gto_token._refresh_access, gapi.get_access_token
+    gto_token._refresh_access = lambda r, kp=None: minted.append(r) or "acc-1"
+    gapi.get_access_token = lambda: (_ for _ in ()).throw(
+        AssertionError("tokens.json path must not be used in override mode"))
+    gapi._override_access = None
+    os.environ["GTOW_REFRESH_TOKEN"] = "refresh-abc"
+    try:
+        assert_eq(gapi._get_token(), "acc-1")
+        assert_eq(gapi._get_token(), "acc-1")          # cached, no second mint
+        assert_eq(minted, ["refresh-abc"])
+        assert_eq(gapi._get_token(force_remint=True), "acc-1")
+        assert_eq(len(minted), 2)                       # 401 path re-mints
+    finally:
+        del os.environ["GTOW_REFRESH_TOKEN"]
+        gto_token._refresh_access = orig_refresh
+        gapi.get_access_token = orig_get
+        gapi._override_access = None
+
+
+@test
+def test_analyze_api_env_token_override_invalid_refresh_raises():
+    """Invalid refresh token -> TokenExpiredError, not a silent None header."""
+    import gtow_analyze_api as gapi
+    import gto_token
+    from gto_token import TokenExpiredError
+    orig_refresh = gto_token._refresh_access
+    gto_token._refresh_access = lambda r, kp=None: None
+    gapi._override_access = None
+    os.environ["GTOW_REFRESH_TOKEN"] = "refresh-bad"
+    try:
+        try:
+            gapi._get_token()
+            assert_true(False, "expected TokenExpiredError")
+        except TokenExpiredError:
+            pass
+    finally:
+        del os.environ["GTOW_REFRESH_TOKEN"]
+        gto_token._refresh_access = orig_refresh
+        gapi._override_access = None
+
+
+@test
+def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
+    """verify rc=2 -> full sweep runs; result carries the escalation marker."""
+    import asyncio
+    from src import ingest_runner
+
+    calls = []
+    async def fake_run(env, *args):
+        calls.append(args)
+        assert_eq(env.get("GTOW_REFRESH_TOKEN"), "tok-r")
+        if "--verify" in args:
+            return (2, "VERIFY MISMATCH api=10 db=8") if len(
+                [c for c in calls if "--verify" in c]) == 1 else (0, "VERIFY OK")
+        if "--backfill" in args:
+            return 0, "INGEST list=2 detail=2 decisions=5 skipped=8"
+        if "--incremental" in args:
+            return 0, "INGEST list=0 detail=0 decisions=0 skipped=8"
+        return 0, ""
+
+    stages = []
+    async def progress(t):
+        stages.append(t)
+
+    orig = ingest_runner._run_script
+    ingest_runner._run_script = fake_run
+    try:
+        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+    finally:
+        ingest_runner._run_script = orig
+    assert_in("list=2 detail=2", result)
+    assert_in("全量補齊", result)
+    assert_true(any("--backfill" in c for c in calls), "full sweep must run")
+    assert_eq([c for c in calls if "--verify" in c][1], calls[-1])
+
+
+@test
+def test_ingest_runner_pipeline_no_new_hands_hint():
+    """list=0 detail=0 with clean verify -> hint about GTOW still processing."""
+    import asyncio
+    from src import ingest_runner
+
+    async def fake_run(env, *args):
+        if "--verify" in args:
+            return 0, "VERIFY OK api=8 db=8"
+        if "--incremental" in args:
+            return 0, "INGEST list=0 detail=0 decisions=0 skipped=8"
+        return 0, ""
+
+    async def progress(t):
+        pass
+
+    orig = ingest_runner._run_script
+    ingest_runner._run_script = fake_run
+    try:
+        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+    finally:
+        ingest_runner._run_script = orig
+    assert_in("list=0 detail=0", result)
+    assert_in("稍後再點一次", result)
+    assert_not_in("全量補齊", result)
+
+
+@test
+def test_ingest_runner_pipeline_crash_surfaces_tail_not_silent():
+    """Ingest crash (e.g. TokenExpiredError) -> loud error with output tail,
+    never the old '✅ INGEST（無輸出）' silent-success (H-token FORCED_LOGOUT bug)."""
+    import asyncio
+    from src import ingest_runner
+
+    async def fake_run(env, *args):
+        return 1, "Traceback ...\ngto_token.TokenExpiredError: GTO Wizard token 過期"
+
+    async def progress(t):
+        pass
+
+    orig = ingest_runner._run_script
+    ingest_runner._run_script = fake_run
+    try:
+        try:
+            asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+            assert_true(False, "expected RuntimeError")
+        except RuntimeError as e:
+            assert_in("TokenExpiredError", str(e))
+            assert_in("rc=1", str(e))
+    finally:
+        ingest_runner._run_script = orig

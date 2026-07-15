@@ -37,20 +37,31 @@ async def _run_script(*script_args) -> tuple[int, str]:
 
 
 async def _daily_ledger_ingest_job(context):
-    """Daily 05:00 Taipei: incremental ingest (30d re-sweep) + sessions + verify."""
+    """Daily 05:00 Taipei: incremental ingest (30d re-sweep) + sessions + verify.
+
+    Uses the owner's extension-synced token (users.gto_refresh_token) so it
+    keeps working after a FORCED_LOGOUT invalidates .tokens.json.
+    """
     from ledger_service import resolve_owner_chat_id
+    from src.ingest_runner import run_pipeline
     try:
-        rc, out = await _run_script("scripts/ledger_ingest.py", "--incremental")
-        logger.info(f"Daily ingest rc={rc}: {out.splitlines()[-1] if out.strip() else ''}")
-        await _run_script("scripts/backfill_spots.py")
-        await _run_script("scripts/ledger_sessions.py", "--rebuild")
-        rc_v, out_v = await _run_script("scripts/ledger_ingest.py", "--verify")
-        if rc_v == 2 and db.pool:
-            owner = await resolve_owner_chat_id(db.pool)
-            if owner:
-                await context.bot.send_message(owner, f"⚠️ Ledger 對數不符\n{out_v.strip()}")
+        owner = await resolve_owner_chat_id(db.pool) if db.pool else None
+        token = await db.get_user_gto_token(owner) if owner else None
+        if not token:
+            logger.error("Daily ingest skipped: no owner GTOW token in users table")
+            return
+
+        async def progress(text):
+            logger.info(f"Daily ingest: {text}")
+
+        result = await run_pipeline(token, progress)
+        logger.info(f"Daily ingest done: {result.splitlines()[0]}")
     except Exception as e:
         logger.error(f"Daily ledger ingest job failed: {e}")
+        if db.pool:
+            owner = await resolve_owner_chat_id(db.pool)
+            if owner:
+                await context.bot.send_message(owner, f"⚠️ 每日手牌攝取失敗\n{e}")
 
 
 async def _weekly_scorecard_job(context):
@@ -133,7 +144,13 @@ async def post_init(application):
             _weekly_scorecard_job,
             time=dt_time(hour=21, minute=0, tzinfo=TZ_TAIPEI),
             days=(0,), name="weekly_scorecard")
-        logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) jobs scheduled")
+        # Extension-triggered ingest queue (gtow_ingest_requests via gtow-sync).
+        from src.ingest_runner import poll_job
+        application.job_queue.run_repeating(
+            lambda ctx: poll_job(ctx, db), interval=5, first=10,
+            name="ingest_request_poller")
+        logger.info("Ledger ingest (daily 05:00) + scorecard (Sun 21:00) "
+                    "+ ingest poller (5s) jobs scheduled")
 
     # Command menu ("/"): public users get the basics; the owner additionally
     # sees the training-loop commands (live import / practice queue / plan).

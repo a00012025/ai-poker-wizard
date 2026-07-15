@@ -70,6 +70,10 @@ async function syncToken(refreshToken, suppliedFingerprint, force = false) {
       body: JSON.stringify({
         refresh_token: refreshToken,
         observed_at: new Date().toISOString(),
+        // Manual triggers (sync button, ingest button, fresh pairing) override
+        // the server's stale-iat guard: this session is logged in right now,
+        // while the stored "newer" token may be FORCED_LOGOUT-dead.
+        force,
       }),
     });
     await setStatus({
@@ -139,6 +143,35 @@ async function unpairDevice() {
   return { revoked: true };
 }
 
+async function deviceHeaders() {
+  const state = await storageGet();
+  if (!state.deviceSecret) throw new Error("DEVICE_UNAUTHORIZED");
+  return { Authorization: `Device ${state.deviceSecret}` };
+}
+
+async function triggerIngest(refreshToken) {
+  const headers = await deviceHeaders();
+  // Best-effort: push the freshest token before the runner picks the job up.
+  // The DB may already hold a valid token, so sync failures are non-fatal.
+  let token = refreshToken;
+  if (!token) {
+    try { token = await tokenFromActiveTab(); } catch { token = null; }
+  }
+  if (token?.startsWith("eyJ")) {
+    try { await syncToken(token, null, true); }
+    catch (error) { if (error.message === "DEVICE_UNAUTHORIZED") throw error; }
+  }
+  return api("/ingest", { method: "POST", headers, body: "{}" });
+}
+
+async function ingestStatus(requestId) {
+  if (typeof requestId !== "string" || !requestId) {
+    throw new Error("REQUEST_ID_INVALID");
+  }
+  const headers = await deviceHeaders();
+  return api(`/ingest/status?id=${encodeURIComponent(requestId)}`, { headers });
+}
+
 async function remoteStatus() {
   const state = await storageGet();
   if (!state.deviceSecret) return { paired: false };
@@ -168,6 +201,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       case "UNPAIR_DEVICE":
         return unpairDevice();
+      case "INGEST_TRIGGER":
+        return triggerIngest(message.refreshToken);
+      case "INGEST_STATUS":
+        return ingestStatus(message.requestId);
       case "GET_STATE":
         return { ...(await storageGet()), config: CONFIG };
       case "REMOTE_STATUS":

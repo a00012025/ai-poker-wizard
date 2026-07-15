@@ -28,3 +28,4 @@ button:disabled { cursor: wait; opacity: .55; }
 #message.error { color: #ff8f8f; }
 footer { margin-top: 12px; color: #6f7887; text-align: center; font-size: 10px; }
 code { color: #a7f3b7; }
+img.logo { background: transparent; border-radius: 12px; object-fit: cover; }

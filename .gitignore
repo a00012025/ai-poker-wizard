@@ -69,3 +69,6 @@ data/gtow_raw/
 data/scorecards/
 .gtow_client_id
 dist/
+
+# Extension icons are shipped assets (built from the bot TG avatar)
+!chrome-extension/icons/*.png
