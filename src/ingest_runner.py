@@ -236,7 +236,34 @@ async def _finish(pool, bot, req_id, user_id, *, ok: bool, text: str):
         logger.warning(f"Ingest notify failed for user {user_id}: {e}")
 
 
-async def process_next(pool, bot, db) -> bool:
+async def _send_session_review(pool, bot, user_id, application=None):
+    """After a successful sync, auto-append the latest online session's 復盤
+    digest — but only when there's something worth reviewing (skip clean/empty
+    sessions, §7-11 依從). Best-effort: never blocks or fails the sync result.
+    """
+    try:
+        from session_review import compute, render_tg, resolve_session, should_auto_send
+        session = await resolve_session(pool, None)
+        if not session:
+            return
+        data = await compute(pool, session)
+        if not should_auto_send(data):
+            return
+        if application is not None:   # warm the callback cache (recompute fallback exists)
+            application.bot_data.setdefault("srev", {})[data["session_id"]] = data
+        out = render_tg(data)
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb = [[InlineKeyboardButton(b["text"], url=b.get("url"),
+                                    callback_data=b.get("callback_data"))
+               for b in row] for row in out["buttons"]]
+        await bot.send_message(
+            user_id, out["html"], parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+    except Exception as e:
+        logger.warning(f"Auto session-review failed for user {user_id}: {e}")
+
+
+async def process_next(pool, bot, db, application=None) -> bool:
     """Claim and run at most one queued request. Returns True if one ran."""
     from ledger_service import resolve_owner_chat_id
 
@@ -266,6 +293,10 @@ async def process_next(pool, bot, db) -> bool:
     try:
         result = await run_pipeline(token, progress, allow_full_sweep=allow_full_sweep)
         await _finish(pool, bot, req_id, user_id, ok=True, text=result)
+        # Skip the auto-review when the sync added nothing new — re-pushing the
+        # same session's digest on every idle sync tap is noise (§7-11 依從).
+        if "沒有新手牌" not in result:
+            await _send_session_review(pool, bot, user_id, application)
     except RuntimeError as e:
         await _finish(pool, bot, req_id, user_id, ok=False, text=str(e))
     except Exception as e:
@@ -280,6 +311,7 @@ async def poll_job(context, db):
         return
     async with _run_lock:
         try:
-            await process_next(db.pool, context.bot, db)
+            await process_next(db.pool, context.bot, db,
+                               application=getattr(context, "application", None))
         except Exception as e:
             logger.error(f"Ingest poll job failed: {e}", exc_info=True)

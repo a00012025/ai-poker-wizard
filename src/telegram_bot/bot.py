@@ -1518,6 +1518,17 @@ class PokerWizardBot:
                for b in row] for row in rows]
         return InlineKeyboardMarkup(kb) if kb else None
 
+    @staticmethod
+    def _mark_button_done(markup, tapped_data: str):
+        """Copy `markup`, relabel the tapped button ✅. Its callback_data is kept
+        so a re-tap is an idempotent enqueue no-op (enqueue_one dedupes)."""
+        if not markup:
+            return None
+        kb = [[(InlineKeyboardButton("✅ 已排入", callback_data=b.callback_data)
+                if b.callback_data == tapped_data else b)
+               for b in row] for row in markup.inline_keyboard]
+        return InlineKeyboardMarkup(kb)
+
     def _is_owner(self, update: Update) -> bool:
         return bool(self.admin_chat_id
                     and update.effective_user.id == self.admin_chat_id)
@@ -1703,6 +1714,64 @@ class PokerWizardBot:
             payload["html"], parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(payload["buttons"]))
 
+    async def review_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/review [session_id] — owner-only: 這場（預設最近一個 online session）
+        的復盤摘要（EV 加權、單場不作趨勢判斷）。只讀不動本週焦點 spot。"""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("Database not connected.")
+            return
+        parts = (update.message.text or "").split()
+        sid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        from session_review import compute, render_tg, resolve_session
+        session = await resolve_session(self.db.pool, sid)
+        if not session:
+            await update.message.reply_text(
+                "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。")
+            return
+        data = await compute(self.db.pool, session)
+        context.application.bot_data.setdefault("srev", {})[data["session_id"]] = data
+        out = render_tg(data)
+        await update.message.reply_text(
+            out["html"], parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(out["buttons"]))
+
+    async def _session_review_enqueue(self, update: Update,
+                                      context: ContextTypes.DEFAULT_TYPE, data: str):
+        """srd|srv:<session_id>:<i> — enqueue the i-th session-review spot(drill)/
+        hand(review) into drill_queue (added_by='session', threshold-free). Idempotent
+        via queue_feed.enqueue_one; the tapped button is relabelled ✅."""
+        query = update.callback_query
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        kind, sid_s, i_s = data.split(":")
+        sid, i = int(sid_s), int(i_s)
+        cached = context.application.bot_data.get("srev", {}).get(sid)
+        if cached is None:
+            from session_review import compute, resolve_session
+            session = await resolve_session(self.db.pool, sid)
+            if not session:
+                await query.answer("找不到這個 session。")
+                return
+            cached = await compute(self.db.pool, session)
+            context.application.bot_data.setdefault("srev", {})[sid] = cached
+        items = cached["top_spots"] if kind == "srd" else cached["top_hands"]
+        if i >= len(items):
+            await query.answer("這個項目已不在清單上。")
+            return
+        from queue_feed import enqueue_one
+        result = await enqueue_one(self.db.pool, items[i]["enqueue_item"])
+        await query.answer({"inserted": "✅ 已排入佇列", "merged": "✅ 已併入佇列",
+                            "noop": "✔ 已在佇列中"}.get(result, "✅ 已排入"))
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=self._mark_button_done(query.message.reply_markup, data))
+        except telegram.error.BadRequest as exc:
+            if "Message is not modified" not in str(exc):
+                self.log.exception("session-review enqueue markup refresh failed")
+
     async def _queue_expand_review(self, update: Update,
                                    context: ContextTypes.DEFAULT_TYPE, queue_id: int):
         """qex:<queue_id> — show a review hand's graded decisions as a sub-menu;
@@ -1845,6 +1914,10 @@ class PokerWizardBot:
         if data.startswith("qad:"):
             _, qid, did = data.split(":")
             await self._queue_add_manual(update, context, int(qid), int(did))
+            return
+
+        if data.startswith("srd:") or data.startswith("srv:"):
+            await self._session_review_enqueue(update, context, data)
             return
 
         await query.answer()
@@ -2072,6 +2145,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("live", self.live_command))
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
+        self.application.add_handler(CommandHandler("review", self.review_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
@@ -2079,7 +2153,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw):"))
+                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|srd|srv):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
