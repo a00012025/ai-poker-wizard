@@ -93,28 +93,37 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     return summary, rc_v, _tail(out_v)
 
 
-async def run_pipeline(refresh_token: str, progress) -> str:
+async def run_pipeline(refresh_token: str, progress, *, allow_full_sweep: bool = True) -> str:
     """incremental ingest → verify; on mismatch escalate to a full sweep.
 
-    `progress` is an async callable taking the current stage text. Returns
-    the final result text; raises RuntimeError with a user-facing message on
-    failure.
+    `progress` is an async callable taking the current stage text. When
+    allow_full_sweep is False (a recent full sweep already proved the mismatch
+    is unfixable — GTOW-side deletions / pre-epoch hands), the escalation is
+    skipped so we don't re-run the ~350-request sweep every day for nothing.
+    Returns the final result text; raises RuntimeError with a user-facing
+    message on failure.
     """
     env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
     summary, rc_v, verify_tail = await _pass(env, progress, ("--incremental",), "攝取中")
     escalated = False
+    guard_skipped = False
     if rc_v == 2:
-        # Hands played outside the 30d incremental window (late uploads of
-        # old sessions) only surface in a full list sweep. --backfill's
-        # --since defaults to the ledger epoch (2026-03-01).
-        escalated = True
-        summary, rc_v, verify_tail = await _pass(
-            env, progress, ("--backfill",), "窗外手牌全量補齊中")
+        if allow_full_sweep:
+            # Hands played outside the 30d incremental window (late uploads of
+            # old sessions) only surface in a full list sweep. --backfill's
+            # --since defaults to the ledger epoch (2026-03-01).
+            escalated = True
+            summary, rc_v, verify_tail = await _pass(
+                env, progress, ("--backfill",), "窗外手牌全量補齊中")
+        else:
+            guard_skipped = True
     result = summary + (" · 全量補齊" if escalated else "")
     if rc_v == 2:
         # A full sweep structurally cannot repair this (GTOW-side deletions
         # or hands played before the epoch) — report it, don't hard-fail.
         result += f"\n⚠️ 對數仍不符（{verify_tail}）— 可能有 GTOW 端刪除或 epoch 前的手牌"
+        if guard_skipped:
+            result += "（24h 內已全量補齊仍不符，本次略過全量 sweep）"
     if re.search(r"\blist=0 detail=0\b", summary):
         result += "\n（沒有新手牌 — 若剛上傳，GTOW 可能還在處理，稍後再點一次）"
     return result
@@ -132,6 +141,19 @@ async def enqueue_request(pool, user_id: int) -> bool:
             "INSERT INTO gtow_ingest_requests (user_id) VALUES ($1) "
             "ON CONFLICT DO NOTHING RETURNING id", user_id)
     return row is None
+
+
+async def _recent_permanent_mismatch(pool, user_id: int) -> bool:
+    """True if this user has a done request in the last 24h whose result shows
+    a full sweep ran AND still couldn't reconcile — the signal that another
+    full sweep would be wasted effort (deferred #9)."""
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM gtow_ingest_requests "
+            "  WHERE user_id=$1 AND status='done' "
+            "    AND finished_at > now() - interval '24 hours' "
+            "    AND result LIKE '%全量補齊%' AND result LIKE '%對數仍不符%')",
+            user_id))
 
 
 async def _set(pool, req_id, **fields):
@@ -210,8 +232,9 @@ async def process_next(pool, bot, db) -> bool:
         await _set(pool, req_id, progress=text,
                    heartbeat_at=datetime.now(timezone.utc))
 
+    allow_full_sweep = not await _recent_permanent_mismatch(pool, user_id)
     try:
-        result = await run_pipeline(token, progress)
+        result = await run_pipeline(token, progress, allow_full_sweep=allow_full_sweep)
         await _finish(pool, bot, req_id, user_id, ok=True, text=result)
     except RuntimeError as e:
         await _finish(pool, bot, req_id, user_id, ok=False, text=str(e))

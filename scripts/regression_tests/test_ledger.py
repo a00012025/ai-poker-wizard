@@ -1549,6 +1549,120 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
 
 
 @test
+def test_get_access_token_force_refresh_bypasses_valid_cache():
+    """force_refresh=True re-mints even when the cached access token is still
+    valid — so the legacy 401 retry can actually replace a server-revoked (but
+    not-yet-expired) token instead of resending the same dead one (deferred #1)."""
+    import time
+    import gto_token
+    saved = (gto_token._load_tokens, gto_token._refresh_access, gto_token._jwt_exp,
+             gto_token._save_tokens, gto_token._get_or_create_keypair)
+    minted = []
+    gto_token._load_tokens = lambda: {"access": "old-cached", "refresh": "r"}
+    gto_token._jwt_exp = lambda t: time.time() + 9999      # everything valid
+    gto_token._get_or_create_keypair = lambda tokens=None: {"kp": 1}
+    gto_token._save_tokens = lambda t: None
+    def fake_refresh(r, kp=None):
+        minted.append(r)
+        return "fresh-access"
+    gto_token._refresh_access = fake_refresh
+    try:
+        assert_eq(gto_token.get_access_token(), "old-cached")     # cache hit
+        assert_eq(minted, [])
+        assert_eq(gto_token.get_access_token(force_refresh=True), "fresh-access")
+        assert_eq(minted, ["r"])                                  # forced a mint
+    finally:
+        (gto_token._load_tokens, gto_token._refresh_access, gto_token._jwt_exp,
+         gto_token._save_tokens, gto_token._get_or_create_keypair) = saved
+
+
+@test
+def test_get_token_legacy_force_remint_forces_token_refresh():
+    """Legacy path (no GTOW_REFRESH_TOKEN): _get_token(force_remint=True) must
+    push force_refresh into get_access_token, not resend the cached token
+    (deferred #1 — the 401 retry was a silent no-op in this branch)."""
+    import gtow_analyze_api as gapi
+    seen = []
+    orig_get = gapi.get_access_token
+    def fake_get(force_refresh=False):
+        seen.append(force_refresh)
+        return "acc-forced" if force_refresh else "acc-cached"
+    gapi.get_access_token = fake_get
+    os.environ.pop("GTOW_REFRESH_TOKEN", None)
+    try:
+        assert_eq(gapi._get_token(), "acc-cached")
+        assert_eq(gapi._get_token(force_remint=True), "acc-forced")
+        assert_eq(seen, [False, True])
+    finally:
+        gapi.get_access_token = orig_get
+
+
+@test
+def test_ingest_runner_pipeline_guard_skips_full_sweep_within_24h():
+    """allow_full_sweep=False (a recent full sweep already proved a permanent
+    mismatch) -> incremental only, no --backfill, warn + skip note (deferred #9:
+    don't re-run the ~350-request sweep every day for an unfixable mismatch)."""
+    import asyncio
+    from src import ingest_runner
+
+    fake_run, calls = _fake_ingest_env([
+        (lambda a, c: "--verify" in a, (2, "VERIFY MISMATCH api=10 db=8")),
+        (lambda a, c: "--incremental" in a, (0, "INGEST list=0 detail=0 decisions=0 skipped=8")),
+    ])
+    async def progress(t):
+        pass
+
+    orig = ingest_runner._run_script
+    ingest_runner._run_script = fake_run
+    try:
+        result = asyncio.run(
+            ingest_runner.run_pipeline("tok-r", progress, allow_full_sweep=False))
+    finally:
+        ingest_runner._run_script = orig
+    assert_in("對數仍不符", result)
+    assert_in("略過全量", result)
+    assert_not_in(" · 全量補齊", result)          # escalation marker absent
+    assert_eq([c for c in calls if "--backfill" in c], [])
+
+
+@test
+def test_recent_permanent_mismatch_query_scopes_to_done_24h_markers():
+    """The guard only fires on a DONE request within 24h whose result carries
+    BOTH the full-sweep marker and the still-mismatch marker (deferred #9)."""
+    import asyncio
+    from src import ingest_runner
+
+    class Conn:
+        def __init__(self, val):
+            self.val, self.q, self.args = val, None, None
+        async def fetchval(self, q, *a):
+            self.q, self.args = q, a
+            return self.val
+    class Acq:
+        def __init__(self, conn):
+            self.conn = conn
+        async def __aenter__(self):
+            return self.conn
+        async def __aexit__(self, *a):
+            return False
+    class Pool:
+        def __init__(self, val):
+            self.conn = Conn(val)
+        def acquire(self):
+            return Acq(self.conn)
+
+    p_true = Pool(True)
+    assert_eq(asyncio.run(ingest_runner._recent_permanent_mismatch(p_true, 42)), True)
+    assert_eq(p_true.conn.args, (42,))
+    assert_eq(asyncio.run(ingest_runner._recent_permanent_mismatch(Pool(False), 42)), False)
+    q = p_true.conn.q
+    assert_in("status='done'", q)
+    assert_in("24 hours", q)
+    assert_in("全量補齊", q)
+    assert_in("對數仍不符", q)
+
+
+@test
 def test_ingest_runner_surfaces_list_only_and_fallback_counts():
     import asyncio
     from src import ingest_runner

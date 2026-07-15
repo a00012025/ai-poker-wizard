@@ -169,13 +169,19 @@ def capture_browser_token() -> bool:
     return False
 
 
-def get_access_token() -> str:
-    """Get a valid access token, refreshing or re-logging in as needed."""
+def get_access_token(force_refresh: bool = False) -> str:
+    """Get a valid access token, refreshing or re-logging in as needed.
+
+    force_refresh skips the cached-access short-circuit and re-mints from the
+    refresh token — needed by the 401 retry path, since a server-revoked (but
+    not-yet-expired) access token would otherwise be returned from cache and
+    resent unchanged, making the retry a no-op.
+    """
     tokens = _load_tokens()
 
     # Check if current access token is still valid (with 60s buffer)
     access = tokens.get("access")
-    if access:
+    if access and not force_refresh:
         try:
             if _jwt_exp(access) > time.time() + 60:
                 return access
