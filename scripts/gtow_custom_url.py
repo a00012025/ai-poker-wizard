@@ -184,8 +184,17 @@ def build_custom_spot_url(
     street: str,
     action_index: int,
     pot_type: str,
+    include_board_texture: bool = False,
 ) -> str:
     """Build a GTOW custom-spot practice URL for a specific hand decision.
+
+    Queue buckets are action-line spots (pot_type × position × IP/OOP × street ×
+    facing) — they do NOT encode board texture.  So the drill defaults to
+    ``include_board_texture=False``: it pins only the action line and lets the
+    Trainer deal EVERY flop/turn/river that is consistent with that line, which
+    is what "practice this spot" means for a texture-agnostic bucket.  The board
+    is still classified below and can be emitted (``include_board_texture=True``)
+    for the future per-texture focus-group feature.
 
     Raises CustomSpotBuildError when:
       - pot_type has no fh_actions mapping
@@ -242,12 +251,16 @@ def build_custom_spot_url(
     params.append(("history_spot", str(resolved["history_spot"])))
     params.append(("fh_actions", fh_actions))
     params.append(("dialogs", _CUSTOM_DIALOGS))
-    # Emit board flags in a stable order for testability.
-    for k in ("flop_paired", "turn_paired", "river_paired",
-              "flop_suits",  "turn_suit",   "river_suit",
-              "flop_connectedness"):
-        if k in texture and texture[k]:
-            params.append((k, texture[k]))
+    # Board-texture flags narrow which boards the Trainer deals.  Omit them by
+    # default so the drill covers ALL boards for this action line (the bucket is
+    # texture-agnostic); emit only when a texture focus-group asks for it.
+    if include_board_texture:
+        # Stable order for testability.
+        for k in ("flop_paired", "turn_paired", "river_paired",
+                  "flop_suits",  "turn_suit",   "river_suit",
+                  "flop_connectedness"):
+            if k in texture and texture[k]:
+                params.append((k, texture[k]))
     params.append(("fh_hero", resolved["hero_pos"]))
     params.append(("fh_opponent", resolved["villain_pos"]))
     if resolved["flop_actions"]:

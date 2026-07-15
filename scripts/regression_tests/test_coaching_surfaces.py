@@ -495,8 +495,7 @@ def test_build_custom_spot_url_h2665():
         hand_data, street="turn", action_index=0, pot_type="SRP",
     )
 
-    # H2665's actual board 4c6h8h has 2 hearts → flush_draw (not rainbow).
-    # Turn 4h brings 3 hearts → flush + pairs the 4. No river flags (folded turn).
+    # Action line is always pinned.
     assert_in("fh_start_spot=custom_spot", url)
     assert_in("gmfs_solution_tab=ai_sols", url)
     assert_in("preflop_actions=F-F-F-F-F-R2.1-F-C", url)
@@ -506,17 +505,30 @@ def test_build_custom_spot_url_h2665():
     assert_in("fh_hero=BTN", url)
     assert_in("fh_opponent=BB", url)
     assert_in("fh_actions=SRP", url)
-    assert_in("flop_paired=not_paired", url)
-    assert_in("flop_suits=flush_draw", url)
-    assert_in("flop_connectedness=disconnected", url)
-    assert_in("turn_paired=paired", url)
-    assert_in("turn_suit=flush", url)
-    assert_true("river_paired" not in url, "river flags should be omitted when hand ended on turn")
-    assert_true("river_suit" not in url, "river flags should be omitted when hand ended on turn")
     assert_in("depth=30.125", url)
     assert_in("depth_list=30.125", url)
     assert_in("gametype=MTTGeneral", url)
     assert_in("dialogs=trainer-advanced-filter-dialog", url)
+    # Bucket is texture-agnostic → NO board flags by default, so the Trainer
+    # deals all boards consistent with this action line.
+    for flag in ("flop_paired", "flop_suits", "flop_connectedness",
+                 "turn_paired", "turn_suit", "river_paired", "river_suit"):
+        assert_true(flag not in url, f"{flag} must be omitted by default (drill all boards)")
+
+    # Opt-in (future texture focus-group) re-emits the real board's flags.
+    url_tex = build_custom_spot_url(
+        hand_data, street="turn", action_index=0, pot_type="SRP",
+        include_board_texture=True,
+    )
+    # H2665's actual board 4c6h8h has 2 hearts → flush_draw (not rainbow).
+    # Turn 4h brings 3 hearts → flush + pairs the 4. No river flags (folded turn).
+    assert_in("flop_paired=not_paired", url_tex)
+    assert_in("flop_suits=flush_draw", url_tex)
+    assert_in("flop_connectedness=disconnected", url_tex)
+    assert_in("turn_paired=paired", url_tex)
+    assert_in("turn_suit=flush", url_tex)
+    assert_true("river_paired" not in url_tex, "river flags omitted when hand ended on turn")
+    assert_true("river_suit" not in url_tex, "river flags omitted when hand ended on turn")
 
 
 @test
