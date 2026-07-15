@@ -5,6 +5,7 @@ Modes:
   --backfill --since 2026-03-01   full list sweep + full detail sweep
   --incremental                   re-sweep trailing 30 days (late-upload safe)
   --verify                        API total vs DB count since 3/1; exit 2 on mismatch
+  --backfill-skipped              fetch detail for list-only zero-loss hands
   --limit N                       cap detail fetches this run (dev/smoke)
 """
 from __future__ import annotations
@@ -25,7 +26,13 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import gtow_analyze_api as gapi
-from ledger_distill import distill_hand
+from ledger_distill import (
+    ListOnlyReconstructionError,
+    distill_hand,
+    distill_hand_from_list,
+    distill_hand_row,
+    should_skip_zeroloss_detail,
+)
 
 RAW = ROOT / "data" / "gtow_raw"
 EPOCH_SINCE = "2026-02-28T16:00:00.000Z"     # 2026-03-01 Taipei
@@ -34,7 +41,7 @@ HAND_COLS = [
     "tournament_buyin", "file_name", "site", "position", "hero_hand",
     "boards", "pot_type", "total_players", "preflop_depth_bb",
     "total_ev_loss_bb", "total_ev_loss_pct_pot", "avg_gto_score",
-    "winloss_bb", "hand_correctness", "solution_status",
+    "winloss_bb", "hand_correctness", "solution_status", "detail_status",
 ]
 DEC_COLS = [
     "gtow_hand_id", "street", "decision_idx", "source", "grader",
@@ -43,6 +50,10 @@ DEC_COLS = [
     "taken_code", "best_code", "correctness", "ev_loss_bb", "ev_loss_pct_pot",
     "taken_freq", "freq_diff", "gto_score", "hand_eq", "pot_bb", "gametype",
     "confidence", "approx_flags", "excluded", "played_at",
+    "spot_category", "spot_leaf", "spot_parent", "spot_keys",
+    "hero_cat", "villain_cat", "ip_oop", "flop_seq", "turn_seq",
+    "eff_stack", "board_suit", "board_conn", "board_paired",
+    "discarded", "limp_origin",
 ]
 
 
@@ -59,6 +70,7 @@ def _ts(v):  # ISO str -> aware datetime for asyncpg
 def _hand_vals(h: dict) -> list:
     vals = [h.get(c) for c in HAND_COLS]
     vals[1] = _ts(vals[1])
+    vals[HAND_COLS.index("detail_status")] = h.get("detail_status") or "pending"
     return vals
 
 
@@ -84,6 +96,10 @@ async def upsert_decisions(conn, decs: list[dict]):
         vals = [d.get(c) for c in DEC_COLS]
         vals[DEC_COLS.index("played_at")] = _ts(d["played_at"])
         vals[DEC_COLS.index("approx_flags")] = json.dumps(d["approx_flags"])
+        vals[DEC_COLS.index("spot_keys")] = (
+            json.dumps(d["spot_keys"]) if d.get("spot_keys") is not None else None)
+        vals[DEC_COLS.index("discarded")] = bool(d.get("discarded", False))
+        vals[DEC_COLS.index("limp_origin")] = bool(d.get("limp_origin", False))
         cols = ", ".join(DEC_COLS)
         ph = ", ".join(f"${i+1}" for i in range(len(DEC_COLS)))
         upd = ", ".join(f"{c}=EXCLUDED.{c}"
@@ -103,7 +119,6 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
                  for r in await conn.fetch("SELECT gtow_hand_id FROM ledger_hands")}
     new = known = 0
     batch: list[dict] = []
-    empty_detail = {"game_analysis": {"game_points": []}}
     for row in gapi.iter_all_hands(since_iso):
         if row["hand_id"] in known_ids:
             known += 1
@@ -113,7 +128,8 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
         lp.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(lp, "at") as f:
             f.write(json.dumps(row) + "\n")
-        hand_row, _ = distill_hand(row, empty_detail)
+        hand_row = distill_hand_row(row)
+        hand_row["detail_status"] = "pending"
         batch.append(hand_row)
         new += 1
         if len(batch) >= _LIST_BATCH:
@@ -123,11 +139,13 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     return new, known
 
 
-async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
+async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = False
+                       ) -> tuple[int, int, int, int]:
+    status = "skipped_zeroloss" if backfill_skipped else "pending"
     rows = await conn.fetch(
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
-        "WHERE NOT detail_fetched AND source='online' ORDER BY played_at")
-    fetched = ndec = skipped_nodata = 0
+        "WHERE detail_status=$1 AND source='online' ORDER BY played_at", status)
+    fetched = ndec = skipped_nodata = skipped_zeroloss = reconstruct_fallback = 0
     for r in rows:
         if limit and fetched >= limit:
             break
@@ -135,6 +153,27 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
         played = r["played_at"].isoformat()
         _, dp = raw_paths(hid, played)
         dp.parent.mkdir(parents=True, exist_ok=True)
+        lp, _ = raw_paths(hid, played)
+        list_row = _find_list_row(lp, hid)
+        if not backfill_skipped and should_skip_zeroloss_detail(list_row):
+            try:
+                _hand_row, decs = distill_hand_from_list(list_row)
+            except ListOnlyReconstructionError as exc:
+                reconstruct_fallback += 1
+                print(f"  list-only fallback {hid}: {exc}", flush=True)
+            else:
+                async with conn.transaction():
+                    await conn.execute(
+                        "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
+                    await upsert_decisions(conn, decs)
+                    await conn.execute(
+                        "UPDATE ledger_hands SET detail_fetched=false, "
+                        "detail_status='skipped_zeroloss' WHERE gtow_hand_id=$1", hid)
+                skipped_zeroloss += 1
+                ndec += len(decs)
+                if skipped_zeroloss % 500 == 0:
+                    print(f"  list-only sweep: {skipped_zeroloss}/{len(rows)}", flush=True)
+                continue
         det = gapi.hand_detail(hid)
         if det is None:
             # no retrievable analysis yet (upload still processing / forbidden /
@@ -143,14 +182,14 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
             continue
         with gzip.open(dp, "wt") as f:
             json.dump(det, f)
-        lp, _ = raw_paths(hid, played)
-        list_row = _find_list_row(lp, hid)
         hand_row, decs = distill_hand(list_row, det)
         async with conn.transaction():
             await upsert_hand(conn, hand_row)
+            await conn.execute(
+                "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
             await upsert_decisions(conn, decs)
             await conn.execute(
-                "UPDATE ledger_hands SET detail_fetched=true, raw_path=$2 "
+                "UPDATE ledger_hands SET detail_fetched=true, detail_status='fetched', raw_path=$2 "
                 "WHERE gtow_hand_id=$1", hid, str(dp.relative_to(ROOT)))
         fetched += 1
         ndec += len(decs)
@@ -159,7 +198,7 @@ async def sweep_detail(conn, limit: int | None) -> tuple[int, int]:
     if skipped_nodata:
         print(f"  detail sweep: skipped {skipped_nodata} hands with no retrievable "
               f"analysis yet (will retry next run)", flush=True)
-    return fetched, ndec
+    return fetched, ndec, skipped_zeroloss, reconstruct_fallback
 
 
 def _find_list_row(list_path: Path, hand_id: str) -> dict:
@@ -187,6 +226,7 @@ async def amain() -> int:
     ap.add_argument("--backfill", action="store_true")
     ap.add_argument("--incremental", action="store_true")
     ap.add_argument("--verify", action="store_true")
+    ap.add_argument("--backfill-skipped", action="store_true")
     ap.add_argument("--since", default="2026-03-01")
     ap.add_argument("--limit", type=int)
     a = ap.parse_args()
@@ -195,14 +235,22 @@ async def amain() -> int:
     try:
         if a.verify:
             return await verify(conn)
+        if a.backfill_skipped:
+            n_new = n_known = 0
+            n_det, n_dec, n_zero, n_fallback = await sweep_detail(
+                conn, a.limit, backfill_skipped=True)
+            print(f"INGEST list={n_new} detail={n_det} decisions={n_dec} known={n_known} "
+                  f"skipped_zeroloss={n_zero} reconstruct_fallback={n_fallback}")
+            return 0
         if a.incremental:
             since_dt = datetime.now(timezone.utc) - timedelta(days=30)
             since = since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         else:
             since = f"{a.since}T00:00:00.000Z" if "T" not in a.since else a.since
         n_new, n_known = await sweep_list(conn, since)
-        n_det, n_dec = await sweep_detail(conn, a.limit)
-        print(f"INGEST list={n_new} detail={n_det} decisions={n_dec} skipped={n_known}")
+        n_det, n_dec, n_zero, n_fallback = await sweep_detail(conn, a.limit)
+        print(f"INGEST list={n_new} detail={n_det} decisions={n_dec} known={n_known} "
+              f"skipped_zeroloss={n_zero} reconstruct_fallback={n_fallback}")
         return 0
     finally:
         await conn.close()

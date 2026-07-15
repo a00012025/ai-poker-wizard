@@ -422,6 +422,8 @@ def walk_spots(list_row: dict, detail: dict):
             spot.update({"gtow_hand_id": list_row.get("hand_id"), "hero_pos": hero,
                          "decision_idx": hero_count[street],
                          "flop_seq": street_seqs["flop"], "turn_seq": street_seqs["turn"],
+                         "acts_before": (list(preflop_before) if street == "preflop"
+                                         else list(street_acts[street])),
                          "ev_loss_bb": ev_loss, "correctness": corr,
                          "excluded": excluded, "tags": tags,
                          "played_at": list_row.get("played_at")})
@@ -525,7 +527,7 @@ def walk_spots_from_parsed(hand: dict):
             spot = _preflop_spot_base(hero, before, npl)
             spot.update({"hero_pos": hero, "decision_idx": hero_count["preflop"],
                          "flop_seq": None, "turn_seq": None,
-                         "acts_before": [], "hero_action_raw": code,
+                         "acts_before": list(before), "hero_action_raw": code,
                          "hero_size": None, "tags": dict(tags)})
             yield spot
             hero_count["preflop"] += 1
