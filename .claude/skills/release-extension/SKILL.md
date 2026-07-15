@@ -1,7 +1,6 @@
 ---
 name: release-extension
 description: Use when the Chrome extension (chrome-extension/) changed and needs to ship — packaging a new build and publishing it as a GitHub release for users to download or reload. Triggers on "發 extension release", "extension 新版本", "publish extension", "package extension", "ext-v", "extension release", "更新 extension".
-user_invocable: true
 ---
 
 # Release the Chrome Extension
@@ -11,9 +10,10 @@ Chrome Web Store. `manifest.json` has **no `update_url`**, so users do not auto-
 they download the zip from the release (or reload the unpacked folder). Every user-facing
 extension change therefore needs a fresh release, or users stay on the old build.
 
-This is separate from `bash scripts/deploy.sh` (bot + edge function + DB). Deploying the
-backend does NOT publish the extension. If a change touches both, do the backend deploy
-first (so the edge-function routes the new extension calls exist), then release the extension.
+This is separate from `bash scripts/deploy.sh` (bot + edge function + DB). The `deploy` skill
+must invoke this workflow whenever `chrome-extension/` differs from the latest `ext-v*` tag.
+If a change touches both, deploy the backend first (so new edge-function routes exist), then
+release the extension before declaring the deploy complete.
 
 ## When to Use
 
@@ -49,9 +49,10 @@ and fails loudly if one is missing — do not hand-zip around a failure.
 
 ### 3. Publish the GitHub release
 
-**Publishing to the public repo is an outward-facing action — confirm the user wants THIS
-release published before running `gh release create`.** ("Should we release?" is a question,
-not authorization.)
+An explicit request to deploy changes that include an extension diff authorizes this matching
+release; do not ask for a redundant second confirmation. For a standalone release request,
+the request itself is also authorization. Ask only when the intended version or release scope
+is genuinely ambiguous.
 
 ```bash
 gh release create ext-v${VERSION} \
@@ -89,11 +90,12 @@ Then tell the user how to update: reload the unpacked extension at `chrome://ext
 
 ## Common Mistakes
 
-- **Deploying the backend and forgetting the extension.** `deploy.sh` never touches the
-  release. Users keep the old popup until you publish `ext-v*`.
+- **Deploying the backend and forgetting the extension.** The deploy is incomplete while
+  `git diff <latest-ext-tag>..HEAD -- chrome-extension/` is non-empty and no newer `ext-v*`
+  release exists.
 - **Reusing the current version.** `gh release create` fails on a duplicate tag; bump
   `manifest.json` first.
-- **Publishing without confirmation.** The repo is public — get an explicit go-ahead for
-  the specific release before `gh release create`.
+- **Asking twice after deploy authorization.** A deploy request covering extension changes
+  already authorizes the matching public extension release.
 - **Hand-editing the zip.** Let `package_extension.sh` build it so the required-file check
   runs; a missing icon or JS file ships a broken extension.

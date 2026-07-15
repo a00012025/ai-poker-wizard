@@ -1,7 +1,6 @@
 ---
 name: deploy
 description: Use when deploying AI Poker Wizard bot to production, updating the running container, or troubleshooting deployment issues. Triggers on "deploy", "部署", "上線", "restart bot", "重啟".
-user_invocable: true
 ---
 
 # Deploy AI Poker Wizard
@@ -68,19 +67,31 @@ docker compose logs --tail=30
 docker compose logs | grep -i database
 ```
 
-### Step 5: Publish the Chrome extension (only if `chrome-extension/` changed)
+### Step 5: Mandatory Chrome extension release gate
 
 `bash scripts/deploy.sh` deploys the **bot, edge function, and DB** — it does **NOT**
 publish the Chrome extension. The extension ships as a separate GitHub release
 (`ext-vX.Y.Z`) and has no `update_url`, so users stay on the old build until you publish.
 
-If this deploy included a user-facing extension change (popup, content script, manifest),
-publish a new release **after** the backend deploy (so the new edge-function routes exist):
+After every deploy, compare the latest extension release tag with deployed `main`:
+
+```bash
+LATEST_EXT_TAG=$(gh release list --limit 100 --json tagName \
+  --jq '[.[].tagName | select(startswith("ext-v"))][0]')
+git diff --quiet "$LATEST_EXT_TAG"..HEAD -- chrome-extension/ || EXTENSION_CHANGED=1
+```
+
+If any tracked file under `chrome-extension/` changed, the deploy is **not complete** until
+a new extension release is published and its zip asset is verified. Do not limit this gate
+to changes guessed to be user-facing; any extension diff triggers it. The request to deploy
+authorizes publishing the matching extension release, so do not ask for a second confirmation.
+Publish **after** the backend deploy so any new edge-function routes already exist:
 
 > **Use the `release-extension` skill** — it covers version bump, `scripts/package_extension.sh`,
 > and `gh release create ext-v${VERSION}` with the notes template.
 
-Backend-only deploys skip this step.
+Backend-only deploys skip the release. Before reporting success, state either the published
+extension tag + asset URL or that the comparison found no extension changes.
 
 ## Database Migrations (Supabase CLI)
 
