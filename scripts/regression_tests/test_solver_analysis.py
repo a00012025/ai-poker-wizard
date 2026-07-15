@@ -71,6 +71,61 @@ def test_run_with_gto_token_clears_executor_thread_token():
     )
 
 
+@test
+def test_gto_api_env_token_mints_without_tokens_json():
+    """GTOW_REFRESH_TOKEN set -> gto_api mints access via the per-user cache and
+    NEVER touches the .tokens.json global path (which would open a 2nd GTOW
+    session and trip 'too many sessions'). Mirrors gtow_analyze_api._get_token.
+    """
+    import gto_api
+    import gto_token
+
+    minted = []
+
+    def fake_user_mint(user_id, refresh):
+        minted.append(refresh)
+        return "env-access"
+
+    orig_user = gto_token.get_user_access_token
+    orig_inval = gto_token.invalidate_user_token
+    orig_global = gto_api.get_access_token
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")  # preserve suite-wide token
+    gto_token.get_user_access_token = fake_user_mint
+    gto_token.invalidate_user_token = lambda uid: None
+    gto_api.get_access_token = lambda force_refresh=False: (_ for _ in ()).throw(
+        AssertionError(".tokens.json path must not run when GTOW_REFRESH_TOKEN is set"))
+    os.environ["GTOW_REFRESH_TOKEN"] = "owner-db-refresh"
+    try:
+        assert_eq(gto_api._get_token(), "env-access")
+        assert_eq(minted, ["owner-db-refresh"])
+    finally:
+        if orig_env is None:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        else:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
+        gto_token.get_user_access_token = orig_user
+        gto_token.invalidate_user_token = orig_inval
+        gto_api.get_access_token = orig_global
+
+
+@test
+def test_gto_api_falls_back_to_tokens_json_when_env_unset():
+    """No GTOW_REFRESH_TOKEN -> gto_api uses the legacy get_access_token path
+    (unchanged production behaviour for the main bot process)."""
+    import gto_api
+
+    orig_global = gto_api.get_access_token
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")  # preserve suite-wide token
+    gto_api.get_access_token = lambda force_refresh=False: "local-tokens-json-access"
+    os.environ.pop("GTOW_REFRESH_TOKEN", None)
+    try:
+        assert_eq(gto_api._get_token(), "local-tokens-json-access")
+    finally:
+        gto_api.get_access_token = orig_global
+        if orig_env is not None:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
+
+
 # ── Card classifier v2 Tests ──
 
 @test

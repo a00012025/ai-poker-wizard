@@ -32,10 +32,27 @@ Before deploying, ensure:
 ### Step 1: Run regression tests
 
 ```bash
-set -a && source .env && set +a && python scripts/regression_test.py
+python scripts/regression_test.py
 ```
 
-All non-API tests must pass. 429 rate-limit failures from GTO Wizard API are expected and OK to ignore.
+`regression_test.py` loads `.env` itself (python-dotenv) — do **not** wrap it in
+`set -a && source .env` (that shell form is blocked in this repo).
+
+**GTOW token for API-backed tests comes from the DB, not `.tokens.json`.** On
+startup the entry point reads the **owner's** `users.gto_refresh_token`
+(`OWNER_CHAT_ID` env → that user's row) and injects it as `GTOW_REFRESH_TOKEN`,
+so the suite mints access from the **same GTOW session the owner's browser/
+extension keeps fresh**. This is deliberate: running the suite off `.tokens.json`
+opens a *second* GTOW session, which trips GTOW's "too many sessions"
+`FORCED_LOGOUT` and kicks the owner's live browser login (and then the DB token
+too). You'll see a `[regression] GTOW token: owner … DB row` line confirming the
+shared-session path; a `… use .tokens.json` line means the DB token was
+unavailable (owner unset / no token / DB down) and API tests may fail.
+
+All non-API tests must pass. Transient GTOW API failures (429 rate-limit, or a
+`FORCED_LOGOUT` when the owner's DB token itself is stale) are expected and OK to
+ignore — refresh the owner's session (`refresh-gto-token` skill or just re-open
+the GTOW browser tab so the extension re-syncs) if the API tests must pass.
 
 ### Step 2: Commit and push changes
 
