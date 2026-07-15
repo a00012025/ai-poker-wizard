@@ -68,6 +68,20 @@ docker compose logs --tail=30
 docker compose logs | grep -i database
 ```
 
+### Step 5: Publish the Chrome extension (only if `chrome-extension/` changed)
+
+`bash scripts/deploy.sh` deploys the **bot, edge function, and DB** — it does **NOT**
+publish the Chrome extension. The extension ships as a separate GitHub release
+(`ext-vX.Y.Z`) and has no `update_url`, so users stay on the old build until you publish.
+
+If this deploy included a user-facing extension change (popup, content script, manifest),
+publish a new release **after** the backend deploy (so the new edge-function routes exist):
+
+> **Use the `release-extension` skill** — it covers version bump, `scripts/package_extension.sh`,
+> and `gh release create ext-v${VERSION}` with the notes template.
+
+Backend-only deploys skip this step.
+
 ## Database Migrations (Supabase CLI)
 
 Schema is managed by Supabase CLI. Migration files live in `supabase/migrations/`.
