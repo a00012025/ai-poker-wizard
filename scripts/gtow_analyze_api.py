@@ -63,7 +63,9 @@ _ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
 def _get_token(force_remint: bool = False) -> str:
     refresh = os.environ.get("GTOW_REFRESH_TOKEN")
     if not refresh:
-        return get_access_token()
+        # force_remint on the 401 retry must force a real re-mint here too,
+        # else get_access_token returns the same cached (revoked) token.
+        return get_access_token(force_refresh=force_remint)
     from gto_token import get_user_access_token, invalidate_user_token
     if force_remint:
         invalidate_user_token(_ENV_TOKEN_USER)
