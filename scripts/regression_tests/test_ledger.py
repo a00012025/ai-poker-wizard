@@ -163,6 +163,141 @@ def test_distill_preflop_fold_hand():
     assert_eq(hand["total_ev_loss_bb"], 0.0)
 
 
+def _list_only_row(**overrides):
+    row = {
+        "hand_id": "list-only-test", "played_at": "2026-07-15T00:00:00Z",
+        "player_position": "BB", "total_players": 3, "preflop_game_depth": 30.125,
+        "solution_status": "OK", "total_ev_loss": 0.0, "total_ev_loss_as_pot": 0.0,
+        "boards": [""], "pot_type": "Preflop", "hero_hand": "7c2d",
+        "actions_with_correctness_preflop": [
+            {"action_code": "F", "correctness": None},
+            {"action_code": "F", "correctness": None},
+            {"action_code": "X", "correctness": "BEST_MOVE"},
+        ],
+        "actions_with_correctness_flop": None,
+        "actions_with_correctness_turn": None,
+        "actions_with_correctness_river": None,
+    }
+    row.update(overrides)
+    return row
+
+
+@test
+def test_list_only_distill_preflop_fold_is_complete_and_provenanced():
+    from ledger_distill import distill_hand_from_list
+    rows = _load_fix("list_rows.json")
+    row = rows["bed8860a-442b-4478-a9b4-8acfd52b6143"]
+    hand, decs = distill_hand_from_list(row)
+    assert_eq(hand["gtow_hand_id"], row["hand_id"])
+    assert_eq(len(decs), 1)
+    d = decs[0]
+    assert_eq((d["street"], d["decision_idx"], d["taken_code"]),
+              ("preflop", 0, "F"))
+    assert_eq(d["grader"], "gtow_list")
+    assert_eq(d["best_code"], "F")
+    assert_eq(d["ev_loss_bb"], 0.0)
+    assert_eq(d["approx_flags"], ["list_only"])
+    assert_eq(d["spot_leaf"], "SB_RFI")
+    assert_eq(d["pot_type"], "unopened")
+
+
+@test
+def test_list_only_distill_preflop_3bet_line():
+    from ledger_distill import distill_hand_from_list
+    row = _list_only_row(
+        player_position="BTN", total_players=6,
+        actions_with_correctness_preflop=[
+            {"action_code": "R2", "correctness": None},
+            {"action_code": "R6", "correctness": None},
+            {"action_code": "F", "correctness": None},
+            {"action_code": "F", "correctness": "BEST_MOVE"},
+        ],
+    )
+    _, decs = distill_hand_from_list(row)
+    assert_eq(len(decs), 1)
+    assert_eq(decs[0]["spot_category"], "vsCold3bet")
+    assert_in("vsCold3bet", decs[0]["spot_leaf"])
+
+
+@test
+def test_list_only_distill_hu_postflop_reconstructs_positions_and_taxonomy():
+    from ledger_distill import distill_hand_from_list
+    row = _list_only_row(
+        player_position="BB", total_players=3, boards=["AsKd2c7h"], pot_type="SRP",
+        actions_with_correctness_preflop=[
+            {"action_code": "R2", "correctness": None},
+            {"action_code": "F", "correctness": None},
+            {"action_code": "C", "correctness": "BEST_MOVE"},
+        ],
+        actions_with_correctness_flop=[
+            {"action_code": "X", "correctness": "BEST_MOVE"},
+            {"action_code": "X", "correctness": None},
+        ],
+        actions_with_correctness_turn=[
+            {"action_code": "X", "correctness": "BEST_MOVE"},
+            {"action_code": "B", "correctness": None},
+            {"action_code": "C", "correctness": "BEST_MOVE"},
+        ],
+    )
+    _, decs = distill_hand_from_list(row)
+    assert_eq([(d["street"], d["decision_idx"], d["taken_code"]) for d in decs], [
+        ("preflop", 0, "C"), ("flop", 0, "X"),
+        ("turn", 0, "X"), ("turn", 1, "C"),
+    ])
+    assert_eq(decs[1]["spot_leaf"], "flop:SRP:BBvLP:OOP:first_to_act")
+    assert_eq(decs[3]["facing"], "vs_bet")
+
+
+@test
+def test_list_only_distill_falls_back_on_multiway_postflop_and_lossy_hand():
+    from ledger_distill import ListOnlyReconstructionError, distill_hand_from_list
+    multiway = _list_only_row(
+        player_position="BB", total_players=4, boards=["AsKd2c"], pot_type="SRP",
+        actions_with_correctness_preflop=[
+            {"action_code": "R2", "correctness": None},
+            {"action_code": "C", "correctness": None},
+            {"action_code": "C", "correctness": None},
+            {"action_code": "C", "correctness": "BEST_MOVE"},
+        ],
+        actions_with_correctness_flop=[
+            {"action_code": "X", "correctness": None},
+            {"action_code": "X", "correctness": "BEST_MOVE"},
+        ],
+    )
+    for row in (multiway, _list_only_row(total_ev_loss=0.01)):
+        try:
+            distill_hand_from_list(row)
+            assert_true(False, "expected conservative list-only fallback")
+        except ListOnlyReconstructionError:
+            pass
+
+
+@test
+def test_list_only_threshold_requires_solved_exact_zero():
+    from ledger_distill import should_skip_zeroloss_detail
+    assert_eq(should_skip_zeroloss_detail(_list_only_row()), True)
+    assert_eq(should_skip_zeroloss_detail(_list_only_row(total_ev_loss=0.000001)), False)
+    assert_eq(should_skip_zeroloss_detail(_list_only_row(total_ev_loss=None)), False)
+    assert_eq(should_skip_zeroloss_detail(_list_only_row(solution_status="NO_SOLUTION")), False)
+
+
+@test
+def test_ingest_detail_status_contract_and_backfill_mode_are_wired():
+    import inspect
+    import ledger_ingest
+    migration = (REPO_ROOT / "supabase" / "migrations" /
+                 "20260715120000_ledger_detail_status.sql").read_text()
+    assert_in("detail_status", migration)
+    assert_in("skipped_zeroloss", migration)
+    assert_in("detail_fetched THEN 'fetched'", migration)
+    assert_in("detail_status", ledger_ingest.HAND_COLS)
+    source = inspect.getsource(ledger_ingest.sweep_detail)
+    assert_in("WHERE detail_status=$1", source)
+    assert_in("backfill_skipped", source)
+    assert_in("detail_status='fetched'", source)
+    assert_in("detail_status='skipped_zeroloss'", source)
+
+
 @test
 def test_distill_honesty_rules():
     """Synthetic mutations of the fixture exercise every honesty rule (pure fn)."""
@@ -1411,6 +1546,30 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
     assert_in("list=0 detail=0", result)
     assert_in("稍後再點一次", result)
     assert_not_in("全量補齊", result)
+
+
+@test
+def test_ingest_runner_surfaces_list_only_and_fallback_counts():
+    import asyncio
+    from src import ingest_runner
+
+    summary = ("INGEST list=12 detail=1 decisions=14 known=8 "
+               "skipped_zeroloss=10 reconstruct_fallback=1")
+    fake_run, _ = _fake_ingest_env([
+        (lambda a, c: "--verify" in a, (0, "VERIFY OK api=20 db=20")),
+        (lambda a, c: "--incremental" in a, (0, summary)),
+    ])
+    async def progress(t):
+        pass
+
+    orig = ingest_runner._run_script
+    ingest_runner._run_script = fake_run
+    try:
+        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+    finally:
+        ingest_runner._run_script = orig
+    assert_in("skipped_zeroloss=10", result)
+    assert_in("reconstruct_fallback=1", result)
 
 
 @test
