@@ -76,10 +76,12 @@ function ingestUi() {
     "line-height:1.5;white-space:pre-wrap;box-shadow:0 6px 24px rgba(0,0,0,.45);";
   const button = document.createElement("button");
   button.id = "apw-ingest-button";
-  button.textContent = "♠ 同步手牌到 DB";
+  button.textContent = "♠";
+  button.title = "同步手牌到 DB";
+  button.setAttribute("aria-label", "同步手牌到 DB");
   button.style.cssText =
-    "padding:10px 16px;border:0;border-radius:999px;background:#95f4aa;" +
-    "color:#102516;font-size:13px;font-weight:700;cursor:pointer;" +
+    "width:42px;height:42px;padding:0;border:0;border-radius:50%;background:#95f4aa;" +
+    "color:#102516;font-size:20px;font-weight:700;line-height:1;cursor:pointer;" +
     "box-shadow:0 6px 24px rgba(0,0,0,.45);";
   button.addEventListener("click", runIngest);
   root.append(toast, button);
