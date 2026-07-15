@@ -1,41 +1,20 @@
 ---
 name: sync-local-token
-description: Sync local `.tokens.json` with the admin's GTO Wizard token from Supabase. Use when regression tests fail with token expiry or after the admin updates their token via `/settoken`.
+description: Deprecated alias for syncing the owner's current GTO Wizard browser token into users.gto_refresh_token. No local token file is created.
 user_invocable: true
 ---
 
-# Sync Local Token from DB
+# Sync Owner GTO Token to DB
 
-Run this command to update `.tokens.json` with the admin's token from the database:
+This skill is retained as a compatibility alias. Authentication is DB-only.
 
-```bash
-set -a && source .env && set +a && python3 -c "
-import asyncio, os, json
-from src.database import Database
-from scripts.gto_token import _refresh_access, _save_tokens
+1. In the logged-in GTO Wizard browser, open the AI Poker Wizard extension.
+2. Click **立即同步目前 GTOW token**. Manual sync force-overrides stale-iat.
+3. Verify:
 
-async def update():
-    db = Database()
-    await db.connect()
-    admin_id = int(os.getenv('ADMIN_CHAT_ID'))
-    refresh = await db.get_user_gto_token(admin_id)
-    await db.close()
-    if not refresh:
-        print('ERROR: No token in DB for admin user', admin_id)
-        return
-    access = _refresh_access(refresh)
-    if not access:
-        print('ERROR: DB token cannot be refreshed — admin needs to re-run /settoken')
-        return
-    _save_tokens({'refresh': refresh, 'access': access})
-    print('OK: .tokens.json updated with admin token from DB')
+   ```bash
+   python scripts/gto_token.py
+   ```
 
-asyncio.run(update())
-"
-```
-
-After syncing, run regression tests to verify:
-
-```bash
-set -a && source .env && set +a && python scripts/regression_test.py
-```
+If browser sync is unavailable, use the private bot command
+`/settoken <refresh>`. Do not create or synchronize a local credential file.

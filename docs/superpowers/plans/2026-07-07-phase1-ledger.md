@@ -38,7 +38,7 @@
 - **開發流程**：全程在 worktree `~/ai-poker-wizard-phase1-ledger`（branch `feat/phase1-ledger`）工作；每個 task 至少一個 commit；最後發 PR。絕不直接改 main。
 - **零新依賴**：只用 `requirements.txt` 已有的套件。
 - **Migrations**：只用 `supabase db push`，永不 raw psql 改 schema。
-- **`.tokens.json` 是 bind-mount**：只能 in-place 讀寫（`open(path, "r+")` + `truncate()`），永不整檔替換 inode。
+- **GTOW token DB-only**：refresh token 只存 `users.gto_refresh_token`；owner tooling 由 `OWNER_CHAT_ID` 解析。
 - **API 禮貌**：對 `api.gtowizard.com` 全域節流 ~2.5 rps + jitter；429/5xx 指數退避；headers 模仿 SPA（`origin: https://app.gtowizard.com`）。
 - **北極星不變量落地**：每筆決策帶 `approx_flags` 與 `excluded`（不變量 2）；一切排序用 EV 不用頻率（不變量 3）；raw JSON 永久落地本地（不變量 9）；所有統計輸出帶 n（§14.3）；降級必須可觀測（§14.2 大聲失敗）。
 - **時區**：`played_at` 是 UTC；所有使用者可見的日/週分桶用 `Asia/Taipei`。
@@ -51,7 +51,7 @@
 
 ## 已驗證的 API 事實（執行時直接引用，不需重新發現）
 
-- Base `https://api.gtowizard.com`；headers：`authorization: Bearer <access>`（`scripts/gto_token.get_access_token()` 取得，自動 refresh）+ `gwclientid: <uuid>` + `origin: https://app.gtowizard.com`。
+- Base `https://api.gtowizard.com`；headers：`authorization: Bearer <access>`（per-user/owner DB token 自動 mint）+ `gwclientid: <uuid>` + `origin: https://app.gtowizard.com`。
 - `POST /v4/hand-history/hands/`：body `{"filters": {"played_at__range": ["2026-02-28T16:00:00.000Z", null], "analyzer_game_format": "TOURNAMENT"}, "pagination": {"limit": 100, "offset": 0, "ordering": ["played_at"]}, "response_fields": [...]}` → `{"items": [...], "total": N, ...}`。`ordering` 支援 `played_at`、`-total_ev_loss`；**filter 不支援 `total_ev_loss__range`（422）**。
 - `GET /v4/hand-history/hands/{uuid}/` → 完整 detail：`game_analysis.game_points[]` 每個動作一節點；hero 決策節點有 `analysis_solved.available_actions[]`（每個動作的 `frequency/frequency_difference/correctness/ev/ev_loss/ev_loss_as_pot/gto_score/selected`）、`hand_eq`；節點另有 `real_game`（`pot`、`pot_odds`、`board`、`current_street.type` ∈ PREFLOP/FLOP/TURN/RIVER、players+stacks）、`gametype`、`depth`、`solved_game_action`（tree-snapped）；`game_analysis` 頂層有 `warning_status`、`approximation_reason`、`live_solved_from_street`、`live_solved_depth`。
 - 已知樣本（用於 fixtures 與 pinned tests）：
@@ -78,7 +78,6 @@ cd ~/ai-poker-wizard && git fetch origin main && git pull origin main
 git worktree add ~/ai-poker-wizard-phase1-ledger -b feat/phase1-ledger
 cd ~/ai-poker-wizard-phase1-ledger
 ln -s ~/ai-poker-wizard/.env .env
-ln -s ~/ai-poker-wizard/.tokens.json .tokens.json
 ln -s ~/ai-poker-wizard/.gto_cache .gto_cache
 mkdir -p data/gtow_raw/list data/gtow_raw/detail data/scorecards \
          scripts/fixtures/gtow docs/superpowers/specs docs/superpowers/plans
@@ -258,7 +257,7 @@ git commit -m "feat(ledger): ledger_* tables migration (hands/decisions/sessions
 - Test: `scripts/regression_test.py`（新增 3 個測試）
 
 **Interfaces:**
-- Consumes: `scripts/gto_token.get_access_token() -> str`（已存在）。
+- Consumes: `scripts/gto_token.get_user_access_token(user_id, refresh_token) -> str`。
 - Produces:
   - `LIST_FIELDS: list[str]`（下方完整列出）
   - `list_hands(since_iso: str, until_iso: str | None = None, offset: int = 0, limit: int = 100, ordering: list[str] | None = None, request_fn=None) -> dict`（回傳 API 原始 dict：`{items,total,...}`）
@@ -387,7 +386,7 @@ def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
 
 def _headers() -> dict:
     return {
-        "authorization": f"Bearer {get_access_token()}",
+        "authorization": f"Bearer {_get_token()}",
         "gwclientid": get_client_id(),
         "origin": ORIGIN,
         "content-type": "application/json",

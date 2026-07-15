@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gto_api import _session, _ensure_auth, API_BASE
+from gto_api import _get_with_retry, API_BASE
 
 # Cache game modes in memory
 _game_modes_cache: list[dict] | None = None
@@ -32,8 +32,7 @@ def _load_game_modes() -> list[dict]:
         return _game_modes_cache
 
     # Fetch from API
-    _ensure_auth()
-    r = _session.get(f"{API_BASE}/v4/game-modes/", timeout=30)
+    r = _get_with_retry(f"{API_BASE}/v4/game-modes/", params={}, timeout=30)
     r.raise_for_status()
     _game_modes_cache = r.json()
 

@@ -5,10 +5,10 @@
 ## 問題
 
 上傳手牌到 GTOW Analyze 後，把手牌拉進 ledger 需要手動跑 `/ingest` 或等每日
-05:00 排程；而且 ingest 依賴 `.tokens.json` 的全域 owner token，一旦使用者在
+05:00 排程；而且 ingest 曾依賴全域 owner token，一旦使用者在
 別處登入 GTOW 觸發 FORCED_LOGOUT，ingest 靜默失敗（bot 回「INGEST（無輸出）」
 還打 ✅）。要一鍵：在 GTOW 頁面點一下 → 手牌進 DB，token 永遠用使用者當下有效
-的那組，**不再讀寫 `.tokens.json`**。
+的那組，統一存入 `users.gto_refresh_token`。
 
 ## 既有基礎（v2 extension，直接沿用）
 
@@ -54,8 +54,8 @@ edge function 直接回傳既有 request id（防連點/防灌爆）。
 ### 3. `gtow_analyze_api` per-request token 模式
 
 env `GTOW_REFRESH_TOKEN` 存在時：用 `gto_token._refresh_access` + 臨時
-keypair mint access（in-memory cache，401 時 re-mint 一次），**全程不碰
-`.tokens.json`**。未設 env 時行為不變（每日排程照舊）。
+keypair mint access（in-memory cache，401 時 re-mint 一次）。未設 env 時，
+owner-run CLI 由 `OWNER_CHAT_ID` 解析 DB token；bot request 漏接 token 則 fail closed。
 
 ### 4. Bot ingest runner（`src/ingest_runner.py` + main_gemini 註冊）
 

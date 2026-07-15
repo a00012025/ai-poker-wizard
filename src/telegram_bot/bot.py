@@ -1492,7 +1492,7 @@ class PokerWizardBot:
         """Handle /ingest — owner-only: queue a GTOW Analyze pull.
 
         Enqueues a gtow_ingest_requests row; the 5s poller runs the same
-        pipeline as the extension button (per-user token, no .tokens.json)
+        pipeline as the extension button (per-user DB token)
         and sends the result as a separate message.
         """
         user_id = update.effective_user.id
@@ -1565,15 +1565,22 @@ class PokerWizardBot:
         eta_low, eta_high = _estimate_live_batch_minutes(n)
         msg = await update.message.reply_text(
             f"🃏 收到 {n} 手，解析評分中…（約 {eta_low}-{eta_high} 分鐘，依 solver 速度浮動）")
+        refresh_token = await self._get_user_refresh_token(update.effective_user.id)
+        if not refresh_token:
+            await msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
+            return
         root = Path(__file__).resolve().parent.parent.parent
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write(text)
             tmp_in = f.name
         tmp_out = tmp_in + ".json"
         try:
+            child_env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
+            child_env.pop("POKER_BOT_PROCESS", None)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "scripts/live_flow.py", "--file", tmp_in,
                 "--json-out", tmp_out, cwd=str(root),
+                env=child_env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             out, _ = await proc.communicate()
             if proc.returncode != 0 or not Path(tmp_out).exists():

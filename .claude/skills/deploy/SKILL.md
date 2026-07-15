@@ -16,10 +16,7 @@ Before deploying, ensure:
    - `SUPABASE_ACCESS_TOKEN` — Supabase personal access token (for CLI migrations)
    - `ADMIN_CHAT_ID` — admin Telegram user ID for token expiry alerts
 
-2. **`.tokens.json`** exists at project root with valid GTO Wizard tokens:
-   ```json
-   {"refresh": "eyJ...", "access": "eyJ..."}
-   ```
+2. The owner row (`OWNER_CHAT_ID`) has a valid `users.gto_refresh_token`.
 
 3. **`.game_modes_cache.json`** exists (can be empty `{}` — will populate on first use)
 
@@ -38,16 +35,13 @@ python scripts/regression_test.py
 `regression_test.py` loads `.env` itself (python-dotenv) — do **not** wrap it in
 `set -a && source .env` (that shell form is blocked in this repo).
 
-**GTOW token for API-backed tests comes from the DB, not `.tokens.json`.** On
+**GTOW token for API-backed tests comes from the DB.** On
 startup the entry point reads the **owner's** `users.gto_refresh_token`
 (`OWNER_CHAT_ID` env → that user's row) and injects it as `GTOW_REFRESH_TOKEN`,
 so the suite mints access from the **same GTOW session the owner's browser/
-extension keeps fresh**. This is deliberate: running the suite off `.tokens.json`
-opens a *second* GTOW session, which trips GTOW's "too many sessions"
-`FORCED_LOGOUT` and kicks the owner's live browser login (and then the DB token
-too). You'll see a `[regression] GTOW token: owner … DB row` line confirming the
-shared-session path; a `… use .tokens.json` line means the DB token was
-unavailable (owner unset / no token / DB down) and API tests may fail.
+extension keeps fresh**. This avoids opening a second GTOW session and triggering
+`FORCED_LOGOUT`. You'll see a `[gto-token] using owner … DB token` line confirming
+the shared-session path. Failure to resolve the DB token is fatal for API cases.
 
 All non-API tests must pass. Transient GTOW API failures (429 rate-limit, or a
 `FORCED_LOGOUT` when the owner's DB token itself is stale) are expected and OK to
@@ -56,7 +50,7 @@ the GTOW browser tab so the extension re-syncs) if the API tests must pass.
 
 ### Step 2: Commit and push changes
 
-Only if there are uncommitted changes. Do NOT commit `.env` or `.tokens.json`.
+Only if there are uncommitted changes. Do NOT commit `.env`.
 
 ### Step 3: Build and deploy
 
@@ -168,7 +162,7 @@ docker compose logs --tail=50
 ```
 
 ### GTO Wizard token expired
-Admin gets a Telegram notification. Update `.tokens.json` on the host — the file is volume-mounted, so the bot picks it up on next API call without restart.
+Re-login to GTO Wizard and use the extension sync or `/settoken`; the bot reads `users.gto_refresh_token` on the next request.
 
 ### DB connection failed
 Check `SUPABASE_CONN` in `.env`. Uses Supabase transaction pooler (port 6543, IPv4).
@@ -187,7 +181,6 @@ docker compose build && docker compose up -d
 Host                          Container (/app)
 ─────────────────────────────────────────────
 .env ──── env_file ────────→  environment vars
-.tokens.json ── volume ───→  /app/.tokens.json
 .game_modes_cache.json ───→  /app/.game_modes_cache.json
 logs/ ──── volume ────────→  /app/logs/
 ```

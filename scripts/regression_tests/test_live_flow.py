@@ -39,6 +39,85 @@ _LIVE_HAND1 = {   # Qd7d BB defends vs UTG+1 open 50bb; flop x-x; turn b3 c; riv
 
 
 @test
+def test_live_batch_subprocess_receives_owner_db_token():
+    """The owner-only /live subprocess must not rely on global file auth."""
+    import asyncio
+    import logging
+    import types
+    from src.telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+
+    class _Message:
+        text = "/live Eff 20bb hero btn open AsKd"
+
+        async def reply_text(self, *args, **kwargs):
+            return self
+
+        async def edit_text(self, *args, **kwargs):
+            return None
+
+        async def delete(self):
+            return None
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok", b""
+
+    async def fake_subprocess(*args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        out_path = Path(args[args.index("--json-out") + 1])
+        out_path.write_text('{"hands": [], "queue": [], "totals": {}}')
+        return _Proc()
+
+    fake_live = types.SimpleNamespace(
+        split_batch=lambda text: [text],
+        render_tg_html=lambda result: "ok",
+        report_buttons=lambda result: [],
+    )
+
+    async def run_case():
+        bot = PokerWizardBot.__new__(PokerWizardBot)
+        bot.log = logging.getLogger("regression-live-token")
+
+        async def get_token(user_id):
+            return "owner-db-refresh"
+
+        bot._get_user_refresh_token = get_token
+        bot._user_label = lambda update: "owner"
+        update = types.SimpleNamespace(
+            effective_user=types.SimpleNamespace(id=556028753),
+            message=_Message(),
+        )
+        await bot._process_live_batch(update, "Eff 20bb hero btn open AsKd")
+
+    orig_subprocess = asyncio.create_subprocess_exec
+    orig_live = sys.modules.get("live_flow")
+    orig_bot_flag = os.environ.get("POKER_BOT_PROCESS")
+    asyncio.create_subprocess_exec = fake_subprocess
+    sys.modules["live_flow"] = fake_live
+    os.environ["POKER_BOT_PROCESS"] = "1"
+    try:
+        asyncio.run(run_case())
+    finally:
+        asyncio.create_subprocess_exec = orig_subprocess
+        if orig_bot_flag is None:
+            os.environ.pop("POKER_BOT_PROCESS", None)
+        else:
+            os.environ["POKER_BOT_PROCESS"] = orig_bot_flag
+        if orig_live is None:
+            sys.modules.pop("live_flow", None)
+        else:
+            sys.modules["live_flow"] = orig_live
+
+    assert_eq(captured["env"]["GTOW_REFRESH_TOKEN"], "owner-db-refresh")
+    assert_true("POKER_BOT_PROCESS" not in captured["env"],
+                "child CLI must use its explicit refresh token")
+
+
+@test
 def test_live_split_batch():
     """Shorthand batches split on lines starting with 'Eff' — including the
     no-space form 'Eff17' (no word boundary between f and 1)."""

@@ -28,7 +28,7 @@ position_wrong 23→4. **99% precision now holds to ~75% coverage (was ~67%).**
 
 - **Worktree**: `/home/harry/ai-poker-wizard/.claude/worktrees/ocr-99-calibrator-first`
 - **Branch**: `worktree-ocr-99-calibrator-first` — pushed, **PR #31** open against `main`.
-- **Symlinks** (from worktree): `.env`, `.tokens.json`, `data/`, `.gto_cache/` → main repo.
+- **Symlinks** (from worktree): `.env`, `data/`, `.gto_cache/` → main repo.
 - **Keys in `.env`**: `GEMINI_API_KEY`, `OPENAI_API_KEY` (no Anthropic/xAI).
 - **GPU**: single 16GB Quadro RTX 5000, **shared with the live bot** (`python -m src.main_gemini`,
   ~0.7–1.6GB). Dumps need `OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`

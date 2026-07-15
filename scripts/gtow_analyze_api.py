@@ -20,7 +20,7 @@ from typing import Iterator
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gto_token import get_access_token
+from gto_token import TokenExpiredError
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
@@ -52,20 +52,26 @@ def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
     return cid
 
 
-# Per-request token mode: when GTOW_REFRESH_TOKEN is set (the extension-sync
-# ingest runner passes the requesting user's current token), access tokens are
-# minted from it via gto_token's per-user in-memory cache (exp-aware,
-# fingerprint-checked) and .tokens.json is never read or written. Unset ->
-# legacy global token path (scripts run against the owner's .tokens.json).
+# Per-request token mode: extension-sync passes the requesting user's token.
+# Owner-run CLI tools resolve the owner token from DB; bot requests fail closed
+# rather than silently borrowing owner credentials.
 _ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
 
 
 def _get_token(force_remint: bool = False) -> str:
+    if os.environ.get("POKER_BOT_PROCESS") == "1":
+        raise TokenExpiredError(
+            "Bot Analyze request 缺少 per-user GTO token；拒絕改用 owner token。"
+        )
     refresh = os.environ.get("GTOW_REFRESH_TOKEN")
     if not refresh:
-        # force_remint on the 401 retry must force a real re-mint here too,
-        # else get_access_token returns the same cached (revoked) token.
-        return get_access_token(force_refresh=force_remint)
+        from gto_owner_token import bootstrap_owner_db_token
+        if not bootstrap_owner_db_token(verbose=False):
+            raise TokenExpiredError(
+                "找不到 owner DB GTO token；請先綁定 owner token，或設定 "
+                "GTOW_REFRESH_TOKEN。"
+            )
+        refresh = os.environ["GTOW_REFRESH_TOKEN"]
     from gto_token import get_user_access_token, invalidate_user_token
     if force_remint:
         invalidate_user_token(_ENV_TOKEN_USER)

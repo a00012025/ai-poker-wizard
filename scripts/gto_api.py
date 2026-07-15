@@ -13,7 +13,7 @@ import requests
 
 # Allow importing gto_token from same directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gto_token import get_access_token
+from gto_token import TokenExpiredError
 from gto_cache import get as cache_get, put as cache_put, SENTINEL
 
 API_BASE = "https://api.gtowizard.com"
@@ -42,20 +42,26 @@ def clear_user_token():
     _thread_local.access_token = None
 
 
-# Per-request token mode (mirrors gtow_analyze_api._get_token): when
-# GTOW_REFRESH_TOKEN is set, mint access from it via gto_token's per-user cache
-# (exp-aware, fingerprint-checked) and never read/write .tokens.json. Unset ->
-# legacy global .tokens.json path. This lets the regression suite (and the
-# ingest subprocess) run on the owner's DB-synced token, sharing that GTOW
-# session instead of spawning a second one from .tokens.json that would trip
-# GTOW's "too many sessions" FORCED_LOGOUT and kick the user's browser.
+# Per-request token mode: subprocesses may provide GTOW_REFRESH_TOKEN. Owner-run
+# CLI tools lazily resolve the same token from DB. The Telegram bot must instead
+# have a thread-local per-user token and fails closed if a request forgot it.
 _ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
 
 
 def _get_token(force_remint: bool = False) -> str:
+    if os.environ.get("POKER_BOT_PROCESS") == "1":
+        raise TokenExpiredError(
+            "Bot solver request 缺少 per-user GTO token；拒絕改用 owner token。"
+        )
     refresh = os.environ.get("GTOW_REFRESH_TOKEN")
     if not refresh:
-        return get_access_token(force_refresh=force_remint)
+        from gto_owner_token import bootstrap_owner_db_token
+        if not bootstrap_owner_db_token(verbose=False):
+            raise TokenExpiredError(
+                "找不到 owner DB GTO token；請先綁定 owner token，或設定 "
+                "GTOW_REFRESH_TOKEN。"
+            )
+        refresh = os.environ["GTOW_REFRESH_TOKEN"]
     from gto_token import get_user_access_token, invalidate_user_token
     if force_remint:
         invalidate_user_token(_ENV_TOKEN_USER)

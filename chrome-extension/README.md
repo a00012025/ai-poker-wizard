@@ -26,8 +26,8 @@ Popup 會顯示最後成功同步時間。需要重試時可按「立即同步�
 在 GTOW 上傳手牌後，開啟 Extension popup 並點「♠ 同步手牌到 DB」：Extension
 會先把當前 token 同步上去（**手動觸發一律強制覆蓋伺服器版本** — 你當下登入中的 token
 必定有效，即使它的 iat 比較舊），再排入攝取佇列；bot 幾秒內接手，用你的
-token 跑 incremental ingest（對數不符時自動全量補齊），全程不碰
-`.tokens.json`。進度顯示在 popup，結果同時發到 Telegram。
+token 跑 incremental ingest（對數不符時自動全量補齊）。進度顯示在 popup，
+結果同時發到 Telegram。
 若剛上傳完顯示「沒有新手牌」，是 GTOW 還在處理檔案，稍後再點一次即可。
 Telegram `/devices` 可查看已配對瀏覽器；`/revoke <裝置ID>` 可撤銷單一裝置；
 `/logout` 會移除 GTOW token 並撤銷所有已配對裝置。

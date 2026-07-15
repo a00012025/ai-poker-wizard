@@ -47,6 +47,7 @@ tests/snapshots/*/gto_text.txt
 tests/snapshots/*/gto_compact.txt
 tests/snapshots/gto_cache/
 .browser-profile/
+# Legacy credential-file tombstone: never allow an old local secret into git.
 .tokens.json
 scripts/_tmp.py
 

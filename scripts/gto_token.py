@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
-"""GTO Wizard token management.
-
-Stores refresh token locally, auto-refreshes access tokens.
-Falls back to browser login if refresh fails.
-"""
+"""Per-user GTO Wizard access-token minting and in-memory caching."""
 import hashlib
 import json
 import logging
-import subprocess
-import sys
 import time
-from pathlib import Path
 
 import requests
 
 log = logging.getLogger(__name__)
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_TOKEN_FILE = _PROJECT_ROOT / ".tokens.json"
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
@@ -26,16 +16,6 @@ ORIGIN = "https://app.gtowizard.com"
 class TokenExpiredError(Exception):
     """Raised when GTO Wizard tokens are expired and cannot be refreshed automatically."""
     pass
-
-
-def _load_tokens() -> dict:
-    if _TOKEN_FILE.exists():
-        return json.loads(_TOKEN_FILE.read_text())
-    return {}
-
-
-def _save_tokens(data: dict):
-    _TOKEN_FILE.write_text(json.dumps(data, indent=2))
 
 
 def _jwt_exp(token: str) -> int:
@@ -88,130 +68,6 @@ def _refresh_access(refresh_token: str, signing_keypair: dict | None = None) -> 
     return None
 
 
-def _browser_login() -> str | None:
-    """Open browser for manual login, extract refresh token from localStorage."""
-    print("需要登入 GTO Wizard，正在開啟瀏覽器...", file=sys.stderr)
-    subprocess.run(["agent-browser", "close"], capture_output=True)
-    subprocess.run(
-        ["agent-browser", "--session-name", "gto-wizard", "--headed",
-         "open", f"{ORIGIN}/solutions"],
-        capture_output=True, timeout=30,
-    )
-    print("請在瀏覽器中登入 GTO Wizard，完成後按 Enter...", file=sys.stderr)
-    input()
-    result = subprocess.run(
-        ["agent-browser", "--session-name", "gto-wizard",
-         "eval", "localStorage.getItem('user_refresh')"],
-        capture_output=True, text=True, timeout=15,
-    )
-    token = result.stdout.strip().strip('"')
-    if token and token.startswith("eyJ"):
-        return token
-    return None
-
-
-def ensure_session() -> bool:
-    """Check if GTO Wizard session can be refreshed. Opens browser if needed.
-
-    Returns True if session is valid.
-    Returns False if browser login is needed (browser has been opened).
-    """
-    tokens = _load_tokens()
-
-    # Check access token
-    access = tokens.get("access")
-    if access:
-        try:
-            if _jwt_exp(access) > time.time() + 60:
-                return True
-        except Exception:
-            pass
-
-    # Try refresh
-    refresh = tokens.get("refresh")
-    if refresh:
-        try:
-            if _jwt_exp(refresh) > time.time():
-                keypair = _get_or_create_keypair(tokens)
-                access = _refresh_access(refresh, keypair)
-                if access:
-                    tokens["access"] = access
-                    tokens["signing_keypair"] = keypair
-                    _save_tokens(tokens)
-                    return True
-        except Exception:
-            pass
-
-    # Refresh token expired
-    return False
-
-
-def capture_browser_token() -> bool:
-    """Try to capture refresh token from browser after user logs in.
-
-    Returns True if token was captured and session is now valid.
-    """
-    try:
-        result = subprocess.run(
-            ["agent-browser", "--session-name", "gto-wizard",
-             "eval", "localStorage.getItem('user_refresh')"],
-            capture_output=True, text=True, timeout=15,
-        )
-        token = result.stdout.strip().strip('"')
-        if token and token.startswith("eyJ"):
-            keypair = _get_or_create_keypair()
-            access = _refresh_access(token, keypair)
-            if access:
-                _save_tokens({"refresh": token, "access": access, "signing_keypair": keypair})
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def get_access_token(force_refresh: bool = False) -> str:
-    """Get a valid access token, refreshing or re-logging in as needed.
-
-    force_refresh skips the cached-access short-circuit and re-mints from the
-    refresh token — needed by the 401 retry path, since a server-revoked (but
-    not-yet-expired) access token would otherwise be returned from cache and
-    resent unchanged, making the retry a no-op.
-    """
-    tokens = _load_tokens()
-
-    # Check if current access token is still valid (with 60s buffer)
-    access = tokens.get("access")
-    if access and not force_refresh:
-        try:
-            if _jwt_exp(access) > time.time() + 60:
-                return access
-        except Exception:
-            pass
-
-    # Try refresh
-    refresh = tokens.get("refresh")
-    if refresh:
-        try:
-            if _jwt_exp(refresh) < time.time():
-                refresh = None  # expired
-        except Exception:
-            refresh = None
-
-    if refresh:
-        keypair = _get_or_create_keypair(tokens)
-        access = _refresh_access(refresh, keypair)
-        if access:
-            tokens["access"] = access
-            tokens["signing_keypair"] = keypair
-            _save_tokens(tokens)
-            return access
-
-    # Refresh failed — raise error instead of browser login (container-safe)
-    raise TokenExpiredError(
-        "GTO Wizard token 過期，無法自動刷新。請手動更新 .tokens.json"
-    )
-
-
 # ── Per-user token management ──
 
 _user_token_cache: dict[int, tuple[str, float, str]] = {}
@@ -253,5 +109,10 @@ def invalidate_user_token(user_id: int):
 
 
 if __name__ == "__main__":
-    token = get_access_token()
-    print(token)
+    import os
+    from gto_owner_token import bootstrap_owner_db_token
+
+    if not bootstrap_owner_db_token():
+        raise SystemExit(1)
+    access = get_user_access_token(-1, os.environ["GTOW_REFRESH_TOKEN"])
+    print(f"OK: owner DB token minted access (length={len(access)})")

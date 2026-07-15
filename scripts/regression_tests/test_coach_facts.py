@@ -701,6 +701,7 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
     restore the context (and last_hand_ids) so the follow-up resolves.
     """
     import asyncio as _asyncio
+    import threading
     import analyze_hand
     from gemini_session import GeminiSessionManager
 
@@ -716,17 +717,26 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
 
     sentinel_ctx = {"hero_position": "BB", "hero_hand": "T9s",
                     "solutions": [{"ok": True}]}
+    calls = []
     orig = analyze_hand.analyze_hand_full
-    analyze_hand.analyze_hand_full = lambda hand: sentinel_ctx
+
+    def fake_analyze(hand):
+        calls.append(("analyze", threading.get_ident()))
+        return sentinel_ctx
+
+    analyze_hand.analyze_hand_full = fake_analyze
     try:
         s = GeminiSessionManager.__new__(GeminiSessionManager)
         s.hand_contexts = {}
         s.last_hand_ids = {}
         s.db = _FakeDB()
-        s._setup_user_token = lambda *a, **k: None
-        s._clear_user_token = lambda *a, **k: None
+        s._setup_user_token = lambda *a, **k: calls.append(
+            ("setup", threading.get_ident()))
+        s._clear_user_token = lambda *a, **k: calls.append(
+            ("clear", threading.get_ident()))
         s._logger = logging.getLogger("regression-rehydrate")
 
+        event_loop_thread = threading.get_ident()
         ok = _asyncio.run(s._ensure_hand_context(
             42, user_id=1, refresh_token="tok"))
 
@@ -736,6 +746,13 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
         assert_eq(s.last_hand_ids.get(42), "H3515",
                   "last_hand_ids restored for tool-call tagging")
         assert_eq(s.db.calls, 1, "DB queried exactly once")
+        assert_eq([name for name, _ in calls], ["setup", "analyze", "clear"],
+                  "worker sets, uses, then clears the request token")
+        worker_threads = {thread_id for _, thread_id in calls}
+        assert_eq(len(worker_threads), 1,
+                  "setup/analyze/clear all run in the same worker thread")
+        assert_true(event_loop_thread not in worker_threads,
+                    "token setup must not happen on the event-loop thread")
 
         # Idempotent: a second call with context present must not re-query.
         ok2 = _asyncio.run(s._ensure_hand_context(

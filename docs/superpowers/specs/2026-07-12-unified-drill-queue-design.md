@@ -221,7 +221,7 @@ python scripts/queue_feed.py --scan [--window-days 60] [--dry-run]   # dry-run �
 
 - 開發流程照 repo 規範：worktree + branch（建議 `feat/unified-drill-queue`）→ PR。
 - 本 spec 檔隨實作 PR 一起 commit。
-- `.env`/`.tokens.json` symlink 進 worktree；regression 的 `.gto_cache` 注意
+- `.env` symlink 進 worktree；regression 的 `.gto_cache` 注意
   agent memory `worktree-gto-cache`（`cp -n` 不能 symlink）。
 - DB 操作全走 migration + `supabase db push`（禁 raw psql DDL）。
 - bot 改動屬於 `src/telegram_bot/bot.py`（非核心分析檔），但 scorecard.py 若改到

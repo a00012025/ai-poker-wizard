@@ -4,7 +4,6 @@ services:
     env_file: .env
     volumes:
       - ./logs:/app/logs
-      - ./.tokens.json:/app/.tokens.json
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
       # GTOW raw hand-detail archive: read by the weekly queue scan to build
       # review-item /solutions Study links; also persists the daily ingest's

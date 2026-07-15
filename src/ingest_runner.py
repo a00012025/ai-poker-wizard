@@ -4,8 +4,8 @@
 The Chrome extension enqueues `gtow_ingest_requests` rows through the
 gtow-sync Edge Function (device-authenticated); this module polls the queue
 every 5s, runs the ingest pipeline with the requesting user's own GTOW
-refresh token (subprocess env GTOW_REFRESH_TOKEN — `.tokens.json` is never
-read or written), streams subprocess progress back onto the row (which also
+refresh token (subprocess env GTOW_REFRESH_TOKEN), streams subprocess progress
+back onto the row (which also
 serves as the liveness heartbeat), and sends the final result over Telegram.
 
 The daily 05:00 scheduled ingest and /ingest both enqueue a row here instead
@@ -37,6 +37,8 @@ _last_expire_check = 0.0
 
 async def _run_script(env: dict, *script_args, on_line=None) -> tuple[int, str]:
     """Run a repo script, streaming stdout lines to on_line; return (rc, tail)."""
+    env = dict(env)
+    env.pop("POKER_BOT_PROCESS", None)
     proc = await asyncio.create_subprocess_exec(
         sys.executable, *script_args, cwd=str(ROOT), env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)

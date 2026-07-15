@@ -72,11 +72,8 @@ def test_run_with_gto_token_clears_executor_thread_token():
 
 
 @test
-def test_gto_api_env_token_mints_without_tokens_json():
-    """GTOW_REFRESH_TOKEN set -> gto_api mints access via the per-user cache and
-    NEVER touches the .tokens.json global path (which would open a 2nd GTOW
-    session and trip 'too many sessions'). Mirrors gtow_analyze_api._get_token.
-    """
+def test_gto_api_env_token_mints_from_shared_refresh():
+    """GTOW_REFRESH_TOKEN mints access from the shared DB/browser session."""
     import gto_api
     import gto_token
 
@@ -88,12 +85,9 @@ def test_gto_api_env_token_mints_without_tokens_json():
 
     orig_user = gto_token.get_user_access_token
     orig_inval = gto_token.invalidate_user_token
-    orig_global = gto_api.get_access_token
     orig_env = os.environ.get("GTOW_REFRESH_TOKEN")  # preserve suite-wide token
     gto_token.get_user_access_token = fake_user_mint
     gto_token.invalidate_user_token = lambda uid: None
-    gto_api.get_access_token = lambda force_refresh=False: (_ for _ in ()).throw(
-        AssertionError(".tokens.json path must not run when GTOW_REFRESH_TOKEN is set"))
     os.environ["GTOW_REFRESH_TOKEN"] = "owner-db-refresh"
     try:
         assert_eq(gto_api._get_token(), "env-access")
@@ -105,25 +99,163 @@ def test_gto_api_env_token_mints_without_tokens_json():
             os.environ["GTOW_REFRESH_TOKEN"] = orig_env
         gto_token.get_user_access_token = orig_user
         gto_token.invalidate_user_token = orig_inval
-        gto_api.get_access_token = orig_global
 
 
 @test
-def test_gto_api_falls_back_to_tokens_json_when_env_unset():
-    """No GTOW_REFRESH_TOKEN -> gto_api uses the legacy get_access_token path
-    (unchanged production behaviour for the main bot process)."""
+def test_gto_api_bootstraps_owner_db_token_when_env_unset():
+    """Owner-run tooling resolves the shared DB refresh token lazily."""
     import gto_api
+    import gto_owner_token
+    import gto_token
 
-    orig_global = gto_api.get_access_token
-    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")  # preserve suite-wide token
-    gto_api.get_access_token = lambda force_refresh=False: "local-tokens-json-access"
+    orig_bootstrap = gto_owner_token.bootstrap_owner_db_token
+    orig_user = gto_token.get_user_access_token
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
+    orig_bot = os.environ.get("POKER_BOT_PROCESS")
+    gto_owner_token.bootstrap_owner_db_token = lambda verbose=False: (
+        os.environ.__setitem__("GTOW_REFRESH_TOKEN", "owner-db-refresh") or True)
+    gto_token.get_user_access_token = lambda user_id, refresh: "owner-db-access"
     os.environ.pop("GTOW_REFRESH_TOKEN", None)
+    os.environ.pop("POKER_BOT_PROCESS", None)
     try:
-        assert_eq(gto_api._get_token(), "local-tokens-json-access")
+        assert_eq(gto_api._get_token(), "owner-db-access")
     finally:
-        gto_api.get_access_token = orig_global
+        gto_owner_token.bootstrap_owner_db_token = orig_bootstrap
+        gto_token.get_user_access_token = orig_user
         if orig_env is not None:
             os.environ["GTOW_REFRESH_TOKEN"] = orig_env
+        else:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        if orig_bot is not None:
+            os.environ["POKER_BOT_PROCESS"] = orig_bot
+
+
+@test
+def test_gto_api_bot_process_fails_closed_without_request_token():
+    """A missed per-user wiring path in the bot must never borrow owner auth."""
+    import gto_api
+    from gto_token import TokenExpiredError
+
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
+    orig_bot = os.environ.get("POKER_BOT_PROCESS")
+    os.environ["GTOW_REFRESH_TOKEN"] = "must-not-be-used-in-bot"
+    os.environ["POKER_BOT_PROCESS"] = "1"
+    try:
+        try:
+            gto_api._get_token()
+            assert_true(False, "bot auth without a request token must fail")
+        except TokenExpiredError as exc:
+            assert_in("per-user", str(exc))
+    finally:
+        if orig_env is not None:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
+        else:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        if orig_bot is None:
+            os.environ.pop("POKER_BOT_PROCESS", None)
+        else:
+            os.environ["POKER_BOT_PROCESS"] = orig_bot
+
+
+@test
+def test_gto_token_legacy_file_api_removed():
+    """The legacy file-backed auth surface is removed, not merely unused."""
+    import gto_token
+
+    for name in ("_TOKEN_FILE", "_load_tokens", "_save_tokens",
+                 "get_access_token", "ensure_session", "capture_browser_token"):
+        assert_true(not hasattr(gto_token, name), f"legacy symbol removed: {name}")
+
+
+@test
+def test_owner_token_bootstrap_reads_configured_owner_from_db():
+    """CLI bootstrap selects OWNER_CHAT_ID and exports its DB refresh token."""
+    import gto_owner_token
+
+    queries = []
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, args=None):
+            queries.append((" ".join(sql.split()), args))
+
+        def fetchone(self):
+            return ("owner-refresh",)
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def cursor(self):
+            return _Cursor()
+
+    orig_connect = gto_owner_token.psycopg2.connect
+    orig_conn = os.environ.get("SUPABASE_CONN")
+    orig_owner = os.environ.get("OWNER_CHAT_ID")
+    orig_refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    gto_owner_token.psycopg2.connect = lambda *a, **k: _Conn()
+    os.environ["SUPABASE_CONN"] = "postgresql://db"
+    os.environ["OWNER_CHAT_ID"] = "556028753"
+    os.environ.pop("GTOW_REFRESH_TOKEN", None)
+    try:
+        assert_true(gto_owner_token.bootstrap_owner_db_token(verbose=False))
+        assert_eq(os.environ["GTOW_REFRESH_TOKEN"], "owner-refresh")
+        assert_eq(queries[-1][1], (556028753,))
+    finally:
+        gto_owner_token.psycopg2.connect = orig_connect
+        for key, value in (("SUPABASE_CONN", orig_conn),
+                           ("OWNER_CHAT_ID", orig_owner),
+                           ("GTOW_REFRESH_TOKEN", orig_refresh)):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@test
+def test_icm_game_modes_fetch_uses_scoped_gto_request():
+    """A missing disk cache must respect thread-local/per-request auth."""
+    import tempfile
+    import icm_modes
+
+    seen = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"name": "ICM-test", "game_modes": []}]
+
+    def fake_get(url, params, timeout):
+        seen.append((url, params, timeout))
+        return _Response()
+
+    orig_cache_file = icm_modes._CACHE_FILE
+    orig_cache = icm_modes._game_modes_cache
+    orig_get = getattr(icm_modes, "_get_with_retry", None)
+    with tempfile.TemporaryDirectory() as td:
+        icm_modes._CACHE_FILE = Path(td) / "missing-cache.json"
+        icm_modes._game_modes_cache = None
+        icm_modes._get_with_retry = fake_get
+        try:
+            assert_eq(icm_modes._load_game_modes()[0]["name"], "ICM-test")
+            assert_eq(seen[0][1], {})
+        finally:
+            icm_modes._CACHE_FILE = orig_cache_file
+            icm_modes._game_modes_cache = orig_cache
+            if orig_get is None:
+                delattr(icm_modes, "_get_with_retry")
+            else:
+                icm_modes._get_with_retry = orig_get
 
 
 # ── Card classifier v2 Tests ──

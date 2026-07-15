@@ -28,7 +28,9 @@ TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 async def _run_script(*script_args) -> tuple[int, str]:
     """Run a repo script as a subprocess from the repo root; return (rc, tail)."""
     from src.ingest_runner import _run_script as _run
-    return await _run(dict(os.environ), *script_args)
+    env = dict(os.environ)
+    env.pop("POKER_BOT_PROCESS", None)  # child is owner-run tooling, not a request
+    return await _run(env, *script_args)
 
 
 async def _daily_ledger_ingest_job(context):
@@ -36,8 +38,7 @@ async def _daily_ledger_ingest_job(context):
 
     The 5s queue poller runs it with the owner's extension-synced token
     (users.gto_refresh_token) — same single-flight path as the extension
-    button and /ingest, so it survives a FORCED_LOGOUT of .tokens.json and
-    can't race a user-triggered ingest.
+    button and /ingest, so it can't race a user-triggered ingest.
     """
     from ledger_service import resolve_owner_chat_id
     from src.ingest_runner import enqueue_request
@@ -183,6 +184,10 @@ async def post_shutdown(application):
 
 def main():
     print("AI Poker Wizard (Gemini) starting...")
+
+    # Production requests must carry the requesting user's DB token. This flag
+    # makes any missed wiring path fail closed instead of borrowing owner auth.
+    os.environ["POKER_BOT_PROCESS"] = "1"
 
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:

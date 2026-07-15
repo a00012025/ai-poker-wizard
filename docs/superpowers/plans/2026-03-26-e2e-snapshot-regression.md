@@ -269,7 +269,7 @@ Usage:
     python scripts/snapshot_test.py --set-expected H2489 '{"hero_hand":"T9s",...}'
                                                       # Set corrected expected_json
 
-Requires: SUPABASE_CONN env var, valid GTO Wizard token (.tokens.json).
+Requires: `SUPABASE_CONN` and a valid owner `users.gto_refresh_token` row.
 """
 import asyncio
 import json
