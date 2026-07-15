@@ -34,14 +34,14 @@ def _sample(empty: bool = False) -> dict:
         "top_hands": [] if empty else [
             {"combo": "T♠9♠", "boards": "8h7c2d5sQc", "desc": "turn barrel",
              "max_ev": 3.4, "total_ev": 3.4,
-             "hand_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
-             "review_url": "https://app.gtowizard.com/solutions?y=1", "enqueue_item": {}},
+             "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
+             "enqueue_item": {}},
             {"combo": "A♥Q♦", "boards": "KsJd4c9h", "desc": "面對 3bet fold",
-             "max_ev": 2.6, "total_ev": 2.6, "hand_url": "https://app.gtowizard.com/a",
-             "review_url": "https://app.gtowizard.com/b", "enqueue_item": {}},
+             "max_ev": 2.6, "total_ev": 2.6,
+             "exact_url": "https://app.gtowizard.com/a", "enqueue_item": {}},
             {"combo": "K♦K♥", "boards": "Ac8s3s7d2h", "desc": "river call 太寬",
-             "max_ev": 1.8, "total_ev": 1.8, "hand_url": "https://app.gtowizard.com/c",
-             "review_url": "https://app.gtowizard.com/d", "enqueue_item": {}},
+             "max_ev": 1.8, "total_ev": 1.8,
+             "exact_url": "https://app.gtowizard.com/c", "enqueue_item": {}},
         ],
         "honesty": {"discarded_n": 6, "low_conf_n": 3},
         "empty": empty,
@@ -84,13 +84,18 @@ def test_session_review_no_trend_no_percentile():
 
 @test
 def test_session_review_deliberate_enqueue_only():
-    """No 全部排入 batch shortcut — adds are per-item deliberate (§5.10)."""
+    """No 全部排入 batch shortcut, no skip button — adds are per-item deliberate
+    (§5.10); review link points at the exact hand (owner request)."""
     out = sr.render_tg(_sample())
     labels = [b["text"] for b in _all_buttons(out["buttons"])]
     assert_true(not any("全部" in t for t in labels), f"unexpected batch button: {labels}")
+    assert_true(not any("略過" in t for t in labels), f"skip button must be gone: {labels}")
     assert_true(any("排入佇列" in t for t in labels), "missing spot enqueue button")
-    assert_true(any(t == "📖 復盤" for t in labels), "missing hand review button")
-    assert_true(any("略過" in t for t in labels), "missing skip button")
+    assert_true(any("復盤" in t for t in labels), "missing hand review button")
+    # every review button links to the exact hand_id__in filter, not a day range
+    review_btns = [b for b in _all_buttons(out["buttons"]) if "復盤" in b["text"]]
+    assert_true(review_btns and all("url" in b for b in review_btns),
+                "review buttons must be exact-hand URL links")
 
 
 @test
@@ -100,7 +105,7 @@ def test_session_review_callback_data_telegram_safe():
         cb = b.get("callback_data")
         if cb is not None:
             assert_true(len(cb.encode()) <= 64, f"callback_data too long: {cb}")
-            assert_true(cb.split(":")[0] in {"srd", "srv", "srx"}, f"bad callback: {cb}")
+            assert_true(cb.split(":")[0] in {"srd", "srv"}, f"bad callback: {cb}")
 
 
 @test
@@ -108,7 +113,5 @@ def test_session_review_empty_session():
     out = sr.render_tg(_sample(empty=True))
     assert_in("沒有值得復盤的漏損", out["html"])
     assert_in("不是進步/退步結論", out["html"])
-    # only the skip button, nothing to enqueue
-    btns = _all_buttons(out["buttons"])
-    assert_eq(len(btns), 1)
-    assert_in("略過", btns[0]["text"])
+    # nothing to enqueue, no skip button → no buttons at all
+    assert_eq(len(_all_buttons(out["buttons"])), 0)

@@ -157,21 +157,24 @@ async def _hand_items(conn, session_id: int) -> list[dict]:
             row["raw_path"] = meta["raw_path"]
             row["hero_pos"] = meta["position"] or row.get("hero_pos")
             row["preflop_depth_bb"] = meta["preflop_depth_bb"]
+        # Exact-hand Analyze filter — the same reliable `hand_id__in` link the
+        # queue's 📚 來源 sub-menu uses. Owner-preferred over the /solutions Study
+        # node, which falls back to a day-range table when a low-loss hand has no
+        # archived detail JSON (PR #122 skips detail for reconstructable hands).
         hand_urls = qf.gtow_analyze_hands_urls([row["ref_hand_id"]])
-        hand_url = hand_urls[0][0] if hand_urls else None
+        exact_url = hand_urls[0][0] if hand_urls else None
         out.append({
             "combo": pretty_hand(row.get("hero_hand")),
             "boards": row.get("boards") or "",
             "desc": hand_desc(row),
             "max_ev": round(float(row.get("max_ev") or 0.0), 1),
             "total_ev": round(float(row["total_ev"]), 1),
-            "hand_url": hand_url,
-            "review_url": qf.review_url(row),
+            "exact_url": exact_url,
             "enqueue_item": {
                 "kind": "review", "added_by": "session", "source": "online",
                 "ref_hand_id": row["ref_hand_id"], "spot_leaf": row.get("spot_leaf"),
                 "spot_category": row.get("spot_category"),
-                "label": qf.review_label(row), "review_url": qf.review_url(row),
+                "label": qf.review_label(row), "review_url": exact_url,
                 "review_anchor_url": None, "review_anchor_street": None,
                 "source_hands": qf._as_list(row["source_hands"]),
                 "total_ev_loss_bb": round(float(row["total_ev"]), 4),
@@ -245,7 +248,7 @@ def render_tg(d: dict) -> dict:
     if d["empty"]:
         L.append(f"這場 <b>{d['n_hands']}</b> 手，幾乎都打對了 — 沒有值得復盤的漏損 👍")
         L.append("（單場數字噪音大，這是「這場長怎樣」，不是進步/退步結論）")
-        return {"html": "\n".join(L), "buttons": [[_skip_btn(sid)]]}
+        return {"html": "\n".join(L), "buttons": []}
 
     L.append(f"這場 <b>{d['n_hands']}</b> 手，平均 <b>{d['per100']:.1f} bb/100 決策</b>，"
              f"本場合計漏 <b>{d['total_bb']:.1f} bb</b>。")
@@ -277,10 +280,8 @@ def render_tg(d: dict) -> dict:
         for i, h in enumerate(d["top_hands"]):
             m = marks[i] if i < len(marks) else f"#{i+1}"
             row = []
-            if h.get("hand_url"):
-                row.append({"text": f"{m} 手牌", "url": h["hand_url"]})
-            if h.get("review_url"):
-                row.append({"text": "📖 復盤", "url": h["review_url"]})
+            if h.get("exact_url"):
+                row.append({"text": f"{m} 📖 復盤", "url": h["exact_url"]})
             row.append({"text": "📥 排入", "callback_data": f"srv:{sid}:{i}"})
             buttons.append(row)
 
@@ -294,12 +295,7 @@ def render_tg(d: dict) -> dict:
     L.append("")
     L.append(" · ".join(caveat))
 
-    buttons.append([_skip_btn(sid)])
     return {"html": "\n".join(L), "buttons": buttons}
-
-
-def _skip_btn(sid: int) -> dict:
-    return {"text": "🔕 這場略過", "callback_data": f"srx:{sid}"}
 
 
 # ── CLI (dry-run: no send, no enqueue) ─────────────────────────────────────────
