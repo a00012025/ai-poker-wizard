@@ -3,6 +3,7 @@
 
 Pure HTTP calls — no browser needed.
 """
+import os
 import threading
 import time
 import sys
@@ -41,8 +42,28 @@ def clear_user_token():
     _thread_local.access_token = None
 
 
+# Per-request token mode (mirrors gtow_analyze_api._get_token): when
+# GTOW_REFRESH_TOKEN is set, mint access from it via gto_token's per-user cache
+# (exp-aware, fingerprint-checked) and never read/write .tokens.json. Unset ->
+# legacy global .tokens.json path. This lets the regression suite (and the
+# ingest subprocess) run on the owner's DB-synced token, sharing that GTOW
+# session instead of spawning a second one from .tokens.json that would trip
+# GTOW's "too many sessions" FORCED_LOGOUT and kick the user's browser.
+_ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
+
+
+def _get_token(force_remint: bool = False) -> str:
+    refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    if not refresh:
+        return get_access_token(force_refresh=force_remint)
+    from gto_token import get_user_access_token, invalidate_user_token
+    if force_remint:
+        invalidate_user_token(_ENV_TOKEN_USER)
+    return get_user_access_token(_ENV_TOKEN_USER, refresh)
+
+
 def _ensure_auth():
-    _session.headers["authorization"] = f"Bearer {get_access_token()}"
+    _session.headers["authorization"] = f"Bearer {_get_token()}"
 
 
 def _get_with_retry(url: str, params: dict, timeout: int = _TIMEOUT) -> requests.Response:
