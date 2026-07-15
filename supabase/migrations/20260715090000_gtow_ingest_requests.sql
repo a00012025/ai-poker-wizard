@@ -12,6 +12,7 @@ CREATE TABLE public.gtow_ingest_requests (
   result text,
   requested_at timestamptz NOT NULL DEFAULT now(),
   started_at timestamptz,
+  heartbeat_at timestamptz,        -- refreshed on every progress write
   finished_at timestamptz
 );
 
@@ -20,6 +21,11 @@ CREATE INDEX gtow_ingest_requests_pending_idx
   WHERE status IN ('pending', 'running');
 CREATE INDEX gtow_ingest_requests_user_idx
   ON public.gtow_ingest_requests (user_id, requested_at DESC);
+-- At most one open request per user; makes enqueue dedupe atomic
+-- (targetless ON CONFLICT DO NOTHING catches this partial index too).
+CREATE UNIQUE INDEX gtow_ingest_requests_one_open_per_user_idx
+  ON public.gtow_ingest_requests (user_id)
+  WHERE status IN ('pending', 'running');
 
 ALTER TABLE public.gtow_ingest_requests ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.gtow_ingest_requests FROM anon, authenticated;
@@ -48,6 +54,18 @@ BEGIN
     RAISE EXCEPTION 'DEVICE_UNAUTHORIZED' USING ERRCODE = 'P0001';
   END IF;
 
+  -- Atomic dedupe: the partial unique index (one open request per user)
+  -- turns a concurrent double-trigger into a no-op insert we then re-read.
+  INSERT INTO public.gtow_ingest_requests (user_id, device_id)
+  VALUES (v_device.user_id, v_device.id)
+  ON CONFLICT DO NOTHING
+  RETURNING id INTO v_id;
+
+  IF v_id IS NOT NULL THEN
+    RETURN QUERY SELECT v_id, 'pending'::text, false;
+    RETURN;
+  END IF;
+
   SELECT * INTO v_existing
   FROM public.gtow_ingest_requests
   WHERE user_id = v_device.user_id
@@ -55,16 +73,20 @@ BEGIN
   ORDER BY requested_at
   LIMIT 1;
 
-  IF FOUND THEN
-    RETURN QUERY SELECT v_existing.id, v_existing.status, true;
+  IF NOT FOUND THEN
+    -- The conflicting row closed between our INSERT and re-read; retry once.
+    INSERT INTO public.gtow_ingest_requests (user_id, device_id)
+    VALUES (v_device.user_id, v_device.id)
+    ON CONFLICT DO NOTHING
+    RETURNING id INTO v_id;
+    IF v_id IS NULL THEN
+      RAISE EXCEPTION 'INGEST_ENQUEUE_RACE' USING ERRCODE = 'P0001';
+    END IF;
+    RETURN QUERY SELECT v_id, 'pending'::text, false;
     RETURN;
   END IF;
 
-  INSERT INTO public.gtow_ingest_requests (user_id, device_id)
-  VALUES (v_device.user_id, v_device.id)
-  RETURNING id INTO v_id;
-
-  RETURN QUERY SELECT v_id, 'pending'::text, false;
+  RETURN QUERY SELECT v_existing.id, v_existing.status, true;
 END;
 $$;
 

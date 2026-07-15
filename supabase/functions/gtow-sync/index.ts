@@ -316,12 +316,11 @@ async function status(req: Request, pepper: string): Promise<Response> {
 }
 
 async function triggerIngest(req: Request, pepper: string): Promise<Response> {
-  const secret = deviceSecret(req);
-  if (!secret) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
-  const credentialHash = await hmacHex(pepper, `device:v1:${secret}`);
+  const authenticated = await authenticateDevice(req, pepper);
+  if (!authenticated) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
   const { data, error } = await adminClient().rpc(
     "enqueue_gtow_ingest_request",
-    { p_credential_hash: credentialHash },
+    { p_credential_hash: authenticated.credentialHash },
   );
   if (error || !data?.[0]) {
     if (error?.message.includes("DEVICE_UNAUTHORIZED")) {
@@ -337,16 +336,15 @@ async function triggerIngest(req: Request, pepper: string): Promise<Response> {
 }
 
 async function ingestStatus(req: Request, pepper: string): Promise<Response> {
-  const secret = deviceSecret(req);
-  if (!secret) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+  const authenticated = await authenticateDevice(req, pepper);
+  if (!authenticated) return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
   const id = new URL(req.url).searchParams.get("id") || "";
-  if (!/^[0-9a-f-]{36}$/.test(id)) {
+  if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) {
     return json(req, { error: "REQUEST_ID_INVALID" }, 400);
   }
-  const credentialHash = await hmacHex(pepper, `device:v1:${secret}`);
   const { data, error } = await adminClient().rpc(
     "get_gtow_ingest_request",
-    { p_credential_hash: credentialHash, p_request_id: id },
+    { p_credential_hash: authenticated.credentialHash, p_request_id: id },
   );
   if (error) {
     if (error.message.includes("DEVICE_UNAUTHORIZED")) {

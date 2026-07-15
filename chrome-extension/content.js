@@ -110,12 +110,18 @@ async function runIngest() {
       refreshToken: localStorage.getItem("user_refresh") || "",
     });
     const startedAt = Date.now();
+    let phase = "pending";
     while (Date.now() - startedAt < INGEST_POLL_MAX_MS) {
-      await new Promise((resolve) => setTimeout(resolve, INGEST_POLL_MS));
+      // Stage transitions are minutes apart once running — back off, and
+      // don't burn edge-function invocations while the tab is hidden.
+      await new Promise((resolve) =>
+        setTimeout(resolve, phase === "running" ? 5000 : INGEST_POLL_MS));
+      if (document.hidden) continue;
       const state = await sendMessage({
         type: "INGEST_STATUS",
         requestId: trigger.request_id,
       });
+      phase = state.status;
       if (state.status === "done") {
         showToast(`✅ ${state.result || "同步完成"}`, { autoHideMs: 20_000 });
         return;

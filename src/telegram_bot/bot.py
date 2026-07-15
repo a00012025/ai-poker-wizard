@@ -1502,17 +1502,11 @@ class PokerWizardBot:
         if not self.db or not self.db.pool:
             await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
             return
-        async with self.db.pool.acquire() as conn:
-            existing = await conn.fetchval(
-                "SELECT id FROM gtow_ingest_requests "
-                "WHERE user_id=$1 AND status IN ('pending','running') LIMIT 1",
-                user_id)
-            if existing:
-                await update.message.reply_text("⏳ 已有一件同步在跑，完成後會通知你")
-                return
-            await conn.execute(
-                "INSERT INTO gtow_ingest_requests (user_id) VALUES ($1)", user_id)
-        await update.message.reply_text("⏳ 已排入同步佇列，完成後會通知你")
+        from src.ingest_runner import enqueue_request
+        reused = await enqueue_request(self.db.pool, user_id)
+        await update.message.reply_text(
+            "⏳ 已有一件同步在跑，完成後會通知你" if reused
+            else "⏳ 已排入同步佇列，完成後會通知你")
 
     # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
 

@@ -27,41 +27,34 @@ TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
 async def _run_script(*script_args) -> tuple[int, str]:
     """Run a repo script as a subprocess from the repo root; return (rc, tail)."""
-    import asyncio
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, *script_args,
-        cwd=str(Path(__file__).resolve().parent.parent),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    out, _ = await proc.communicate()
-    return proc.returncode, out.decode(errors="replace")[-3000:]
+    from src.ingest_runner import _run_script as _run
+    return await _run(dict(os.environ), *script_args)
 
 
 async def _daily_ledger_ingest_job(context):
-    """Daily 05:00 Taipei: incremental ingest (30d re-sweep) + sessions + verify.
+    """Daily 05:00 Taipei: enqueue an ingest request for the owner.
 
-    Uses the owner's extension-synced token (users.gto_refresh_token) so it
-    keeps working after a FORCED_LOGOUT invalidates .tokens.json.
+    The 5s queue poller runs it with the owner's extension-synced token
+    (users.gto_refresh_token) — same single-flight path as the extension
+    button and /ingest, so it survives a FORCED_LOGOUT of .tokens.json and
+    can't race a user-triggered ingest.
     """
     from ledger_service import resolve_owner_chat_id
-    from src.ingest_runner import run_pipeline
+    from src.ingest_runner import enqueue_request
     try:
         owner = await resolve_owner_chat_id(db.pool) if db.pool else None
-        token = await db.get_user_gto_token(owner) if owner else None
-        if not token:
-            logger.error("Daily ingest skipped: no owner GTOW token in users table")
-            return
-
-        async def progress(text):
-            logger.info(f"Daily ingest: {text}")
-
-        result = await run_pipeline(token, progress)
-        logger.info(f"Daily ingest done: {result.splitlines()[0]}")
+        if not owner:
+            raise RuntimeError("no owner chat id (OWNER_CHAT_ID unset / multiple active users)")
+        reused = await enqueue_request(db.pool, owner)
+        logger.info(f"Daily ingest enqueued for owner {owner} (reused_open_request={reused})")
     except Exception as e:
         logger.error(f"Daily ledger ingest job failed: {e}")
-        if db.pool:
-            owner = await resolve_owner_chat_id(db.pool)
-            if owner:
-                await context.bot.send_message(owner, f"⚠️ 每日手牌攝取失敗\n{e}")
+        admin = os.getenv("ADMIN_CHAT_ID")
+        if admin:
+            try:
+                await context.bot.send_message(int(admin), f"⚠️ 每日手牌攝取排程失敗\n{e}")
+            except Exception as notify_err:
+                logger.error(f"Daily ingest failure notify failed: {notify_err}")
 
 
 async def _weekly_scorecard_job(context):
