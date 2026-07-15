@@ -57,6 +57,34 @@ def _summary_line(out: str) -> str | None:
     return next((l for l in out.splitlines() if l.startswith("INGEST")), None)
 
 
+def _format_summary(summary: str) -> str:
+    """Turn the ingest CLI's machine summary into a user-facing explanation.
+
+    Older deployments called already-known hands ``skipped``.  Accept both
+    names so queued/running jobs from either CLI version cannot make normal
+    deduplication look like a failure.
+    """
+    counts = {key: int(value) for key, value in re.findall(r"(\w+)=(\d+)", summary)}
+    required = ("list", "detail", "decisions")
+    if not all(key in counts for key in required):
+        return summary
+
+    known = counts.get("known", counts.get("skipped", 0))
+    lines = [
+        "本次同步結果：",
+        f"• 新增手牌：{counts['list']:,}",
+        f"• 完整分析：{counts['detail']:,}",
+        f"• 決策紀錄：{counts['decisions']:,}",
+        f"• 已在資料庫：{known:,}（不是失敗）",
+    ]
+    if counts.get("skipped_zeroloss"):
+        lines.append(f"• 零損失摘要建檔：{counts['skipped_zeroloss']:,}")
+    if counts.get("reconstruct_fallback"):
+        lines.append(
+            f"• 摘要不足、改抓完整分析：{counts['reconstruct_fallback']:,}")
+    return "\n".join(lines)
+
+
 def _tail(out: str) -> str:
     return out.strip().splitlines()[-1] if out.strip() else "(無輸出)"
 
@@ -117,7 +145,9 @@ async def run_pipeline(refresh_token: str, progress, *, allow_full_sweep: bool =
                 env, progress, ("--backfill",), "窗外手牌全量補齊中")
         else:
             guard_skipped = True
-    result = summary + (" · 全量補齊" if escalated else "")
+    result = _format_summary(summary)
+    if escalated:
+        result += "\n• 範圍：已執行全量補齊"
     if rc_v == 2:
         # A full sweep structurally cannot repair this (GTOW-side deletions
         # or hands played before the epoch) — report it, don't hard-fail.
