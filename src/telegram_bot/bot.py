@@ -148,7 +148,8 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
         text = f"🎴 {detail} · 損失 {ev:.1f}bb"[:60]
         action_rows.append([{
             "text": text,
-            "callback_data": f"qraw:{source['hand_id']}",
+            "callback_data":
+                f"qraw:{queue_id}:{page}:{queue_page}:{source['hand_id']}",
         }])
 
     pages = max(1, (len(action_rows) + QUEUE_SOURCE_PAGE_SIZE - 1)
@@ -1827,22 +1828,67 @@ class PokerWizardBot:
 
     async def _queue_send_live_raw(self, update: Update,
                                    context: ContextTypes.DEFAULT_TYPE,
-                                   hand_id: str):
-        """Send stored live shorthand verbatim; do not trigger re-analysis."""
+                                   hand_id: str, *, queue_id: int | None = None,
+                                   source_page: int = 0, queue_page: int = 0):
+        """Replace the source menu with live shorthand + Study/back buttons."""
         query = update.callback_query
         if not (self.db and self.db.pool):
             await query.answer("Database not connected.")
             return
         row = await self.db.pool.fetchrow(
-            "SELECT raw_text FROM ledger_hands "
+            "SELECT raw_text, parsed_json FROM ledger_hands "
             "WHERE gtow_hand_id=$1 AND source='live'", hand_id)
         raw_text = row["raw_text"] if row else None
         if not raw_text:
             await query.answer("找不到這手的原始記錄。")
             return
-        await query.answer()
+
+        await query.answer("正在準備 Study 連結…")
+        study_url = None
+        try:
+            parsed = row["parsed_json"]
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+            decisions = await self.db.pool.fetch(
+                "SELECT street, decision_idx FROM ledger_decisions "
+                "WHERE gtow_hand_id=$1 AND source='live' "
+                "AND grader='own_pipeline' AND excluded=FALSE",
+                hand_id)
+            refresh_token = await self._get_user_refresh_token(
+                update.effective_user.id)
+            if parsed and decisions and refresh_token:
+                def build_study_url():
+                    self._setup_user_token(
+                        update.effective_user.id, refresh_token)
+                    try:
+                        from gtow_solution_url import build_last_hero_hand_url
+                        return build_last_hero_hand_url(
+                            parsed, [dict(d) for d in decisions])
+                    finally:
+                        self._clear_user_token()
+
+                study_url = await asyncio.to_thread(build_study_url)
+        except Exception:
+            self.log.debug("Live raw Study URL build failed for %s",
+                           hand_id, exc_info=True)
+
         payload = f"📝 線下原始紀錄\n\n{raw_text}"
-        for chunk in _split_message(payload):
+        buttons = []
+        if study_url:
+            buttons.append([{
+                "text": "🧙 查看最後可用 Study Spot", "url": study_url,
+            }])
+        if queue_id is not None:
+            buttons.append([{
+                "text": "⬅ 返回來源牌局",
+                "callback_data":
+                    f"qsrc:{queue_id}:{source_page}:{queue_page}",
+            }])
+        markup = self._rows_to_markup(buttons) if buttons else None
+        chunks = _split_message(payload)
+        await query.edit_message_text(
+            chunks[0], disable_web_page_preview=True, reply_markup=markup)
+        for chunk in chunks[1:]:
             await context.bot.send_message(update.effective_chat.id, chunk)
 
     async def plan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1997,7 +2043,8 @@ class PokerWizardBot:
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
         qsrc:<queue_id>[:source_page[:queue_page]] — exact online/live
         source-hand menu;
-        qraw:<hand_id> — echo stored live shorthand without re-analysis;
+        qraw:<queue_id>:<source_page>:<queue_page>:<hand_id> — show stored
+        live shorthand + Study link in place;
         qdet:<queue_id> — ensure/reuse GTOW Drill and show its detail menu;
         qdst:<queue_id> — refresh the same detail menu and practice results;
         qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
@@ -2023,7 +2070,14 @@ class PokerWizardBot:
             return
 
         if data.startswith("qraw:"):
-            await self._queue_send_live_raw(update, context, data[5:])
+            parts = data.split(":", 4)
+            if len(parts) == 5 and parts[1].isdigit():
+                await self._queue_send_live_raw(
+                    update, context, parts[4], queue_id=int(parts[1]),
+                    source_page=int(parts[2]), queue_page=int(parts[3]))
+            else:
+                # Backward compatibility for buttons sent before this deploy.
+                await self._queue_send_live_raw(update, context, data[5:])
             return
 
         if data.startswith("qdet:") or data.startswith("qdst:"):

@@ -488,6 +488,51 @@ def build_last_node_url(context: dict, *, _resolver=None) -> str | None:
     return None
 
 
+def build_last_hero_hand_url(hand: dict, decisions: list[dict], *,
+                             _resolver=None) -> str | None:
+    """Build the latest Study URL among hero-hand-bearing ledger decisions.
+
+    ``decisions`` comes from live ``ledger_decisions`` rows with
+    ``excluded=false``.  The live grader only writes those rows after the
+    exact hero hand/combo is present in the spot solution, so this function
+    only has to replay the action line.  Candidates are tried latest-first;
+    an off-tree final node falls back to the nearest earlier queryable node.
+    """
+    if not hand or not hand.get("hero_hand"):
+        return None
+    resolver = _resolver
+    if resolver is None:
+        from gtow_action_resolver import resolve_actions_for_deviation
+        resolver = resolve_actions_for_deviation
+
+    order = {street: i for i, street in enumerate(
+        ("preflop", "flop", "turn", "river"))}
+    candidates = sorted(
+        decisions or [],
+        key=lambda d: (order.get(d.get("street"), -1),
+                       int(d.get("decision_idx") or 0)),
+        reverse=True,
+    )
+    for decision in candidates:
+        street = decision.get("street")
+        if street not in order:
+            continue
+        action_index = int(decision.get("decision_idx") or 0)
+        try:
+            resolved = resolver(hand, street, action_index)
+            if not resolved.get("preflop_actions"):
+                if street != "preflop":
+                    continue
+                return _root_solution_url(
+                    resolved["depth"], resolved.get("gametype") or "MTTGeneral")
+            board = canonical_board_through_street(hand, street)
+            return build_solution_url(resolved, board)
+        except Exception as exc:  # noqa: BLE001 — convenience link, keep falling back
+            _log.debug("live hero-hand URL build failed at %s[%d]: %s",
+                       street, action_index, exc)
+    return None
+
+
 def build_node_url_for_street(context: dict, street: str,
                               *, _resolver=None) -> str | None:
     """Build a /solutions URL for hero's FIRST decision on `street`.
