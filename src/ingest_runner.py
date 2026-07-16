@@ -62,28 +62,22 @@ def _summary_line(out: str) -> str | None:
 def _format_summary(summary: str) -> str:
     """Turn the ingest CLI's machine summary into a user-facing explanation.
 
-    Older deployments called already-known hands ``skipped``.  Accept both
-    names so queued/running jobs from either CLI version cannot make normal
-    deduplication look like a failure.
+    Extra counters remain machine-readable in the stored CLI output, while the
+    Telegram summary only includes counts that are useful to the user.
     """
     counts = {key: int(value) for key, value in re.findall(r"(\w+)=(\d+)", summary)}
     required = ("list", "detail", "decisions")
     if not all(key in counts for key in required):
         return summary
 
-    known = counts.get("known", counts.get("skipped", 0))
     lines = [
         "本次同步結果：",
         f"• 新增手牌：{counts['list']:,}",
         f"• 完整分析：{counts['detail']:,}",
         f"• 決策紀錄：{counts['decisions']:,}",
-        f"• 已在資料庫：{known:,}（不是失敗）",
     ]
     if counts.get("skipped_zeroloss"):
         lines.append(f"• 零損失摘要建檔：{counts['skipped_zeroloss']:,}")
-    if counts.get("reconstruct_fallback"):
-        lines.append(
-            f"• 摘要不足、改抓完整分析：{counts['reconstruct_fallback']:,}")
     return "\n".join(lines)
 
 
@@ -231,6 +225,10 @@ async def _expire_stale(pool, bot):
 async def _finish(pool, bot, req_id, user_id, *, ok: bool, text: str):
     await _set(pool, req_id, status="done" if ok else "error", result=text,
                progress=None, finished_at=datetime.now(timezone.utc))
+    # An idle sync is still recorded as successfully completed, but does not
+    # need a Telegram notification. Errors must always remain visible.
+    if ok and re.search(r"(?m)^• 新增手牌：0$", text):
+        return
     try:
         icon = "✅" if ok else "❌"
         await bot.send_message(user_id, f"{icon} GTOW 手牌同步\n{text}")
