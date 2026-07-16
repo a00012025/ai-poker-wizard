@@ -397,7 +397,7 @@ _QUEUE_DECISION_SQL = """
 SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
        d.pot_type, d.eff_stack, d.ev_loss_bb, d.taken_code, d.best_code, d.gametype,
-       h.source hand_source, h.raw_path, h.parsed_json,
+       h.source hand_source, h.raw_path, h.raw_text, h.parsed_json,
        h.position hand_position, h.preflop_depth_bb
 FROM ledger_decisions d
 JOIN ledger_hands h ON h.gtow_hand_id=d.gtow_hand_id
@@ -419,6 +419,12 @@ def _load_source_hand(dec: dict) -> dict:
             parsed = json.loads(parsed)
         if not isinstance(parsed, dict):
             raise ValueError("live ledger hand has no parsed_json")
+        parsed = dict(parsed)
+        if not parsed.get("preflop_actions_for_pot") and dec.get("raw_text"):
+            from live_flow import preflop_actions_for_pot_from_raw
+            pot_line = preflop_actions_for_pot_from_raw(dec["raw_text"], parsed)
+            if pot_line:
+                parsed["preflop_actions_for_pot"] = pot_line
         return parsed
 
     raw_path = dec.get("raw_path")
@@ -525,8 +531,14 @@ async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
 
 async def queue_drill_url_from_sources(conn, entries: list[dict],
                                        depths: list[int] | None = None) -> str | None:
-    """Use the first source decision that can produce a faithful URL."""
-    for dec in await _source_decisions(conn, entries):
+    """Use the newest source decision that can produce a faithful URL.
+
+    ``source_hands`` is persisted chronologically.  New evidence should own
+    the representative depth and bet sizes; older hands are fallback only
+    when the latest source cannot be reconstructed exactly.
+    """
+    decisions = await _source_decisions(conn, entries)
+    for dec in reversed(decisions):
         if dec.get("spot_category") in _EXACT_SOURCE_CATEGORIES:
             # Exact resolution may query GTOW while snapping real bet sizes;
             # keep Telegram callbacks and weekly jobs off the event loop.
@@ -552,6 +564,12 @@ UPDATE drill_queue SET
   source_hands = $2::jsonb,
   n_sources = $3,
   total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + $4,
+  gtow_settings_hash = CASE
+    WHEN $5 IS NOT NULL AND drill_url IS DISTINCT FROM $5
+      THEN NULL ELSE gtow_settings_hash END,
+  gtow_drill_synced_at = CASE
+    WHEN $5 IS NOT NULL AND drill_url IS DISTINCT FROM $5
+      THEN NULL ELSE gtow_drill_synced_at END,
   drill_url = COALESCE($5, drill_url),
   label = COALESCE($6, label),
   bias_key = CASE WHEN $7 THEN $8 ELSE bias_key END,
@@ -852,9 +870,45 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
             tally["unresolved"] += 1
         if rebuilt != row["drill_url"] or normalized != entries:
             await conn.execute(
-                "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb WHERE id=$1",
+                "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb, "
+                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL WHERE id=$1",
                 row["id"], rebuilt, json.dumps(normalized))
             tally["updated"] += 1
+    return tally
+
+
+async def backfill_live_preflop_pot_lines(conn) -> dict:
+    """Persist real multiway preflop contributions into live parsed_json.
+
+    Older rows only retained the HU-repaired solver line.  Rebuild the pot
+    line from the raw live note so future queue URLs and GTOW Drill PATCHes
+    remain correct even outside this process.
+    """
+    from live_flow import preflop_actions_for_pot_from_raw
+
+    tally = {"scanned": 0, "updated": 0, "unresolved": 0}
+    rows = await conn.fetch(
+        "SELECT gtow_hand_id, raw_text, parsed_json FROM ledger_hands "
+        "WHERE source='live' AND raw_text IS NOT NULL")
+    for row in rows:
+        tally["scanned"] += 1
+        parsed = row["parsed_json"]
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+        if not isinstance(parsed, dict):
+            tally["unresolved"] += 1
+            continue
+        pot_line = preflop_actions_for_pot_from_raw(row["raw_text"], parsed)
+        if not pot_line:
+            tally["unresolved"] += 1
+            continue
+        if parsed.get("preflop_actions_for_pot") == pot_line:
+            continue
+        parsed["preflop_actions_for_pot"] = pot_line
+        await conn.execute(
+            "UPDATE ledger_hands SET parsed_json=$2::jsonb WHERE gtow_hand_id=$1",
+            row["gtow_hand_id"], json.dumps(parsed, ensure_ascii=False))
+        tally["updated"] += 1
     return tally
 
 
@@ -925,7 +979,9 @@ async def _run_trainer_refresh(include_all: bool) -> int:
     import asyncpg
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     try:
+        backfill = await backfill_live_preflop_pot_lines(conn)
         tally = await refresh_trainer_links(conn, include_all=include_all)
+        print(f"live pot-line backfill: {backfill}")
         print(f"trainer-link refresh: {tally}")
         return 0
     finally:

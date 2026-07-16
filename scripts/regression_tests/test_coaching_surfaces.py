@@ -607,6 +607,79 @@ def test_custom_spot_resolves_legacy_sized_bet_token():
 
 
 @test
+def test_live_17bb_x_b15_r5_line_keeps_small_flop_sizing():
+    """Production regression: the user's 17bb hand must not train an old
+    30bb source whose LJ flop bet resolves to 83% pot.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    from gtow_custom_url import build_custom_spot_url
+
+    hand = {
+        "gametype": "MTTGeneral", "effective_bb": 17,
+        "hero_position": "BB", "players_at_table": 8,
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [
+            {"board": "8s3s2d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R", "size": 1.5},
+                {"position": "BB", "action": "R", "size": 5},
+                {"position": "LJ", "action": "C"},
+            ]},
+            {"card": "8d", "actions": [
+                {"position": "BB", "action": "AI", "size": 10},
+                {"position": "LJ", "action": "F"},
+            ]},
+        ],
+    }
+    query = parse_qs(urlsplit(build_custom_spot_url(
+        hand, street="turn", action_index=0, pot_type="SRP",
+    )).query)
+
+    assert_eq(query["depth"], ["17.125"])
+    assert_eq(query["flop_actions"], ["X-R1.8-R4.8-C"])
+
+
+@test
+def test_multiway_projection_matches_every_raise_by_real_pot_percentage():
+    """Both the opening bet and subsequent raise use real-pot percentages.
+
+    With a 7bb real pot: 4bb is 57%; after that bet, raising total-to 9bb is
+    a 5bb increment into the 15bb pot-after-call, i.e. 33%.
+    """
+    import gtow_action_resolver as resolver
+
+    seen = []
+    old = resolver._resolve_one_raise
+
+    def fake_resolve(**kwargs):
+        seen.append((kwargs["target_size"], kwargs["actual_pot"],
+                     kwargs["target_pct"]))
+        return f"R{kwargs['target_size']:g}"
+
+    resolver._resolve_one_raise = fake_resolve
+    try:
+        line, final_pot = resolver._resolve_street_codes(
+            gametype="MTTGeneral", depth=30.125,
+            preflop_actions="F-F-R2-F-F-F-F-C",
+            board_so_far="6c4c3d", street_key="flop",
+            raw_actions=[
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R", "size": 4},
+                {"position": "BB", "action": "R", "size": 9},
+                {"position": "LJ", "action": "C"},
+            ],
+            stop_after_n=4, prior_streets={}, actual_pot=7.0,
+        )
+    finally:
+        resolver._resolve_one_raise = old
+
+    assert_eq(line, "X-R4-R9-C")
+    assert_true(abs(seen[0][2] - 4 / 7) < 1e-9)
+    assert_true(abs(seen[1][2] - 5 / 15) < 1e-9)
+    assert_eq(final_pot, 25.0)
+
+
+@test
 def test_build_custom_spot_url_raises_on_multiway_postflop():
     """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
