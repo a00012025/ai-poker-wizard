@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Poker Wizard - GTOW Sync",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Securely pair with AI Poker Wizard, automatically sync your GTO Wizard token, and pull new hands into the ledger with one click.",
   "icons": {
     "16": "icons/icon16.png",
