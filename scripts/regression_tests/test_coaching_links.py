@@ -1261,12 +1261,14 @@ def test_build_url_open_raise():
 @test
 def test_apply_trainer_defaults_upgrades_existing_url():
     from gtow_trainer_url import apply_trainer_defaults
-    old = "https://app.gtowizard.com/practice/trainer?fh_actions=RFI&fh_trainer_game_speed=normal"
+    old = ("https://app.gtowizard.com/practice/trainer?fh_actions=RFI"
+           "&fh_trainer_game_speed=normal&fh_trainer_mode=stop_after_action")
     qs = parse_qs(urlparse(apply_trainer_defaults(old)).query)
     assert_eq(qs["fh_actions"], ["RFI"])
     assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
     assert_eq(qs["fh_trainer_learning_mode"], ["on"])
     assert_eq(qs["fh_trainer_session"], ["100"])
+    assert_eq(qs["fh_trainer_mode"], ["stop_end_of_hand"])
     non_trainer = "https://app.gtowizard.com/solutions?gametype=MTTGeneral"
     assert_eq(apply_trainer_defaults(non_trainer), non_trainer)
 
