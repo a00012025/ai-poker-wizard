@@ -1744,6 +1744,7 @@ def test_queue_drill_detail_and_early_clear_are_not_threshold_gated():
     assert_in("尚未達標", html)
     assert_in("隨時完成或清除", html)
     assert_true(any(button.get("url") == item["drill_url"] for button in flat))
+    assert_in("qsrc:13:0:2", [button.get("callback_data") for button in flat])
     assert_in("qcf:13:2", [button.get("callback_data") for button in flat])
 
     clear_html, clear_buttons = _queue_clear_confirm_payload(item, page=2)
@@ -1867,14 +1868,18 @@ def test_queue_source_menu_supports_mixed_sources_and_pagination():
          "hero_hand": "AsKd", "played_at": None}
         for i in range(1, 9)
     ]
-    html1, buttons1 = _queue_source_payload(123, "混合來源", sources, page=0)
+    html1, buttons1 = _queue_source_payload(
+        123, "混合來源", sources, page=0, queue_page=4)
     flat1 = [button for row in buttons1 for button in row]
     assert_in("線上 21 手、線下 8 手", html1)
     assert_true(any(button.get("url") and "線上" in button["text"]
                     for button in flat1))
     assert_true(any((button.get("callback_data") or "").startswith("qraw:")
                     for button in flat1))
-    assert_true(any(button.get("callback_data") == "qsrc:123:1"
+    assert_true(any(button.get("callback_data") == "qsrc:123:1:4"
+                    for button in flat1))
+    assert_true(any(button.get("callback_data") == "qdet:123:4"
+                    and button["text"] == "⬅ 返回練習詳情"
                     for button in flat1))
     assert_true(all(len(button.get("callback_data", "").encode()) <= 64
                     for button in flat1))
@@ -1895,11 +1900,19 @@ def test_queue_source_menu_supports_mixed_sources_and_pagination():
     assert_not_in("同 spot", spot_html)
     assert_not_in("由高到低", spot_html)
 
-    html2, buttons2 = _queue_source_payload(123, "混合來源", sources, page=1)
+    html2, buttons2 = _queue_source_payload(
+        123, "混合來源", sources, page=1, queue_page=4)
     flat2 = [button for row in buttons2 for button in row]
     assert_in("第 2/2 頁", html2)
-    assert_true(any(button.get("callback_data") == "qsrc:123:0"
+    assert_true(any(button.get("callback_data") == "qsrc:123:0:4"
                     for button in flat2))
+
+    _review_html, review_buttons = _queue_source_payload(
+        124, "復盤來源", sources, kind="review", queue_page=2)
+    review_flat = [button for row in review_buttons for button in row]
+    assert_true(any(button.get("callback_data") == "qpg:2"
+                    and button["text"] == "⬅ 返回 Queue"
+                    for button in review_flat))
 
     stress = [
         {"hand_id": f"{i:08d}-1234-1234-1234-123456789012",

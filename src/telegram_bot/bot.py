@@ -114,7 +114,9 @@ def _queue_payload(rows, *, page: int = 0,
 
 
 def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
-                          *, page: int = 0) -> tuple[str, list[list[dict]]]:
+                          *, page: int = 0, queue_page: int = 0,
+                          kind: str = "drill"
+                          ) -> tuple[str, list[list[dict]]]:
     """Render exact online links + lightweight live-hand callbacks."""
     from html import escape as _esc
     from queue_feed import (QUEUE_SOURCE_HANDS_PER_LINK,
@@ -168,11 +170,23 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
         nav = []
         if page > 0:
             nav.append({"text": "⬅ 上一頁",
-                        "callback_data": f"qsrc:{queue_id}:{page - 1}"})
+                        "callback_data":
+                            f"qsrc:{queue_id}:{page - 1}:{queue_page}"})
         if page + 1 < pages:
             nav.append({"text": "下一頁 ➡",
-                        "callback_data": f"qsrc:{queue_id}:{page + 1}"})
+                        "callback_data":
+                            f"qsrc:{queue_id}:{page + 1}:{queue_page}"})
         buttons.append(nav)
+    if kind == "drill":
+        buttons.append([{
+            "text": "⬅ 返回練習詳情",
+            "callback_data": f"qdet:{queue_id}:{queue_page}",
+        }])
+    else:
+        buttons.append([{
+            "text": "⬅ 返回 Queue",
+            "callback_data": f"qpg:{queue_page}",
+        }])
     return html, buttons
 
 
@@ -216,7 +230,8 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
         [{"text": "🎯 開始練習", "url": item["drill_url"]}],
         [
             {"text": "🔄 更新成績", "callback_data": f"qdst:{qid}:{page}"},
-            {"text": "📚 來源牌局", "callback_data": f"qsrc:{qid}:0"},
+            {"text": "📚 來源牌局",
+             "callback_data": f"qsrc:{qid}:0:{page}"},
         ],
         [
             {"text": "✔ 完成／清除", "callback_data": f"qcf:{qid}:{page}"},
@@ -1808,14 +1823,15 @@ class PokerWizardBot:
     async def _queue_show_sources(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE,
                                   queue_id: int, page: int = 0,
-                                  *, edit: bool = False):
+                                  *, queue_page: int = 0,
+                                  edit: bool = False):
         """Show the exact online/live hands that produced one queue item."""
         query = update.callback_query
         if not (self.db and self.db.pool):
             await query.answer("Database not connected.")
             return
         item = await self.db.pool.fetchrow(
-            "SELECT label, source_hands, ref_hand_id "
+            "SELECT label, kind, source_hands, ref_hand_id "
             "FROM drill_queue WHERE id=$1",
             queue_id)
         if not item:
@@ -1834,7 +1850,8 @@ class PokerWizardBot:
         sources = resolve_queue_source_hands(
             entries, ledger_rows, ref_hand_id=item["ref_hand_id"])
         html, buttons = _queue_source_payload(
-            queue_id, item["label"] or str(queue_id), sources, page=page)
+            queue_id, item["label"] or str(queue_id), sources, page=page,
+            queue_page=queue_page, kind=item["kind"])
         markup = self._rows_to_markup(buttons)
         await query.answer()
         if edit:
@@ -2016,7 +2033,8 @@ class PokerWizardBot:
     async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Practice-queue + live-hand callbacks (all owner-only, §6.3):
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
-        qsrc:<queue_id>[:page] — exact online/live source-hand menu;
+        qsrc:<queue_id>[:source_page[:queue_page]] — exact online/live
+        source-hand menu;
         qraw:<hand_id> — echo stored live shorthand without re-analysis;
         qdet:<queue_id> — ensure/reuse GTOW Drill and show its detail menu;
         qdst:<queue_id> — refresh the same detail menu and practice results;
@@ -2037,8 +2055,10 @@ class PokerWizardBot:
             parts = data.split(":")
             queue_id = int(parts[1])
             source_page = int(parts[2]) if len(parts) > 2 else 0
+            queue_page = int(parts[3]) if len(parts) > 3 else 0
             await self._queue_show_sources(
-                update, context, queue_id, source_page, edit=len(parts) > 2)
+                update, context, queue_id, source_page,
+                queue_page=queue_page, edit=len(parts) > 2)
             return
 
         if data.startswith("qraw:"):
