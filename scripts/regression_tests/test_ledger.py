@@ -1560,7 +1560,7 @@ def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
     assert_in("新增手牌：2", result)
     assert_in("完整分析：2", result)
     assert_in("決策紀錄：5", result)
-    assert_in("已在資料庫：8（不是失敗）", result)
+    assert_not_in("已在資料庫", result)
     assert_in("全量補齊", result)
     assert_not_in("對數仍不符", result)
     backfills = [c for c in calls if "--backfill" in c]
@@ -1617,6 +1617,45 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
     assert_in("完整分析：0", result)
     assert_in("稍後再點一次", result)
     assert_not_in("全量補齊", result)
+
+
+@test
+def test_ingest_runner_silences_success_notification_when_no_hands_added():
+    """A successful list=0 sync is recorded but silent; useful results stay loud."""
+    import asyncio
+    from src import ingest_runner
+
+    writes = []
+    sent = []
+
+    async def fake_set(pool, req_id, **fields):
+        writes.append((req_id, fields))
+
+    class Bot:
+        async def send_message(self, user_id, text):
+            sent.append((user_id, text))
+
+    orig = ingest_runner._set
+    ingest_runner._set = fake_set
+    try:
+        asyncio.run(ingest_runner._finish(
+            object(), Bot(), 7, 42, ok=True,
+            text="本次同步結果：\n• 新增手牌：0\n• 完整分析：0"))
+        asyncio.run(ingest_runner._finish(
+            object(), Bot(), 8, 42, ok=True,
+            text="本次同步結果：\n• 新增手牌：3\n• 完整分析：3"))
+        asyncio.run(ingest_runner._finish(
+            object(), Bot(), 9, 42, ok=False,
+            text="攝取失敗（• 新增手牌：0）"))
+    finally:
+        ingest_runner._set = orig
+
+    assert_eq(len(sent), 2)
+    assert_in("✅ GTOW 手牌同步", sent[0][1])
+    assert_in("❌ GTOW 手牌同步", sent[1][1])
+    assert_eq(writes[0][0], 7)
+    assert_eq(writes[0][1]["status"], "done")
+    assert_in("新增手牌：0", writes[0][1]["result"])
 
 
 @test
@@ -1685,7 +1724,7 @@ def test_recent_permanent_mismatch_query_scopes_to_done_24h_markers():
 
 
 @test
-def test_ingest_runner_surfaces_list_only_and_fallback_counts():
+def test_ingest_runner_surfaces_only_useful_summary_counts():
     import asyncio
     from src import ingest_runner
 
@@ -1707,15 +1746,14 @@ def test_ingest_runner_surfaces_list_only_and_fallback_counts():
     assert_in("新增手牌：12", result)
     assert_in("完整分析：1", result)
     assert_in("決策紀錄：14", result)
-    assert_in("已在資料庫：8（不是失敗）", result)
+    assert_not_in("已在資料庫", result)
     assert_in("零損失摘要建檔：10", result)
-    assert_in("摘要不足、改抓完整分析：1", result)
+    assert_not_in("摘要不足", result)
 
 
 @test
-def test_ingest_runner_formats_legacy_skipped_as_known_not_failure():
-    """The pre-#122 summary called already-known hands `skipped`; the user
-    notification must explain that these are existing rows, not failed hands."""
+def test_ingest_runner_omits_legacy_skipped_from_user_summary():
+    """Legacy `skipped` input remains accepted but is not user-facing noise."""
     from src import ingest_runner
 
     result = ingest_runner._format_summary(
@@ -1723,7 +1761,7 @@ def test_ingest_runner_formats_legacy_skipped_as_known_not_failure():
     assert_in("新增手牌：512", result)
     assert_in("完整分析：512", result)
     assert_in("決策紀錄：582", result)
-    assert_in("已在資料庫：1,884（不是失敗）", result)
+    assert_not_in("已在資料庫", result)
     assert_not_in("skipped", result)
 
 
