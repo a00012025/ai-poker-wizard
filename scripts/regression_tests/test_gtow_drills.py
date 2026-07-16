@@ -169,15 +169,58 @@ def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
 def test_gtow_drill_known_binding_with_current_name_needs_no_request():
     import gtow_drill_service as svc
     calls = []
+    url = _trainer_url(fh_trainer_mode="stop_end_of_hand")
+    fingerprint = svc.settings_hash(svc.settings_from_trainer_url(url))
     client = svc.GTOWDrillClient(
         7, "refresh", lambda *args, **kwargs: calls.append((args, kwargs)))
     binding = client.ensure_drill(
-        _trainer_url(), "LP OOP vs LP 3bet",
+        url, "LP OOP vs LP 3bet",
         known_drill_id="c8767ec9-bd78-434e-a0be-dfd0b01072dc",
-        known_drill_name="LP OOP vs LP 3bet")
+        known_drill_name="LP OOP vs LP 3bet",
+        known_settings_hash=fingerprint)
     assert_eq(calls, [])
     assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_true(not binding.created)
+
+
+@test
+def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
+    """A DB URL mode upgrade PATCHes the same GTOW Drill UUID."""
+    import gtow_drill_service as svc
+    drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
+    url = _trainer_url(fh_trainer_mode="stop_end_of_hand")
+    calls = []
+
+    def request(method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        assert_eq(method, "PATCH")
+        assert_true(endpoint.endswith(f"/drills/{drill_id}/"))
+        return _Response({"id": drill_id, **kwargs["json"]})
+
+    old_get = svc.get_user_access_token
+    svc.get_user_access_token = lambda user_id, refresh: "access"
+    try:
+        binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
+            url, "LP OOP vs LP 3bet", known_drill_id=drill_id,
+            known_drill_name="LP OOP vs LP 3bet",
+            known_settings_hash="stale-spot-mode-hash")
+    finally:
+        svc.get_user_access_token = old_get
+
+    assert_eq(binding.drill_id, drill_id)
+    assert_eq([call[0] for call in calls], ["PATCH"])
+    assert_eq(calls[0][2]["json"]["settings"]["fh_trainer_mode"],
+              "stop_end_of_hand")
+
+
+@test
+def test_full_hand_drill_migration_backfills_urls_and_locks_invariant():
+    sql = (REPO_ROOT / "supabase/migrations/20260716233000_full_hand_drills.sql"
+           ).read_text()
+    assert_in("fh_trainer_mode=stop_end_of_hand", sql)
+    assert_in("regexp_replace", sql)
+    assert_in("gtow_settings_hash = NULL", sql)
+    assert_in("drill_queue_full_hand_trainer_url", sql)
 
 
 @test

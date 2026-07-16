@@ -508,9 +508,9 @@ def test_build_custom_spot_url_h2665():
     assert_in("depth=30.125", url)
     assert_in("depth_list=30.125", url)
     assert_in("gametype=MTTGeneral", url)
-    assert_in("fh_trainer_mode=stop_after_action", url)
-    assert_true("fh_trainer_mode=stop_end_of_hand" not in url,
-                "an exact decision drill must not continue into a different node")
+    assert_in("fh_trainer_mode=stop_end_of_hand", url)
+    assert_true("fh_trainer_mode=stop_after_action" not in url,
+                "every queue Trainer link must use GTOW Full hand mode")
     assert_in("dialogs=trainer-advanced-filter-dialog", url)
     # Bucket is texture-agnostic → NO board flags by default, so the Trainer
     # deals all boards consistent with this action line.
@@ -535,14 +535,8 @@ def test_build_custom_spot_url_h2665():
 
 
 @test
-def test_custom_turn_first_act_drill_stops_before_facing_bet():
-    """Queue regression: x-b-r-c -> turn first act trains only that decision.
-
-    With the global full-hand mode, checking the prescribed first-act node
-    continued the same exercise into BB facing LJ's bet.  The queue item is a
-    single action-line decision, so its custom Trainer URL must end after the
-    first answer rather than grading the later facing-bet node too.
-    """
+def test_custom_turn_first_act_drill_uses_full_hand_mode():
+    """Queue custom spots always continue as a Full hand exercise."""
     from urllib.parse import parse_qs, urlsplit
     from gtow_custom_url import build_custom_spot_url
 
@@ -572,7 +566,7 @@ def test_custom_turn_first_act_drill_stops_before_facing_bet():
     assert_eq(query["flop_actions"], ["X-R4.75-R9.75-C"])
     assert_true("turn_actions" not in query,
                 "turn first act must stop before hero check and villain bet")
-    assert_eq(query["fh_trainer_mode"], ["stop_after_action"])
+    assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
 
 
 @test
@@ -609,7 +603,7 @@ def test_custom_spot_resolves_legacy_sized_bet_token():
     assert_true("B" not in query["flop_actions"][0])
     assert_eq(query["turn_actions"], ["X-X"])
     assert_eq(query["river_actions"], ["X"])
-    assert_eq(query["fh_trainer_mode"], ["stop_after_action"])
+    assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
 
 
 @test

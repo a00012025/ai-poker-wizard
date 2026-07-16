@@ -142,7 +142,6 @@ from urllib.parse import quote, urlencode
 from gtow_trainer_url import _TRAINER_UI_DEFAULTS, _BASE_URL
 
 _CUSTOM_DIALOGS = "trainer-advanced-filter-dialog_namespace-tra/alpha_tmpNamespace-tmp/primary"
-_CUSTOM_TRAINER_MODE = "stop_after_action"
 
 _POT_TYPE_TO_FH_ACTIONS: dict[str, str] = {
     "SRP":      "SRP",
@@ -241,15 +240,12 @@ def build_custom_spot_url(
     params.append(("depth", depth_str))
     params.append(("depth_list", depth_str))
     # Trainer UI flags — skip solution_type (already emitted) and dialogs
-    # (we set a custom value below).  A queue item prescribes ONE exact
-    # decision node, not the rest of the hand: continuing after the target
-    # action can silently train a different facing state (e.g. turn first act
-    # -> hero checks -> now facing a bet).  Pin GTOW's single-action mode.
+    # (we set a custom value below).  All practice links intentionally use
+    # GTOW Full hand mode (fh_trainer_mode=stop_end_of_hand), including custom
+    # spots, so one exercise continues through the rest of the hand.
     for k, v in _TRAINER_UI_DEFAULTS.items():
         if k in ("solution_type", "dialogs"):
             continue
-        if k == "fh_trainer_mode":
-            v = _CUSTOM_TRAINER_MODE
         params.append((k, v))
     params.append(("fh_start_spot", "custom_spot"))
     params.append(("gmfs_solution_tab", "ai_sols"))

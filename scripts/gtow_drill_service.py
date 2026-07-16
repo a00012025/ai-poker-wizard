@@ -170,7 +170,8 @@ class GTOWDrillClient:
 
     def ensure_drill(self, trainer_url: str, name: str, *,
                      known_drill_id: str | None = None,
-                     known_drill_name: str | None = None) -> DrillBinding:
+                     known_drill_name: str | None = None,
+                     known_settings_hash: str | None = None) -> DrillBinding:
         settings = settings_from_trainer_url(trainer_url)
         fingerprint = settings_hash(settings)
         drill = None
@@ -198,7 +199,8 @@ class GTOWDrillClient:
                 "tags": [],
             })
             created = True
-        elif str(drill.get("name") or "") != wanted_name:
+        elif (str(drill.get("name") or "") != wanted_name
+              or (known_drill_id and known_settings_hash != fingerprint)):
             drill_id = str(drill["id"])
             payload = {
                 "id": drill_id,

@@ -1743,7 +1743,7 @@ class PokerWizardBot:
                         "SELECT id, spot_leaf, spot_category, label, drill_url, "
                         "kind, n_sources, bias_direction, bias_n, "
                         "bias_ev_loss_bb, bias_share, "
-                        "gtow_drill_id, gtow_drill_name, "
+                        "gtow_drill_id, gtow_drill_name, gtow_settings_hash, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
                         "gtow_training_started_at "
                         "FROM drill_queue WHERE id=$1 FOR UPDATE", queue_id)
@@ -1768,7 +1768,8 @@ class PokerWizardBot:
                         client.ensure_drill, item["drill_url"], drill_name,
                         known_drill_id=(str(item["gtow_drill_id"])
                                         if item["gtow_drill_id"] else None),
-                        known_drill_name=item["gtow_drill_name"])
+                        known_drill_name=item["gtow_drill_name"],
+                        known_settings_hash=item["gtow_settings_hash"])
                     item = await conn.fetchrow(
                         "UPDATE drill_queue SET gtow_drill_id=$2::uuid, "
                         "gtow_drill_name=$3, gtow_settings_hash=$4, "
