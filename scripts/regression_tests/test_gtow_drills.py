@@ -72,7 +72,7 @@ def test_gtow_drill_ensure_reuses_exact_settings_without_post():
         calls.append((method, url, kwargs))
         return _Response([{
             "id": "80af61e6-ac0b-4c38-9e2d-3d5855fc0c96",
-            "name": "Existing drill", "settings": settings,
+            "name": "LP OOP vs LP 3bet", "settings": settings,
             "totals": {"total_hands": 10, "played_moves_sum": 26,
                        "gto_score_avg": 0.87, "total_ev_loss_sum": 1.05},
         }])
@@ -81,13 +81,103 @@ def test_gtow_drill_ensure_reuses_exact_settings_without_post():
     svc.get_user_access_token = lambda user_id, refresh: "access"
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
-            _trainer_url(), "New name")
+            _trainer_url(), "LP OOP vs LP 3bet")
     finally:
         svc.get_user_access_token = old_get
     assert_true(not binding.created)
-    assert_eq(binding.name, "Existing drill")
+    assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_eq(binding.stats.total_hands, 10)
     assert_eq([call[0] for call in calls], ["GET"])
+
+
+@test
+def test_gtow_drill_ensure_renames_matching_settings_with_full_patch():
+    """Settings own identity; a stale display name is PATCHed, not duplicated."""
+    import gtow_drill_service as svc
+    settings = svc.settings_from_trainer_url(_trainer_url())
+    drill_id = "80af61e6-ac0b-4c38-9e2d-3d5855fc0c96"
+    existing = {
+        "id": drill_id,
+        "name": "LP 被 3bet（對手 LP，你 OOP）｜棄牌過多",
+        "description": "keep me", "favorite": True,
+        "settings": {**settings, "unused_empty": ""},
+        "tags": ["weekly"],
+        "totals": {"total_hands": 10, "played_moves_sum": 26,
+                   "gto_score_avg": 0.87, "total_ev_loss_sum": 1.05},
+    }
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "GET":
+            return _Response([existing])
+        assert_eq(method, "PATCH")
+        assert_true(url.endswith(f"/drills/{drill_id}/"))
+        return _Response({"id": drill_id, **kwargs["json"]})
+
+    old_get = svc.get_user_access_token
+    svc.get_user_access_token = lambda user_id, refresh: "access"
+    try:
+        binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
+            _trainer_url(), "LP OOP vs LP 3bet")
+    finally:
+        svc.get_user_access_token = old_get
+
+    assert_true(not binding.created)
+    assert_eq(binding.name, "LP OOP vs LP 3bet")
+    assert_eq(binding.stats.total_hands, 10)
+    assert_eq([call[0] for call in calls], ["GET", "PATCH"])
+    body = calls[1][2]["json"]
+    assert_eq(body["id"], drill_id)
+    assert_eq(body["name"], "LP OOP vs LP 3bet")
+    assert_eq(body["description"], "keep me")
+    assert_true(body["favorite"])
+    assert_eq(body["tags"], ["weekly"])
+    assert_eq(body["settings"]["unused_empty"], "")
+
+
+@test
+def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
+    """A paginated Drill list must not duplicate a queue row's bound UUID."""
+    import gtow_drill_service as svc
+    settings = svc.settings_from_trainer_url(_trainer_url())
+    drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        assert_eq(method, "PATCH")
+        assert_true(url.endswith(f"/drills/{drill_id}/"))
+        return _Response({"id": drill_id, **kwargs["json"]})
+
+    old_get = svc.get_user_access_token
+    svc.get_user_access_token = lambda user_id, refresh: "access"
+    try:
+        binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
+            _trainer_url(), "LP OOP vs LP 3bet", known_drill_id=drill_id,
+            known_drill_name="old verbose name")
+    finally:
+        svc.get_user_access_token = old_get
+    assert_eq(binding.drill_id, drill_id)
+    assert_eq(binding.name, "LP OOP vs LP 3bet")
+    assert_true(not binding.created)
+    assert_eq([call[0] for call in calls], ["PATCH"])
+    assert_true(not any("with_totals" in call[1] for call in calls))
+
+
+@test
+def test_gtow_drill_known_binding_with_current_name_needs_no_request():
+    import gtow_drill_service as svc
+    calls = []
+    client = svc.GTOWDrillClient(
+        7, "refresh", lambda *args, **kwargs: calls.append((args, kwargs)))
+    binding = client.ensure_drill(
+        _trainer_url(), "LP OOP vs LP 3bet",
+        known_drill_id="c8767ec9-bd78-434e-a0be-dfd0b01072dc",
+        known_drill_name="LP OOP vs LP 3bet")
+    assert_eq(calls, [])
+    assert_eq(binding.name, "LP OOP vs LP 3bet")
+    assert_true(not binding.created)
 
 
 @test

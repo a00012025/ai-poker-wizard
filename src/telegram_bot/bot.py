@@ -69,7 +69,11 @@ def _queue_payload(rows, *, page: int = 0,
     start = page * QUEUE_PAGE_SIZE
     for local_i, r in enumerate(rows, 1):
         i = start + local_i
-        lbl = r["label"] or r["spot_leaf"]
+        if r["kind"] == "review":
+            lbl = r["label"] or r["spot_leaf"]
+        else:
+            from spot_naming import compact_spot_name
+            lbl = compact_spot_name(r)
         st = "（本週課表內）" if r["status"] == "prescribed" else ""
         if r["kind"] == "review":
             L.append(f"🔍 {i}. {_esc(lbl)}{st}")
@@ -93,8 +97,12 @@ def _queue_payload(rows, *, page: int = 0,
             else:
                 row_btns.extend(actions)
         else:
+            from spot_naming import telegram_bias_summary
             ev = r["total_ev_loss_bb"] or 0
             L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}")
+            bias = telegram_bias_summary(r)
+            if bias:
+                L.append(f"   ↳ {_esc(bias)}")
             row_btns = [{"text": f"🎯 詳細／練習 {i}",
                          "callback_data": f"qdet:{r['id']}:{page}"}]
             row_btns.append({"text": f"📚 {i} 來源",
@@ -196,8 +204,11 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
                                 *, page: int = 0) -> tuple[str, list[list[dict]]]:
     """Render one queue prescription after its GTOW Drill is ensured."""
     from html import escape as _esc
+    from spot_naming import compact_spot_name, telegram_bias_summary
 
-    label = item.get("label") or item.get("spot_leaf") or "未命名 Drill"
+    label = compact_spot_name(item)
+    bias = telegram_bias_summary(item)
+    bias_line = f"• {_esc(bias)}\n" if bias else ""
     target_hands = int(item.get("gtow_target_hands") or 30)
     target_score = float(item.get("gtow_target_score") or 0.90)
     passed = (attempt.total_hands >= target_hands
@@ -213,6 +224,7 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
         f"<b>處方來源</b>\n"
         f"• 來自 {int(item.get('n_sources') or 0)} 手真實對局\n"
         f"• 累計 EV loss：{float(item.get('total_ev_loss_bb') or 0):.1f}bb\n\n"
+        f"{bias_line}"
         f"<b>GTOW Drill</b>\n"
         f"• {link_state}：{_esc(binding.name)}\n"
         f"• 歷史累計：{lifetime.total_hands} hands / "
@@ -1687,7 +1699,8 @@ class PokerWizardBot:
         rows = await self.db.pool.fetch(
             "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
             "review_anchor_street, status, n_sources, "
-            "total_ev_loss_bb, kind, ref_hand_id "
+            "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
+            "bias_direction, bias_n, bias_ev_loss_bb, bias_share "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST "
             "LIMIT $1 OFFSET $2", QUEUE_PAGE_SIZE, page * QUEUE_PAGE_SIZE)
@@ -1727,7 +1740,10 @@ class PokerWizardBot:
             async with self.db.pool.acquire() as conn:
                 async with conn.transaction():
                     item = await conn.fetchrow(
-                        "SELECT id, spot_leaf, label, drill_url, kind, n_sources, "
+                        "SELECT id, spot_leaf, spot_category, label, drill_url, "
+                        "kind, n_sources, bias_direction, bias_n, "
+                        "bias_ev_loss_bb, bias_share, "
+                        "gtow_drill_id, gtow_drill_name, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
                         "gtow_training_started_at "
                         "FROM drill_queue WHERE id=$1 FOR UPDATE", queue_id)
@@ -1746,11 +1762,17 @@ class PokerWizardBot:
                     await conn.fetchval(
                         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                         fingerprint)
+                    from spot_naming import compact_spot_name
+                    drill_name = compact_spot_name(item)
                     binding = await asyncio.to_thread(
-                        client.ensure_drill, item["drill_url"], item["label"])
+                        client.ensure_drill, item["drill_url"], drill_name,
+                        known_drill_id=(str(item["gtow_drill_id"])
+                                        if item["gtow_drill_id"] else None),
+                        known_drill_name=item["gtow_drill_name"])
                     item = await conn.fetchrow(
                         "UPDATE drill_queue SET gtow_drill_id=$2::uuid, "
                         "gtow_drill_name=$3, gtow_settings_hash=$4, "
+                        "label=$6, "
                         "gtow_drill_synced_at=NOW(), "
                         "gtow_training_started_at="
                         "COALESCE(gtow_training_started_at, NOW()), "
@@ -1758,7 +1780,8 @@ class PokerWizardBot:
                         "COALESCE(gtow_baseline_totals, $5::jsonb) "
                         "WHERE id=$1 RETURNING *",
                         queue_id, binding.drill_id, binding.name,
-                        binding.settings_hash, json.dumps(stats_json(binding.stats)))
+                        binding.settings_hash, json.dumps(stats_json(binding.stats)),
+                        drill_name)
 
             def load_stats():
                 return (
@@ -1794,7 +1817,7 @@ class PokerWizardBot:
             await query.answer("Database not connected.")
             return
         item = await self.db.pool.fetchrow(
-            "SELECT label, kind, source_hands, ref_hand_id "
+            "SELECT label, kind, spot_leaf, spot_category, source_hands, ref_hand_id "
             "FROM drill_queue WHERE id=$1",
             queue_id)
         if not item:
@@ -1812,8 +1835,13 @@ class PokerWizardBot:
                 hand_ids)
         sources = resolve_queue_source_hands(
             entries, ledger_rows, ref_hand_id=item["ref_hand_id"])
+        if item["kind"] == "drill":
+            from spot_naming import compact_spot_name
+            source_label = compact_spot_name(item)
+        else:
+            source_label = item["label"] or str(queue_id)
         html, buttons = _queue_source_payload(
-            queue_id, item["label"] or str(queue_id), sources, page=page,
+            queue_id, source_label, sources, page=page,
             queue_page=queue_page, kind=item["kind"])
         markup = self._rows_to_markup(buttons)
         await query.answer()

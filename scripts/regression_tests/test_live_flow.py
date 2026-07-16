@@ -871,7 +871,7 @@ def test_live_queue_selection_and_report():
     assert_eq(round(items[0]["total_ev_loss_bb"], 2), 0.44)
     assert_true(items[0]["drill_url"] and "fh_hero=BB" in items[0]["drill_url"])
     assert_true(items[0]["label"])
-    assert_in("flop x-x", items[0]["label"])
+    assert_in("翻牌 x-x", items[0]["label"])
     result = {
         "date": "2026-07-10",
         "totals": {"hands": 2, "decisions": 6, "graded": 4, "mistakes": 1,
@@ -927,7 +927,8 @@ def test_live_queue_labels_include_prior_street_actions():
         "hero_cat": "BB", "villain_cat": "LP", "ip_oop": "OOP",
         "position": "BB", "flop_seq": "x-b-c", "turn_seq": None,
     }
-    assert_in("轉牌面對下注（flop x-b-c）", spot_label_zh(turn))
+    assert_eq(spot_label_zh(turn),
+              "SRP｜BB OOP｜轉牌 vs Bet｜翻牌 x-b-c")
 
     river = {
         "spot_category": "river", "street": "river",
@@ -935,8 +936,49 @@ def test_live_queue_labels_include_prior_street_actions():
         "hero_cat": "LP", "villain_cat": "EP", "ip_oop": "IP",
         "position": "BTN", "flop_seq": None, "turn_seq": None,
     }
-    assert_in("河牌面對過牌（flop x-x / turn x-b-c）",
-              spot_label_zh(river))
+    assert_eq(spot_label_zh(river),
+              "SRP｜LP IP｜河牌 vs X｜翻牌 x-x／轉牌 x-b-c")
+
+
+@test
+def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
+    """One compact grammar names queue rows, detail titles, and GTOW Drills."""
+    from spot_naming import compact_spot_name
+
+    cases = [
+        ({"spot_category": "flop",
+          "spot_leaf": "flop:3bet:LPvSB:IP:vs_raise"},
+         "3bet｜LP IP｜翻牌 vs XR"),
+        ({"spot_category": "turn",
+          "spot_leaf": "turn:SRP:BBvLP:OOP:[x-b-r-c]:first_to_act"},
+         "SRP｜BB OOP｜轉牌 首動｜翻牌 x-b-r-c"),
+        ({"spot_category": "river",
+          "spot_leaf": "river:4bet:EPvBB:IP:[x-x|x-b-c]:vs_check"},
+         "4bet｜EP IP｜河牌 vs X｜翻牌 x-x／轉牌 x-b-c"),
+        ({"spot_category": "RFI", "spot_leaf": "HJ_RFI"}, "HJ RFI"),
+        ({"spot_category": "vsOpen", "spot_leaf": "SB_vsOpen_LP"},
+         "SB vs LP Open"),
+        ({"spot_category": "vsRaiseCall",
+          "spot_leaf": "BB_vsRaiseCall_OOP"},
+         "BB OOP vs Open+Call"),
+        ({"spot_category": "vsSqueeze",
+          "spot_leaf": "LP_vsSqueeze_vSB_OOP"},
+         "LP OOP vs SB Squeeze"),
+        ({"spot_category": "vs3bet",
+          "spot_leaf": "LP_vs3bet_vLP_OOP"},
+         "LP OOP vs LP 3bet"),
+        ({"spot_category": "vsCold3bet",
+          "spot_leaf": "LP_vsCold3bet_vSB_IP"},
+         "LP IP｜Cold vs SB 3bet"),
+        ({"spot_category": "vs4bet",
+          "spot_leaf": "EP_vs4bet_vBB_OOP"},
+         "EP OOP vs BB 4bet"),
+        ({"spot_category": "vsCold4bet",
+          "spot_leaf": "EP_vsCold4bet_vBB_OOP"},
+         "EP OOP｜Cold vs BB 4bet"),
+    ]
+    for row, expected in cases:
+        assert_eq(compact_spot_name(row), expected)
 
 
 @test
@@ -1312,17 +1354,17 @@ def test_queue_feed_scan_sql_shape():
 
 
 @test
-def test_queue_label_only_adds_a_dominant_action_tendency():
-    """Queue remains terse: one suffix when useful, no mixed/unclear filler."""
+def test_queue_label_never_embeds_action_tendency():
+    """Bias belongs to Telegram training info, never the persisted Drill name."""
     import queue_feed as qf
     row = {"spot_leaf": "HJ_vs3bet_SB_IP", "spot_category": "vs3bet",
            "hero_cat": "MP", "villain_cat": "SB", "ip_oop": "IP",
            "hero_pos": "HJ"}
     bias = {"direction": "overfold", "label": "棄牌過多", "n": 10,
             "ev_loss_bb": 12.69, "share": 0.838}
-    assert_true(qf.drill_label(row, bias).endswith("｜棄牌過多"))
+    assert_eq(qf.drill_label(row, bias), "MP IP vs SB 3bet")
     plain = qf.drill_label(row, None)
-    assert_true("明顯傾向" not in plain and "方向混合" not in plain and "｜" not in plain)
+    assert_eq(plain, "MP IP vs SB 3bet")
 
 
 @test
@@ -1721,15 +1763,41 @@ def test_queue_clear_refreshes_message_with_remaining_items():
 
 
 @test
+def test_queue_drill_row_uses_compact_spot_and_keeps_bias_in_telegram_only():
+    """Persisted legacy labels cannot leak verbose prose/bias into Drill names."""
+    from telegram_bot.bot import _queue_payload
+
+    rows = [{
+        "id": 13, "kind": "drill", "status": "pending",
+        "label": "SRP 底池，你 BB 在 OOP，轉牌面對下注｜棄牌過多",
+        "spot_category": "turn",
+        "spot_leaf": "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet",
+        "drill_url": "https://example.com", "n_sources": 7,
+        "total_ev_loss_bb": 4.2, "bias_direction": "overfold",
+        "bias_n": 7, "bias_ev_loss_bb": 4.2, "bias_share": 0.81,
+    }]
+    html, _buttons = _queue_payload(rows)
+    assert_in("🎯 1. SRP｜BB OOP｜轉牌 vs Bet｜翻牌 x-b-c", html)
+    assert_in("明顯傾向：棄牌過多（7 手，共損失 4.20bb）", html)
+    title_line = next(line for line in html.splitlines() if line.startswith("🎯 1."))
+    assert_not_in("棄牌過多", title_line)
+
+
+@test
 def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     """Completion stays available without a redundant confirmation submenu."""
     from types import SimpleNamespace
     from telegram_bot.bot import _queue_drill_detail_payload
 
     item = {
-        "id": 13, "label": "APW should not appear here", "spot_leaf": "leaf",
+        "id": 13,
+        "label": "SRP 底池，你 BB 在 OOP，轉牌面對下注｜棄牌過多",
+        "spot_category": "turn",
+        "spot_leaf": "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet",
         "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
         "n_sources": 4, "total_ev_loss_bb": 4.8,
+        "bias_direction": "overfold", "bias_n": 7,
+        "bias_ev_loss_bb": 4.2, "bias_share": 0.81,
         "gtow_target_hands": 30, "gtow_target_score": 0.90,
     }
     binding = SimpleNamespace(created=False, name="BB vs SB SRP Flop faced c-bet")
@@ -1740,6 +1808,9 @@ def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     html, buttons = _queue_drill_detail_payload(
         item, binding, lifetime, attempt, page=2)
     flat = [button for row in buttons for button in row]
+    assert_in("SRP｜BB OOP｜轉牌 vs Bet｜翻牌 x-b-c", html)
+    assert_not_in("你 BB 在 OOP", html)
+    assert_in("明顯傾向：棄牌過多（7 手，共損失 4.20bb）", html)
     assert_in("3/30 hands", html)
     assert_in("尚未達標", html)
     assert_in("隨時完成", html)
