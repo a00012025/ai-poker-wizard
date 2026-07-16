@@ -490,12 +490,15 @@ class GeminiSessionManager:
         hand_json = last["hand"]
         hand_id = last.get("hand_id")
         try:
-            self._setup_user_token(user_id, refresh_token)
-            try:
-                from analyze_hand import analyze_hand_full
-                context = await asyncio.to_thread(analyze_hand_full, hand_json)
-            finally:
-                self._clear_user_token()
+            def _analyze_with_token():
+                self._setup_user_token(user_id, refresh_token)
+                try:
+                    from analyze_hand import analyze_hand_full
+                    return analyze_hand_full(hand_json)
+                finally:
+                    self._clear_user_token()
+
+            context = await asyncio.to_thread(_analyze_with_token)
         except Exception as e:
             self._logger.warning(
                 f"[chat={chat_id}] rehydrate analyze_hand_full failed "

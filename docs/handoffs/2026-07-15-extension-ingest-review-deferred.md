@@ -28,11 +28,8 @@
 
 ## Deferred（之後再做）
 
-1. **Legacy 模式 401 re-mint 是 no-op**（pre-existing，非本 PR 引入）：
-   `.tokens.json` 的 access token 被 server 端 revoke 但未過期時，
-   `get_access_token()` 直接回 cache，401 retry 重送同一顆 token。
-   正解：`gto_token.get_access_token(force_refresh=True)` 之類的參數，
-   讓 `_get_token(force_remint=True)` 在 legacy 分支也能真的重 mint。
+1. **RESOLVED — legacy global auth 已移除**：access token 現由 DB refresh
+   token mint；401 retry 透過 `invalidate_user_token` 強制重 mint。
 2. **content.js / popup.js 輪詢迴圈重複**：trigger+poll 應下沉到
    background.js（單一 INGEST_RUN 訊息或 port streaming），兩個 UI 變純
    renderer。目前 popup 版沒有 hidden-skip/backoff，協定改動要改兩處。

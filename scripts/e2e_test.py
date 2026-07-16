@@ -41,13 +41,8 @@ async def main():
     session = GeminiSessionManager()
     chat_id = 99999  # fake chat id
 
-    # Load refresh token from .tokens.json for local testing
-    import json as _json
-    _tokens_file = os.path.join(os.path.dirname(__file__), "..", ".tokens.json")
-    _refresh_token = None
-    if os.path.exists(_tokens_file):
-        with open(_tokens_file) as f:
-            _refresh_token = _json.load(f).get("refresh")
+    # The CLI bootstrap below resolves the owner DB token before asyncio starts.
+    _refresh_token = os.getenv("GTOW_REFRESH_TOKEN")
 
     # Parse args
     args = sys.argv[1:]
@@ -163,4 +158,7 @@ async def run_message(session: GeminiSessionManager, chat_id: int, text: str,
 
 
 if __name__ == "__main__":
+    from gto_owner_token import bootstrap_owner_db_token
+    if not bootstrap_owner_db_token():
+        raise SystemExit("ERROR: owner DB GTO token unavailable")
     asyncio.run(main())

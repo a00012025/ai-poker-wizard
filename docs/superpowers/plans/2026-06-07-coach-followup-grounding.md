@@ -339,7 +339,7 @@ print("acting hero:", (hero_sol.get("game") or {}).get("active_position"))
 print("acting villain node:", (vr.get("game") or {}).get("active_position") if vr else None)
 ```
 
-- [ ] **Step 2: Run capture (needs `.tokens.json`); verify acting players**
+- [ ] **Step 2: Run capture (uses owner DB token); verify acting players**
 
 Run: `cd ~/ai-poker-wizard-coach-impl && python scripts/_tmp.py`
 Expected: prints hero acting position == "HJ" and villain node acting == "BB".

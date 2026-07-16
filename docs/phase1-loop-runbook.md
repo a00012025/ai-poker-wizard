@@ -3,7 +3,7 @@
 選手手動驗收清單。每步的預期結果都列出來，照著跑一遍就知道閉環是否轉動。
 
 ## 前置
-- `.tokens.json` 有效（過期時用 skill `gtow-cdp-session` 修，或 `refresh-gto-token`）。
+- owner 的 `users.gto_refresh_token` 有效（過期時用 skill `gtow-cdp-session` 或 `refresh-gto-token` 重新登入並同步 DB）。
 - Bot 已部署（`bash scripts/deploy.sh`），`OWNER_CHAT_ID`（可選）或 `users` 表恰一個 `is_active` 使用者。
 
 ## 1. 入帳（攝取）

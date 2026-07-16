@@ -28,7 +28,7 @@
 
 ## 3. 資料源事實（2026-07-07 live 探測，全部驗證過）
 
-- Host `https://api.gtowizard.com`；auth = `Authorization: Bearer <access>` + `GWCLIENTID: <uuid>` header；access token 由 `.tokens.json` refresh token（5 年效期）經 `gto_token._refresh_access` 現 mint；data endpoints 不需 ECDSA 簽名。
+- Host `https://api.gtowizard.com`；auth = `Authorization: Bearer <access>` + `GWCLIENTID: <uuid>` header；access token 由 `users.gto_refresh_token` 經 `gto_token.get_user_access_token` 現 mint；data endpoints 不需 ECDSA 簽名。
 - **List**: `POST /v4/hand-history/hands/`，body `{filters:{played_at__range:[iso,null], analyzer_game_format:"TOURNAMENT"}, pagination:{limit:100,offset,ordering:["played_at"]}, response_fields:[...]}` → `{items,total,limit,offset}`。
   - 可用欄位（實測）：`hand_id`(uuid)、`played_at`、`tournament_id/name/buyin`、`file_original_name`、`site`、`pot_type`、`player_position`、`hero_hand`、`boards`、`total_pot`、`blinds`、`board_flop_connectedness/pairedness`、`game_format`、`total_players`、`preflop_game_depth`、`solution_status`、`total_ev_loss`(bb)、`total_ev_loss_as_pot`、`avg_gto_score`、`avg_frequency_difference`、`player_winloss`(bb)、`hand_correctness`、`actions`（各街動作碼陣列）、`actions_with_correctness_{street}` = `[{action_code, correctness}]`（hero 動作才有 correctness，如 `BEST_MOVE/CORRECT_MOVE/BLUNDER`；非 hero 為 null）、`correctnesses` + `sequence_numbers`。
   - `ordering` 支援 `played_at`、`-total_ev_loss`（實測）；filter 不支援 `total_ev_loss__range`（422）。
@@ -85,7 +85,7 @@ GTOW Analyze API ──► scripts/gtow_analyze_api.py ──► data/gtow_raw/*
 ## 6. 攝取管線
 
 ### `scripts/gtow_analyze_api.py`
-- Session 帶 `origin: https://app.gtowizard.com`、UA 對齊 SPA、`GWCLIENTID`（首次生成 uuid4 持久化於 `.gtow_client_id`）、access token 走 `gto_token.get_access_token()`。
+- Session 帶 `origin: https://app.gtowizard.com`、UA 對齊 SPA、`GWCLIENTID`（首次生成 uuid4 持久化於 `.gtow_client_id`）、access token 走 per-user/owner DB bootstrap。
 - `list_hands(since, until, offset, limit)`、`hand_detail(gtow_hand_id)`；**節流 2-3 rps + jitter**；429/5xx 指數退避（上限後熄火存 checkpoint）；401 時重 mint access 一次再試。
 
 ### `scripts/ledger_ingest.py`
@@ -181,6 +181,6 @@ GTOW Analyze API ──► scripts/gtow_analyze_api.py ──► data/gtow_raw/*
 
 - 遵守 repo 開發流程：worktree + branch + PR；每個 bug fix 附 regression test；ad-hoc 探測寫 `scripts/_tmp.py`。
 - Migrations 一律 `supabase db push`。
-- `.tokens.json` 為 bind-mount，永不整檔替換（in-place write）。
+- GTOW refresh token 只存 `users.gto_refresh_token`；owner tooling 由 `OWNER_CHAT_ID` 解析。
 - 探測未驗證 endpoints 時：HAR 重放法見 skill `gtow-cdp-session`（Method B）。
 - 蒸餾邏輯改動後：重跑 distill 全量 + 記分卡 snapshot diff，確認無非預期漂移。

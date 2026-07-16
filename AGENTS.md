@@ -13,13 +13,14 @@ This file is the shared repo-local agent guidance for both Codex and Claude Code
 src/
   gemini_session.py    — Gemini LLM session manager (parse hand → analyze → coach)
   main_gemini.py       — Telegram bot entry point
-  ingest_runner.py     — Extension 觸發的攝取佇列 runner（gtow_ingest_requests 5s poll；per-user token via env GTOW_REFRESH_TOKEN，不碰 .tokens.json；incremental→spots→sessions→verify，對不上自動全量 sweep）
+  ingest_runner.py     — Extension 觸發的攝取佇列 runner（gtow_ingest_requests 5s poll；per-user token via env GTOW_REFRESH_TOKEN；incremental→spots→sessions→verify，對不上自動全量 sweep）
   telegram_bot/bot.py  — Telegram message handler (.txt/.zip uploads, follow-up by hand_id)
 scripts/
   analyze_hand.py      — Multi-street GTO analysis orchestration
   gto_api.py           — GTO Wizard API client (next-actions, spot-solution)
   gto_formatter.py     — Solver JSON → natural language + combo-level breakdown
-  gto_token.py         — JWT auth & token refresh (.tokens.json)
+  gto_token.py         — Per-user JWT access minting + in-memory cache
+  gto_owner_token.py   — Owner-run CLI/regression 從 users.gto_refresh_token bootstrap
   icm_modes.py         — ICM game mode discovery and stack matching
   hand_eval.py         — Deterministic hand type evaluation
   hand_validator.py    — Poker-rules structural validator: replays each parsed hand as a real betting game; catches orphan calls, act-after-fold, dup cards, dropped seats before they silently reach the solver (attached to analyze_hand_full as result["validation"])
@@ -53,7 +54,7 @@ scripts/
 - **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
 - **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
 - **Training-loop LLM tools** (all ledger-backed, EV-weighted, always with n): `query_ledger_summary`（弱點/統計）, `query_ledger_hands`（最貴的手）, `get_training_plan`（週記分卡）, `get_progress`（週 EV loss 趨勢）. Deviations are still extracted after each live analysis (fire-and-forget) into `deviations` as a capture snapshot, but no stats surface reads that table anymore.
-- **Extension-triggered ingest**: Chrome extension (`chrome-extension/`, v2.1) 的「♠ 同步手牌到 DB」→ Edge Function `gtow-sync` `/ingest`（Device auth）→ `gtow_ingest_requests` row → `src/ingest_runner.py` 5s poller 用該 user 的 `users.gto_refresh_token`（env `GTOW_REFRESH_TOKEN`，永不讀寫 `.tokens.json`）跑 incremental ingest；`--verify` 對不上自動升級全量 sweep。**手動觸發（sync/ingest 按鈕、/settoken）一律 force override 伺服器 token 的 stale-iat guard** — 當下登入中的 token 必定有效，DB 裡 iat 較新的可能已被 FORCED_LOGOUT 殺掉。每日 05:00 排程與 `/ingest` 都走同一條 per-user-token pipeline。
+- **Extension-triggered ingest**: Chrome extension (`chrome-extension/`, v2.1) 的「♠ 同步手牌到 DB」→ Edge Function `gtow-sync` `/ingest`（Device auth）→ `gtow_ingest_requests` row → `src/ingest_runner.py` 5s poller 用該 user 的 `users.gto_refresh_token`（env `GTOW_REFRESH_TOKEN`）跑 incremental ingest；`--verify` 對不上自動升級全量 sweep。**手動觸發（sync/ingest 按鈕、/settoken）一律 force override 伺服器 token 的 stale-iat guard** — 當下登入中的 token 必定有效，DB 裡 iat 較新的可能已被 FORCED_LOGOUT 殺掉。每日 05:00 排程與 `/ingest` 都走同一條 per-user-token pipeline。
 - **Live flow (線下流 v1)**: `/live` (owner-only) imports live-hand shorthand batches → per-decision solver grading → `ledger_hands/decisions` with `source='live'` + `drill_queue` (deviated action lines ≥0.1bb). `/queue` lists pending/prescribed lines with 🎯 drill URL buttons + ✔ cleared; `/plan` resends the weekly plan. Weekly scorecard drains the queue (pending→prescribed) and sends drill links as URL buttons.
 - **Source isolation (§5.2)**: ALL stats/aggregation queries on ledger tables must filter `source='online'` — live hands are selectively recorded (biased sample) and only ever surface via the queue/線下 sections. `ledger_hands.source` exists since migration 20260711.
 
@@ -92,9 +93,7 @@ scripts/
 
 ## Docker & Deployment
 
-- `.tokens.json` is bind-mounted — do NOT replace the file inode when updating it
-- To update tokens: write directly into container via `docker compose exec bot sh -c 'cat > /app/.tokens.json ...'`
-- Also update host file with in-place write (`open('...', 'r+')` + `truncate()`)
+- GTOW refresh tokens live only in `users.gto_refresh_token`; owner CLI tools resolve `OWNER_CHAT_ID` through `scripts/gto_owner_token.py`
 - Deploy: `bash scripts/deploy.sh` (git pull → supabase db push → docker compose build+up)
 
 ## Database (Supabase)
@@ -152,10 +151,9 @@ git worktree remove ~/ai-poker-wizard-leak-detection
 ### 注意事項
 
 - 每個 worktree 共享同一個 `.git` — branch 之間不會衝突
-- `.env` 和 `.tokens.json` 在 main repo 中，worktree 需要 symlink 或複製：
+- `.env` 在 main repo 中，worktree 需要 symlink：
   ```bash
   ln -s ~/ai-poker-wizard/.env ~/ai-poker-wizard-leak-detection/.env
-  ln -s ~/ai-poker-wizard/.tokens.json ~/ai-poker-wizard-leak-detection/.tokens.json
   ```
 - Supabase migrations 在任何 worktree 中都可以跑 `supabase db push`
 - `regression_test.py` 在每個 worktree 中獨立執行

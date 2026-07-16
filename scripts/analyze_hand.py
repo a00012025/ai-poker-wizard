@@ -110,7 +110,7 @@ def _run_with_gto_token(parent_token: str | None, fn, *args, **kwargs):
 
     ``_run_analysis`` fetches some spots in executor threads and some inline on
     the main request thread. Inline calls must not clear the main thread's
-    token, or later solver requests fall back to the global ``.tokens.json``.
+    token, or later solver requests lose the requesting user's auth context.
     """
     from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
 

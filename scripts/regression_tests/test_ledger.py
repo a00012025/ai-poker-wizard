@@ -1407,16 +1407,13 @@ def _restore_user_token_mint(orig):
 
 
 @test
-def test_analyze_api_env_token_override_mints_without_tokens_json():
-    """GTOW_REFRESH_TOKEN set -> access minted via the per-user cache; the
-    .tokens.json global path must never be touched."""
+def test_analyze_api_env_token_override_mints_access():
+    """GTOW_REFRESH_TOKEN set -> access minted via the per-user cache."""
     import gtow_analyze_api as gapi
     import gto_token
     minted = []
     orig = _patch_user_token_mint(minted)
-    orig_get = gapi.get_access_token
-    gapi.get_access_token = lambda: (_ for _ in ()).throw(
-        AssertionError("tokens.json path must not be used in override mode"))
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
     gto_token.invalidate_user_token(gapi._ENV_TOKEN_USER)
     os.environ["GTOW_REFRESH_TOKEN"] = "refresh-abc"
     try:
@@ -1426,9 +1423,11 @@ def test_analyze_api_env_token_override_mints_without_tokens_json():
         assert_eq(gapi._get_token(force_remint=True), "acc-1")
         assert_eq(len(minted), 2)                       # 401 path re-mints
     finally:
-        del os.environ["GTOW_REFRESH_TOKEN"]
+        if orig_env is None:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        else:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
         _restore_user_token_mint(orig)
-        gapi.get_access_token = orig_get
 
 
 @test
@@ -1438,6 +1437,7 @@ def test_analyze_api_env_token_override_invalid_refresh_raises():
     import gto_token
     from gto_token import TokenExpiredError
     orig_refresh = gto_token._refresh_access
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
     gto_token._refresh_access = lambda r, kp=None: None
     gto_token.invalidate_user_token(gapi._ENV_TOKEN_USER)
     os.environ["GTOW_REFRESH_TOKEN"] = "refresh-bad"
@@ -1448,9 +1448,39 @@ def test_analyze_api_env_token_override_invalid_refresh_raises():
         except TokenExpiredError:
             pass
     finally:
-        del os.environ["GTOW_REFRESH_TOKEN"]
+        if orig_env is None:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        else:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
         gto_token._refresh_access = orig_refresh
         gto_token.invalidate_user_token(gapi._ENV_TOKEN_USER)
+
+
+@test
+def test_analyze_api_bot_process_fails_closed_without_request_token():
+    """Analyze API must not borrow owner auth inside the Telegram bot."""
+    import gtow_analyze_api as gapi
+    from gto_token import TokenExpiredError
+
+    orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
+    orig_bot = os.environ.get("POKER_BOT_PROCESS")
+    os.environ["GTOW_REFRESH_TOKEN"] = "must-not-be-used-in-bot"
+    os.environ["POKER_BOT_PROCESS"] = "1"
+    try:
+        try:
+            gapi._get_token()
+            assert_true(False, "bot Analyze auth without user token must fail")
+        except TokenExpiredError as exc:
+            assert_in("per-user", str(exc))
+    finally:
+        if orig_env is not None:
+            os.environ["GTOW_REFRESH_TOKEN"] = orig_env
+        else:
+            os.environ.pop("GTOW_REFRESH_TOKEN", None)
+        if orig_bot is None:
+            os.environ.pop("POKER_BOT_PROCESS", None)
+        else:
+            os.environ["POKER_BOT_PROCESS"] = orig_bot
 
 
 def _fake_ingest_env(script_map):
@@ -1464,6 +1494,43 @@ def _fake_ingest_env(script_map):
                 return result
         return 0, ""
     return fake_run, calls
+
+
+@test
+def test_ingest_subprocess_keeps_user_token_but_clears_bot_guard():
+    """A bot child is CLI tooling: explicit user auth stays, bot guard does not."""
+    import asyncio
+    from src import ingest_runner
+
+    captured = {}
+
+    class _Stdout:
+        async def readline(self):
+            return b""
+
+    class _Proc:
+        stdout = _Stdout()
+
+        async def wait(self):
+            return 0
+
+    async def fake_subprocess(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _Proc()
+
+    orig = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = fake_subprocess
+    try:
+        rc, _ = asyncio.run(ingest_runner._run_script(
+            {"POKER_BOT_PROCESS": "1", "GTOW_REFRESH_TOKEN": "user-refresh"},
+            "scripts/ledger_ingest.py",
+        ))
+    finally:
+        asyncio.create_subprocess_exec = orig
+
+    assert_eq(rc, 0)
+    assert_eq(captured["env"]["GTOW_REFRESH_TOKEN"], "user-refresh")
+    assert_true("POKER_BOT_PROCESS" not in captured["env"])
 
 
 @test
@@ -1550,55 +1617,6 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
     assert_in("完整分析：0", result)
     assert_in("稍後再點一次", result)
     assert_not_in("全量補齊", result)
-
-
-@test
-def test_get_access_token_force_refresh_bypasses_valid_cache():
-    """force_refresh=True re-mints even when the cached access token is still
-    valid — so the legacy 401 retry can actually replace a server-revoked (but
-    not-yet-expired) token instead of resending the same dead one (deferred #1)."""
-    import time
-    import gto_token
-    saved = (gto_token._load_tokens, gto_token._refresh_access, gto_token._jwt_exp,
-             gto_token._save_tokens, gto_token._get_or_create_keypair)
-    minted = []
-    gto_token._load_tokens = lambda: {"access": "old-cached", "refresh": "r"}
-    gto_token._jwt_exp = lambda t: time.time() + 9999      # everything valid
-    gto_token._get_or_create_keypair = lambda tokens=None: {"kp": 1}
-    gto_token._save_tokens = lambda t: None
-    def fake_refresh(r, kp=None):
-        minted.append(r)
-        return "fresh-access"
-    gto_token._refresh_access = fake_refresh
-    try:
-        assert_eq(gto_token.get_access_token(), "old-cached")     # cache hit
-        assert_eq(minted, [])
-        assert_eq(gto_token.get_access_token(force_refresh=True), "fresh-access")
-        assert_eq(minted, ["r"])                                  # forced a mint
-    finally:
-        (gto_token._load_tokens, gto_token._refresh_access, gto_token._jwt_exp,
-         gto_token._save_tokens, gto_token._get_or_create_keypair) = saved
-
-
-@test
-def test_get_token_legacy_force_remint_forces_token_refresh():
-    """Legacy path (no GTOW_REFRESH_TOKEN): _get_token(force_remint=True) must
-    push force_refresh into get_access_token, not resend the cached token
-    (deferred #1 — the 401 retry was a silent no-op in this branch)."""
-    import gtow_analyze_api as gapi
-    seen = []
-    orig_get = gapi.get_access_token
-    def fake_get(force_refresh=False):
-        seen.append(force_refresh)
-        return "acc-forced" if force_refresh else "acc-cached"
-    gapi.get_access_token = fake_get
-    os.environ.pop("GTOW_REFRESH_TOKEN", None)
-    try:
-        assert_eq(gapi._get_token(), "acc-cached")
-        assert_eq(gapi._get_token(force_remint=True), "acc-forced")
-        assert_eq(seen, [False, True])
-    finally:
-        gapi.get_access_token = orig_get
 
 
 @test

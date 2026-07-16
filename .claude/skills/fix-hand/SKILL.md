@@ -54,7 +54,6 @@ SLUG="HXXXX"   # or a short bug slug
 git worktree add ~/ai-poker-wizard-fix-$SLUG -b fix/$SLUG origin/main
 cd ~/ai-poker-wizard-fix-$SLUG
 ln -sf ~/ai-poker-wizard/.env .env
-ln -sf ~/ai-poker-wizard/.tokens.json .tokens.json
 ln -sf ~/ai-poker-wizard/.gto_cache .gto_cache   # avoid Layer-2 EV drift
 ```
 

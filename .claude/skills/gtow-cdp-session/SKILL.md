@@ -113,7 +113,7 @@ headless `9222` from another task) and silently hand you an unauthenticated
 - The **access token is NOT in localStorage** — the SPA keeps it in memory. A
   page-context `fetch` that reads a token from localStorage will **401**.
 - localStorage holds `user_refresh` — the **refresh** JWT (~361 chars, long TTL).
-  That's the useful one: it's exactly what `.tokens.json` wants.
+  The extension syncs it into `users.gto_refresh_token`, the sole credential store.
 - The working request auth is `Authorization: Bearer <access>` **+** header
   `GWCLIENTID: <uuid>`. No ECDSA `google-anal-id` signing is needed for data
   endpoints (that's only for `/v1/token/refresh/`, handled by `gto_signing.py`).
@@ -122,18 +122,17 @@ headless `9222` from another task) and silently hand you an unauthenticated
 
 ## Pull data — two working methods
 
-### Method A — refresh token → repo client (preferred, also repairs the token)
+### Method A — browser token → DB → repo client (preferred)
 
-Lift `user_refresh` to a file (never printed), drop it into `.tokens.json`, let
-`gto_token._refresh_access` mint an access token, then call the API with plain
-`requests` / `scripts/gto_api.py`. This simultaneously fixes a `FORCED_LOGOUT`:
+After login, click the extension's **立即同步目前 GTOW token** button. It writes
+`user_refresh` to the owner's `users.gto_refresh_token` row. Owner-run clients
+then resolve that row automatically; verify without printing secrets:
 
 ```bash
-agent-browser --cdp 9222 eval 'localStorage.getItem("user_refresh")' > /tmp/gtow_refresh.txt
-# strip agent-browser's quotes, then in-place write {"refresh": <tok>, "access": ""} into
-# .tokens.json (keep signing_keypair), call gto_token._refresh_access, verify, and
-# `rm /tmp/gtow_refresh.txt`. (See scripts/_tmp.py usage in the session that built this skill.)
+python scripts/gto_token.py
 ```
+
+This is also the supported repair path after `FORCED_LOGOUT`.
 
 ### Method B — replay the SPA's own request from a HAR (fastest for schema discovery)
 

@@ -26,7 +26,8 @@ scripts/
   analyze_hand.py    — Multi-street GTO analysis orchestration
   gto_api.py         — GTO Wizard API client (next-actions, spot-solution)
   gto_formatter.py   — Solver JSON → natural language + combo-level breakdown
-  gto_token.py       — JWT auth & token refresh (.tokens.json)
+  gto_token.py       — Per-user JWT access minting + in-memory cache
+  gto_owner_token.py — Owner DB token bootstrap for CLI/regression
   e2e_test.py        — CLI E2E test (no Telegram needed)
 src/
   main_gemini.py     — Telegram bot entry point
@@ -98,9 +99,10 @@ python scripts/analyze_hand.py --json '<hand_json>'
 ## GTO Wizard API
 
 ### Authentication
-- Refresh token stored in `.tokens.json` (auto-managed)
+- Refresh tokens stored per-user in `users.gto_refresh_token`
+- Owner CLI tools resolve `OWNER_CHAT_ID` from DB automatically
 - Access token auto-refreshed via `POST /v1/token/refresh/`
-- If refresh fails, `agent-browser` opens headed browser for manual login
+- If refresh fails, re-login and sync through the extension or private `/settoken`
 
 ### Endpoints
 
