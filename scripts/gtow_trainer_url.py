@@ -54,11 +54,29 @@ _PREFLOP_SPOT_TO_FH_ACTIONS: dict[str, str] = {
 # Baseline trainer UI flags (copied from reference URL). Preserved as
 # constants so every URL we build lands with the same UI affordances
 # (ranges visible, equity chart, etc.).
+ALL_TRAINER_GROUPS = (
+    "22,33,44,55,66,77,88,99,AA,KK,QQ,JJ,TT,AKs,AKo,AQs,AJs,AQo,KQs,"
+    "ATs,AJo,KJs,KQo,QJs,KTs,A9s,ATo,QTs,A8s,JTs,A7s,A5s,KJo,K9s,A4s,"
+    "A6s,Q9s,A3s,T9s,QJo,J9s,A2s,KTo,A9o,K8s,QTo,K7s,JTo,Q8s,K6s,T8s,"
+    "A8o,J8s,K5s,98s,A5o,A7o,K4s,K9o,Q7s,K3s,Q6s,A4o,T7s,A6o,K2s,J7s,"
+    "Q9o,T9o,Q5s,97s,A3o,J9o,87s,Q4s,Q3s,A2o,K8o,76s,Q2s,J6s,T6s,J5s,"
+    "65s,96s,86s,54s,K7o,J4s,Q8o,T8o,J3s,J8o,K6o,75s,98o,J2s,T5s,K5o,"
+    "T4s,64s,53s,85s,95s,T3s,K4o,T2s,43s,Q7o,74s,K3o,Q6o,T7o,J7o,97o,"
+    "63s,87o,K2o,52s,Q5o,93s,84s,94s,42s,92s,Q4o,32s,73s,76o,Q3o,65o,"
+    "54o,86o,T6o,Q2o,J6o,96o,62s,J5o,83s,82s,J4o,75o,J3o,72s,64o,53o,"
+    "J2o,85o,T5o,95o,T4o,43o,T3o,T2o,74o,63o,52o,42o,84o,93o,94o,92o,"
+    "32o,73o,62o,82o,83o,72o"
+)
+
 _TRAINER_UI_DEFAULTS: dict[str, str] = {
     "solution_type":                "gwiz",
     "gmfft_sort_key":               "0",
     "gmfft_sort_order":             "desc",
     "fh_groups_selection":          "manual",
+    # GTOW injects this complete 169-class selection into every session even
+    # when the deep link omits it.  Pin it explicitly so the settings object
+    # used for Drill creation is byte-for-byte matchable by the Trainer UI.
+    "fh_groups":                    ALL_TRAINER_GROUPS,
     "fh_trainer_tables":            "1",
     "fh_trainer_mode":              "stop_end_of_hand",
     "fh_trainer_game_mode":         "trainer_actions",

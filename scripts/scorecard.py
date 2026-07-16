@@ -389,9 +389,9 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
                 buttons.append(row)
         else:
             row = []
-            if q.get("drill_url"):
-                row.append({"text": f"📥 佇列：{lbl}", "url": q["drill_url"]})
             if qid is not None:
+                row.append({"text": f"📥 詳細／練習：{lbl}",
+                            "callback_data": f"qdet:{qid}:0"})
                 row.append({"text": "📚 來源", "callback_data": f"qsrc:{qid}"})
             if row:
                 buttons.append(row)
