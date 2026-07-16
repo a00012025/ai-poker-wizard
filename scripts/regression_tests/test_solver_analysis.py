@@ -18,6 +18,145 @@ from regression_tests.harness import (
     test,
 )
 
+# ── GTO cache ordering Tests ──
+
+
+@test
+def test_gto_cache_prefers_local_file_without_touching_db():
+    """A persistent local hit must not create Shared Pooler egress."""
+    import tempfile
+    import gto_cache
+
+    key = "a" * 64
+    original_dir = gto_cache._CACHE_DIR
+    original_key = gto_cache._cache_key
+    original_get_conn = gto_cache._get_conn
+    original_db_conn = gto_cache._db_conn
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            gto_cache._CACHE_DIR = Path(td)
+            gto_cache._cache_key = lambda *_args, **_kwargs: key
+            gto_cache._get_conn = lambda: (_ for _ in ()).throw(
+                AssertionError("local cache hit must not query PostgreSQL"))
+            gto_cache._db_conn = None
+            gto_cache._mem.clear()
+            (Path(td) / f"{key}.json").write_text(
+                json.dumps({"is_null": False, "response": {"source": "local"}}))
+
+            assert_eq(gto_cache.get("spot_solution", {}), {"source": "local"})
+    finally:
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._cache_key = original_key
+        gto_cache._get_conn = original_get_conn
+        gto_cache._db_conn = original_db_conn
+        gto_cache._mem.clear()
+
+
+@test
+def test_gto_cache_db_fallback_repairs_corrupt_local_file():
+    """A corrupt local entry falls back to DB and hydrates a valid local copy."""
+    import tempfile
+    import gto_cache
+
+    class Cursor:
+        def __init__(self):
+            self.executed = 0
+
+        def execute(self, *_args):
+            self.executed += 1
+
+        def fetchone(self):
+            return ({"source": "db"}, False)
+
+        def close(self):
+            pass
+
+    class Conn:
+        def __init__(self):
+            self.cur = Cursor()
+
+        def cursor(self):
+            return self.cur
+
+    key = "b" * 64
+    conn = Conn()
+    original_dir = gto_cache._CACHE_DIR
+    original_key = gto_cache._cache_key
+    original_get_conn = gto_cache._get_conn
+    original_db_conn = gto_cache._db_conn
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / f"{key}.json"
+            cache_file.write_text("not-json")
+            gto_cache._CACHE_DIR = Path(td)
+            gto_cache._cache_key = lambda *_args, **_kwargs: key
+            gto_cache._get_conn = lambda: conn
+            gto_cache._db_conn = None
+            gto_cache._mem.clear()
+
+            assert_eq(gto_cache.get("spot_solution", {}), {"source": "db"})
+            assert_eq(conn.cur.executed, 1)
+            assert_eq(json.loads(cache_file.read_text()), {
+                "is_null": False, "response": {"source": "db"}})
+    finally:
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._cache_key = original_key
+        gto_cache._get_conn = original_get_conn
+        gto_cache._db_conn = original_db_conn
+        gto_cache._mem.clear()
+
+
+@test
+def test_gto_cache_put_writes_local_atomically_before_db():
+    """The durable local layer is committed before best-effort DB storage."""
+    import tempfile
+    import gto_cache
+
+    key = "c" * 64
+    observations = []
+    replacements = []
+    original_dir = gto_cache._CACHE_DIR
+    original_key = gto_cache._cache_key
+    original_get_conn = gto_cache._get_conn
+    original_replace = gto_cache.os.replace
+    original_db_conn = gto_cache._db_conn
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / f"{key}.json"
+            gto_cache._CACHE_DIR = Path(td)
+            gto_cache._cache_key = lambda *_args, **_kwargs: key
+            gto_cache._get_conn = lambda: observations.append(cache_file.exists())
+            gto_cache.os.replace = lambda src, dst: (
+                replacements.append((Path(src), Path(dst))),
+                original_replace(src, dst),
+            )[-1]
+            gto_cache._db_conn = None
+            gto_cache._mem.clear()
+
+            gto_cache.put("spot_solution", {}, {"value": 7})
+            assert_eq(observations, [True], "local file must exist before DB lookup")
+            assert_true(bool(replacements), "local writes must use atomic os.replace")
+            assert_eq(json.loads(cache_file.read_text()), {
+                "is_null": False, "response": {"value": 7}})
+            assert_eq(list(Path(td).glob("*.tmp")), [])
+    finally:
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._cache_key = original_key
+        gto_cache._get_conn = original_get_conn
+        gto_cache.os.replace = original_replace
+        gto_cache._db_conn = original_db_conn
+        gto_cache._mem.clear()
+
+
+@test
+def test_gto_cache_is_persisted_into_bot_container():
+    """Deploys must reuse the host cache instead of baking it into images."""
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
+    assert_in("./.gto_cache:/app/.gto_cache", compose)
+    assert_in(".gto_cache/", dockerignore)
+
+
 # ── GTO auth context Tests ──
 
 @test
