@@ -95,13 +95,12 @@ def _queue_payload(rows, *, page: int = 0,
         else:
             ev = r["total_ev_loss_bb"] or 0
             L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}")
-            row_btns = []
-            if r["drill_url"]:
-                row_btns.append({"text": f"🎯 練 {i}", "url": r["drill_url"]})
+            row_btns = [{"text": f"🎯 詳細／練習 {i}",
+                         "callback_data": f"qdet:{r['id']}:{page}"}]
             row_btns.append({"text": f"📚 {i} 來源",
                              "callback_data": f"qsrc:{r['id']}"})
-            row_btns.append({"text": f"✔ {i} 已練",
-                             "callback_data": f"qcl:{r['id']}:{page}"})
+            row_btns.append({"text": f"✔ {i} 清除",
+                             "callback_data": f"qcf:{r['id']}:{page}"})
         buttons.append(row_btns)
     if pages > 1:
         nav = []
@@ -175,6 +174,78 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
                         "callback_data": f"qsrc:{queue_id}:{page + 1}"})
         buttons.append(nav)
     return html, buttons
+
+
+def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
+                                *, page: int = 0) -> tuple[str, list[list[dict]]]:
+    """Render one queue prescription after its GTOW Drill is ensured."""
+    from html import escape as _esc
+
+    label = item.get("label") or item.get("spot_leaf") or "未命名 Drill"
+    target_hands = int(item.get("gtow_target_hands") or 30)
+    target_score = float(item.get("gtow_target_score") or 0.90)
+    passed = (attempt.total_hands >= target_hands
+              and attempt.gto_score >= target_score)
+    link_state = "剛建立" if binding.created else "已連結既有"
+    lifetime_score = (f"{lifetime.gto_score * 100:.1f}%"
+                      if lifetime.total_hands else "—")
+    attempt_score = (f"{attempt.gto_score * 100:.1f}%"
+                     if attempt.total_hands else "—")
+    status = "✅ 本次 Drill 已達標" if passed else "⏳ 尚未達標"
+    html = (
+        f"🎯 <b>{_esc(label)}</b>\n\n"
+        f"<b>處方來源</b>\n"
+        f"• 來自 {int(item.get('n_sources') or 0)} 手真實對局\n"
+        f"• 累計 EV loss：{float(item.get('total_ev_loss_bb') or 0):.1f}bb\n\n"
+        f"<b>GTOW Drill</b>\n"
+        f"• {link_state}：{_esc(binding.name)}\n"
+        f"• 歷史累計：{lifetime.total_hands} hands / "
+        f"{lifetime.played_moves} decisions\n"
+        f"• 歷史 Score：{lifetime_score}\n"
+        f"• 歷史 EV loss：{lifetime.total_ev_loss_bb:.2f}bb\n\n"
+        f"<b>本次處方</b>\n"
+        f"• {attempt.sessions} sessions · {attempt.total_hands}/{target_hands} hands"
+        f" · {attempt.played_moves} decisions\n"
+        f"• Score：{attempt_score}（目標 ≥{target_score * 100:.0f}%）\n"
+        f"• EV loss：{attempt.total_ev_loss_bb:.2f}bb\n"
+        f"• {status}\n\n"
+        "門檻只用來標示是否達標；即使未達標，也可以隨時完成或清除。"
+    )
+    qid = int(item["id"])
+    buttons = [
+        [{"text": "🎯 開始練習", "url": item["drill_url"]}],
+        [
+            {"text": "🔄 更新成績", "callback_data": f"qdst:{qid}:{page}"},
+            {"text": "📚 來源牌局", "callback_data": f"qsrc:{qid}:0"},
+        ],
+        [
+            {"text": "✔ 完成／清除", "callback_data": f"qcf:{qid}:{page}"},
+            {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
+        ],
+    ]
+    return html, buttons
+
+
+def _queue_clear_confirm_payload(item: dict, *, page: int = 0
+                                 ) -> tuple[str, list[list[dict]]]:
+    """Completion is always available; reasons distinguish training from typo."""
+    from html import escape as _esc
+    qid = int(item["id"])
+    label = item.get("label") or item.get("spot_leaf") or str(qid)
+    html = (
+        f"✔ <b>完成／清除</b>\n{_esc(label)}\n\n"
+        "不需要達到指定手數或分數。若這項是誤植，可以直接清掉，"
+        "不會記成 Drill 達標。"
+    )
+    return html, [
+        [
+            {"text": "✔ 已完成練習",
+             "callback_data": f"qcl:{qid}:{page}:completed"},
+            {"text": "🗑 誤植，直接清掉",
+             "callback_data": f"qcl:{qid}:{page}:mistake"},
+        ],
+        [{"text": "取消", "callback_data": f"qpg:{page}"}],
+    ]
 
 
 def _setup_logger() -> logging.Logger:
@@ -1639,6 +1710,101 @@ class PokerWizardBot:
             html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(buttons))
 
+    async def _queue_drill_detail(self, update: Update,
+                                  context: ContextTypes.DEFAULT_TYPE,
+                                  queue_id: int, page: int = 0):
+        """Ensure/reuse the matching GTOW Drill, then show its practice card."""
+        query = update.callback_query
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        refresh_token = await self._get_user_refresh_token(update.effective_user.id)
+        if not refresh_token:
+            await query.answer("請先綁定 GTO Wizard token。", show_alert=True)
+            return
+        await query.answer("正在準備 GTOW Drill…")
+        try:
+            from gtow_drill_service import (GTOWDrillClient,
+                                            settings_from_trainer_url,
+                                            settings_hash, stats_json)
+            client = GTOWDrillClient(update.effective_user.id, refresh_token)
+            async with self.db.pool.acquire() as conn:
+                async with conn.transaction():
+                    item = await conn.fetchrow(
+                        "SELECT id, spot_leaf, label, drill_url, kind, n_sources, "
+                        "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
+                        "gtow_training_started_at "
+                        "FROM drill_queue WHERE id=$1 FOR UPDATE", queue_id)
+                    if not item or item["kind"] != "drill":
+                        await query.edit_message_text("找不到這個 Drill queue item。")
+                        return
+                    if not item["drill_url"]:
+                        await query.edit_message_text(
+                            "這個項目目前沒有可精確重建的 GTOW Trainer 連結。")
+                        return
+                    fingerprint = settings_hash(
+                        settings_from_trainer_url(item["drill_url"]))
+                    # Serialize ensure/create across different queue rows that
+                    # resolve to the same settings; rapid taps cannot create
+                    # duplicate GTOW Drills.
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        fingerprint)
+                    binding = await asyncio.to_thread(
+                        client.ensure_drill, item["drill_url"], item["label"])
+                    item = await conn.fetchrow(
+                        "UPDATE drill_queue SET gtow_drill_id=$2::uuid, "
+                        "gtow_drill_name=$3, gtow_settings_hash=$4, "
+                        "gtow_drill_synced_at=NOW(), "
+                        "gtow_training_started_at="
+                        "COALESCE(gtow_training_started_at, NOW()), "
+                        "gtow_baseline_totals="
+                        "COALESCE(gtow_baseline_totals, $5::jsonb) "
+                        "WHERE id=$1 RETURNING *",
+                        queue_id, binding.drill_id, binding.name,
+                        binding.settings_hash, json.dumps(stats_json(binding.stats)))
+
+            def load_stats():
+                return (
+                    client.drill_totals(binding.drill_id),
+                    client.attempt_stats(
+                        binding.drill_id, item["gtow_training_started_at"]),
+                )
+
+            lifetime, attempt = await asyncio.to_thread(load_stats)
+            html, buttons = _queue_drill_detail_payload(
+                dict(item), binding, lifetime, attempt, page=page)
+            await query.edit_message_text(
+                html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=self._rows_to_markup(buttons))
+        except Exception as exc:
+            self.log.error("GTOW Drill detail failed for queue %s: %s",
+                           queue_id, exc, exc_info=True)
+            await query.edit_message_text(
+                "⚠️ 無法準備 GTOW Drill。可能是 GTOW token 已失效或 API 暫時異常。",
+                reply_markup=self._rows_to_markup([[
+                    {"text": "🔄 重試", "callback_data": f"qdet:{queue_id}:{page}"},
+                    {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
+                ]]))
+
+    async def _queue_clear_confirm(self, update: Update, queue_id: int,
+                                   page: int = 0):
+        """Ask only for the clear reason; never enforce practice thresholds."""
+        query = update.callback_query
+        if not (self.db and self.db.pool):
+            await query.answer("Database not connected.")
+            return
+        item = await self.db.pool.fetchrow(
+            "SELECT id, spot_leaf, label FROM drill_queue WHERE id=$1", queue_id)
+        if not item:
+            await query.answer("找不到這個 queue item。")
+            return
+        html, buttons = _queue_clear_confirm_payload(dict(item), page=page)
+        await query.answer()
+        await query.edit_message_text(
+            html, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons))
+
     async def _queue_show_sources(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE,
                                   queue_id: int, page: int = 0,
@@ -1852,6 +2018,9 @@ class PokerWizardBot:
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
         qsrc:<queue_id>[:page] — exact online/live source-hand menu;
         qraw:<hand_id> — echo stored live shorthand without re-analysis;
+        qdet:<queue_id> — ensure/reuse GTOW Drill and show its detail menu;
+        qdst:<queue_id> — refresh the same detail menu and practice results;
+        qcf:<queue_id> — confirm completion reason without threshold gating;
         qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
         qex:<queue_id> — expand a review item into its decisions to hand-pick;
         qad:<queue_id>:<decision_id> — add one decision as a manual drill."""
@@ -1876,6 +2045,19 @@ class PokerWizardBot:
             await self._queue_send_live_raw(update, context, data[5:])
             return
 
+        if data.startswith("qdet:") or data.startswith("qdst:"):
+            parts = data.split(":")
+            await self._queue_drill_detail(
+                update, context, int(parts[1]),
+                int(parts[2]) if len(parts) > 2 else 0)
+            return
+
+        if data.startswith("qcf:"):
+            parts = data.split(":")
+            await self._queue_clear_confirm(
+                update, int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+            return
+
         if data.startswith("qpg:"):
             if self.db and self.db.pool:
                 page = int(data.split(":", 1)[1])
@@ -1894,12 +2076,17 @@ class PokerWizardBot:
                 parts = data.split(":")
                 queue_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 0
+                reason = parts[3] if len(parts) > 3 else "completed"
+                if reason not in {"completed", "mistake", "skipped"}:
+                    reason = "completed"
                 await self.db.pool.execute(
-                    "UPDATE drill_queue SET status='cleared', cleared_at=NOW() "
-                    "WHERE id=$1", queue_id)
+                    "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
+                    "clear_reason=$2 WHERE id=$1", queue_id, reason)
                 rows, total, page = await self._fetch_queue_page(page)
                 html, buttons = _queue_payload(rows, page=page, total=total)
-                await query.answer("✔ 已標記為完成")
+                answer = ("🗑 已移除誤植項目" if reason == "mistake"
+                          else "✔ 已標記為完成")
+                await query.answer(answer)
                 try:
                     await query.edit_message_text(
                         html, parse_mode="HTML", disable_web_page_preview=True,
@@ -2160,7 +2347,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|srd|srv):"))
+                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|qdet|qdst|qcf|srd|srv):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application

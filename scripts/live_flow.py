@@ -1459,6 +1459,15 @@ async def persist(result: dict) -> None:
             if entry.get("ok"):
                 await write_hand(conn, entry["hand_row"], entry["dec_rows"])
         await enqueue(conn, result["queue"])
+        # The JSON result is sent straight to Telegram after persistence.
+        # Attach the canonical open-row id so its immediate drill button uses
+        # the same detail/provisioning menu as /queue instead of bypassing it.
+        for item in result["queue"]:
+            item["queue_id"] = await conn.fetchval(
+                "SELECT id FROM drill_queue WHERE spot_leaf=$1 "
+                "AND kind='drill' AND status IN ('pending','prescribed') "
+                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+                item["spot_leaf"])
     finally:
         await conn.close()
 
@@ -1600,7 +1609,12 @@ def report_buttons(result: dict) -> list[list[dict]]:
         rows.append(cur)
     for it in result["queue"][:MAX_DRILL_BUTTONS]:
         if it["drill_url"]:
-            rows.append([{"text": f"🎯 練：{it['label']}", "url": it["drill_url"]}])
+            button = {"text": f"🎯 詳細／練習：{it['label']}"}
+            if it.get("queue_id") is not None:
+                button["callback_data"] = f"qdet:{it['queue_id']}:0"
+            else:  # dry-run/unit payloads have no persisted queue identity
+                button["url"] = it["drill_url"]
+            rows.append([button])
     return rows
 
 

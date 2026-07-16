@@ -164,6 +164,17 @@ python scripts/queue_feed.py --scan [--window-days 60] [--dry-run]   # dry-run �
   `total_ev_loss_bb=該決策 ev_loss`（可為 0）, drill_url + label 走 5.3 同一路徑，
   upsert 入列（同 leaf 已 open 則合併，`added_by` 保留原值）。
   回 callback answer + 確認訊息（含 leaf label 與 `/queue` 提示）。
+
+### 6.3 GTOW Drill 詳細選單與成績（2026-07-16 延伸）
+
+- drill 項的入口改為 `qdet:<queue_id>:<page>`，不直接離開 Telegram。打開時以完整
+  Trainer settings（包含 GTOW 會自動注入的 169 手牌組）查找相同 Drill；有則復用，
+  無則以 queue label 建立，名稱不加 `APW` 前綴。設定相同時 GTOW Trainer 會自動選中
+  該 Drill，開始 session 的 request 會帶其 UUID。
+- 詳細卡顯示處方來源、lifetime hands/decisions/score/EV loss，以及自首次開卡後、綁定
+  Drill UUID 的本次 sessions 成績。`qdst` 原地更新；`🎯 開始練習` 才是 GTOW URL。
+- 30 hands / 90% 是達標標籤，不是清除 gate。`qcf` 提供「已完成練習」與「誤植，直接
+  清掉」，兩者都可隨時 `qcl`；以 `clear_reason` 區分，誤植不得記成 Drill 達標。
   來源手照常記在 `source_hands` + `ref_hand_id`，未來回看有跡可循。
 
 ### 6.3 權限

@@ -907,6 +907,11 @@ def test_live_queue_selection_and_report():
     assert_eq(flat[0]["callback_data"], "lvd:live:2026-07-10:aaa")
     assert_true(any(b.get("url", "").startswith("https://app.gtowizard.com/")
                     for b in flat))
+    items[0]["queue_id"] = 55
+    persisted_flat = [b for row in report_buttons(result) for b in row]
+    assert_in("qdet:55:0", [b.get("callback_data") for b in persisted_flat])
+    assert_true(not any(b.get("url") == items[0]["drill_url"]
+                        for b in persisted_flat))
     assert_true(QUEUE_EV_MIN == 0.10)
 
 
@@ -1641,7 +1646,7 @@ def test_scorecard_queue_quota_and_weekly_scan():
 @test
 def test_weekly_payload_review_buttons():
     """Weekly buttons: review items ride 🔗 復盤 (URL) + ✔ 完成 (qcl) + ➕ 加練
-    (qex) callbacks; drill items ride a 📥 URL button (§7/§6.2)."""
+    (qex) callbacks; drill items open the detail/provisioning menu."""
     from scorecard import weekly_tg_payload
     d = {"per100": 3.0, "delta": 0.0, "weekly_series": [], "focus": [],
          "leaderboard": [], "readback": [], "honesty": {},
@@ -1661,7 +1666,9 @@ def test_weekly_payload_review_buttons():
     cbs = [b.get("callback_data") for b in flat if b.get("callback_data")]
     assert_in("qcl:12", cbs)                                   # review 完成
     assert_in("qex:12", cbs)                                   # review 加練
-    assert_true(any(b.get("url", "").endswith("a=1") and "📥" in b["text"] for b in flat))
+    assert_in("qdet:11:0", cbs)
+    assert_true(any("📥" in b["text"] and b.get("callback_data") == "qdet:11:0"
+                    for b in flat))
     assert_true(any("損失" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
     assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("flop=1") for b in flat))
     # review section header + both kinds rendered in the text
@@ -1688,8 +1695,9 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     ]
     html, buttons = _queue_payload(rows[1:])
     assert_in("練習佇列</b>（1 項）", html)
-    assert_in("qcl:13:0", [b.get("callback_data") for b in buttons[0]])
-    assert_in("✔ 1 已練", [b.get("text") for b in buttons[0]])
+    assert_in("qdet:13:0", [b.get("callback_data") for b in buttons[0]])
+    assert_in("qcf:13:0", [b.get("callback_data") for b in buttons[0]])
+    assert_in("✔ 1 清除", [b.get("text") for b in buttons[0]])
     empty_html, empty_buttons = _queue_payload([])
     assert_in("已清空", empty_html)
     assert_eq(empty_buttons, [])
@@ -1709,6 +1717,53 @@ def test_queue_clear_refreshes_message_with_remaining_items():
         'if data.startswith("qex:"):', 1)[0]
     assert_not_in("send_message", qcl_src)
     assert_in("Failed to refresh queue after qcl", qcl_src)
+
+
+@test
+def test_queue_drill_detail_and_early_clear_are_not_threshold_gated():
+    """The score/volume targets are labels, never a lock on clearing typos."""
+    from types import SimpleNamespace
+    from telegram_bot.bot import (_queue_clear_confirm_payload,
+                                  _queue_drill_detail_payload)
+
+    item = {
+        "id": 13, "label": "APW should not appear here", "spot_leaf": "leaf",
+        "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
+        "n_sources": 4, "total_ev_loss_bb": 4.8,
+        "gtow_target_hands": 30, "gtow_target_score": 0.90,
+    }
+    binding = SimpleNamespace(created=False, name="BB vs SB SRP Flop faced c-bet")
+    lifetime = SimpleNamespace(total_hands=10, played_moves=26,
+                               gto_score=0.87277, total_ev_loss_bb=1.052)
+    attempt = SimpleNamespace(sessions=1, total_hands=3, played_moves=8,
+                              gto_score=0.75, total_ev_loss_bb=0.4)
+    html, buttons = _queue_drill_detail_payload(
+        item, binding, lifetime, attempt, page=2)
+    flat = [button for row in buttons for button in row]
+    assert_in("3/30 hands", html)
+    assert_in("尚未達標", html)
+    assert_in("隨時完成或清除", html)
+    assert_true(any(button.get("url") == item["drill_url"] for button in flat))
+    assert_in("qcf:13:2", [button.get("callback_data") for button in flat])
+
+    clear_html, clear_buttons = _queue_clear_confirm_payload(item, page=2)
+    clear_callbacks = [button.get("callback_data")
+                       for row in clear_buttons for button in row]
+    assert_in("不需要達到指定手數或分數", clear_html)
+    assert_in("qcl:13:2:completed", clear_callbacks)
+    assert_in("qcl:13:2:mistake", clear_callbacks)
+    assert_in("qpg:2", clear_callbacks)
+
+    import inspect
+    from telegram_bot.bot import PokerWizardBot
+    src = inspect.getsource(PokerWizardBot.handle_live_button)
+    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
+        'if data.startswith("qex:"):', 1)[0]
+    assert_not_in("gtow_target_hands", qcl_src)
+    assert_not_in("gtow_target_score", qcl_src)
+    assert_in("clear_reason=$2", qcl_src)
+    detail_src = inspect.getsource(PokerWizardBot._queue_drill_detail)
+    assert_in("pg_advisory_xact_lock", detail_src)
 
 
 @test
@@ -1735,7 +1790,7 @@ def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
     html2, buttons2 = _queue_payload(rows[6:], page=1, total=12)
     flat2 = [b for row in buttons2 for b in row]
     assert_in("🎯 7.", html2)
-    assert_in("qcl:7:1", [b.get("callback_data") for b in flat2])
+    assert_in("qcf:7:1", [b.get("callback_data") for b in flat2])
     assert_in("qpg:0", [b.get("callback_data") for b in flat2])
     assert_true(len(PokerWizardBot._rows_to_markup(buttons2).to_json().encode()) < 10_000)
 
