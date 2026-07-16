@@ -1962,9 +1962,77 @@ def test_every_queue_surface_exposes_source_hands():
 
 
 @test
+def test_live_raw_study_url_falls_back_to_last_queryable_hero_hand_spot():
+    """A failed final live node falls back to the prior graded hero decision."""
+    from urllib.parse import parse_qs, urlparse
+    from gtow_solution_url import build_last_hero_hand_url
+
+    hand = {
+        "gametype": "MTTGeneral", "effective_bb": 17,
+        "players_at_table": 8, "hero_position": "BTN",
+        "hero_hand": "KQo", "preflop_actions": "F-R2-F-F-F-F-C-F",
+        "streets": [
+            {"board": "8c5d2h", "actions": []},
+            {"card": "4s", "actions": []},
+            {"card": "Tc", "actions": []},
+        ],
+    }
+    decisions = [
+        {"street": "turn", "decision_idx": 0},
+        {"street": "river", "decision_idx": 1},
+    ]
+    attempts = []
+
+    def resolver(_hand, street, decision_idx):
+        attempts.append((street, decision_idx))
+        if street == "river":
+            raise ValueError("final node is off-tree")
+        return {
+            "preflop_actions": "F-R2-F-F-F-F-C-F",
+            "flop_actions": "X-X", "turn_actions": "X-R2.5",
+            "river_actions": "", "history_spot": 11,
+            "depth": 17.125, "gametype": "MTTGeneral",
+        }
+
+    url = build_last_hero_hand_url(hand, decisions, _resolver=resolver)
+    assert_eq(attempts, [("river", 1), ("turn", 0)])
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["board"], ["8c5d2h4s"])
+    assert_eq(qs["turn_actions"], ["X-R2.5"])
+
+
+@test
+def test_qraw_callback_preserves_navigation_and_colonated_live_hand_id():
+    """qraw carries source/queue pages without truncating live:{date}:{hash}."""
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+    bot = object.__new__(PokerWizardBot)
+    bot._is_owner = lambda _update: True
+
+    async def show_raw(_update, _context, hand_id, **kwargs):
+        captured.update(hand_id=hand_id, **kwargs)
+
+    bot._queue_send_live_raw = show_raw
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data="qraw:123:1:4:live:2026-07-12:1c69c5ba8e"),
+        effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=556028753),
+    )
+    asyncio.run(bot.handle_live_button(update, SimpleNamespace()))
+    assert_eq(captured, {
+        "hand_id": "live:2026-07-12:1c69c5ba8e",
+        "queue_id": 123, "source_page": 1, "queue_page": 4,
+    })
+
+
+@test
 def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     """Runtime smoke for qsrc/qraw: source classification comes from the
-    ledger query, and the raw callback sends stored text without parsing it."""
+    ledger query, and the raw callback includes the latest Study link."""
     import asyncio
     import json
     from types import SimpleNamespace
@@ -1987,10 +2055,18 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
                     ]),
                 }
             if "source='live'" in sql:
-                return {"raw_text": "Eff 30bb 原始文字"}
+                return {
+                    "raw_text": "Eff 30bb 原始文字",
+                    "parsed_json": json.dumps({
+                        "hero_hand": "Qh8c", "hero_position": "BB",
+                    }),
+                }
             raise AssertionError(sql)
 
         async def fetch(self, sql, *args):
+            if "FROM ledger_decisions" in sql:
+                assert_in("excluded=FALSE", sql)
+                return [{"street": "turn", "decision_idx": 0}]
             assert_in("FROM ledger_hands", sql)
             assert_eq(args[0], ["online-1", "live:2026-07-14:abc"])
             return [
@@ -2005,9 +2081,13 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     class FakeQuery:
         def __init__(self):
             self.answers = []
+            self.edits = []
 
         async def answer(self, text=None):
             self.answers.append(text)
+
+        async def edit_message_text(self, *args, **kwargs):
+            self.edits.append((args, kwargs))
 
     class FakeTgBot:
         def __init__(self):
@@ -2018,10 +2098,17 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
 
     bot = object.__new__(PokerWizardBot)
     bot.db = SimpleNamespace(pool=FakePool())
+    bot.log = logging.getLogger("test-live-raw-study")
+    async def get_token(_user_id):
+        return "refresh-token"
+    bot._get_user_refresh_token = get_token
+    bot._setup_user_token = lambda _user_id, _token: None
+    bot._clear_user_token = lambda: None
     query = FakeQuery()
     update = SimpleNamespace(
         callback_query=query,
         effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=556028753),
     )
     tg = FakeTgBot()
     context = SimpleNamespace(bot=tg)
@@ -2032,12 +2119,30 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     flat = [button for row in markup["inline_keyboard"] for button in row]
     assert_true(any("hand_id__in" in button.get("url", "")
                     and "online-1" in button.get("url", "") for button in flat))
-    assert_true(any(button.get("callback_data") == "qraw:live:2026-07-14:abc"
+    assert_true(any(button.get("callback_data")
+                    == "qraw:7:0:0:live:2026-07-14:abc"
                     for button in flat))
 
-    asyncio.run(bot._queue_send_live_raw(
-        update, context, "live:2026-07-14:abc"))
-    assert_in("Eff 30bb 原始文字", tg.sent[-1][0][1])
+    import gtow_solution_url
+    original = gtow_solution_url.build_last_hero_hand_url
+    gtow_solution_url.build_last_hero_hand_url = (
+        lambda hand, decisions: "https://app.gtowizard.com/solutions?spot=last")
+    try:
+        asyncio.run(bot._queue_send_live_raw(
+            update, context, "live:2026-07-14:abc",
+            queue_id=7, source_page=0, queue_page=0))
+    finally:
+        gtow_solution_url.build_last_hero_hand_url = original
+    assert_eq(len(query.edits), 1)
+    assert_in("Eff 30bb 原始文字", query.edits[0][0][0])
+    raw_markup = query.edits[0][1]["reply_markup"].to_dict()
+    raw_buttons = [button for row in raw_markup["inline_keyboard"] for button in row]
+    assert_true(any(button.get("url", "").endswith("spot=last")
+                    and button["text"] == "🧙 查看 Study Spot"
+                    for button in raw_buttons))
+    assert_true(any(button.get("callback_data") == "qsrc:7:0:0"
+                    and "返回來源牌局" in button["text"]
+                    for button in raw_buttons))
 
 
 @test
