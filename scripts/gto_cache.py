@@ -1,4 +1,4 @@
-"""GTO API cache — L1 in-memory dict + L2 PostgreSQL + L3 local files.
+"""GTO API cache — L1 memory + L2 persistent local files + L3 PostgreSQL.
 
 Sync interface (psycopg2) because gto_api.py is synchronous.
 """
@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -38,11 +39,12 @@ SENTINEL = object()  # distinguishes "not in cache" from "cached None"
 # L1: in-memory cache
 _mem: dict[str, dict | None] = {}
 
-# L2: DB connection (lazy, thread-safe)
+# L3: DB connection (lazy, thread-safe)
 _db_conn = None
 _db_lock = threading.Lock()
 
-# L3: local file cache
+# L2: persistent local file cache. Docker bind-mounts this directory so cache
+# hits survive deploys and do not create Shared Pooler egress after restarts.
 _CACHE_DIR = Path(__file__).resolve().parent.parent / ".gto_cache"
 
 _PARAM_KEYS = [
@@ -79,6 +81,54 @@ def _get_conn():
         return None
 
 
+def _write_local(key: str, response: dict | None) -> bool:
+    """Atomically persist one sanitized cache response.
+
+    The temporary file is created beside the destination so ``os.replace`` is
+    atomic even when ``.gto_cache`` is a Docker bind mount. Concurrent writers
+    may replace one another, but readers can never observe a partial JSON file.
+    """
+    temp_path: Path | None = None
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file = _CACHE_DIR / f"{key}.json"
+        data = ({"is_null": True} if response is None else
+                {"is_null": False, "response": response})
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=_CACHE_DIR,
+            prefix=f".{key}.", suffix=".tmp", delete=False,
+        ) as f:
+            temp_path = Path(f.name)
+            json.dump(data, f, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, cache_file)
+        return True
+    except Exception as e:
+        logger.warning(f"gto_cache: local write failed: {e}")
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False
+
+
+def _read_local(key: str):
+    """Return a local cached value, or ``SENTINEL`` on miss/corruption."""
+    cache_file = _CACHE_DIR / f"{key}.json"
+    try:
+        if not cache_file.exists():
+            return SENTINEL
+        data = json.loads(cache_file.read_text())
+        return None if data["is_null"] else data["response"]
+    except Exception as e:
+        # Corrupt or interrupted legacy files are soft misses. The DB fallback
+        # below repairs them with a fresh atomic local copy.
+        logger.warning(f"gto_cache: local read failed: {e}")
+        return SENTINEL
+
+
 def get(function: str, params: dict):
     """Look up cache. Returns SENTINEL on miss, else dict or None."""
     key = _cache_key(function, params)
@@ -87,10 +137,19 @@ def get(function: str, params: dict):
     if key in _mem:
         return _mem[key]
 
-    # L2
+    # L2: persistent local cache first. This is intentionally before the DB:
+    # a new Python process or bot deploy should not download the same large
+    # solver JSON through Supavisor when the host already has it.
+    local = _read_local(key)
+    if local is not SENTINEL:
+        _mem[key] = local
+        return local
+
+    # L3: PostgreSQL disaster-recovery/cold-miss fallback.
     with _db_lock:
         conn = _get_conn()
         if conn is not None:
+            cur = None
             try:
                 cur = conn.cursor()
                 cur.execute(
@@ -98,42 +157,39 @@ def get(function: str, params: dict):
                     (key,),
                 )
                 row = cur.fetchone()
-                cur.close()
                 if row is not None:
                     response, is_null = row
                     result = None if is_null else response
                     _mem[key] = result
+                    # Hydrate L2 so later processes and container restarts no
+                    # longer need the DB for this key.
+                    _write_local(key, result)
                     return result
             except Exception as e:
                 logger.warning(f"gto_cache: DB read failed: {e}")
-
-    # L3: file cache
-    cache_file = _CACHE_DIR / f"{key}.json"
-    try:
-        if cache_file.exists():
-            data = json.loads(cache_file.read_text())
-            result = None if data["is_null"] else data["response"]
-            _mem[key] = result
-            return result
-    except Exception as e:
-        logger.warning(f"gto_cache: file read failed: {e}")
+            finally:
+                if cur is not None:
+                    cur.close()
 
     return SENTINEL
 
 
 def put(function: str, params: dict, response: dict | None):
-    """Store result in L1 + L2 + L3."""
+    """Store result in memory, local persistence, then best-effort DB."""
     key = _cache_key(function, params)
     _mem[key] = response
 
-    # Sanitize once up-front: replace NaN/Inf floats with None so both L2
-    # (Postgres JSONB) and L3 (file cache reparsed elsewhere) stay strict-JSON.
+    # Sanitize once up-front so local JSON and PostgreSQL JSONB stay strict.
     sanitized = _sanitize_json(response) if response is not None else None
 
-    # L2: PostgreSQL
+    # L2 first: DB latency/failure must not prevent durable local caching.
+    _write_local(key, sanitized)
+
+    # L3: PostgreSQL remains a best-effort fallback for a lost/new host.
     with _db_lock:
         conn = _get_conn()
         if conn is not None:
+            cur = None
             try:
                 cur = conn.cursor()
                 if sanitized is None:
@@ -150,18 +206,8 @@ def put(function: str, params: dict, response: dict | None):
                         "ON CONFLICT (cache_key) DO UPDATE SET response = EXCLUDED.response, is_null = FALSE",
                         (key, json.dumps(sanitized, allow_nan=False)),
                     )
-                cur.close()
             except Exception as e:
                 logger.warning(f"gto_cache: DB write failed: {e}")
-
-    # L3: file cache
-    try:
-        _CACHE_DIR.mkdir(exist_ok=True)
-        cache_file = _CACHE_DIR / f"{key}.json"
-        if sanitized is None:
-            data = {"is_null": True}
-        else:
-            data = {"is_null": False, "response": sanitized}
-        cache_file.write_text(json.dumps(data, allow_nan=False))
-    except Exception as e:
-        logger.warning(f"gto_cache: file write failed: {e}")
+            finally:
+                if cur is not None:
+                    cur.close()
