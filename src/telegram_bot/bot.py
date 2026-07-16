@@ -99,8 +99,9 @@ def _queue_payload(rows, *, page: int = 0,
                          "callback_data": f"qdet:{r['id']}:{page}"}]
             row_btns.append({"text": f"📚 {i} 來源",
                              "callback_data": f"qsrc:{r['id']}"})
-            row_btns.append({"text": f"✔ {i} 清除",
-                             "callback_data": f"qcf:{r['id']}:{page}"})
+            row_btns.append({"text": f"✔ {i} 完成",
+                             "callback_data":
+                                 f"qcl:{r['id']}:{page}:completed"})
         buttons.append(row_btns)
     if pages > 1:
         nav = []
@@ -223,7 +224,7 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
         f"• Score：{attempt_score}（目標 ≥{target_score * 100:.0f}%）\n"
         f"• EV loss：{attempt.total_ev_loss_bb:.2f}bb\n"
         f"• {status}\n\n"
-        "門檻只用來標示是否達標；即使未達標，也可以隨時完成或清除。"
+        "門檻只用來標示是否達標；即使未達標，也可以隨時完成。"
     )
     qid = int(item["id"])
     buttons = [
@@ -234,33 +235,12 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
              "callback_data": f"qsrc:{qid}:0:{page}"},
         ],
         [
-            {"text": "✔ 完成／清除", "callback_data": f"qcf:{qid}:{page}"},
+            {"text": "✔ 完成",
+             "callback_data": f"qcl:{qid}:{page}:completed"},
             {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
         ],
     ]
     return html, buttons
-
-
-def _queue_clear_confirm_payload(item: dict, *, page: int = 0
-                                 ) -> tuple[str, list[list[dict]]]:
-    """Completion is always available; reasons distinguish training from typo."""
-    from html import escape as _esc
-    qid = int(item["id"])
-    label = item.get("label") or item.get("spot_leaf") or str(qid)
-    html = (
-        f"✔ <b>完成／清除</b>\n{_esc(label)}\n\n"
-        "不需要達到指定手數或分數。若這項是誤植，可以直接清掉，"
-        "不會記成 Drill 達標。"
-    )
-    return html, [
-        [
-            {"text": "✔ 已完成練習",
-             "callback_data": f"qcl:{qid}:{page}:completed"},
-            {"text": "🗑 誤植，直接清掉",
-             "callback_data": f"qcl:{qid}:{page}:mistake"},
-        ],
-        [{"text": "取消", "callback_data": f"qpg:{page}"}],
-    ]
 
 
 def _setup_logger() -> logging.Logger:
@@ -1802,24 +1782,6 @@ class PokerWizardBot:
                     {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
                 ]]))
 
-    async def _queue_clear_confirm(self, update: Update, queue_id: int,
-                                   page: int = 0):
-        """Ask only for the clear reason; never enforce practice thresholds."""
-        query = update.callback_query
-        if not (self.db and self.db.pool):
-            await query.answer("Database not connected.")
-            return
-        item = await self.db.pool.fetchrow(
-            "SELECT id, spot_leaf, label FROM drill_queue WHERE id=$1", queue_id)
-        if not item:
-            await query.answer("找不到這個 queue item。")
-            return
-        html, buttons = _queue_clear_confirm_payload(dict(item), page=page)
-        await query.answer()
-        await query.edit_message_text(
-            html, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(buttons))
-
     async def _queue_show_sources(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE,
                                   queue_id: int, page: int = 0,
@@ -2038,7 +2000,6 @@ class PokerWizardBot:
         qraw:<hand_id> — echo stored live shorthand without re-analysis;
         qdet:<queue_id> — ensure/reuse GTOW Drill and show its detail menu;
         qdst:<queue_id> — refresh the same detail menu and practice results;
-        qcf:<queue_id> — confirm completion reason without threshold gating;
         qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
         qex:<queue_id> — expand a review item into its decisions to hand-pick;
         qad:<queue_id>:<decision_id> — add one decision as a manual drill."""
@@ -2070,12 +2031,6 @@ class PokerWizardBot:
             await self._queue_drill_detail(
                 update, context, int(parts[1]),
                 int(parts[2]) if len(parts) > 2 else 0)
-            return
-
-        if data.startswith("qcf:"):
-            parts = data.split(":")
-            await self._queue_clear_confirm(
-                update, int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
             return
 
         if data.startswith("qpg:"):
@@ -2367,7 +2322,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|qdet|qdst|qcf|srd|srv):"))
+                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|qdet|qdst|srd|srv):"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
