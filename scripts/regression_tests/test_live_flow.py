@@ -1696,8 +1696,9 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     html, buttons = _queue_payload(rows[1:])
     assert_in("練習佇列</b>（1 項）", html)
     assert_in("qdet:13:0", [b.get("callback_data") for b in buttons[0]])
-    assert_in("qcf:13:0", [b.get("callback_data") for b in buttons[0]])
-    assert_in("✔ 1 清除", [b.get("text") for b in buttons[0]])
+    assert_in("qcl:13:0:completed",
+              [b.get("callback_data") for b in buttons[0]])
+    assert_in("✔ 1 完成", [b.get("text") for b in buttons[0]])
     empty_html, empty_buttons = _queue_payload([])
     assert_in("已清空", empty_html)
     assert_eq(empty_buttons, [])
@@ -1720,11 +1721,10 @@ def test_queue_clear_refreshes_message_with_remaining_items():
 
 
 @test
-def test_queue_drill_detail_and_early_clear_are_not_threshold_gated():
-    """The score/volume targets are labels, never a lock on clearing typos."""
+def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
+    """Completion stays available without a redundant confirmation submenu."""
     from types import SimpleNamespace
-    from telegram_bot.bot import (_queue_clear_confirm_payload,
-                                  _queue_drill_detail_payload)
+    from telegram_bot.bot import _queue_drill_detail_payload
 
     item = {
         "id": 13, "label": "APW should not appear here", "spot_leaf": "leaf",
@@ -1742,22 +1742,19 @@ def test_queue_drill_detail_and_early_clear_are_not_threshold_gated():
     flat = [button for row in buttons for button in row]
     assert_in("3/30 hands", html)
     assert_in("尚未達標", html)
-    assert_in("隨時完成或清除", html)
+    assert_in("隨時完成", html)
+    assert_not_in("完成或清除", html)
     assert_true(any(button.get("url") == item["drill_url"] for button in flat))
     assert_in("qsrc:13:0:2", [button.get("callback_data") for button in flat])
-    assert_in("qcf:13:2", [button.get("callback_data") for button in flat])
-
-    clear_html, clear_buttons = _queue_clear_confirm_payload(item, page=2)
-    clear_callbacks = [button.get("callback_data")
-                       for row in clear_buttons for button in row]
-    assert_in("不需要達到指定手數或分數", clear_html)
-    assert_in("qcl:13:2:completed", clear_callbacks)
-    assert_in("qcl:13:2:mistake", clear_callbacks)
-    assert_in("qpg:2", clear_callbacks)
+    callbacks = [button.get("callback_data") for button in flat]
+    assert_in("qcl:13:2:completed", callbacks)
+    assert_not_in("qcf:13:2", callbacks)
+    assert_true(any(button.get("text") == "✔ 完成" for button in flat))
 
     import inspect
     from telegram_bot.bot import PokerWizardBot
     src = inspect.getsource(PokerWizardBot.handle_live_button)
+    assert_not_in('data.startswith("qcf:")', src)
     qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
         'if data.startswith("qex:"):', 1)[0]
     assert_not_in("gtow_target_hands", qcl_src)
@@ -1791,7 +1788,7 @@ def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
     html2, buttons2 = _queue_payload(rows[6:], page=1, total=12)
     flat2 = [b for row in buttons2 for b in row]
     assert_in("🎯 7.", html2)
-    assert_in("qcf:7:1", [b.get("callback_data") for b in flat2])
+    assert_in("qcl:7:1:completed", [b.get("callback_data") for b in flat2])
     assert_in("qpg:0", [b.get("callback_data") for b in flat2])
     assert_true(len(PokerWizardBot._rows_to_markup(buttons2).to_json().encode()) < 10_000)
 
