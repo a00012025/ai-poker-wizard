@@ -300,7 +300,11 @@ def _resolve_street_codes(
         action = act.get("action", "")
         pos = act.get("position")
         target = 0.0
-        if action.startswith("R"):
+        # Legacy live rows may persist a sized opening bet as generic ``B``
+        # plus ``size``.  It is semantically the same wager as ``R{size}`` and
+        # must be resolved through GTOW before URL validation; emitting raw B
+        # makes GTOW discard the entire custom history.
+        if action.startswith("R") or action == "B":
             target = float(act.get("size") or action[1:] or 0)
             code = _resolve_one_raise(
                 gametype=gametype, depth=depth,

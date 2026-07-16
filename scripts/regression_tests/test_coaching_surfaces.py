@@ -508,6 +508,9 @@ def test_build_custom_spot_url_h2665():
     assert_in("depth=30.125", url)
     assert_in("depth_list=30.125", url)
     assert_in("gametype=MTTGeneral", url)
+    assert_in("fh_trainer_mode=stop_after_action", url)
+    assert_true("fh_trainer_mode=stop_end_of_hand" not in url,
+                "an exact decision drill must not continue into a different node")
     assert_in("dialogs=trainer-advanced-filter-dialog", url)
     # Bucket is texture-agnostic → NO board flags by default, so the Trainer
     # deals all boards consistent with this action line.
@@ -529,6 +532,84 @@ def test_build_custom_spot_url_h2665():
     assert_in("turn_suit=flush", url_tex)
     assert_true("river_paired" not in url_tex, "river flags omitted when hand ended on turn")
     assert_true("river_suit" not in url_tex, "river flags omitted when hand ended on turn")
+
+
+@test
+def test_custom_turn_first_act_drill_stops_before_facing_bet():
+    """Queue regression: x-b-r-c -> turn first act trains only that decision.
+
+    With the global full-hand mode, checking the prescribed first-act node
+    continued the same exercise into BB facing LJ's bet.  The queue item is a
+    single action-line decision, so its custom Trainer URL must end after the
+    first answer rather than grading the later facing-bet node too.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    from gtow_custom_url import build_custom_spot_url
+
+    hand_data = {
+        "gametype": "MTTGeneral", "effective_bb": 30.0,
+        "hero_position": "BB", "players_at_table": 8,
+        "preflop_actions": "F-F-R2-F-F-F-F-C",
+        "streets": [
+            {"board": "6c4c3d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R4", "size": 4.0},
+                {"position": "BB", "action": "R9", "size": 9.0},
+                {"position": "LJ", "action": "C"},
+            ]},
+            {"card": "Ad", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R10", "size": 10.0},
+                {"position": "BB", "action": "C"},
+            ]},
+        ],
+    }
+    query = parse_qs(urlsplit(build_custom_spot_url(
+        hand_data, street="turn", action_index=0, pot_type="SRP",
+    )).query, keep_blank_values=True)
+
+    assert_eq(query["history_spot"], ["12"])
+    assert_eq(query["flop_actions"], ["X-R4.75-R9.75-C"])
+    assert_true("turn_actions" not in query,
+                "turn first act must stop before hero check and villain bet")
+    assert_eq(query["fh_trainer_mode"], ["stop_after_action"])
+
+
+@test
+def test_custom_spot_resolves_legacy_sized_bet_token():
+    """Legacy live ``B`` + size rows must rebuild into valid GTOW R codes."""
+    from urllib.parse import parse_qs, urlsplit
+    from gtow_custom_url import build_custom_spot_url
+
+    hand_data = {
+        "gametype": "MTTGeneral", "effective_bb": 17.0,
+        "hero_position": "CO", "players_at_table": 8,
+        "preflop_actions": "F-F-F-F-R2-F-F-C",
+        "streets": [
+            {"board": "Ah9h5d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "B", "size": 1.5},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "6s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+            {"card": "3c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "X"},
+            ]},
+        ],
+    }
+    query = parse_qs(urlsplit(build_custom_spot_url(
+        hand_data, street="river", action_index=0, pot_type="SRP",
+    )).query)
+
+    assert_true(query["flop_actions"][0].startswith("X-R"))
+    assert_true("B" not in query["flop_actions"][0])
+    assert_eq(query["turn_actions"], ["X-X"])
+    assert_eq(query["river_actions"], ["X"])
+    assert_eq(query["fh_trainer_mode"], ["stop_after_action"])
 
 
 @test

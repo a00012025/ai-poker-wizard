@@ -1766,29 +1766,31 @@ def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
 
 @test
 def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
-    """Regression: 12 exact custom-spot URLs produced a 10.8KB inline
-    keyboard and Telegram rejected /queue with `Reply markup is too long`.
-    Render at most six direct-link rows per page and preserve global numbering.
+    """Queue renders at most ten items per page with global numbering.
+
+    The old six-item cap protected direct-link keyboards. Queue rows now use
+    compact detail callbacks, so ten items remain below Telegram's markup
+    limit while reducing unnecessary pagination.
     """
     import json
     from telegram_bot.bot import (_queue_payload, PokerWizardBot,
                                   QUEUE_PAGE_SIZE)
-    assert_eq(QUEUE_PAGE_SIZE, 6)
+    assert_eq(QUEUE_PAGE_SIZE, 10)
     rows = [{
         "id": i, "kind": "drill", "label": f"練習 {i}",
         "spot_leaf": f"leaf-{i}", "drill_url": "https://example.com/?" + "x" * 1150,
         "status": "pending", "n_sources": 1, "total_ev_loss_bb": 1.0,
-    } for i in range(1, 13)]
-    html1, buttons1 = _queue_payload(rows[:6], page=0, total=12)
+    } for i in range(1, 21)]
+    html1, buttons1 = _queue_payload(rows[:10], page=0, total=20)
     markup1 = PokerWizardBot._rows_to_markup(buttons1)
     assert_in("第 1/2 頁", html1)
     assert_in("qpg:1", [b.get("callback_data") for row in buttons1 for b in row])
     assert_true(len(markup1.to_json().encode()) < 10_000)
 
-    html2, buttons2 = _queue_payload(rows[6:], page=1, total=12)
+    html2, buttons2 = _queue_payload(rows[10:], page=1, total=20)
     flat2 = [b for row in buttons2 for b in row]
-    assert_in("🎯 7.", html2)
-    assert_in("qcl:7:1:completed", [b.get("callback_data") for b in flat2])
+    assert_in("🎯 11.", html2)
+    assert_in("qcl:11:1:completed", [b.get("callback_data") for b in flat2])
     assert_in("qpg:0", [b.get("callback_data") for b in flat2])
     assert_true(len(PokerWizardBot._rows_to_markup(buttons2).to_json().encode()) < 10_000)
 
