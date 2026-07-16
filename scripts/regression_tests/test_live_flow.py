@@ -2138,7 +2138,8 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     raw_markup = query.edits[0][1]["reply_markup"].to_dict()
     raw_buttons = [button for row in raw_markup["inline_keyboard"] for button in row]
     assert_true(any(button.get("url", "").endswith("spot=last")
-                    and "Study Spot" in button["text"] for button in raw_buttons))
+                    and button["text"] == "🧙 查看 Study Spot"
+                    for button in raw_buttons))
     assert_true(any(button.get("callback_data") == "qsrc:7:0:0"
                     and "返回來源牌局" in button["text"]
                     for button in raw_buttons))

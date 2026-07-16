@@ -1876,7 +1876,7 @@ class PokerWizardBot:
         buttons = []
         if study_url:
             buttons.append([{
-                "text": "🧙 查看最後可用 Study Spot", "url": study_url,
+                "text": "🧙 查看 Study Spot", "url": study_url,
             }])
         if queue_id is not None:
             buttons.append([{
