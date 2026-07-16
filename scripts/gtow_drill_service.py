@@ -168,21 +168,52 @@ class GTOWDrillClient:
             return payload
         return list(payload.get("results") or payload.get("data") or [])
 
-    def ensure_drill(self, trainer_url: str, name: str) -> DrillBinding:
+    def ensure_drill(self, trainer_url: str, name: str, *,
+                     known_drill_id: str | None = None,
+                     known_drill_name: str | None = None) -> DrillBinding:
         settings = settings_from_trainer_url(trainer_url)
         fingerprint = settings_hash(settings)
-        drill = find_matching_drill(self.list_drills(), settings)
+        drill = None
+        if known_drill_id:
+            # GTOW's detail GET currently returns 500 for valid Drill UUIDs,
+            # while PATCH on the same endpoint works.  The queue binding is
+            # authoritative: use it directly and avoid a paginated-list miss
+            # creating a duplicate Drill.
+            drill = {
+                "id": str(known_drill_id),
+                "name": str(known_drill_name or ""),
+                "settings": settings,
+            }
+        if drill is None:
+            drill = find_matching_drill(self.list_drills(), settings)
+        wanted_name = preset_name(name)
         created = False
         if drill is None:
             drill = self._request("POST", "/drills/", json={
                 "id": "",
-                "name": preset_name(name),
+                "name": wanted_name,
                 "description": "",
                 "favorite": False,
                 "settings": settings,
                 "tags": [],
             })
             created = True
+        elif str(drill.get("name") or "") != wanted_name:
+            drill_id = str(drill["id"])
+            payload = {
+                "id": drill_id,
+                "name": wanted_name,
+                "description": str(drill.get("description") or ""),
+                "favorite": bool(drill.get("favorite", False)),
+                # Preserve the server's complete settings payload, including
+                # empty keys that canonical matching intentionally ignores.
+                "settings": drill.get("settings") or settings,
+                "tags": list(drill.get("tags") or []),
+            }
+            patched = self._request(
+                "PATCH", f"/drills/{drill_id}/", json=payload)
+            # PATCH responses may omit totals; retain them from the list row.
+            drill = {**drill, **(patched or {}), "name": wanted_name}
         return DrillBinding(
             drill_id=str(drill["id"]),
             name=str(drill.get("name") or name),

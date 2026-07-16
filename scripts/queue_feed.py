@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 import spot_leaderboard as lb
-from action_bias import bias_suffix, dominant_action_bias
+from action_bias import dominant_action_bias
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
@@ -267,14 +267,9 @@ def review_label(row: dict) -> str:
 
 
 def drill_label(row: dict, action_bias: dict | None = None) -> str:
-    """zh label for an online drill leaf (reuses scorecard.spot_desc_zh, §5.3)."""
-    from scorecard import spot_desc_zh
-    base = spot_desc_zh({
-        "spot_category": row.get("spot_category"), "spot_leaf": row.get("spot_leaf"),
-        "hero_cat": row.get("hero_cat"), "villain_cat": row.get("villain_cat"),
-        "ip_oop": row.get("ip_oop"), "hero_pos": row.get("hero_pos"),
-        "street": row.get("spot_category")})
-    return base + bias_suffix(action_bias)
+    """Compact online Drill name; action bias stays in Telegram metadata."""
+    from spot_naming import compact_spot_name
+    return compact_spot_name(row)
 
 
 def review_url(row: dict) -> str | None:

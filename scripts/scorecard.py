@@ -302,7 +302,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
             if q.get("status") == "prescribed":
                 wk = q.get("prescribed_week")
                 aging = f"（{wk} 已開過，還沒練 ⏰）" if wk else "（先前已開過，還沒練 ⏰）"
-            lbl = q.get("label") or q.get("spot_leaf") or "?"
+            if q.get("kind") == "review":
+                lbl = q.get("label") or q.get("spot_leaf") or "?"
+            else:
+                from spot_naming import compact_spot_name
+                lbl = compact_spot_name(q)
             if q.get("kind") == "review":
                 # label already reads「復盤 M/D … −Xbb」
                 L.append(f"• 🔍 {escape(lbl)}{aging}")
@@ -311,6 +315,10 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 ev = q.get("total_ev_loss_bb") or 0
                 L.append(f"• 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
                          f"累計損失 {ev:.1f}bb{cross}{aging}")
+                from spot_naming import telegram_bias_summary
+                bias = telegram_bias_summary(q)
+                if bias:
+                    L.append(f"  ↳ {escape(bias)}")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -364,7 +372,12 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
             buttons.append([{"text": f"🎯 練 {i}：{f['desc'][:28]}", "url": f["drill_url"]}])
     for q in (d.get("drill_queue") or []):
         qid = q.get("id")
-        lbl = (q.get("label") or q.get("spot_leaf") or "?")[:24]
+        if q.get("kind") == "review":
+            lbl = q.get("label") or q.get("spot_leaf") or "?"
+        else:
+            from spot_naming import compact_spot_name
+            lbl = compact_spot_name(q)
+        lbl = lbl[:24]
         if q.get("kind") == "review":
             row: list[dict] = []
             anchor = q.get("review_anchor_url")
@@ -476,7 +489,8 @@ QUEUE_SLOTS = QUEUE_DRILL_SLOTS + QUEUE_REVIEW_SLOTS
 QUEUE_SQL = """
 SELECT id, spot_leaf, spot_category, label, drill_url, review_anchor_url,
        review_anchor_street, n_sources, total_ev_loss_bb, source, status,
-       prescribed_week, kind, ref_hand_id
+       prescribed_week, kind, ref_hand_id, bias_direction, bias_n,
+       bias_ev_loss_bb, bias_share
 FROM drill_queue WHERE status IN ('pending', 'prescribed')
 ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 40
 """
@@ -512,6 +526,10 @@ async def fetch_drill_queue(conn) -> list[dict]:
     the per-kind quota (§7). Pending-first / EV-desc order is preserved."""
     from queue_feed import mix_queue_quota
     rows = [dict(r) for r in await conn.fetch(QUEUE_SQL)]
+    from spot_naming import compact_spot_name
+    for row in rows:
+        if row.get("kind") == "drill":
+            row["label"] = compact_spot_name(row)
     return mix_queue_quota(rows, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS, QUEUE_SLOTS)
 
 
