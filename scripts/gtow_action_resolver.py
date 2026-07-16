@@ -6,9 +6,9 @@ Key decisions:
     with extra leading folds so hero's physical position maps onto the 8-max
     seat order. (5-max BTN → 8-max BTN; 6-max CO → 8-max CO.)
   - Cash games use the raw players_at_table preflop tree (no padding).
-  - Each action is resolved independently via a next_actions call up to that
-    decision point, snapping raw bb to the closest R* code (absolute distance
-    match; same heuristic as find_closest_action).
+  - Postflop bets and raises are matched by their fraction of the real pot.
+    This preserves sizing when a multiway source is projected onto a HU tree,
+    whose modeled pot omits the extra player's chips.
   - action_index in the deviations table is HERO-SCOPED (counts hero's Nth
     decision on the street). The resolver converts it to raw stream index when
     truncating the street's actions.
@@ -170,6 +170,7 @@ def _resolve_one_raise(
     river_actions: str,
     target_size: float,
     actual_pot: float = 0.0,
+    target_pct: float | None = None,
 ) -> str:
     """Call next_actions at the current node and snap target_size to R* code.
 
@@ -204,7 +205,8 @@ def _resolve_one_raise(
         # pot ratio (the guard used to live here; now shared so the two pipelines
         # can't drift apart — H3480).
         from analyze_hand import _find_action_by_pot_pct
-        code = _find_action_by_pot_pct(raises, target_size, actual_pot)
+        code = _find_action_by_pot_pct(
+            raises, target_size, actual_pot, target_pct=target_pct)
     else:
         code = find_closest_action(raises, target_size)
     return code
@@ -286,10 +288,12 @@ def _resolve_street_codes(
     """Resolve actions for one postflop street, emitting only actions[0:stop_after_n].
 
     Returns (action_string, updated_actual_pot). When ``actual_pot`` > 0 the
-    street's OPENING bet is snapped by pot ratio (the meaningful signal in a
-    multiway pot where dead money inflates the bet's apparent solver-pot
-    fraction); later raises keep absolute snapping. The running pot is advanced
-    through every emitted action so downstream streets see the right pot.
+    every bet/raise is snapped by pot ratio (the meaningful signal in a
+    multiway pot whose dead money is absent from the HU solver tree). For a
+    raise, GTOW's percentage is the raise increment divided by the pot after
+    calling, not the total-to amount divided by the current pot. The running
+    pot is advanced through every emitted action so downstream streets see the
+    right pot.
     """
     out_tokens: list[str] = []
     outstanding_bet = 0.0
@@ -306,6 +310,16 @@ def _resolve_street_codes(
         # makes GTOW discard the entire custom history.
         if action.startswith("R") or action == "B":
             target = float(act.get("size") or action[1:] or 0)
+            actor_prev = street_investments.get(pos, 0.0)
+            call_needed = max(0.0, outstanding_bet - actor_prev)
+            target_pct = None
+            if actual_pot > 0:
+                target_pct = (
+                    max(0.0, target - outstanding_bet)
+                    / max(actual_pot + call_needed, 1e-9)
+                    if outstanding_bet > 0
+                    else target / actual_pot
+                )
             code = _resolve_one_raise(
                 gametype=gametype, depth=depth,
                 preflop_actions=preflop_actions,
@@ -314,8 +328,8 @@ def _resolve_street_codes(
                 turn_actions=prior_streets.get("turn", "") if street_key != "turn" else "-".join(out_tokens),
                 river_actions=prior_streets.get("river", "") if street_key != "river" else "-".join(out_tokens),
                 target_size=target,
-                # Pot-ratio snap only the street's opening bet.
-                actual_pot=actual_pot if outstanding_bet == 0 else 0.0,
+                actual_pot=actual_pot,
+                target_pct=target_pct,
             )
             out_tokens.append(code)
         else:
@@ -399,15 +413,21 @@ def resolve_actions_for_deviation(
     hero_pos_raw = hand_data.get("hero_position") or ""
     players = int(hand_data.get("players_at_table") or 8)
     raw_preflop = hand_data.get("preflop_actions") or ""
+    raw_preflop_for_pot = (
+        hand_data.get("preflop_actions_for_pot") or raw_preflop)
 
     depth = nearest_cash_depth(effective_bb) if _is_cash(gametype) else nearest_depth(effective_bb)
 
     if _is_cash(gametype):
         padded_preflop = raw_preflop
+        padded_preflop_for_pot = raw_preflop_for_pot
         hero_pos_8 = hero_pos_raw
     else:
         padded_preflop, hero_pos_8, _ = _pad_preflop_to_mtt_tree(
             raw_preflop, players, hero_pos_raw,
+        )
+        padded_preflop_for_pot, _pot_hero, _ = _pad_preflop_to_mtt_tree(
+            raw_preflop_for_pot, players, hero_pos_raw,
         )
 
     if street == "preflop":
@@ -442,7 +462,8 @@ def resolve_actions_for_deviation(
         ante = 0.0 if _is_cash(gametype) else 0.125
         pot_players = players if _is_cash(gametype) else MTT_TREE_SIZE
         actual_pot = _compute_preflop_pot(
-            padded_preflop, effective_bb, num_players=pot_players, ante_per_player=ante,
+            padded_preflop_for_pot, effective_bb,
+            num_players=pot_players, ante_per_player=ante,
         )
 
         streets = hand_data.get("streets") or []

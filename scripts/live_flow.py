@@ -788,6 +788,32 @@ def _events_to_preflop_actions(events: list[tuple[str, str]], players: int = 8) 
     return "-".join([t or "F" for t in first] + continuation)
 
 
+def preflop_actions_for_pot_from_raw(raw_text: str, hand: dict) -> str | None:
+    """Recover the real preflop contribution line from a live shorthand.
+
+    ``repair_hu_pot`` deliberately folds a third player out of the solver line
+    so GTOW can reach a heads-up postflop tree.  The third player's chips still
+    belong in the *real* pot used to translate bet sizes into percentages.
+    This deterministic parser keeps those two representations separate and
+    also lets existing live ledger rows be backfilled without another LLM call.
+    """
+    lines = [ln.strip() for ln in (raw_text or "").splitlines()
+             if ln.strip() and not _is_noise(ln)]
+    if not lines:
+        return None
+    toks = re.split(r"\s+", lines[0])
+    hero_pos = hand.get("hero_position")
+    players = int(hand.get("players_at_table") or 8)
+    if not hero_pos:
+        return None
+    hero_idx = next(
+        (i for i, tok in enumerate(toks) if _clean_word(tok) == "hero"), None)
+    eff = (_effective_bb_from_preflop_tokens(toks, hero_idx)
+           or str(hand.get("effective_bb") or ""))
+    events = _live_preflop_events(toks, hero_pos, eff)
+    return _events_to_preflop_actions(events, players) if events else None
+
+
 def parse_simple_preflop_block(block: str) -> dict | None:
     """Deterministic fallback for terse one-line preflop-only live notes.
 
@@ -943,6 +969,7 @@ def repair_hu_pot(hand: dict) -> dict:
     if not order or not streets or len(tokens) < npl:
         return hand
     r1 = tokens[:npl]
+    original_preflop = "-".join(tokens)
 
     # 1) phantom actions by round-1 folders
     folded_r1 = {order[i] for i, t in enumerate(r1) if t == "F"}
@@ -988,7 +1015,13 @@ def repair_hu_pot(hand: dict) -> dict:
             acted_after = any(p == other for p, _t in seat_toks[last_raise_i + 1:])
             if not acted_after:
                 tokens.append("C")   # the real continuation call the parse dropped
-    hand["preflop_actions"] = "-".join(tokens)
+    repaired_preflop = "-".join(tokens)
+    hand["preflop_actions"] = repaired_preflop
+    if repaired_preflop != original_preflop:
+        # The repaired line is the HU solver history.  Preserve the original
+        # contributions independently so percentage-based sizing still sees
+        # dead money from a genuine third player.
+        hand.setdefault("preflop_actions_for_pot", original_preflop)
 
     # 3) HU alternation
     postflop_order = order[-2:] + order[:-2]              # SB, BB, UTG, ...
@@ -1313,6 +1346,9 @@ def process_batch(text: str, date_str: str | None = None,
             if hand2 and not hand2.get("_refused") and not hero_folded_but_acts(hand2):
                 repairs = list(hand2.pop("_repairs", [])) + ["矛盾重解析（hero preflop 動作歸屬）"]
                 hand = hand2
+        pot_line = preflop_actions_for_pot_from_raw(block, hand)
+        if pot_line:
+            hand["preflop_actions_for_pot"] = pot_line
         pre_repair = json.dumps(hand, sort_keys=True)
         hand = repair_hu_pot(hand)
         if json.dumps(hand, sort_keys=True) != pre_repair:
@@ -1330,6 +1366,9 @@ def process_batch(text: str, date_str: str | None = None,
             hand2 = parse_block(block, extra_hint=hint)
             if hand2 and not hand2.get("_refused"):
                 repairs2 = list(hand2.pop("_repairs", []))
+                pot_line = preflop_actions_for_pot_from_raw(block, hand2)
+                if pot_line:
+                    hand2["preflop_actions_for_pot"] = pot_line
                 hand2 = repair_hu_pot(hand2)
                 if find_ghost(hand2) is None:
                     hand = hand2

@@ -1,6 +1,7 @@
 """Regression tests extracted from the legacy monolithic suite."""
 
 import json
+import inspect
 import logging
 import os
 import sys
@@ -703,6 +704,8 @@ def test_live_repair_hu_pot_and_ghost():
            ]}
     fixed = repair_hu_pot(bad)
     assert_eq(fixed["preflop_actions"], "F-R2-F-F-R5.5-F-F-F-C")  # ghost BTN folded, UTG+1 cont-call added
+    assert_eq(fixed["preflop_actions_for_pot"],
+              "F-R2-F-F-R5.5-C-F-F")  # real/raw contributions survive HU repair
     assert_eq([(a["position"], a["action"]) for a in fixed["streets"][0]["actions"]],
               [("UTG+1", "X"), ("CO", "X")])                       # phantoms stripped + alternation
     assert_true(find_ghost(fixed) is None)
@@ -737,6 +740,34 @@ def test_live_repair_hu_pot_continuation_ghost_call():
     fixed = repair_hu_pot(bad)
     assert_eq(fixed["preflop_actions"], "F-F-F-F-R2-C-R10-F-F-C")
     assert_true(find_ghost(fixed) is None)
+
+
+@test
+def test_live_threeway_raw_line_preserves_real_pot_contributors():
+    """A genuine HJ cold-call is folded out of the HU solver history but its
+    2bb contribution remains available for percentage-based Trainer sizing.
+    """
+    from live_flow import preflop_actions_for_pot_from_raw, repair_hu_pot
+
+    raw = ("Eff 30bb Lj raise hj call hero bb call 6s5d\n"
+           "6c4c3 x lj bet 4bb hero raise 9bb lj call\n"
+           "Ad pot 25bb, x lj bet 10bb hero call\nJh x x")
+    hand = {
+        "players_at_table": 8, "effective_bb": 30,
+        "hero_position": "BB", "hero_hand": "6s5d",
+        "preflop_actions": "F-F-R2-C-F-F-F-C",
+        "streets": [{"board": "6c4c3d", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "LJ", "action": "R4", "size": 4},
+            {"position": "BB", "action": "R9", "size": 9},
+            {"position": "LJ", "action": "C"},
+        ]}],
+    }
+    hand["preflop_actions_for_pot"] = preflop_actions_for_pot_from_raw(raw, hand)
+    fixed = repair_hu_pot(hand)
+
+    assert_eq(fixed["preflop_actions"], "F-F-R2-F-F-F-F-C")
+    assert_eq(fixed["preflop_actions_for_pot"], "F-F-R2-C-F-F-F-C")
 
 
 @test
@@ -1114,6 +1145,49 @@ def test_queue_source_normalization_repairs_legacy_missing_decision_index():
     fixed = asyncio.run(qf.normalize_source_entries(Conn(), entries))
     assert_eq(fixed[0]["decision_idx"], 1)
     assert_eq(fixed[0]["src"], "live")
+
+
+@test
+def test_shared_queue_drill_prefers_newest_valid_source_sizing():
+    """Link refresh must not revert a newly-added 17bb line to the oldest
+    30bb source's unrelated bet sizes; persisted sources are chronological.
+    """
+    import asyncio
+    import queue_feed as qf
+
+    old_source = qf._source_decisions
+    old_builder = qf.queue_drill_url_for_decision
+
+    async def fake_source(_conn, _entries):
+        return [
+            {"gtow_hand_id": "old-30bb", "spot_category": "turn"},
+            {"gtow_hand_id": "new-17bb", "spot_category": "turn"},
+        ]
+
+    def fake_builder(dec, _depths=None):
+        return f"https://trainer/{dec['gtow_hand_id']}"
+
+    qf._source_decisions = fake_source
+    qf.queue_drill_url_for_decision = fake_builder
+    try:
+        url = asyncio.run(qf.queue_drill_url_from_sources(None, []))
+    finally:
+        qf._source_decisions = old_source
+        qf.queue_drill_url_for_decision = old_builder
+
+    assert_eq(url, "https://trainer/new-17bb")
+
+
+@test
+def test_queue_url_changes_invalidate_bound_drill_settings_hash():
+    """Any sizing/depth URL change must force an in-place GTOW Drill PATCH."""
+    import queue_feed as qf
+
+    assert_in("gtow_settings_hash = CASE", qf._MERGE_SQL)
+    assert_in("drill_url IS DISTINCT FROM $5", qf._MERGE_SQL)
+    refresh_src = inspect.getsource(qf.refresh_trainer_links)
+    assert_in("gtow_settings_hash=NULL", refresh_src)
+    assert_in("gtow_drill_synced_at=NULL", refresh_src)
 
 
 @test
