@@ -32,7 +32,7 @@ ANALYSIS_TIMEOUT = 1800
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
-QUEUE_PAGE_SIZE = 6
+QUEUE_PAGE_SIZE = 10
 QUEUE_SOURCE_PAGE_SIZE = 8
 
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
