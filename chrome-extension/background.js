@@ -105,6 +105,11 @@ async function tokenFromActiveTab() {
   return result;
 }
 
+async function settokenCommandFromActiveTab() {
+  const token = await tokenFromActiveTab();
+  return `/settoken ${token}`;
+}
+
 async function pairDevice(code, deviceName) {
   const result = await api("/pair/exchange", {
     method: "POST",
@@ -199,6 +204,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const token = await tokenFromActiveTab();
         return syncToken(token, null, true);
       }
+      case "GET_SETTOKEN_COMMAND":
+        return { command: await settokenCommandFromActiveTab() };
       case "UNPAIR_DEVICE":
         return unpairDevice();
       case "INGEST_TRIGGER":

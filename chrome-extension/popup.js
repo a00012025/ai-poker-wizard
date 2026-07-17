@@ -103,6 +103,18 @@ $("#sync-button").addEventListener("click", async () => {
   finally { setBusy(button, false); }
 });
 
+$("#copy-settoken-button").addEventListener("click", async () => {
+  const button = $("#copy-settoken-button");
+  setBusy(button, true);
+  message("正在讀取目前的 GTOW token…");
+  try {
+    const { command } = await send("GET_SETTOKEN_COMMAND");
+    await navigator.clipboard.writeText(command);
+    message("✅ 已複製 /settoken 指令，請直接貼到 Telegram bot。");
+  } catch (error) { message(errorText(error.message), true); }
+  finally { setBusy(button, false); }
+});
+
 $("#unpair-button").addEventListener("click", async () => {
   if (!confirm("確定解除這台 Chrome 的同步配對？")) return;
   try {
