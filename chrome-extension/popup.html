@@ -40,8 +40,14 @@
         <button id="unpair-button" class="danger-link">解除這台裝置</button>
       </section>
 
+      <section class="card fallback-card">
+        <h2>手動備援</h2>
+        <p>自動同步失敗時，複製完整指令後貼到 Telegram bot。</p>
+        <button id="copy-settoken-button" class="secondary">複製 /settoken 指令</button>
+      </section>
+
       <p id="message" role="status"></p>
-      <footer>Token 不會顯示或寫入 Extension log。</footer>
+      <footer>Token 不會顯示、寫入 storage 或 Extension log。</footer>
     </main>
     <script src="popup.js"></script>
   </body>

@@ -7,7 +7,7 @@ Analyze 手牌攝取進 ledger，popup 顯示進度，完成後 Telegram 也會�
 
 ## 安裝
 
-1. 到最新 GitHub Release 下載 `ai-poker-wizard-gtow-sync-v2.1.1.zip`。
+1. 到最新 GitHub Release 下載 `ai-poker-wizard-gtow-sync-v2.2.0.zip`。
 2. 解壓縮下載檔案。
 3. 開啟 `chrome://extensions`，啟用右上角「開發人員模式」。
 4. 點擊「載入未封裝項目」，選擇剛才解壓縮的資料夾。
@@ -20,6 +20,13 @@ Analyze 手牌攝取進 ledger，popup 顯示進度，完成後 Telegram 也會�
 3. 正常開啟並登入 GTO Wizard。
 
 Popup 會顯示最後成功同步時間。需要重試時可按「立即同步目前 GTOW token」。
+
+## 手動 `/settoken` 備援
+
+若自動同步服務暫時失敗，先切到已登入的 GTO Wizard 分頁，打開 Extension popup，
+點「複製 `/settoken` 指令」，再直接貼到 Telegram bot。Extension 只會在點擊當下
+讀取 token 並把完整指令寫入系統剪貼簿，不會顯示或保存 token；貼上後建議複製
+其他文字覆蓋剪貼簿內容。
 
 ## 一鍵手牌同步（v2.1）
 
@@ -39,7 +46,8 @@ token 注入 B 電腦，因此不會替另一台瀏覽器自動登入。
 ## 隱私與安全
 
 - Extension 只會在 `app.gtowizard.com` 讀取 `localStorage.user_refresh`。
-- Extension 不會顯示、記錄，或將原始 GTOW token 寫入 Chrome storage。
+- Extension 不會顯示、記錄，或將原始 GTOW token 寫入 Chrome storage；只有使用者
+  主動點擊手動備援按鈕時，才會把 `/settoken` 指令寫入系統剪貼簿。
 - Chrome storage 只保存可撤銷的 AI Poker Wizard device credential、token fingerprint
   與同步時間。
 - 同步全程使用 HTTPS，初次連結必須使用 Telegram 產生的一次性配對碼。
