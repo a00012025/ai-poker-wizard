@@ -4,9 +4,8 @@ services:
     env_file: .env
     volumes:
       - ./logs:/app/logs
-      # Persistent solver cache is local-first. Keep it outside the image so
-      # deploys/restarts reuse cached JSON instead of downloading it again
-      # through the Supabase shared pooler.
+      # The personal solver library is local-only. Keep it outside the image so
+      # deploys/restarts reuse cached JSON without consuming Supabase storage.
       - ./.gto_cache:/app/.gto_cache
       - ./.game_modes_cache.json:/app/.game_modes_cache.json
       # GTOW raw hand-detail archive: read by the weekly queue scan to build

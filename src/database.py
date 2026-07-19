@@ -14,7 +14,6 @@ logger = logging.getLogger("poker_bot")
 _REQUIRED_TABLES = [
     "users",
     "hand_histories",
-    "gto_api_cache",
     "message_logs",
     "token_usage",
     "analysis_snapshots",
@@ -420,7 +419,6 @@ class Database:
                    WHERE uploaded_at >= ((NOW() AT TIME ZONE 'Asia/Taipei')::date - 6)
                    AT TIME ZONE 'Asia/Taipei') AS hands_week,
                   (SELECT COUNT(*) FROM hand_histories) AS hands_total,
-                  (SELECT COUNT(*) FROM gto_api_cache) AS cache_total,
                   -- Token usage metrics
                   (SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage
                    WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date
