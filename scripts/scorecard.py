@@ -53,15 +53,35 @@ def spot_desc_zh(row: dict) -> str:
         key = row.get("diagnosis_key") or "?"
         parts = key.split(":")
         if cat in ("flop", "turn", "river") and len(parts) >= 4:
-            return (f"{parts[1]} 底池，你在 {parts[2]}，"
+            desc = (f"{parts[1]} 底池，你在 {parts[2]}，"
                     f"{CAT_ZH[cat]}{FACING_ZH.get(parts[3], parts[3])}")
+            hero = row.get("hero_pos") or row.get("hero_cat")
+            villain = row.get("villain_cat")
+            if hero and villain:
+                desc += f"（代表：Hero {hero} 對 {villain}）"
+            return desc
+        hero = row.get("hero_pos") or row.get("hero_cat") or "?"
+        villain = row.get("villain_cat")
+        rel = row.get("ip_oop")
+        if cat == "RFI":
+            return f"Hero {hero} 開池"
+        if cat == "vsOpen":
+            return f"Hero {hero} 面對 {villain or '?'} 開池"
+        if cat in ("vs3bet", "vsCold3bet", "vs4bet", "vsCold4bet", "vsSqueeze"):
+            matchup = f"Hero {hero} 對 {villain or '?'}"
+            if rel:
+                matchup += f"、處於 {rel}"
+            return f"{matchup}，{CAT_ZH[cat]}"
         return f"{CAT_ZH.get(cat, cat)}這類情境"
     hc, vc, rel = row.get("hero_cat"), row.get("villain_cat"), row.get("ip_oop")
     if cat in ("flop", "turn", "river"):
         parts = row["spot_leaf"].split(":")
         pot = parts[1] if len(parts) > 1 else "?"
         facing = FACING_ZH.get(parts[-1], parts[-1])
-        return f"{pot} 底池，你 {hc} 在 {rel or '?'}，{CAT_ZH[cat]}{facing}"
+        hero = row.get("hero_pos") or hc or "?"
+        matchup = (f"Hero {hero} 對 {vc}、處於 {rel or '?'}"
+                   if vc else f"Hero {hero}、處於 {rel or '?'}")
+        return f"{pot} 底池，{matchup}，{CAT_ZH[cat]}{facing}"
     if cat == "RFI":
         return f"{row.get('hero_pos') or hc} 開池"
     if cat == "vsOpen":
@@ -86,6 +106,7 @@ def _svg_sparkline(values, w=560, h=80) -> str:
 
 # diagnosis window for --weekly: recent form, not all-history
 FOCUS_WINDOW_DAYS = 90
+READBACK_MIN_N = 25  # below the focus-family sample floor: show, never judge
 
 TRAINING_READINESS_SQL = """
 SELECT count(*) FILTER (
@@ -116,9 +137,12 @@ async def ensure_training_ready(conn) -> None:
 def compute_training_plan(window_label, weekly_series, spots, top_hands,
                           readback, honesty, focus_k=2) -> dict:
     per100 = weekly_series[-1]["per100"] if weekly_series else 0.0
+    n = int(weekly_series[-1].get("n") or 0) if weekly_series else 0
+    previous_n = int(weekly_series[-2].get("n") or 0) if len(weekly_series) >= 2 else 0
     delta = (weekly_series[-1]["per100"] - weekly_series[-2]["per100"]
              if len(weekly_series) >= 2 else 0.0)
-    word = "較上週改善" if delta < 0 else ("較上週惡化" if delta > 0 else "持平")
+    change = (f"本週觀察值較上週少 {abs(delta):.2f}" if delta < 0 else
+              (f"本週觀察值較上週多 {delta:.2f}" if delta > 0 else "與上週相同"))
     focus = []
     for it in spots[:focus_k]:
         r = it["row"]
@@ -138,8 +162,9 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
         })
     return {
         "window": window_label,
-        "headline": f"本週 EV loss {per100:.2f} bb/100 決策，{word} {abs(delta):.2f}",
-        "per100": per100, "delta": delta, "weekly_series": weekly_series,
+        "headline": f"本週平均 EV 損失 {per100:.2f} bb/100（n={n}），{change}",
+        "per100": per100, "n": n, "previous_n": previous_n,
+        "delta": delta, "weekly_series": weekly_series,
         "leaderboard": [dict(it["row"], drill_url=it["url"], restrict=it.get("restrict"))
                         for it in spots],
         "focus": focus, "readback": readback,
@@ -159,10 +184,11 @@ def prev_focus_readback(prev_focus, current_by_leaf):
         leaf = f.get("spot_leaf")
         cur = (current_by_leaf or {}).get(leaf)
         has_data = bool(cur and cur.get("n"))
-        out.append({"spot_leaf": leaf, "prescribed_per100": f.get("per100"),
+        out.append({"spot_leaf": leaf, "label": f.get("desc") or f.get("label") or leaf,
+                    "prescribed_per100": f.get("per100"),
                     "current_per100": cur["per100"] if has_data else None,
                     "n": cur["n"] if cur else 0,
-                    "note": "開始練習後的實戰成績；至少連續看 4 週才判斷是否真的進步"})
+                    "note": "列入練習後的實戰讀數"})
     return out
 
 
@@ -196,7 +222,6 @@ def render_html(d: dict) -> str:
         f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}"
         f"{('｜' + escape(r['action_bias']['label'])) if r.get('action_bias') else ''}</td>"
         f"<td>{r['avg_ev']*100:.2f}</td>"
-        f"<td>{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f}</td>"
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
     focus_html = ""
     for f in d["focus"]:
@@ -212,11 +237,10 @@ def render_html(d: dict) -> str:
                 if f.get("fragile") else '')
         bias = f.get("action_bias")
         bias_html = (f'<div><b>明顯傾向：{escape(bias["label"])}</b>'
-                     f'（{bias["n"]} 手，共損失 {bias["ev_loss_bb"]:.2f}bb）</div>'
+                     f'（{bias["n"]} 手，EV 損失合計 {bias["ev_loss_bb"]:.2f} bb）</div>'
                      if bias else '')
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
-                       f'<div class="sub">實戰漏損 {f["per100"]:.2f} bb/100 · 保守估計 '
-                       f'{f.get("shrunk_per100", f["per100"]):.2f} bb/100 · 樣本 {f["n"]} 個決策 · '
+                       f'<div class="sub">平均 EV 損失 {f["per100"]:.2f} bb/100（n={f["n"]}） · '
                        f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
                        f'<div class="note">用來建立練習的代表牌局路線：<code>'
                        f'{escape(f.get("representative_leaf") or f["spot_leaf"])}</code></div>'
@@ -224,13 +248,15 @@ def render_html(d: dict) -> str:
     rb = ""
     if d.get("readback"):
         for r in d["readback"]:
-            cur = f'{r["current_per100"]:.2f}' if r["current_per100"] is not None else "—"
-            pre = f'{r["prescribed_per100"]:.2f}' if r.get("prescribed_per100") is not None else "—"
-            delta = (r["current_per100"] - r["prescribed_per100"]) if (r["current_per100"] is not None and r.get("prescribed_per100") is not None) else 0
-            rb += (f'<div class="card">上週焦點 <code>{escape(str(r["spot_leaf"]))}</code>：'
-                   f'開始練習時 {pre} → 目前 {cur} bb/100（樣本 {r["n"]}） {_trend(delta)}'
-                   f'<div class="note">{escape(r["note"])}</div></div>')
-    hon = d["honesty"]
+            label = escape(str(r.get("label") or r["spot_leaf"]))
+            if r.get("current_per100") is None:
+                body = "尚無新樣本，暫不判斷"
+            else:
+                body = f'目前 {r["current_per100"]:.2f} bb/100（n={r["n"]}）'
+                if int(r.get("n") or 0) < READBACK_MIN_N:
+                    body += "；樣本不足，暫不判斷"
+            rb += (f'<div class="card">{label}：{body}'
+                   f'<div class="note">僅供追蹤，不作進步或退步判斷。</div></div>')
     top = "".join(
         f'<div class="sub">· {escape(str(h.get("hero_hand") or "?"))} {escape(str(h.get("position") or ""))} '
         f'{escape(str(h.get("boards") or ""))} 損失 {(h.get("total_ev_loss_bb") or 0):.1f}bb '
@@ -240,16 +266,15 @@ def render_html(d: dict) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>訓練計畫 {escape(d['window'])}</title><style>{_STYLE}</style></head><body>
 <h1>週訓練計畫</h1><div class="sub">統計期間：{escape(d['window'])}</div>
-<h2>主指標：EV loss / 100 決策</h2>
-<div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · 週變化 {_trend(d['delta'])}</span></div>{spark}
+<h2>主指標：平均 EV 損失 / 100 決策</h2>
+<div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · n={d.get('n', 0)} · 週變化 {_trend(d['delta'])}</span></div>{spark}
 <h2>本週最該練的情境（先作答，再練）</h2>{focus_html or '<div class="sub">目前沒有樣本足夠的焦點</div>'}
-{('<h2>上週練習後的實戰表現</h2>'+rb) if rb else ''}
-<h2>最燒錢情境排行</h2>
-<div class="note">「保守估計」會降低小樣本的權重，避免少數幾個大底池把排名推得太高。</div>
-<table><tr><th>情境類型</th><th>實戰漏損 bb/100</th><th>保守估計</th><th>樣本決策</th></tr>{lb_rows}</table>
+{('<h2>列入練習後的實戰追蹤</h2>'+rb) if rb else ''}
+<h2>EV 損失較高的情境</h2>
+<div class="note">優先順序已考慮樣本數；表中顯示原始平均 EV 損失。</div>
+<table><tr><th>情境類型</th><th>平均 EV 損失 bb/100</th><th>樣本決策</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
-<h2>資料範圍與限制</h2><div class="sub">無法可靠評分而排除 {hon['excluded_n']} · limp 未計入 {hon['discarded_n']} · 低信心未計入 {hon.get('low_confidence_n', 0)} · 翻牌後以 chipEV（不計 ICM）評分 {hon['chipev_share']*100:.0f}% · 牌桌籌碼與 GTOW 評分深度不同 {hon.get('depth_snap_n', 0)}</div>
-<div class="note">低信心決策不會影響排行；練習深度以 GTOW 實際拿來評分的籌碼深度為準。</div>
+<h2>資料口徑</h2><div class="sub">僅納入高信心的線上決策；翻牌後採 chipEV 評分，翻牌前涉及 limp 的決策不納入。</div>
 </body></html>"""
 
 
@@ -262,21 +287,25 @@ def weekly_tg_html(week: str, d: dict) -> str:
     buttons (weekly_tg_payload) under the message.
     """
     per100 = d.get("per100", 0.0)
+    series = d.get("weekly_series") or []
+    n = int(d.get("n") or (series[-1].get("n") if series else 0) or 0)
+    previous_n = int(d.get("previous_n") or
+                     (series[-2].get("n") if len(series) >= 2 else 0) or 0)
     delta = d.get("delta", 0.0)
     if delta < -1e-9:
-        trend = f"比上週少漏了 {abs(delta):.2f} 👍"
+        trend = f"本週觀察值較上週少了 <b>{abs(delta):.2f} bb/100</b>（上週 n={previous_n}）"
     elif delta > 1e-9:
-        trend = f"比上週多漏了 {delta:.2f}"
+        trend = f"本週觀察值較上週多 <b>{delta:.2f} bb/100</b>（上週 n={previous_n}）"
     else:
-        trend = "跟上週差不多"
+        trend = f"與上週相同（上週 n={previous_n}）"
 
     L = [f"🃏 <b>本週該練的地方</b>（{escape(week)}）", ""]
-    L.append(f"這週你每 100 個決策平均漏掉 <b>{per100:.2f} bb</b>，{trend}。")
+    L.append(f"這週平均 EV 損失為 <b>{per100:.2f} bb/100</b>（n={n}），{trend}。")
 
     focus = d.get("focus", [])
     if focus:
         L.append("")
-        L.append("<b>最該補的洞：</b>")
+        L.append("<b>最該補的洞（優先順序已考慮樣本數）：</b>")
         for i, f in enumerate(focus, 1):
             band = ""
             if f.get("restrict"):
@@ -284,24 +313,18 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
             frag = "（⚠️ 部分下注尺寸不在 GTOW 標準樹上，先保守看）" if f.get("fragile") else ""
             rep = f.get("representative_leaf") or f.get("spot_leaf") or "?"
-            L.append(f"{i}. {escape(f['desc'])} — 實戰漏損 {f['per100']:.1f} bb/100；"
-                     f"考慮樣本數後保守估計 {f.get('shrunk_per100', f['per100']):.1f}；"
-                     f"樣本 {f['n']} 個決策。代表牌局路線 <code>{escape(rep)}</code>{band}{frag}")
+            L.append(f"{i}. {escape(f['desc'])} — 平均 EV 損失 {f['per100']:.1f} bb/100（n={f['n']}）。"
+                     f"代表牌局路線 <code>{escape(rep)}</code>{band}{frag}")
             bias = f.get("action_bias")
             if bias:
                 L.append(f"   明顯傾向：{escape(bias['label'])}（{bias['n']} 手，"
-                         f"共損失 {bias['ev_loss_bb']:.2f}bb）")
+                         f"EV 損失合計 {bias['ev_loss_bb']:.2f} bb）")
 
     dq = d.get("drill_queue") or []
     if dq:
-        lb_leafs = {r["spot_leaf"] for r in d.get("leaderboard", [])}
         L.append("")
         L.append("<b>📥 練習佇列（現場 + 線上）：</b>")
         for q in dq:
-            aging = ""
-            if q.get("status") == "prescribed":
-                wk = q.get("prescribed_week")
-                aging = f"（{wk} 已開過，還沒練 ⏰）" if wk else "（先前已開過，還沒練 ⏰）"
             if q.get("kind") == "review":
                 lbl = q.get("label") or q.get("spot_leaf") or "?"
             else:
@@ -309,12 +332,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 lbl = compact_spot_name(q)
             if q.get("kind") == "review":
                 # label already reads「復盤 M/D … −Xbb」
-                L.append(f"• 🔍 {escape(lbl)}{aging}")
+                L.append(f"• 🔍 {escape(lbl)}")
             else:
-                cross = "（線上同一個情境也在漏 ⚠️）" if q.get("spot_leaf") in lb_leafs else ""
                 ev = q.get("total_ev_loss_bb") or 0
                 L.append(f"• 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
-                         f"累計損失 {ev:.1f}bb{cross}{aging}")
+                         f"EV 損失合計 {ev:.1f} bb")
                 from spot_naming import telegram_bias_summary
                 bias = telegram_bias_summary(q)
                 if bias:
@@ -323,39 +345,33 @@ def weekly_tg_html(week: str, d: dict) -> str:
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
     if others:
-        parts = [f"{spot_desc_zh(r)} {r['avg_ev'] * 100:.1f}"
-                 f"{('（' + r['action_bias']['label'] + '）') if r.get('action_bias') else ''}"
-                 for r in others]
         L.append("")
-        L.append("其他也在漏的（bb/100）：" + "、".join(escape(p) for p in parts))
+        L.append("<b>其他 EV 損失節點：</b>")
+        for r in others:
+            bias = f"；{r['action_bias']['label']}" if r.get("action_bias") else ""
+            L.append(f"• {escape(spot_desc_zh(r))} — 平均 EV 損失 "
+                     f"{r['avg_ev'] * 100:.1f} bb/100（n={r['n']}{escape(bias)}）")
 
-    for r in (d.get("readback") or []):
-        if r.get("current_per100") is not None and r.get("prescribed_per100") is not None:
-            dv = r["current_per100"] - r["prescribed_per100"]
-            arrow = "↓ 有進步" if dv < -1e-9 else ("↑ 還在漏" if dv > 1e-9 else "持平")
-            L.append("")
-            L.append(f"上週練的那個 spot：{r['prescribed_per100']:.1f} → "
-                     f"{r['current_per100']:.1f} bb/100 {arrow}"
-                     f"（{escape(r['note'])}）")
+    readback = d.get("readback") or []
+    if readback:
+        L.append("")
+        L.append("<b>📈 列入練習後的實戰追蹤：</b>")
+        for r in readback:
+            label = escape(str(r.get("label") or r.get("spot_leaf") or "?"))
+            if r.get("current_per100") is None:
+                L.append(f"• {label} — 尚無新樣本，暫不判斷")
+            else:
+                status = ("；樣本不足，暫不判斷"
+                          if int(r.get("n") or 0) < READBACK_MIN_N else "；持續觀察")
+                L.append(f"• {label} — 目前 {r['current_per100']:.1f} bb/100（n={r['n']}）{status}")
+        L.append("  僅供追蹤，不作進步或退步判斷。")
 
     L.append("")
-    L.append("🎯 <b>目標</b>：把上面幾個 spot 練到接近 GTO，整體漏損往 &lt;2 bb/100 收。")
+    L.append("🎯 <b>本週目標</b>：完成以上焦點 spot 的練習與復盤。")
 
-    hon = d.get("honesty", {})
     L.append("")
-    L.append("⚠️ <b>老實說，這份數據有幾個誤差跟缺口：</b>")
-    L.append(f"• 翻牌後全部用 chipEV 評分（占 {hon.get('chipev_share', 0) * 100:.0f}%），"
-             "泡沫、單桌決賽的手會有 ICM 誤差，之後才會校正。")
-    L.append(f"• 你的 limp 手（約 {hon.get('discarded_n', 0)} 個決策）直接沒算進去——"
-             "GTOW 的 limp 範圍跟真人差太多，算了會誤導。")
-    low_n = hon.get("low_confidence_n") or 0
-    if low_n:
-        L.append(f"• 有 {low_n} 個低信心決策未納入統計（例如下注尺寸不在 GTOW 標準樹，或無法確認評分深度）。")
-    gap_n = hon.get("depth_snap_n") or 0
-    if gap_n:
-        L.append(f"• 有 {gap_n} 個決策的牌桌籌碼與 GTOW 實際評分深度不同；"
-                 "練習已採用 GTOW 真正拿來評分的深度。")
-    L.append("• 只看得到你有上傳 GTOW Analyzer 的手 + 用 /live 記的現場手，其他不在裡面。")
+    L.append("⚠️ <b>統計口徑</b>：僅納入高信心的線上決策；翻牌後採 chipEV 評分，"
+             "翻牌前涉及 limp 的決策不納入。")
     return "\n".join(L)
 
 
@@ -413,33 +429,29 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
 
 def preview_summary_md(d: dict) -> str:
     L = [f"# 訓練計畫預覽（{d['window']}）", "",
-         f"## 主指標", f"- EV loss/100 決策：**{d['per100']:.2f} bb**（週變化 {d['delta']:+.2f}）",
-         f"- 已累積：{len(d['weekly_series'])} 週資料", "", "## 本週最該練的情境"]
+         f"## 主指標", f"- 平均 EV 損失：**{d['per100']:.2f} bb/100**（n={d.get('n', 0)}；週變化 {d['delta']:+.2f}）",
+         f"- 已累積：{len(d['weekly_series'])} 週資料", "", "## 本週最該練的情境",
+         "優先順序已考慮樣本數；下方顯示原始平均 EV 損失。"]
     for f in d["focus"]:
         L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
-        L.append(f"- 實戰漏損 {f['per100']:.2f} bb/100 · 考慮樣本數後保守估計 "
-                 f"{f.get('shrunk_per100', f['per100']):.2f} · 樣本 {f['n']} 個決策")
+        L.append(f"- 平均 EV 損失 {f['per100']:.2f} bb/100（n={f['n']}）")
         if f.get("action_bias"):
             b = f["action_bias"]
-            L.append(f"- 明顯傾向：{b['label']}（{b['n']} 手，共損失 {b['ev_loss_bb']:.2f}bb）")
+            L.append(f"- 明顯傾向：{b['label']}（{b['n']} 手，EV 損失合計 {b['ev_loss_bb']:.2f} bb）")
         if f["drill_url"]:
             L.append(f"- 🎯 drill：{f['drill_url']}")
         L.append("")
-    L.append("## 最燒錢情境排行")
-    L.append("保守估計會降低小樣本的權重，避免少數幾個大底池把排名推得太高。")
+    L.append("## EV 損失較高的情境")
     L.append("")
-    L.append("| 情境類型 | 實戰漏損 bb/100 | 保守估計 | 樣本決策 |")
-    L.append("|---|---:|---:|---:|")
+    L.append("| 情境類型 | 平均 EV 損失 bb/100 | 樣本決策 |")
+    L.append("|---|---:|---:|")
     for r in d["leaderboard"][:10]:
         label = r.get('diagnosis_key', r['spot_leaf'])
         if r.get("action_bias"):
             label += f"｜{r['action_bias']['label']}"
-        L.append(f"| {label} | {r['avg_ev']*100:.2f} | "
-                 f"{r.get('shrunk_avg_ev', r['avg_ev'])*100:.2f} | {r['n']} |")
+        L.append(f"| {label} | {r['avg_ev']*100:.2f} | {r['n']} |")
     L.append("")
-    hon = d["honesty"]
-    L.append(f"## 資料範圍與限制\n- 無法可靠評分而排除 {hon['excluded_n']} · limp 未計入 {hon['discarded_n']} · "
-             f"翻牌後以 chipEV（不計 ICM）評分 {hon['chipev_share']*100:.1f}%")
+    L.append("## 資料口徑\n- 僅納入高信心的線上決策；翻牌後採 chipEV 評分，翻牌前涉及 limp 的決策不納入。")
     return "\n".join(L)
 
 
@@ -603,6 +615,7 @@ async def _run(mode: str, min_n: int):
         fam_payload = [{"spot_leaf": f["spot_leaf"],
                         "diagnosis_key": f.get("diagnosis_key"),
                         "diagnosis_level": f.get("diagnosis_level"),
+                        "desc": f.get("desc"),
                         "per100": f["per100"], "n": f["n"],
                         "drill_url": f["drill_url"]} for f in data["focus"]]
         presc = [{"label": f["desc"], "url": f["drill_url"]} for f in data["focus"] if f["drill_url"]]
