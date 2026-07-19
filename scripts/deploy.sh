@@ -13,6 +13,24 @@ configure_supabase_cli
 
 git pull
 
+# The legacy solver cache is ~500 MB of immutable JSON.  Export once while the
+# bot is live, then stop writers and repeat the resumable pass so the final
+# snapshot is exact before the drop-table migration can run.  On any later
+# deployment the table-exists probe skips this block.
+if python scripts/export_gto_api_cache.py --table-exists; then
+  python scripts/export_gto_api_cache.py --output-dir .gto_cache
+  docker compose stop bot
+  _restart_bot_on_failure=1
+  trap 'if (( _restart_bot_on_failure )); then docker compose up -d bot; fi' EXIT
+  python scripts/export_gto_api_cache.py --output-dir .gto_cache
+else
+  _cache_probe_status=$?
+  if (( _cache_probe_status != 1 )); then
+    echo "無法確認 gto_api_cache 遷移狀態，停止部署" >&2
+    exit 1
+  fi
+fi
+
 # Run Supabase migrations (project already linked)
 supabase db push
 
@@ -39,3 +57,5 @@ echo
 # Build and deploy container
 docker compose build
 docker compose up -d
+_restart_bot_on_failure=0
+trap - EXIT

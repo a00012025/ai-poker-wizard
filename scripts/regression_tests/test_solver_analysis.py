@@ -22,130 +22,137 @@ from regression_tests.harness import (
 
 
 @test
-def test_gto_cache_prefers_local_file_without_touching_db():
-    """A persistent local hit must not create Shared Pooler egress."""
+def test_gto_cache_reads_persistent_local_file():
+    """A persistent local hit hydrates memory without any database layer."""
     import tempfile
     import gto_cache
 
     key = "a" * 64
     original_dir = gto_cache._CACHE_DIR
     original_key = gto_cache._cache_key
-    original_get_conn = gto_cache._get_conn
-    original_db_conn = gto_cache._db_conn
     try:
         with tempfile.TemporaryDirectory() as td:
             gto_cache._CACHE_DIR = Path(td)
             gto_cache._cache_key = lambda *_args, **_kwargs: key
-            gto_cache._get_conn = lambda: (_ for _ in ()).throw(
-                AssertionError("local cache hit must not query PostgreSQL"))
-            gto_cache._db_conn = None
             gto_cache._mem.clear()
             (Path(td) / f"{key}.json").write_text(
                 json.dumps({"is_null": False, "response": {"source": "local"}}))
 
             assert_eq(gto_cache.get("spot_solution", {}), {"source": "local"})
+            assert_eq(gto_cache.entry_count(), 1)
     finally:
         gto_cache._CACHE_DIR = original_dir
         gto_cache._cache_key = original_key
-        gto_cache._get_conn = original_get_conn
-        gto_cache._db_conn = original_db_conn
         gto_cache._mem.clear()
 
 
 @test
-def test_gto_cache_db_fallback_repairs_corrupt_local_file():
-    """A corrupt local entry falls back to DB and hydrates a valid local copy."""
+def test_gto_cache_corrupt_local_file_is_visible_miss():
+    """A corrupt entry misses locally so the caller can re-fetch and repair it."""
     import tempfile
     import gto_cache
 
-    class Cursor:
-        def __init__(self):
-            self.executed = 0
-
-        def execute(self, *_args):
-            self.executed += 1
-
-        def fetchone(self):
-            return ({"source": "db"}, False)
-
-        def close(self):
-            pass
-
-    class Conn:
-        def __init__(self):
-            self.cur = Cursor()
-
-        def cursor(self):
-            return self.cur
-
     key = "b" * 64
-    conn = Conn()
     original_dir = gto_cache._CACHE_DIR
     original_key = gto_cache._cache_key
-    original_get_conn = gto_cache._get_conn
-    original_db_conn = gto_cache._db_conn
     try:
         with tempfile.TemporaryDirectory() as td:
             cache_file = Path(td) / f"{key}.json"
             cache_file.write_text("not-json")
             gto_cache._CACHE_DIR = Path(td)
             gto_cache._cache_key = lambda *_args, **_kwargs: key
-            gto_cache._get_conn = lambda: conn
-            gto_cache._db_conn = None
             gto_cache._mem.clear()
 
-            assert_eq(gto_cache.get("spot_solution", {}), {"source": "db"})
-            assert_eq(conn.cur.executed, 1)
+            assert_true(gto_cache.get("spot_solution", {}) is gto_cache.SENTINEL)
+            gto_cache.put("spot_solution", {}, {"source": "api"})
             assert_eq(json.loads(cache_file.read_text()), {
-                "is_null": False, "response": {"source": "db"}})
+                "is_null": False, "response": {"source": "api"}})
     finally:
         gto_cache._CACHE_DIR = original_dir
         gto_cache._cache_key = original_key
-        gto_cache._get_conn = original_get_conn
-        gto_cache._db_conn = original_db_conn
         gto_cache._mem.clear()
 
 
 @test
-def test_gto_cache_put_writes_local_atomically_before_db():
-    """The durable local layer is committed before best-effort DB storage."""
+def test_gto_cache_put_is_atomic_and_json_safe():
+    """Local writes are atomic and memory matches the persisted sanitized JSON."""
     import tempfile
     import gto_cache
 
     key = "c" * 64
-    observations = []
     replacements = []
     original_dir = gto_cache._CACHE_DIR
     original_key = gto_cache._cache_key
-    original_get_conn = gto_cache._get_conn
     original_replace = gto_cache.os.replace
-    original_db_conn = gto_cache._db_conn
     try:
         with tempfile.TemporaryDirectory() as td:
             cache_file = Path(td) / f"{key}.json"
             gto_cache._CACHE_DIR = Path(td)
             gto_cache._cache_key = lambda *_args, **_kwargs: key
-            gto_cache._get_conn = lambda: observations.append(cache_file.exists())
             gto_cache.os.replace = lambda src, dst: (
                 replacements.append((Path(src), Path(dst))),
                 original_replace(src, dst),
             )[-1]
-            gto_cache._db_conn = None
             gto_cache._mem.clear()
 
-            gto_cache.put("spot_solution", {}, {"value": 7})
-            assert_eq(observations, [True], "local file must exist before DB lookup")
+            gto_cache.put("spot_solution", {}, {"value": float("nan")})
             assert_true(bool(replacements), "local writes must use atomic os.replace")
             assert_eq(json.loads(cache_file.read_text()), {
-                "is_null": False, "response": {"value": 7}})
+                "is_null": False, "response": {"value": None}})
+            assert_eq(gto_cache.get("spot_solution", {}), {"value": None})
             assert_eq(list(Path(td).glob("*.tmp")), [])
     finally:
         gto_cache._CACHE_DIR = original_dir
         gto_cache._cache_key = original_key
-        gto_cache._get_conn = original_get_conn
         gto_cache.os.replace = original_replace
-        gto_cache._db_conn = original_db_conn
         gto_cache._mem.clear()
+
+
+@test
+def test_gto_cache_export_repairs_and_verifies_local_rows():
+    """The DB exporter is resumable and repairs corrupt/null local entries."""
+    import tempfile
+    import export_gto_api_cache
+
+    key = "d" * 64
+    with tempfile.TemporaryDirectory() as td:
+        output = Path(td)
+        path = output / f"{key}.json"
+        path.write_text("corrupt")
+        assert_true(export_gto_api_cache._sync_row(
+            output, key, {"answer": [1, 2]}, False))
+        assert_eq(json.loads(path.read_text()), {
+            "is_null": False, "response": {"answer": [1, 2]}})
+        assert_true(not export_gto_api_cache._sync_row(
+            output, key, {"answer": [1, 2]}, False))
+        assert_true(export_gto_api_cache._sync_row(output, key, None, True))
+        assert_eq(json.loads(path.read_text()), {"is_null": True})
+
+
+@test
+def test_gto_cache_has_no_supabase_runtime_dependency():
+    """Runtime cache paths and analytics must not reference the dropped table."""
+    cache_source = (SCRIPTS_DIR / "gto_cache.py").read_text()
+    database_source = (REPO_ROOT / "src/database.py").read_text()
+    assert_not_in("psycopg", cache_source)
+    assert_not_in("SUPABASE_CONN", cache_source)
+    assert_not_in('"gto_api_cache"', database_source)
+    assert_not_in("FROM gto_api_cache", database_source)
+
+
+@test
+def test_gto_cache_drop_is_guarded_by_verified_export():
+    """Deployment quiesces writers and exports again before dropping the table."""
+    deploy = (REPO_ROOT / "scripts/deploy.sh").read_text()
+    migration = (
+        REPO_ROOT / "supabase/migrations/20260719090000_drop_gto_api_cache.sql"
+    ).read_text()
+    first_export = deploy.index("export_gto_api_cache.py --output-dir")
+    stop = deploy.index("docker compose stop bot")
+    second_export = deploy.index("export_gto_api_cache.py --output-dir", first_export + 1)
+    migrate = deploy.index("supabase db push")
+    assert_true(first_export < stop < second_export < migrate)
+    assert_in("DROP TABLE IF EXISTS public.gto_api_cache", migration)
 
 
 @test

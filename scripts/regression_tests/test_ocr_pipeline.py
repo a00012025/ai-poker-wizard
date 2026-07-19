@@ -2307,18 +2307,11 @@ def _register_snapshot_tests():
                 orig_cache_dir = gto_cache._CACHE_DIR
                 gto_cache._CACHE_DIR = snapshot_cache
                 gto_cache._mem.clear()
-                # Disable DB cache (L2) — unset env var to prevent auto-reconnect
-                orig_db = gto_cache._db_conn
-                orig_dsn = os.environ.pop("SUPABASE_CONN", None)
-                gto_cache._db_conn = None
                 try:
                     from analyze_hand import analyze_hand_full
                     result = analyze_hand_full(hand_json)
                 finally:
                     gto_cache._CACHE_DIR = orig_cache_dir
-                    gto_cache._db_conn = orig_db
-                    if orig_dsn:
-                        os.environ["SUPABASE_CONN"] = orig_dsn
                     gto_cache._mem.clear()
                 actual = strip_timing(result["text"])
 

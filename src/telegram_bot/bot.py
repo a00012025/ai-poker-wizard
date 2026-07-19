@@ -2324,6 +2324,8 @@ class PokerWizardBot:
             return
         try:
             m = await self.db.get_analytics_metrics()
+            from gto_cache import entry_count as gto_cache_entry_count
+            m["cache_total"] = gto_cache_entry_count()
             def _fmt_tokens(n):
                 """Format token count: 1234567 → 1.2M, 12345 → 12.3K."""
                 if n >= 1_000_000:
