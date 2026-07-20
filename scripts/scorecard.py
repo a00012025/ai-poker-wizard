@@ -283,8 +283,8 @@ def weekly_tg_html(week: str, d: dict) -> str:
 
     Concise, no jargon (no "北極星"/"迴圈"). Tells the player: what to drill,
     where they're leaking, the goal, and the honest data caveats (chipEV/ICM,
-    dropped limps, coverage). Drill links are NOT embedded — they ride as URL
-    buttons (weekly_tg_payload) under the message.
+    dropped limps, coverage). Drill actions are NOT embedded — they ride as
+    compact queue-detail buttons (weekly_tg_payload) under the message.
     """
     per100 = d.get("per100", 0.0)
     series = d.get("weekly_series") or []
@@ -324,7 +324,7 @@ def weekly_tg_html(week: str, d: dict) -> str:
     if dq:
         L.append("")
         L.append("<b>📥 練習佇列（現場 + 線上）：</b>")
-        for q in dq:
+        for qi, q in enumerate(dq, 1):
             if q.get("kind") == "review":
                 lbl = q.get("label") or q.get("spot_leaf") or "?"
             else:
@@ -332,10 +332,10 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 lbl = compact_spot_name(q)
             if q.get("kind") == "review":
                 # label already reads「復盤 M/D … −Xbb」
-                L.append(f"• 🔍 {escape(lbl)}")
+                L.append(f"{qi}. 🔍 {escape(lbl)}")
             else:
                 ev = q.get("total_ev_loss_bb") or 0
-                L.append(f"• 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
+                L.append(f"{qi}. 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
                          f"EV 損失合計 {ev:.1f} bb")
                 from spot_naming import telegram_bias_summary
                 bias = telegram_bias_summary(q)
@@ -378,15 +378,18 @@ def weekly_tg_html(week: str, d: dict) -> str:
 def weekly_tg_payload(week: str, d: dict) -> dict:
     """Weekly TG message + inline buttons: {"html": str, "buttons": rows}.
 
-    Buttons: 🎯 focus-spot drills, then the practice-queue quota. Every queue
-    item exposes 📚 exact source hands (qsrc); review items additionally carry
-    🔗 復盤 + ✔ 完成 (qcl) + ➕ 加練 (qex) (§7/§6.2).
+    Buttons: 🎯 focus-spot details, then the practice-queue quota. Drill
+    callbacks use the existing detail/provisioning flow and carry ``plan`` so
+    the weekly message stays immutable. Every queue item exposes 📚 exact
+    source hands (qsrc); review items additionally carry 🔗 復盤 + ✔ 完成
+    (qcl) + ➕ 加練 (qex) (§7/§6.2).
     """
     buttons: list[list[dict]] = []
     for i, f in enumerate(d.get("focus", []), 1):
-        if f.get("drill_url"):
-            buttons.append([{"text": f"🎯 練 {i}：{f['desc'][:28]}", "url": f["drill_url"]}])
-    for q in (d.get("drill_queue") or []):
+        if f.get("queue_id") is not None:
+            buttons.append([{"text": f"🎯 焦點 {i}",
+                             "callback_data": f"qdet:{f['queue_id']}:0:plan"}])
+    for qi, q in enumerate((d.get("drill_queue") or []), 1):
         qid = q.get("id")
         if q.get("kind") == "review":
             lbl = q.get("label") or q.get("spot_leaf") or "?"
@@ -399,16 +402,17 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
             anchor = q.get("review_anchor_url")
             anchor_street = q.get("review_anchor_street")
             if anchor:
-                row.append({"text": f"↩ 先看 {(anchor_street or '上游').title()}",
+                row.append({"text": f"↩ {qi} {(anchor_street or '上游').title()}",
                             "url": anchor})
             if q.get("drill_url"):
-                text = "💥 再看損失" if anchor else f"🔗 復盤：{lbl}"
+                text = f"💥 {qi} 損失" if anchor else f"🔗 復盤 {qi}"
                 row.append({"text": text, "url": q["drill_url"]})
             actions: list[dict] = []
             if qid is not None:
-                actions.append({"text": "📚 來源", "callback_data": f"qsrc:{qid}"})
-                actions.append({"text": "✔ 完成", "callback_data": f"qcl:{qid}"})
-                actions.append({"text": "➕ 加練", "callback_data": f"qex:{qid}"})
+                actions.append({"text": f"📚 來源 {qi}", "callback_data": f"qsrc:{qid}"})
+                actions.append({"text": f"✔ 完成 {qi}",
+                                "callback_data": f"qcl:{qid}:0:completed:plan"})
+                actions.append({"text": f"➕ 加練 {qi}", "callback_data": f"qex:{qid}"})
             if anchor and row:
                 buttons.append(row)
                 row = actions
@@ -419,9 +423,9 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
         else:
             row = []
             if qid is not None:
-                row.append({"text": f"📥 詳細／練習：{lbl}",
-                            "callback_data": f"qdet:{qid}:0"})
-                row.append({"text": "📚 來源", "callback_data": f"qsrc:{qid}"})
+                row.append({"text": f"🎯 練習 {qi}",
+                            "callback_data": f"qdet:{qid}:0:plan"})
+                row.append({"text": f"📚 來源 {qi}", "callback_data": f"qsrc:{qid}"})
             if row:
                 buttons.append(row)
     return {"html": weekly_tg_html(week, d), "buttons": buttons}
@@ -533,16 +537,63 @@ async def _honesty(conn) -> dict:
             "sizing_snap_n": snap, "depth_snap_n": dgap, "low_confidence_n": low}
 
 
-async def fetch_drill_queue(conn) -> list[dict]:
+async def fetch_drill_queue(conn, exclude_ids=None) -> list[dict]:
     """Top practice-queue items for the weekly plan (drill + review), mixed to
     the per-kind quota (§7). Pending-first / EV-desc order is preserved."""
     from queue_feed import mix_queue_quota
     rows = [dict(r) for r in await conn.fetch(QUEUE_SQL)]
+    excluded = {int(i) for i in (exclude_ids or [])}
+    rows = [row for row in rows if int(row["id"]) not in excluded]
     from spot_naming import compact_spot_name
     for row in rows:
         if row.get("kind") == "drill":
             row["label"] = compact_spot_name(row)
     return mix_queue_quota(rows, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS, QUEUE_SLOTS)
+
+
+def focus_queue_item(focus: dict) -> dict | None:
+    """Build an idempotent drill_queue item for a weekly focus prescription."""
+    if not (focus.get("spot_leaf") and focus.get("drill_url")):
+        return None
+    sources = [{
+        "hand_id": s.get("gtow_hand_id"),
+        "street": s.get("street"),
+        "decision_idx": s.get("decision_idx"),
+        "ev_loss_bb": float(s.get("ev_loss_bb") or 0.0),
+        "src": "online",
+    } for s in (focus.get("samples") or []) if s.get("gtow_hand_id")]
+    if not sources:
+        return None
+    return {
+        "kind": "drill", "added_by": "scorecard_focus", "source": "online",
+        "spot_leaf": focus["spot_leaf"],
+        "spot_category": focus.get("spot_category"),
+        "label": focus.get("desc") or focus["spot_leaf"],
+        "drill_url": focus["drill_url"],
+        "total_ev_loss_bb": round(sum(s["ev_loss_bb"] for s in sources), 4),
+        "source_hands": sources,
+    }
+
+
+async def bind_focus_queue_items(conn, focus: list[dict]) -> list[int]:
+    """Ensure every actionable focus uses the existing Drill detail flow."""
+    from queue_feed import enqueue_one
+    ids = []
+    for prescription in focus:
+        item = focus_queue_item(prescription)
+        if not item:
+            continue
+        await enqueue_one(conn, item)
+        row = await conn.fetchrow(
+            "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
+            "AND status IN ('pending','prescribed') "
+            "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+            item["spot_leaf"])
+        if row:
+            queue_id = int(row["id"])
+            prescription["queue_id"] = queue_id
+            ids.append(queue_id)
+    return ids
 
 
 async def fetch_readback(conn, prev_focus, prev_at) -> dict:
@@ -561,7 +612,7 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
 
 
 async def build(conn, window_label, prev_focus, min_n=50, top=8,
-                since=None, prev_at=None):
+                since=None, prev_at=None, provision_focus=False):
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
     spots = await lb.hierarchical_leaderboard(
         conn, min_n=max(25, min_n // 2), top=top, since=since)
@@ -572,7 +623,10 @@ async def build(conn, window_label, prev_focus, min_n=50, top=8,
     if prev_focus and prev_at:
         readback = prev_focus_readback(prev_focus, await fetch_readback(conn, prev_focus, prev_at))
     data = compute_training_plan(window_label, weekly, spots, top_hands, readback, honesty)
-    data["drill_queue"] = await fetch_drill_queue(conn)
+    focus_queue_ids = (await bind_focus_queue_items(conn, data["focus"])
+                       if provision_focus else [])
+    data["focus_queue_ids"] = focus_queue_ids
+    data["drill_queue"] = await fetch_drill_queue(conn, focus_queue_ids)
     return data
 
 
@@ -609,7 +663,8 @@ async def _run(mode: str, min_n: int):
         print(f"queue scan: {len(scan['drill'])} drill + {len(scan['review'])} "
               f"review candidates, tally={scan['tally']}")
         since = datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS)
-        data = await build(conn, week, prev_focus, min_n=min_n, since=since, prev_at=prev_at)
+        data = await build(conn, week, prev_focus, min_n=min_n, since=since,
+                           prev_at=prev_at, provision_focus=True)
         html = render_html(data)
         (outdir / f"{week}.html").write_text(html)
         fam_payload = [{"spot_leaf": f["spot_leaf"],
@@ -633,7 +688,9 @@ async def _run(mode: str, min_n: int):
         if prev and data.get("readback"):
             await conn.execute("UPDATE coach_focus SET readback=$2 WHERE week=$1",
                                prev["week"], json.dumps(data["readback"], default=str))
-        dq_ids = [q["id"] for q in (data.get("drill_queue") or [])]
+        dq_ids = list(dict.fromkeys(
+            list(data.get("focus_queue_ids") or [])
+            + [q["id"] for q in (data.get("drill_queue") or [])]))
         if dq_ids:
             # surfaced in this week's plan -> prescribed (still visible in /queue
             # until the player marks them cleared)
