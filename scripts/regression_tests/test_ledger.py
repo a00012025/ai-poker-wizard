@@ -1665,7 +1665,7 @@ def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
         (lambda a, c: "--incremental" in a, (0, "INGEST list=0 detail=0 decisions=0 skipped=8")),
     ])
     stages = []
-    async def progress(t):
+    async def progress(t, **kw):
         stages.append(t)
 
     orig = ingest_runner._run_script
@@ -1698,7 +1698,7 @@ def test_ingest_runner_pipeline_persistent_mismatch_warns_not_fails():
         (lambda a, c: "--backfill" in a, (0, "INGEST list=1 detail=1 decisions=2 skipped=9")),
         (lambda a, c: "--incremental" in a, (0, "INGEST list=0 detail=0 decisions=0 skipped=9")),
     ])
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     orig = ingest_runner._run_script
@@ -1721,7 +1721,7 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
         (lambda a, c: "--verify" in a, (0, "VERIFY OK api=8 db=8")),
         (lambda a, c: "--incremental" in a, (0, "INGEST list=0 detail=0 decisions=0 skipped=8")),
     ])
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     orig = ingest_runner._run_script
@@ -1787,7 +1787,7 @@ def test_ingest_runner_pipeline_guard_skips_full_sweep_within_24h():
         (lambda a, c: "--verify" in a, (2, "VERIFY MISMATCH api=10 db=8")),
         (lambda a, c: "--incremental" in a, (0, "INGEST list=0 detail=0 decisions=0 skipped=8")),
     ])
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     orig = ingest_runner._run_script
@@ -1851,7 +1851,7 @@ def test_ingest_runner_surfaces_only_useful_summary_counts():
         (lambda a, c: "--verify" in a, (0, "VERIFY OK api=20 db=20")),
         (lambda a, c: "--incremental" in a, (0, summary)),
     ])
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     orig = ingest_runner._run_script
@@ -1892,7 +1892,7 @@ def test_ingest_runner_pipeline_crash_surfaces_tail_not_silent():
     async def fake_run(env, *args, on_line=None):
         return 1, "Traceback ...\ngto_token.TokenExpiredError: GTO Wizard token 過期"
 
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     orig = ingest_runner._run_script
@@ -1916,7 +1916,7 @@ def test_ingest_runner_pipeline_stage_failures_are_loud():
     import asyncio
     from src import ingest_runner
 
-    async def progress(t):
+    async def progress(t, **kw):
         pass
 
     async def spots_fail(env, *args, on_line=None):

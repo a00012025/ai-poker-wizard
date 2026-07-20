@@ -107,7 +107,7 @@ def test_live_status_debounces_rapid_same_stage_updates():
         await live.update("攝取中", "  detail sweep: 60/240")   # now allowed
         return bot.edits
 
-    edits = asyncio.get_event_loop().run_until_complete(run())
+    edits = asyncio.run(run())
     assert_eq(len(edits), 2, f"debounced to 2 edits, got {len(edits)}: {edits}")
 
 
@@ -124,7 +124,7 @@ def test_live_status_stage_change_bypasses_debounce():
         await live.update("補 spot 分類", None)
         return bot.edits
 
-    edits = asyncio.get_event_loop().run_until_complete(run())
+    edits = asyncio.run(run())
     assert_eq(len(edits), 2, f"stage change bypasses debounce: {edits}")
 
 
@@ -140,7 +140,7 @@ def test_live_status_swallows_not_modified():
         await live.settle("✅ 完成")
         return True
 
-    ok = asyncio.get_event_loop().run_until_complete(run())
+    ok = asyncio.run(run())
     assert_true(ok, "BadRequest not-modified swallowed")
 
 
@@ -220,7 +220,7 @@ def test_process_next_sends_live_bar_and_settles():
         return ran, bot
 
     try:
-        ran, bot = asyncio.get_event_loop().run_until_complete(_run())
+        ran, bot = asyncio.run(_run())
     finally:
         for name, val in saved.items():
             setattr(ir, name, val)
