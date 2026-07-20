@@ -326,7 +326,7 @@ QUERY_LEDGER_SUMMARY_DECLARATION = types.FunctionDeclaration(
     name="query_ledger_summary",
     description=(
         "查詢全量帳本（GTOW Analyzer 評分的線上 MTT 決策，action-line 分類）的 "
-        "EV loss 聚合。可按 spot 大類（RFI/vsOpen/vsRaiseCall/vs3bet/vsCold3bet/"
+        "EV loss 聚合。可按 spot 大類（RFI/vsOpen/vsRaiseCall/vs3bet/"
         "vs4bet/vsSqueeze/flop/turn/river）或 hero 位置類（EP/MP/LP/SB/BB）或天數過濾。"
         "回傳 EV loss/100 決策、總損失、樣本數 n、excluded 數與 top spot。"
         "使用者問『我最大的弱點 / 什麼地方打最差 / 我的統計 / 我哪裡漏 EV / "

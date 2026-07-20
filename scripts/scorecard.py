@@ -67,6 +67,11 @@ def spot_desc_zh(row: dict) -> str:
             return f"Hero {hero} 開池"
         if cat == "vsOpen":
             return f"Hero {hero} 面對 {villain or '?'} 開池"
+        if cat == "vsSqueeze" and "flat_vsSqueeze" in key:
+            matchup = f"Hero {hero} flat 後對 {villain or '?'} squeeze"
+            if rel:
+                matchup += f"、處於 {rel}"
+            return matchup
         if cat in ("vs3bet", "vsCold3bet", "vs4bet", "vsCold4bet", "vsSqueeze"):
             matchup = f"Hero {hero} 對 {villain or '?'}"
             if rel:
@@ -86,6 +91,8 @@ def spot_desc_zh(row: dict) -> str:
         return f"{row.get('hero_pos') or hc} 開池"
     if cat == "vsOpen":
         return f"{row.get('hero_pos') or hc} 面對 {vc} 開池"
+    if cat == "vsSqueeze" and "flat_vsSqueeze" in row["spot_leaf"]:
+        return f"{hc} flat 後面對 squeeze（對手 {vc}，你 {rel or '?'}）"
     if cat in ("vs3bet", "vsCold3bet", "vs4bet", "vsCold4bet", "vsSqueeze"):
         return f"{hc} {CAT_ZH[cat]}（對手 {vc}，你 {rel or '?'}）"
     return f"{hc} {CAT_ZH.get(cat, cat)}（對手 {vc}）"

@@ -196,6 +196,8 @@ def choose_depths(bands) -> tuple[str | None, list[int]]:
 
 
 def _drill_url(r, depths) -> str | None:
+    if "flat_vsSqueeze" in str(r.get("spot_leaf") or ""):
+        return None
     parts = r["spot_leaf"].split(":")
     return drill_url_for_spot(
         r["spot_category"], hero_pos=r.get("hero_pos"), hero_cat=r.get("hero_cat"),

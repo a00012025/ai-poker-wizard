@@ -442,9 +442,15 @@ def _load_source_hand(dec: dict) -> dict:
         detail, hero_pos, float(depth), dec.get("gametype") or "MTTGeneral")
 
 
+def _is_flat_vs_squeeze(dec: dict) -> bool:
+    return "flat_vsSqueeze" in str(dec.get("spot_leaf") or "")
+
+
 def _exact_pot_type(dec: dict) -> str:
     category = dec.get("spot_category")
-    if category == "vsCold3bet":
+    if _is_flat_vs_squeeze(dec):
+        return "squeezed"
+    if category == "vsCold3bet":  # legacy rows only; new taxonomy emits vs3bet
         return "3bet"
     if category == "vsCold4bet":
         return "4bet"
@@ -459,7 +465,7 @@ def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> 
     continue to use CDP-verified shortcuts.
     """
     category = dec.get("spot_category")
-    if category in _EXACT_SOURCE_CATEGORIES:
+    if category in _EXACT_SOURCE_CATEGORIES or _is_flat_vs_squeeze(dec):
         try:
             from gtow_custom_url import build_custom_spot_url
             hand = _load_source_hand(dec)
