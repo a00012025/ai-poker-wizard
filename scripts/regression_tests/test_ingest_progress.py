@@ -189,7 +189,8 @@ def test_process_next_sends_live_bar_and_settles():
         async def fake_claim(pool):
             return {"id": "req-1", "user_id": OWNER}
 
-        async def fake_run_pipeline(token, progress, *, allow_full_sweep=True):
+        async def fake_run_pipeline(token, progress, *, mode="incremental",
+                                    allow_full_sweep=True):
             await progress("攝取中…", stage="攝取中")
             await progress("攝取中：detail sweep: 120/240", stage="攝取中",
                            raw="detail sweep: 120/240")
@@ -236,3 +237,120 @@ def test_process_next_sends_live_bar_and_settles():
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),
                 f"settle edit present: {bot.edits}")
+
+
+# ── full-history import mode ────────────────────────────────────────────────
+
+@test
+def test_run_pipeline_full_mode_backfills_directly():
+    """mode='full' runs --backfill straight away (no --incremental first) and
+    marks the result as a full import."""
+    import src.ingest_runner as ir
+    from regression_tests.test_ledger import _fake_ingest_env
+
+    fake_run, calls = _fake_ingest_env([
+        (lambda a, c: "--verify" in a, (0, "VERIFY OK api=413 db=413")),
+        (lambda a, c: "--backfill" in a,
+         (0, "INGEST list=413 detail=241 decisions=490 skipped=170")),
+    ])
+
+    async def progress(t, **kw):
+        pass
+
+    async def _run():
+        orig = ir._run_script
+        ir._run_script = fake_run
+        try:
+            return await ir.run_pipeline("tok-r", progress, mode="full")
+        finally:
+            ir._run_script = orig
+
+    result = asyncio.run(_run())
+    assert_in("新增手牌：413", result)
+    assert_in("全量匯入", result)
+    assert_true(not any("--incremental" in a for a in calls),
+                f"full mode must not run --incremental: {calls}")
+    assert_true(any("--backfill" in a for a in calls), "backfill ran")
+
+
+@test
+def test_run_pipeline_full_mode_no_new_hands_message():
+    """A full import that finds nothing new says so (not the incremental
+    'GTOW still processing' hint)."""
+    import src.ingest_runner as ir
+    from regression_tests.test_ledger import _fake_ingest_env
+
+    fake_run, _ = _fake_ingest_env([
+        (lambda a, c: "--verify" in a, (0, "VERIFY OK api=413 db=413")),
+        (lambda a, c: "--backfill" in a,
+         (0, "INGEST list=0 detail=0 decisions=0 skipped=413")),
+    ])
+
+    async def progress(t, **kw):
+        pass
+
+    async def _run():
+        orig = ir._run_script
+        ir._run_script = fake_run
+        try:
+            return await ir.run_pipeline("tok-r", progress, mode="full")
+        finally:
+            ir._run_script = orig
+
+    result = asyncio.run(_run())
+    assert_in("歷史手牌都已在資料庫", result)
+    assert_true("稍後再點一次" not in result, "no incremental-only hint in full mode")
+
+
+@test
+def test_process_next_threads_mode_to_pipeline():
+    """process_next passes the claimed row's mode through to run_pipeline, and a
+    full import bypasses the 24h already-swept guard."""
+    import ledger_service
+    import src.ingest_runner as ir
+
+    OWNER = 556028753
+    saved = {name: getattr(ir, name) for name in
+             ("_expire_stale", "_claim_next", "_recent_permanent_mismatch",
+              "_set", "_send_session_review", "_init_live_status", "run_pipeline")}
+    saved_resolve = ledger_service.resolve_owner_chat_id
+    seen = {}
+
+    async def _run():
+        async def fake_claim(pool):
+            return {"id": "req-1", "user_id": OWNER, "mode": "full"}
+
+        async def fake_run_pipeline(token, progress, *, mode="incremental",
+                                    allow_full_sweep=True):
+            seen["mode"] = mode
+            seen["allow_full_sweep"] = allow_full_sweep
+            return "本次同步結果：\n• 新增手牌：413\n• 完整分析：241\n• 決策紀錄：490"
+
+        async def anoop(*a, **k):
+            return None
+
+        async def afalse(*a, **k):
+            return False
+
+        async def fake_resolve(pool):
+            return OWNER
+
+        ir._expire_stale = anoop
+        ir._claim_next = fake_claim
+        ir._recent_permanent_mismatch = afalse
+        ir._set = anoop
+        ir._send_session_review = anoop
+        ir._init_live_status = anoop        # no live bar needed for this assertion
+        ir.run_pipeline = fake_run_pipeline
+        ledger_service.resolve_owner_chat_id = fake_resolve
+        return await ir.process_next(object(), _RecordingBot(), _FakeDB())
+
+    try:
+        asyncio.run(_run())
+    finally:
+        for name, val in saved.items():
+            setattr(ir, name, val)
+        ledger_service.resolve_owner_chat_id = saved_resolve
+
+    assert_eq(seen.get("mode"), "full", "mode threaded to run_pipeline")
+    assert_true(seen.get("allow_full_sweep") is True, "full bypasses 24h guard")

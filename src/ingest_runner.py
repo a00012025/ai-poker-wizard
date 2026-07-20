@@ -259,8 +259,13 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     return summary, rc_v, _tail(out_v)
 
 
-async def run_pipeline(refresh_token: str, progress, *, allow_full_sweep: bool = True) -> str:
+async def run_pipeline(refresh_token: str, progress, *, mode: str = "incremental",
+                       allow_full_sweep: bool = True) -> str:
     """incremental ingest → verify; on mismatch escalate to a full sweep.
+
+    mode='full' skips the incremental-first pass and backfills the whole history
+    from the ledger epoch directly (the /fullingest path) — backfill already
+    covers everything, so there is no escalation branch.
 
     `progress` is an async callable taking the current stage text. When
     allow_full_sweep is False (a recent full sweep already proved the mismatch
@@ -270,21 +275,29 @@ async def run_pipeline(refresh_token: str, progress, *, allow_full_sweep: bool =
     message on failure.
     """
     env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
-    summary, rc_v, verify_tail = await _pass(env, progress, ("--incremental",), "攝取中")
     escalated = False
     guard_skipped = False
-    if rc_v == 2:
-        if allow_full_sweep:
-            # Hands played outside the 30d incremental window (late uploads of
-            # old sessions) only surface in a full list sweep. --backfill's
-            # --since defaults to the ledger epoch (2026-03-01).
-            escalated = True
-            summary, rc_v, verify_tail = await _pass(
-                env, progress, ("--backfill",), "窗外手牌全量補齊中")
-        else:
-            guard_skipped = True
+    full_import = mode == "full"
+    if full_import:
+        summary, rc_v, verify_tail = await _pass(
+            env, progress, ("--backfill",), "全量攝取中")
+    else:
+        summary, rc_v, verify_tail = await _pass(
+            env, progress, ("--incremental",), "攝取中")
+        if rc_v == 2:
+            if allow_full_sweep:
+                # Hands played outside the 30d incremental window (late uploads
+                # of old sessions) only surface in a full list sweep.
+                # --backfill's --since defaults to the ledger epoch (2026-03-01).
+                escalated = True
+                summary, rc_v, verify_tail = await _pass(
+                    env, progress, ("--backfill",), "窗外手牌全量補齊中")
+            else:
+                guard_skipped = True
     result = _format_summary(summary)
-    if escalated:
+    if full_import:
+        result += "\n• 範圍：全量匯入（自 ledger epoch）"
+    elif escalated:
         result += "\n• 範圍：已執行全量補齊"
     if rc_v == 2:
         # A full sweep structurally cannot repair this (GTOW-side deletions
@@ -293,21 +306,23 @@ async def run_pipeline(refresh_token: str, progress, *, allow_full_sweep: bool =
         if guard_skipped:
             result += "（24h 內已全量補齊仍不符，本次略過全量 sweep）"
     if re.search(r"\blist=0 detail=0\b", summary):
-        result += "\n（沒有新手牌 — 若剛上傳，GTOW 可能還在處理，稍後再點一次）"
+        result += ("\n（歷史手牌都已在資料庫，沒有新增）" if full_import
+                   else "\n（沒有新手牌 — 若剛上傳，GTOW 可能還在處理，稍後再點一次）")
     return result
 
 
-async def enqueue_request(pool, user_id: int) -> bool:
+async def enqueue_request(pool, user_id: int, mode: str = "incremental") -> bool:
     """Enqueue an ingest request; returns True if an open one already existed.
 
-    Atomic via the partial unique index (one pending/running row per user) —
-    the targetless ON CONFLICT catches its violation without a check-then-
-    insert race.
+    Atomic via the partial unique index (one pending/running row per user,
+    mode-agnostic) — the targetless ON CONFLICT catches its violation without a
+    check-then-insert race, so a full request is blocked while an incremental
+    one is open and vice versa.
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO gtow_ingest_requests (user_id) VALUES ($1) "
-            "ON CONFLICT DO NOTHING RETURNING id", user_id)
+            "INSERT INTO gtow_ingest_requests (user_id, mode) VALUES ($1, $2) "
+            "ON CONFLICT DO NOTHING RETURNING id", user_id, mode)
     return row is None
 
 
@@ -340,7 +355,7 @@ async def _claim_next(pool):
                 "started_at=now(), heartbeat_at=now() "
                 "WHERE id = (SELECT id FROM gtow_ingest_requests WHERE status='pending' "
                 "            ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
-                "RETURNING id, user_id")
+                "RETURNING id, user_id, mode")
 
 
 async def _expire_stale(pool, bot):
@@ -419,7 +434,8 @@ async def process_next(pool, bot, db, application=None) -> bool:
     if not row:
         return False
     req_id, user_id = row["id"], row["user_id"]
-    logger.info(f"Ingest request {req_id} claimed (user {user_id})")
+    mode = row["mode"] if "mode" in row else "incremental"
+    logger.info(f"Ingest request {req_id} claimed (user {user_id}, mode={mode})")
 
     owner = await resolve_owner_chat_id(pool)
     if user_id != owner:
@@ -440,9 +456,13 @@ async def process_next(pool, bot, db, application=None) -> bool:
         if live is not None:
             await live.update(stage or text, raw)
 
-    allow_full_sweep = not await _recent_permanent_mismatch(pool, user_id)
+    # The 24h "already fully swept" guard only gates the *incremental* path's
+    # escalation; a full import always runs the backfill by definition.
+    allow_full_sweep = (mode == "full"
+                        or not await _recent_permanent_mismatch(pool, user_id))
     try:
-        result = await run_pipeline(token, progress, allow_full_sweep=allow_full_sweep)
+        result = await run_pipeline(token, progress, mode=mode,
+                                    allow_full_sweep=allow_full_sweep)
         notified = await _finish(pool, bot, req_id, user_id, ok=True, text=result)
         if live is not None:
             await live.settle("✅ 同步完成 · 結果見下方 ↓" if notified
