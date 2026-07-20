@@ -256,6 +256,17 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
     return html, buttons
 
 
+async def _present_queue_detail(query, context, chat_id: int, html: str,
+                                markup, *, new_message: bool = False):
+    """Keep the weekly plan immutable while retaining in-place queue detail."""
+    kwargs = {"parse_mode": "HTML", "disable_web_page_preview": True,
+              "reply_markup": markup}
+    if new_message:
+        await context.bot.send_message(chat_id, html, **kwargs)
+    else:
+        await query.edit_message_text(html, **kwargs)
+
+
 def _setup_logger() -> logging.Logger:
     _LOG_DIR.mkdir(exist_ok=True)
     logger = logging.getLogger("poker_bot")
@@ -1598,12 +1609,12 @@ class PokerWizardBot:
         return InlineKeyboardMarkup(kb) if kb else None
 
     @staticmethod
-    def _mark_button_done(markup, tapped_data: str):
+    def _mark_button_done(markup, tapped_data: str, done_text: str = "✅ 已排入"):
         """Copy `markup`, relabel the tapped button ✅. Its callback_data is kept
         so a re-tap is an idempotent enqueue no-op (enqueue_one dedupes)."""
         if not markup:
             return None
-        kb = [[(InlineKeyboardButton("✅ 已排入", callback_data=b.callback_data)
+        kb = [[(InlineKeyboardButton(done_text, callback_data=b.callback_data)
                 if b.callback_data == tapped_data else b)
                for b in row] for row in markup.inline_keyboard]
         return InlineKeyboardMarkup(kb)
@@ -1721,9 +1732,11 @@ class PokerWizardBot:
 
     async def _queue_drill_detail(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE,
-                                  queue_id: int, page: int = 0):
+                                  queue_id: int, page: int = 0,
+                                  *, new_message: bool = False):
         """Ensure/reuse the matching GTOW Drill, then show its practice card."""
         query = update.callback_query
+        chat_id = update.effective_chat.id
         if not (self.db and self.db.pool):
             await query.answer("Database not connected.")
             return
@@ -1748,11 +1761,15 @@ class PokerWizardBot:
                         "gtow_training_started_at "
                         "FROM drill_queue WHERE id=$1 FOR UPDATE", queue_id)
                     if not item or item["kind"] != "drill":
-                        await query.edit_message_text("找不到這個 Drill queue item。")
+                        await _present_queue_detail(
+                            query, context, chat_id, "找不到這個 Drill queue item。",
+                            None, new_message=new_message)
                         return
                     if not item["drill_url"]:
-                        await query.edit_message_text(
-                            "這個項目目前沒有可精確重建的 GTOW Trainer 連結。")
+                        await _present_queue_detail(
+                            query, context, chat_id,
+                            "這個項目目前沒有可精確重建的 GTOW Trainer 連結。",
+                            None, new_message=new_message)
                         return
                     fingerprint = settings_hash(
                         settings_from_trainer_url(item["drill_url"]))
@@ -1794,18 +1811,19 @@ class PokerWizardBot:
             lifetime, attempt = await asyncio.to_thread(load_stats)
             html, buttons = _queue_drill_detail_payload(
                 dict(item), binding, lifetime, attempt, page=page)
-            await query.edit_message_text(
-                html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=self._rows_to_markup(buttons))
+            await _present_queue_detail(
+                query, context, chat_id, html, self._rows_to_markup(buttons),
+                new_message=new_message)
         except Exception as exc:
             self.log.error("GTOW Drill detail failed for queue %s: %s",
                            queue_id, exc, exc_info=True)
-            await query.edit_message_text(
+            await _present_queue_detail(
+                query, context, chat_id,
                 "⚠️ 無法準備 GTOW Drill。可能是 GTOW token 已失效或 API 暫時異常。",
-                reply_markup=self._rows_to_markup([[
+                self._rows_to_markup([[
                     {"text": "🔄 重試", "callback_data": f"qdet:{queue_id}:{page}"},
                     {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
-                ]]))
+                ]]), new_message=new_message)
 
     async def _queue_show_sources(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE,
@@ -2111,9 +2129,11 @@ class PokerWizardBot:
 
         if data.startswith("qdet:") or data.startswith("qdst:"):
             parts = data.split(":")
+            origin = parts[3] if len(parts) > 3 else "queue"
             await self._queue_drill_detail(
                 update, context, int(parts[1]),
-                int(parts[2]) if len(parts) > 2 else 0)
+                int(parts[2]) if len(parts) > 2 else 0,
+                new_message=(data.startswith("qdet:") and origin == "plan"))
             return
 
         if data.startswith("qpg:"):
@@ -2135,11 +2155,23 @@ class PokerWizardBot:
                 queue_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 0
                 reason = parts[3] if len(parts) > 3 else "completed"
+                origin = parts[4] if len(parts) > 4 else "queue"
                 if reason not in {"completed", "mistake", "skipped"}:
                     reason = "completed"
                 await self.db.pool.execute(
                     "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
                     "clear_reason=$2 WHERE id=$1", queue_id, reason)
+                if origin == "plan":
+                    await query.answer("✔ 已標記為完成")
+                    try:
+                        await query.edit_message_reply_markup(
+                            reply_markup=self._mark_button_done(
+                                query.message.reply_markup, data,
+                                done_text="✅ 已完成"))
+                    except telegram.error.BadRequest as exc:
+                        if "Message is not modified" not in str(exc):
+                            self.log.exception("Failed to refresh weekly plan after qcl")
+                    return
                 rows, total, page = await self._fetch_queue_page(page)
                 html, buttons = _queue_payload(rows, page=page, total=total)
                 answer = ("🗑 已移除誤植項目" if reason == "mistake"

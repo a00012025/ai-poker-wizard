@@ -971,8 +971,8 @@ def test_training_plan_focus_and_readback():
                                 {"MP_vs3bet_IP": {"n": 0, "per100": None}})
     assert_eq(empty[0]["current_per100"], None)
     assert_eq(empty[0]["n"], 0)
-    # end-user weekly TG message: drill links ride as URL BUTTONS (not in the
-    # text), no jargon, honest caveats, live practice queue section
+    # end-user weekly TG message: drill links are opened through the queue
+    # detail callback so GTOW Drill provisioning happens before Trainer opens.
     data["leaderboard"] = [dict(row, drill_url=spots[0]["url"], restrict=None)]
     data["drill_queue"] = [
         {"id": 1, "spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
@@ -1001,16 +1001,74 @@ def test_training_plan_focus_and_readback():
     assert_true("GTOW 實際評分深度" not in msg)
     assert_true("線上同一個情境也在漏" not in msg)
     assert_true("已開過，還沒練" not in msg)
+    data["focus"][0]["queue_id"] = 91
     payload = weekly_tg_payload("2026-W28", data)
     assert_eq(payload["html"], msg)
     urls = [b["url"] for r in payload["buttons"] for b in r if b.get("url")]
-    assert_true(urls and all(u.startswith("https://app.gtowizard.com/") for u in urls))
+    assert_true(all(u.startswith("https://app.gtowizard.com/") for u in urls))
     texts = [b["text"] for r in payload["buttons"] for b in r]
     assert_true(any(t.startswith("🎯") for t in texts))      # focus drill button
-    assert_true(any(t.startswith("📥") for t in texts))      # queue drill button
+    assert_true(all(len(t) <= 14 for t in texts), "weekly buttons stay compact")
     callbacks = [b["callback_data"] for r in payload["buttons"] for b in r
                  if b.get("callback_data")]
+    assert_in("qdet:91:0:plan", callbacks)
+    assert_in("qdet:1:0:plan", callbacks)
     assert_true(any(c.startswith("qsrc:") for c in callbacks))  # source hands menu
+
+
+@test
+def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
+    """The focus button must have a queue row to provision/reuse a GTOW Drill;
+    it must never bypass the existing detail flow with a raw Trainer URL."""
+    from scorecard import focus_queue_item
+
+    item = focus_queue_item({
+        "spot_leaf": "river:SRP:SBvBB:OOP:[b-c]:vs_bet",
+        "spot_category": "river", "desc": "Hero SB 對 BB",
+        "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
+        "samples": [
+            {"gtow_hand_id": "h1", "street": "river", "decision_idx": 0,
+             "ev_loss_bb": 2.25},
+            {"gtow_hand_id": "h2", "street": "river", "decision_idx": 1,
+             "ev_loss_bb": 1.75},
+        ],
+    })
+    assert_eq(item["kind"], "drill")
+    assert_eq(item["added_by"], "scorecard_focus")
+    assert_eq(item["total_ev_loss_bb"], 4.0)
+    assert_eq([s["hand_id"] for s in item["source_hands"]], ["h1", "h2"])
+    assert_true(focus_queue_item({"spot_leaf": "x", "drill_url": None}) is None)
+
+    import asyncio
+    import queue_feed
+    from scorecard import bind_focus_queue_items
+
+    calls = []
+    old_enqueue = queue_feed.enqueue_one
+
+    async def fake_enqueue(_conn, queued):
+        calls.append(queued)
+        return "inserted"
+
+    class FakeConn:
+        async def fetchrow(self, _sql, leaf):
+            assert_eq(leaf, item["spot_leaf"])
+            return {"id": 91}
+
+    focus = [{
+        "spot_leaf": item["spot_leaf"], "spot_category": "river",
+        "desc": "Hero SB 對 BB", "drill_url": item["drill_url"],
+        "samples": [{"gtow_hand_id": "h1", "street": "river",
+                     "decision_idx": 0, "ev_loss_bb": 2.25}],
+    }]
+    queue_feed.enqueue_one = fake_enqueue
+    try:
+        ids = asyncio.run(bind_focus_queue_items(FakeConn(), focus))
+    finally:
+        queue_feed.enqueue_one = old_enqueue
+    assert_eq(ids, [91])
+    assert_eq(focus[0]["queue_id"], 91)
+    assert_eq(calls[0]["added_by"], "scorecard_focus")
 
 
 @test

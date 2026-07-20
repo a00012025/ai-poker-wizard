@@ -1780,11 +1780,12 @@ def test_weekly_payload_review_buttons():
     payload = weekly_tg_payload("2026-W28", d)
     flat = [b for row in payload["buttons"] for b in row]
     cbs = [b.get("callback_data") for b in flat if b.get("callback_data")]
-    assert_in("qcl:12", cbs)                                   # review 完成
+    assert_in("qcl:12:0:completed:plan", cbs)                  # review 完成
     assert_in("qex:12", cbs)                                   # review 加練
-    assert_in("qdet:11:0", cbs)
-    assert_true(any("📥" in b["text"] and b.get("callback_data") == "qdet:11:0"
+    assert_in("qdet:11:0:plan", cbs)
+    assert_true(any("🎯" in b["text"] and b.get("callback_data") == "qdet:11:0:plan"
                     for b in flat))
+    assert_true(all(len(b["text"]) <= 14 for b in flat))
     assert_true(any("損失" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
     assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("flop=1") for b in flat))
     # review section header + both kinds rendered in the text
@@ -1907,6 +1908,57 @@ def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     assert_in("clear_reason=$2", qcl_src)
     detail_src = inspect.getsource(PokerWizardBot._queue_drill_detail)
     assert_in("pg_advisory_xact_lock", detail_src)
+
+
+@test
+def test_weekly_drill_detail_opens_new_message_without_replacing_plan():
+    """A qdet callback from the weekly plan provisions the Drill as usual but
+    presents the detail card in a new message. Refreshes on that detail card
+    remain in-place, and weekly completion only relabels the tapped button."""
+    import asyncio
+    import inspect
+    from types import SimpleNamespace
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram_bot.bot import (_present_queue_detail,
+                                  PokerWizardBot)
+
+    class FakeQuery:
+        def __init__(self):
+            self.edits = []
+        async def edit_message_text(self, *args, **kwargs):
+            self.edits.append((args, kwargs))
+
+    class FakeBot:
+        def __init__(self):
+            self.sends = []
+        async def send_message(self, *args, **kwargs):
+            self.sends.append((args, kwargs))
+
+    query, bot = FakeQuery(), FakeBot()
+    context = SimpleNamespace(bot=bot)
+    asyncio.run(_present_queue_detail(
+        query, context, 777, "detail", None, new_message=True))
+    assert_eq(len(bot.sends), 1)
+    assert_eq(query.edits, [])
+    asyncio.run(_present_queue_detail(
+        query, context, 777, "refreshed", None, new_message=False))
+    assert_eq(len(query.edits), 1)
+
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✔ 1 完成",
+                             callback_data="qcl:12:0:completed:plan")]])
+    marked = PokerWizardBot._mark_button_done(
+        markup, "qcl:12:0:completed:plan", done_text="✅ 已完成")
+    assert_eq(marked.inline_keyboard[0][0].text, "✅ 已完成")
+
+    src = inspect.getsource(PokerWizardBot.handle_live_button)
+    qdet_src = src.split('if data.startswith("qdet:")', 1)[1].split(
+        'if data.startswith("qpg:")', 1)[0]
+    assert_in('origin == "plan"', qdet_src)
+    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
+        'if data.startswith("qex:"):', 1)[0]
+    assert_in('origin == "plan"', qcl_src)
+    assert_in("edit_message_reply_markup", qcl_src)
 
 
 @test
