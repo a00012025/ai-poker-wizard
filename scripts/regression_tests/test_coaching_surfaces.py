@@ -2190,3 +2190,36 @@ def test_coach_system_terminology_rule():
     assert_in("all-in", cs, "English-abbreviation whitelist missing")
     assert_true("pot control / 控制底池" not in cs,
                 "prompt body still contains a banned bilingual gloss")
+
+
+def _queue_drill_row(**over):
+    """A minimal pending drill-queue Record-shaped dict for _queue_payload."""
+    base = dict(
+        kind="drill", id=1, label=None,
+        spot_leaf="flop:3bet:EPvSB:IP:vs_bet",
+        spot_category="flop:3bet:EPvSB:IP",
+        status="pending", n_sources=1, added_by="auto",
+        total_ev_loss_bb=0.0, ref_hand_id="h", drill_url=None,
+        review_anchor_url=None, review_anchor_street=None,
+        hero_cat=None, villain_cat=None, ip_oop="IP", hero_pos="EP",
+        bias_direction=None, bias_n=None, bias_ev_loss_bb=None, bias_share=None)
+    base.update(over)
+    return base
+
+
+@test
+def test_queue_payload_marks_manual_add():
+    """A manually-added drill (added_by='manual', threshold-free) renders a
+    「（手動加入）」 tag so a genuine 0.0bb non-leak spot isn't misread as a
+    miscalculation; auto-detected leaks stay untagged."""
+    from telegram_bot.bot import _queue_payload
+
+    manual = _queue_drill_row(id=77, added_by="manual", total_ev_loss_bb=0.0)
+    auto = _queue_drill_row(id=39, added_by="auto",
+                            total_ev_loss_bb=9.9, n_sources=5)
+    html, _ = _queue_payload([manual, auto], total=2)
+    lines = html.split("\n")
+    manual_line = next(l for l in lines if "累計損失 0.0bb" in l)
+    auto_line = next(l for l in lines if "累計損失 9.9bb" in l)
+    assert_in("（手動加入）", manual_line, "manual add must be tagged")
+    assert_not_in("（手動加入）", auto_line, "auto leak must stay untagged")

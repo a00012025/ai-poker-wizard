@@ -99,7 +99,10 @@ def _queue_payload(rows, *, page: int = 0,
         else:
             from spot_naming import telegram_bias_summary
             ev = r["total_ev_loss_bb"] or 0
-            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}")
+            # 手動加練（➕加練 / 復盤排入）不設 EV 門檻，可能是 0bb 的
+            # non-leak spot；標「（手動加入）」讓 0.0bb 不被誤讀為算錯。
+            manual = "（手動加入）" if r.get("added_by") == "manual" else ""
+            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}{manual}")
             bias = telegram_bias_summary(r)
             if bias:
                 L.append(f"   ↳ {_esc(bias)}")
@@ -1709,7 +1712,7 @@ class PokerWizardBot:
         page = max(0, min(int(page), pages - 1))
         rows = await self.db.pool.fetch(
             "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
-            "review_anchor_street, status, n_sources, "
+            "review_anchor_street, status, n_sources, added_by, "
             "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
             "bias_direction, bias_n, bias_ev_loss_bb, bias_share "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
