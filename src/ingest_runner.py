@@ -34,6 +34,146 @@ _EXPIRE_CHECK_INTERVAL = 60          # seconds between stale-row scans
 _run_lock = asyncio.Lock()
 _last_expire_check = 0.0
 
+# Bridges the /ingest command's immediate reply to the poller that later claims
+# the row (same process). Keyed by user_id; the one-open-request-per-user unique
+# index guarantees at most one live status message per user at a time.
+_PENDING_STATUS: dict[int, tuple[int, int]] = {}
+
+# Minimum seconds between live message edits within a stage (Telegram rate
+# limits edits; a stage change always edits immediately regardless).
+_EDIT_DEBOUNCE_S = 4.0
+
+
+def register_status_message(user_id: int, chat_id: int, message_id: int) -> None:
+    """Record the /ingest reply so the poller edits it in place on claim."""
+    _PENDING_STATUS[user_id] = (chat_id, message_id)
+
+
+# ── Live progress rendering (pure helpers, unit-tested without a bot) ────────
+
+# `x/total` appears in "detail sweep: 126/241" and "list-only sweep: 500/1700";
+# the plain "list sweep: 320 new..." has no denominator (streaming paginator).
+_FRACTION_RE = re.compile(r"sweep:\s*(\d+)\s*/\s*(\d+)")
+_COUNT_RE = re.compile(r"list sweep:\s*(\d+)\s+new")
+
+
+def parse_progress(line: str) -> tuple[int, int] | None:
+    """Extract (done, total) from a sweep line, or None if it has no denominator."""
+    m = _FRACTION_RE.search(line or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def parse_running_count(line: str) -> int | None:
+    """Extract the running 'N new' count from a denominator-less list sweep line."""
+    m = _COUNT_RE.search(line or "")
+    return int(m.group(1)) if m else None
+
+
+def _fmt_dur(seconds: float) -> str:
+    s = max(0, round(seconds))
+    return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def render_bar(done: int, total: int, width: int = 10) -> str:
+    frac = 0.0 if total <= 0 else max(0.0, min(1.0, done / total))
+    filled = int(round(frac * width))
+    filled = max(0, min(width, filled))
+    return "▓" * filled + "░" * (width - filled)
+
+
+def format_eta(done: int, total: int, elapsed_s: float) -> str | None:
+    """Rough ETA from the observed rate; None until we have a datapoint."""
+    if done <= 0 or elapsed_s <= 0 or total <= done:
+        return None
+    rate = done / elapsed_s                 # items per second
+    if rate <= 0:
+        return None
+    remaining_s = (total - done) / rate
+    if remaining_s < 90:
+        return f"剩約 {max(1, round(remaining_s))} 秒"
+    return f"剩約 {round(remaining_s / 60)} 分"
+
+
+def render_status(stage_label: str, parsed: tuple[int, int] | None,
+                  elapsed_s: float, stage_times: dict, *,
+                  running_count: int | None = None) -> str:
+    """Assemble the live status message body."""
+    lines = ["⏳ GTOW 手牌同步"]
+    if parsed:
+        done, total = parsed
+        pct = 0 if total <= 0 else round(100 * done / total)
+        bar = render_bar(done, total)
+        eta = format_eta(done, total, elapsed_s)
+        tail = f" · {eta}" if eta else ""
+        lines.append(f"{stage_label} · {bar} {pct}%{tail}（{done}/{total}）")
+    elif running_count is not None:
+        lines.append(f"{stage_label} · 已抓 {running_count:,} 筆新手牌…")
+    else:
+        lines.append(f"{stage_label}…")
+    done_stages = [f"{k} {v}" for k, v in stage_times.items()]
+    if done_stages:
+        lines.append(f"（{' · '.join(done_stages)}）")
+    return "\n".join(lines)
+
+
+class _LiveStatus:
+    """Owns one Telegram message for a run; debounced, error-swallowing edits.
+
+    `now` is injectable so tests drive a fake clock. Formatting is delegated to
+    the module-level pure helpers above.
+    """
+
+    def __init__(self, bot, chat_id: int, message_id: int, *, now=time.monotonic):
+        self.bot = bot
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self._now = now
+        self.started_at = now()
+        self.detail_started_at: float | None = None
+        self.stage_times: dict[str, str] = {}
+        self._stage: str | None = None
+        self._stage_started_at: float | None = None
+        self._last_edit_at = 0.0
+        self._last_text: str | None = None
+
+    async def update(self, stage_label: str, raw_line: str | None = None) -> None:
+        parsed = parse_progress(raw_line) if raw_line else None
+        running = parse_running_count(raw_line) if raw_line else None
+        stage_changed = stage_label != self._stage
+        if stage_changed:
+            # Book the finished stage's duration so the message shows where the
+            # time actually went (instruments the pipeline for later perf work).
+            if self._stage is not None and self._stage_started_at is not None:
+                self.stage_times[self._stage] = _fmt_dur(
+                    self._now() - self._stage_started_at)
+            self._stage = stage_label
+            self._stage_started_at = self._now()
+        # Anchor the ETA clock at the first detail-sweep datapoint.
+        if parsed and self.detail_started_at is None:
+            self.detail_started_at = self._now()
+        anchor = self.detail_started_at or self.started_at
+        elapsed = self._now() - anchor
+        text = render_status(stage_label, parsed, elapsed, self.stage_times,
+                             running_count=running)
+        now = self._now()
+        if not stage_changed and now - self._last_edit_at < _EDIT_DEBOUNCE_S:
+            return
+        if text == self._last_text:
+            return
+        await self._edit(text)
+
+    async def settle(self, final_text: str) -> None:
+        await self._edit(final_text)
+
+    async def _edit(self, text: str) -> None:
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id, message_id=self.message_id, text=text)
+            self._last_edit_at = self._now()
+            self._last_text = text
+        except Exception as e:  # not-modified, flood-control, deleted msg — never fatal
+            logger.debug(f"Live status edit skipped: {e}")
+
 
 async def _run_script(env: dict, *script_args, on_line=None) -> tuple[int, str]:
     """Run a repo script, streaming stdout lines to on_line; return (rc, tail)."""
@@ -91,13 +231,15 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     Returns (summary, verify_rc, verify_tail); raises RuntimeError with a
     user-facing message when any stage fails.
     """
-    await progress(f"{label}…")
+    await progress(f"{label}…", stage=label)
 
     async def heartbeat(line):
         # ledger_ingest prints periodic "  list/detail sweep: ..." progress;
-        # surface it in the toast and refresh the row's liveness heartbeat.
+        # surface it in the toast (raw line drives the live bar) and refresh
+        # the row's liveness heartbeat.
         if "sweep:" in line:
-            await progress(f"{label}：{line.strip()}")
+            await progress(f"{label}：{line.strip()}", stage=label,
+                           raw=line.strip())
 
     rc, out = await _run_script(env, "scripts/ledger_ingest.py", *ingest_args,
                                 on_line=heartbeat)
@@ -106,11 +248,11 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
         raise RuntimeError(f"{label}失敗 (rc={rc}): {_tail(out)}")
     for args, stage in ((("scripts/backfill_spots.py",), "補 spot 分類"),
                         (("scripts/ledger_sessions.py", "--rebuild"), "重建 sessions")):
-        await progress(f"{stage}…")
+        await progress(f"{stage}…", stage=stage)
         rc, out = await _run_script(env, *args)
         if rc != 0:
             raise RuntimeError(f"{stage}失敗 (rc={rc}): {_tail(out)}")
-    await progress("對數中…")
+    await progress("對數中…", stage="對數中")
     rc_v, out_v = await _run_script(env, "scripts/ledger_ingest.py", "--verify")
     if rc_v not in (0, 2):
         raise RuntimeError(f"對數檢查失敗 (rc={rc_v}): {_tail(out_v)}")
@@ -222,18 +364,23 @@ async def _expire_stale(pool, bot):
             logger.warning(f"Ingest expiry notify failed for user {r['user_id']}: {e}")
 
 
-async def _finish(pool, bot, req_id, user_id, *, ok: bool, text: str):
+async def _finish(pool, bot, req_id, user_id, *, ok: bool, text: str) -> bool:
+    """Record the terminal state; send a fresh notification unless idle.
+
+    Returns True if a Telegram message was sent (so the caller can settle the
+    live progress bar to a matching terminal state)."""
     await _set(pool, req_id, status="done" if ok else "error", result=text,
                progress=None, finished_at=datetime.now(timezone.utc))
     # An idle sync is still recorded as successfully completed, but does not
     # need a Telegram notification. Errors must always remain visible.
     if ok and re.search(r"(?m)^• 新增手牌：0$", text):
-        return
+        return False
     try:
         icon = "✅" if ok else "❌"
         await bot.send_message(user_id, f"{icon} GTOW 手牌同步\n{text}")
     except Exception as e:
         logger.warning(f"Ingest notify failed for user {user_id}: {e}")
+    return True
 
 
 async def _send_session_review(pool, bot, user_id, application=None):
@@ -285,24 +432,51 @@ async def process_next(pool, bot, db, application=None) -> bool:
                       text="找不到有效的 GTOW token，請在 GTOW 頁面重新登入後再點一次")
         return True
 
-    async def progress(text):
+    live = await _init_live_status(bot, user_id)
+
+    async def progress(text, stage=None, raw=None):
         await _set(pool, req_id, progress=text,
                    heartbeat_at=datetime.now(timezone.utc))
+        if live is not None:
+            await live.update(stage or text, raw)
 
     allow_full_sweep = not await _recent_permanent_mismatch(pool, user_id)
     try:
         result = await run_pipeline(token, progress, allow_full_sweep=allow_full_sweep)
-        await _finish(pool, bot, req_id, user_id, ok=True, text=result)
+        notified = await _finish(pool, bot, req_id, user_id, ok=True, text=result)
+        if live is not None:
+            await live.settle("✅ 同步完成 · 結果見下方 ↓" if notified
+                              else "✅ 已是最新，沒有新手牌進來")
         # Skip the auto-review when the sync added nothing new — re-pushing the
         # same session's digest on every idle sync tap is noise (§7-11 依從).
         if "沒有新手牌" not in result:
             await _send_session_review(pool, bot, user_id, application)
     except RuntimeError as e:
         await _finish(pool, bot, req_id, user_id, ok=False, text=str(e))
+        if live is not None:
+            await live.settle("❌ 同步失敗 · 詳情見下方 ↓")
     except Exception as e:
         logger.error(f"Ingest request {req_id} crashed: {e}", exc_info=True)
         await _finish(pool, bot, req_id, user_id, ok=False, text=f"內部錯誤：{e}")
+        if live is not None:
+            await live.settle("❌ 同步失敗 · 詳情見下方 ↓")
     return True
+
+
+async def _init_live_status(bot, user_id: int) -> "_LiveStatus | None":
+    """Build the live status message: reuse the /ingest reply if the command
+    registered one, else send a fresh message (extension ♠-sync path). Popped so
+    a stale message id can never leak into a later run. Best-effort — a failure
+    here just means no live bar, never a failed sync."""
+    pending = _PENDING_STATUS.pop(user_id, None)
+    try:
+        if pending:
+            return _LiveStatus(bot, pending[0], pending[1])
+        msg = await bot.send_message(user_id, "⏳ 開始同步…")
+        return _LiveStatus(bot, msg.chat_id, msg.message_id)
+    except Exception as e:
+        logger.warning(f"Live status init failed for user {user_id}: {e}")
+        return None
 
 
 async def poll_job(context, db):

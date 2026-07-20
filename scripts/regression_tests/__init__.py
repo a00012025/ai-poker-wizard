@@ -15,6 +15,7 @@ TEST_MODULES = (
     "test_coach_facts",
     "test_validation",
     "test_ledger",
+    "test_ingest_progress",
     "test_live_flow",
     "test_gtow_drills",
     "test_session_review",

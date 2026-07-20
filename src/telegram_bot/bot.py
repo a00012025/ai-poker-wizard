@@ -1595,11 +1595,16 @@ class PokerWizardBot:
         if not self.db or not self.db.pool:
             await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
             return
-        from src.ingest_runner import enqueue_request
+        from src.ingest_runner import enqueue_request, register_status_message
         reused = await enqueue_request(self.db.pool, user_id)
-        await update.message.reply_text(
+        msg = await update.message.reply_text(
             "⏳ 已有一件同步在跑，完成後會通知你" if reused
             else "⏳ 已排入同步佇列，完成後會通知你")
+        # Hand this reply to the poller so it edits progress in place on claim.
+        # On a reused request the in-flight run already owns its own message, so
+        # only register when we actually enqueued a fresh one.
+        if not reused:
+            register_status_message(user_id, msg.chat_id, msg.message_id)
 
     # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
 
