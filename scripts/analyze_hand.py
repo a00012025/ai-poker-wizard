@@ -3337,14 +3337,24 @@ def analyze_hand_full(hand: dict) -> dict:
         hero_spots: list of {street, params, ...} per hero decision
         solutions: list of raw spot-solution API responses (parallel to hero_spots)
     """
+    result = _run_analysis(hand)
+
     # Last line of defense (§4b): replay the hand as a real betting game.  A
     # hard-invalid parse must NOT silently fall through to "（無 solver 數據）"
     # — attach a structured report the bot turns into a user warning, and log
     # loudly so a parse bug is distinguishable from a genuinely off-tree spot.
+    #
+    # Validate the hand AFTER _run_analysis has normalized it (effective_bb
+    # computed, pre-flop line reconciled, all-in badges collapsed) — i.e. the
+    # exact structure that was analysed and graded.  Validating the RAW parse
+    # instead surfaced false "動作解析有矛盾（沒有對象的 call）" warnings for hands
+    # the pipeline had already repaired and graded ✅: H3660's raw parse arrived
+    # with effective_bb=None (a HARD EFFECTIVE_BB issue), but _run_analysis then
+    # computed 70bb and graded every hero decision cleanly.  Warn only when the
+    # analysed structure is still inconsistent, so the note can never contradict
+    # a confident verdict.
     validation_hand, _, _ = _canonicalize_hand_board_cards(hand)
     validation = _build_validation(validation_hand)
-
-    result = _run_analysis(hand)
     result["validation"] = validation
 
     # Cash-game fallback: if all spot solutions came back None (typically a 403

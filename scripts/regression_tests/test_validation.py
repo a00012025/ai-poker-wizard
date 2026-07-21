@@ -251,6 +251,44 @@ def test_validator_user_warning_messages():
 
 
 @test
+def test_analyze_validation_runs_on_repaired_hand_not_raw_parse():
+    """H3660: a raw parse missing effective_bb must NOT surface a HARD warning.
+
+    The Gemini parse of H3660 arrived with effective_bb=None (a HARD
+    EFFECTIVE_BB issue).  _run_analysis then computed the depth (70bb) and
+    graded every hero decision ✅✅ — flop cbet and a call-of-an-all-in.
+    analyze_hand_full must validate the hand AFTER that normalization so the
+    user-facing note reflects the analysed structure; validating the raw
+    pre-repair parse falsely told the user "動作解析有矛盾（沒有對象的 call）"
+    directly beneath the confident ✅ verdicts.
+    """
+    from analyze_hand import analyze_hand_full
+    from hand_validator import HARD_WARNING
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "JhJc",
+        "effective_bb": None,             # unknown depth in the raw parse
+        "hero_position": "SB",
+        "player_stacks": [13.9, 94.5, 42.1, 44.6, 73.6, 78.7, 102.8],
+        "preflop_actions": "F-F-R2-F-F-R7-F-C",  # MP opens, SB 3bets, MP calls
+        "players_at_table": 7,
+        "hero_starting_stack": 35.8,
+        "streets": [{"board": "Td5c7c", "actions": [
+            {"position": "SB", "action": "R7.9", "size": 7.9},
+            {"position": "HJ", "action": "R42.8", "size": 42.8, "allin": True},
+            {"position": "SB", "action": "C", "size": 20.9, "allin": True}]}],
+    })
+    v = result.get("validation") or {}
+    assert_true(v.get("ok"),
+                f"repaired hand must validate clean, got hard={[h.get('code') for h in v.get('hard', [])]}")
+    assert_eq(v.get("user_warning"), "",
+              "a hand graded ✅ after depth repair must not warn about a "
+              "'contradiction / orphan call'")
+    assert_not_in(HARD_WARNING, v.get("user_warning") or "",
+                  "H3660 must not surface the hard 'orphan call' warning")
+
+
+@test
 def test_validator_parser_feedback_localizes_the_spot():
     """to_parser_feedback renders the failing street + repair hint for re-parse."""
     from hand_validator import validate_hand, to_parser_feedback
