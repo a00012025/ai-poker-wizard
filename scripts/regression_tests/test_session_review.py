@@ -32,7 +32,7 @@ def _sample(empty: bool = False) -> dict:
              "drill_url": None, "enqueue_item": {}},
         ],
         "top_decisions": [] if empty else [
-            {"combo": "Q♣J♣", "position": "HJ", "depth": 30.125,
+            {"combo": "Q♣️J♣️", "position": "HJ", "depth": 30.125,
              "boards": "", "desc": "MP flat 後面對 squeeze（對手 BB，你 IP）",
              "street_lines": [
                  "翻前: LJ Raise, HJ Call, BB Raise",
@@ -40,15 +40,15 @@ def _sample(empty: bool = False) -> dict:
              "action_line": "Call→應Fold", "ev_loss": 0.76,
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
              "drill_url": "https://app.gtowizard.com/practice?d=1", "enqueue_item": {}},
-            {"combo": "T♠9♠", "position": "CO", "depth": 25.0,
-             "boards": "8h7c2d5sQc", "desc": "turn barrel",
+            {"combo": "T♠️9♠️", "position": "CO", "depth": 25.0,
+             "boards": "8h7c2d5sQc", "desc": "SRP 底池（HU），Hero CO 對 BB、處於 IP，轉牌首動",
              "street_lines": [
-                 "Flop 8h7c2d: BB Check, Hero Bet 33%, BB Call",
-                 "Turn 5s: BB Check",
+                 "Flop 8♥️7♣️2♦️: BB Check, Hero Bet 33%, BB Call",
+                 "Turn 5♠️: BB Check",
              ],
              "action_line": "Raise→應Call", "ev_loss": 3.4,
              "exact_url": "https://app.gtowizard.com/a", "drill_url": None, "enqueue_item": {}},
-            {"combo": "A♥Q♦", "position": "UTG+1", "depth": 40.0,
+            {"combo": "A♥️Q♦️", "position": "UTG+1", "depth": 40.0,
              "boards": "KsJd4c9h", "desc": "面對 3bet fold",
              "action_line": "Fold→應Call", "ev_loss": 2.6,
              "exact_url": "https://app.gtowizard.com/b", "drill_url": None, "enqueue_item": {}},
@@ -115,8 +115,64 @@ def test_session_review_postflop_bet_not_raise_with_size():
             "hero_pos": "HJ", "boards": "Qs9s8c"})
     finally:
         sr._load_detail = old_loader
-    assert_in("Flop Qs9s8c: BB Check", ctx["street_line"])
+    assert_in("Flop Q♠️9♠️8♣️: BB Check", ctx["street_line"])
     assert_eq(ctx["action_line"], "Bet 33%→應Check")
+
+
+@test
+def test_session_review_turn_first_to_act_keeps_turn_card_and_action_line():
+    detail = {
+        "game_analysis": {"game_points": [
+            {"real_game": {"current_street": {"type": "FLOP"}},
+             "real_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "solved_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "analysis_solved": {"available_actions": []}},
+            {"real_game": {"current_street": {"type": "FLOP"}},
+             "real_game_action": {"position": "LP", "code": "R1.1", "display_name": "BET",
+                                  "betsize_by_pot": "0.333"},
+             "solved_game_action": {"position": "LP", "code": "R1.1", "display_name": "BET",
+                                    "betsize_by_pot": "0.333"},
+             "analysis_solved": {"available_actions": []}},
+            {"real_game": {"current_street": {"type": "FLOP"}},
+             "real_game_action": {"position": "BB", "code": "C", "display_name": "CALL"},
+             "solved_game_action": {"position": "BB", "code": "C", "display_name": "CALL"},
+             "analysis_solved": {"available_actions": []}},
+            {"real_game": {"current_street": {"type": "TURN"}},
+             "real_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "solved_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "analysis_solved": {"available_actions": [
+                 {"selected": True, "action": {"position": "BB", "code": "R2.5",
+                                               "display_name": "RAISE"},
+                  "correctness": "WRONG_MOVE", "ev": "1"},
+                 {"selected": False, "action": {"position": "BB", "code": "X",
+                                                "display_name": "CHECK"},
+                  "correctness": "BEST_MOVE", "ev": "2"},
+             ]}},
+        ]}
+    }
+    old_loader = sr._load_detail
+    try:
+        sr._load_detail = lambda _p: detail
+        ctx = sr.decision_action_context({
+            "raw_path": "unused", "street": "turn", "decision_idx": 0,
+            "hero_pos": "BB", "boards": "6s5d4h5h"})
+    finally:
+        sr._load_detail = old_loader
+    assert_eq(ctx["street_lines"], [
+        "Flop 6♠️5♦️4♥️: Hero Check, LP Bet 33%, Hero Call",
+        "Turn 5♥️: Hero 首動",
+    ])
+    assert_eq(ctx["action_line"], "Raise→應Check")
+
+
+@test
+def test_session_review_decision_depth_prefers_solver_effective_stack():
+    assert_eq(sr._decision_display_depth({
+        "preflop_depth_bb": 50.832, "played_depth_bb": 50.832, "solver_depth_bb": 12.0,
+    }), 12.0)
+    assert_eq(sr.depth_label(sr._decision_display_depth({
+        "preflop_depth_bb": 50.832, "played_depth_bb": 50.832, "solver_depth_bb": 12.0,
+    })), "有效 12bb")
 
 
 @test
@@ -155,16 +211,16 @@ def test_session_review_full_message():
     assert_in("turn OOP 面對下注", html)
     assert_in("6.1 bb", html)
     assert_in("最值得回看的 8 個決策", html)
-    assert_in("Q♣J♣", html)
-    assert_in("HJ 30bb", html)
+    assert_in("Q♣️J♣️", html)
+    assert_in("HJ 有效 30bb", html)
     assert_in("MP flat 後面對 squeeze", html)
-    assert_in("1️⃣ Q♣J♣ HJ 30bb｜MP flat 後面對 squeeze", html)
+    assert_in("1️⃣ Q♣️J♣️ HJ 有效 30bb｜MP flat 後面對 squeeze", html)
     assert_in("翻前: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
     assert_in("Call→應Fold", html)
     assert_in("−<b>0.76bb</b>", html)
-    assert_in("T♠9♠", html)
-    assert_in("Flop 8h7c2d: BB Check, Hero Bet 33%, BB Call", html)
-    assert_in("Turn 5s: BB Check｜<b>Raise→應Call</b>", html)
+    assert_in("T♠️9♠️", html)
+    assert_in("Flop 8♥️7♣️2♦️: BB Check, Hero Bet 33%, BB Call", html)
+    assert_in("Turn 5♠️: BB Check｜<b>Raise→應Call</b>", html)
     # honesty caveat with session-scoped counts
     assert_in("limp 6 手未計", html)
     assert_in("3 個低信心未計", html)

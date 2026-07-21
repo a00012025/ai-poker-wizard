@@ -19,9 +19,9 @@ Preflop actions 校正: F-F-F-F-F-R2.2-F-C → F-F-F-F-F-R2.1-F-C
     RAISE 2.1（31% pot）: 100.0%（12.0 combos） EV 2.41bb
 
 ==================================================
-【Flop: Th5hAh】
+【Flop: T♥️5♥️A♥️】
 Hero AJo 牌型: 頂對 (A) + 花聽牌
-【BTN 在 Flop AhTh5h】底池 5.700bb
+【BTN 在 Flop A♥️T♥️5♥️】底池 5.700bb
   Check: 2.7%（15 combos）
   BET 1.15（20% pot）: 16.7%（92 combos）
   BET 1.9（33% pot）: 47.8%（264 combos）
@@ -29,63 +29,63 @@ Hero AJo 牌型: 頂對 (A) + 花聽牌
   BET 4.75（83% pot）: 1.1%（6 combos）
   BET 7.1（125% pot）: 0.1%（1 combos）
 
-【BTN AdJh（AJo）】
+【BTN A♦️J♥️（AJo）】
   策略: Bet 1.15（20% pot） 2%, Bet 1.9（33% pot） 18%, Bet 3.15（55% pot） 74%, Bet 4.75（83% pot） 6%, Bet 7.1（125% pot） 1%（EV 7.15bb）
   AJo 其他花色:
-    AcJh: Bet 1.15（20% pot） 2%, Bet 1.9（33% pot） 18%, Bet 3.15（55% pot） 74%, Bet 4.75（83% pot） 6%, Bet 7.1（125% pot） 1%（EV 7.2bb）
-    AsJh: Bet 1.15（20% pot） 2%, Bet 1.9（33% pot） 18%, Bet 3.15（55% pot） 74%, Bet 4.75（83% pot） 6%, Bet 7.1（125% pot） 1%（EV 7.2bb）
-    AcJd: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-    AcJs: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-    AdJc: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-    AdJs: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-    AsJc: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-    AsJd: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♣️J♥️: Bet 1.15（20% pot） 2%, Bet 1.9（33% pot） 18%, Bet 3.15（55% pot） 74%, Bet 4.75（83% pot） 6%, Bet 7.1（125% pot） 1%（EV 7.2bb）
+    A♠️J♥️: Bet 1.15（20% pot） 2%, Bet 1.9（33% pot） 18%, Bet 3.15（55% pot） 74%, Bet 4.75（83% pot） 6%, Bet 7.1（125% pot） 1%（EV 7.2bb）
+    A♣️J♦️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♣️J♠️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♦️J♣️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♦️J♠️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♠️J♣️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
+    A♠️J♦️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
 ⚠ EV 損失 0.01bb（Bet 1.15（20% pot） 7.14bb vs Bet 3.15（55% pot） 7.15bb）
   → 實際行動: BTN R1.1 1.1bb（solver code: R1.15）
 
 
 ==================================================
-【Turn: 4c（Board: Th5hAh4c）】
+【Turn: 4♣️（Board: T♥️5♥️A♥️4♣️）】
 Hero AJo 牌型: 頂對 (A) + 花聽牌
-【BTN 在 Turn AhTh5h4c】底池 8.000bb
+【BTN 在 Turn A♥️T♥️5♥️4♣️】底池 8.000bb
   Check: 42.7%（39 combos）
   BET 2.65（33% pot）: 1.9%（2 combos）
   BET 4.4（55% pot）: 45.2%（41 combos）
   BET 6.65（83% pot）: 10.2%（9 combos）
 
-【BTN AdJh（AJo）】
+【BTN A♦️J♥️（AJo）】
   策略: Bet 6.65（83% pot） 100%（EV 9.66bb）
   AJo 其他花色:
-    AcJh: Bet 6.65（83% pot） 100%（EV 9.6bb）
-    AsJh: Bet 6.65（83% pot） 100%（EV 9.7bb）
-    AdJs: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 31%, Bet 6.65（83% pot） 68%（EV 7.5bb）
-    AsJd: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 31%, Bet 6.65（83% pot） 68%（EV 7.5bb）
-    AcJd: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.4bb）
-    AcJs: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.4bb）
-    AdJc: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.5bb）
-    AsJc: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.5bb）
+    A♣️J♥️: Bet 6.65（83% pot） 100%（EV 9.6bb）
+    A♠️J♥️: Bet 6.65（83% pot） 100%（EV 9.7bb）
+    A♦️J♠️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 31%, Bet 6.65（83% pot） 68%（EV 7.5bb）
+    A♠️J♦️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 31%, Bet 6.65（83% pot） 68%（EV 7.5bb）
+    A♣️J♦️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.4bb）
+    A♣️J♠️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.4bb）
+    A♦️J♣️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.5bb）
+    A♠️J♣️: Bet 2.65（33% pot） 1%, Bet 4.4（55% pot） 35%, Bet 6.65（83% pot） 64%（EV 7.5bb）
   → 實際行動: BTN R6 6.0bb（solver code: R6.65）
 
 
 ==================================================
-【River: 9d（Board: Th5hAh4c9d）】
+【River: 9♦️（Board: T♥️5♥️A♥️4♣️9♦️）】
 Hero AJo 牌型: 頂對 (A)
-【BTN 在 River AhTh5h4c9d】底池 21.300bb
+【BTN 在 River A♥️T♥️5♥️4♣️9♦️】底池 21.300bb
   Check: 39.3%（3 combos）
   BET 13（61% pot）: 3.9%（0 combos）
   All-in 20.100: 56.8%（5 combos）
 
-【BTN AdJh（AJo）】
+【BTN A♦️J♥️（AJo）】
   策略: Bet 13（61% pot） 25%, All-in 75%（EV 19.73bb）
   AJo 其他花色:
-    AdJc: Bet 13（61% pot） 1%, All-in 99%（EV 19.7bb）
-    AdJs: Bet 13（61% pot） 1%, All-in 99%（EV 19.7bb）
-    AsJc: All-in 100%（EV 19.8bb）
-    AsJd: All-in 100%（EV 19.8bb）
-    AcJd: Bet 13（61% pot） 2%, All-in 98%（EV 19.6bb）
-    AcJs: Bet 13（61% pot） 2%, All-in 98%（EV 19.6bb）
-    AsJh: Bet 13（61% pot） 5%, All-in 95%（EV 19.8bb）
-    AcJh: Bet 13（61% pot） 27%, All-in 73%（EV 19.6bb）
+    A♦️J♣️: Bet 13（61% pot） 1%, All-in 99%（EV 19.7bb）
+    A♦️J♠️: Bet 13（61% pot） 1%, All-in 99%（EV 19.7bb）
+    A♠️J♣️: All-in 100%（EV 19.8bb）
+    A♠️J♦️: All-in 100%（EV 19.8bb）
+    A♣️J♦️: Bet 13（61% pot） 2%, All-in 98%（EV 19.6bb）
+    A♣️J♠️: Bet 13（61% pot） 2%, All-in 98%（EV 19.6bb）
+    A♠️J♥️: Bet 13（61% pot） 5%, All-in 95%（EV 19.8bb）
+    A♣️J♥️: Bet 13（61% pot） 27%, All-in 73%（EV 19.6bb）
   → 實際行動: BTN R89.9 89.9bb（solver code: RAI）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

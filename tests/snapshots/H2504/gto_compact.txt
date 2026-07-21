@@ -4,21 +4,21 @@
 ─── Preflop ───
 GTO: All-in 100%
 
-─── Flop: Qs3dAh ───
+─── Flop: Q♠️3♦️A♥️ ───
 🎯 頂對 (A) + 後門花聽牌
 GTO: Check 100%
 → Hero check ✅
 GTO: RAISE 3.65（33% pot） 79% / Call 21%
 → Hero call ✅ (GTO建議 raise 33% pot)
 
-─── Turn: Jd ───
+─── Turn: J♦️ ───
 🎯 頂對 (A) + 堅果花聽牌
 GTO: Check 100%
 → Hero check ✅
 GTO: Call 100%
 → Hero call ✅
 
-─── River: 3c ───
+─── River: 3♣️ ───
 🎯 頂對 (A)
 GTO: Check 100%
 → Hero check ✅

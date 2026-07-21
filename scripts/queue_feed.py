@@ -208,7 +208,6 @@ def _has_approx(flags) -> bool:
     return any(f in _APPROX_KEYS for f in _as_list(flags))
 
 
-_SUIT_GLYPH = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}
 _STREET_ORDER = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
 _STREET_TITLE = {"preflop": "Preflop", "flop": "Flop", "turn": "Turn", "river": "River"}
 
@@ -232,15 +231,8 @@ def low_frequency_anchor(decisions: list[dict], worst_street: str,
 
 
 def pretty_hand(hero_hand: str | None) -> str:
-    """'Qh8c' -> 'Q♥8♣' so the review label shows the EXACT combo (with suits)
-    the owner must look up in the solver grid. Non-exact/odd inputs pass through."""
-    h = (hero_hand or "").strip()
-    if not h or len(h) % 2 != 0:
-        return h
-    out = []
-    for i in range(0, len(h), 2):
-        out.append(h[i] + _SUIT_GLYPH.get(h[i + 1].lower(), h[i + 1]))
-    return "".join(out)
+    """Display exact combos with emoji suits; class/odd inputs pass through."""
+    return cards_to_emoji(hero_hand)
 
 
 def review_label(row: dict) -> str:

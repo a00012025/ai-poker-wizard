@@ -3,14 +3,14 @@
 ─── Preflop ───
 GTO: RAISE 2（29% pot） 87% / Limp 13%
 
-─── Flop: KcJc8d ───
+─── Flop: K♣️J♣️8♦️ ───
 🎯 Ace high + 卡順聽牌
 GTO: Bet 1.8（33% pot） 43% / Bet 1.1（20% pot） 30% / Bet 3（55% pot） 17% / Check 10%
 → Hero bet 33% pot ✅
 
-─── Turn: 6s ───
+─── Turn: 6♠️ ───
 🎯 Ace high + 卡順聽牌
 GTO: Check 93%
 → Hero bet 75% pot ❌ (GTO建議 check)
 GTO: 此手牌 0% 到達此節點
-→ Hero fold ✅
+→ Hero fold ⚪（off-tree:此線無 solver 對照,非對錯判定）

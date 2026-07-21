@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Convert GTO Wizard API JSON into natural language summaries."""
 
+from card_display import cards_to_emoji
+
 _RANK_ORDER = "AKQJT98765432"
 _COMBO_RANKS = "23456789TJQKA"
 _COMBO_SUITS = "cdhs"
@@ -218,7 +220,7 @@ def _format_combo_breakdown(combo_strats: list[dict], spot_solution: dict) -> li
             label = _action_label(code, spot_solution)
             parts.append(f"{label} {freq*100:.0f}%")
         actions_str = ", ".join(parts)
-        lines.append(f"    {cs['combo']}: {actions_str}（EV {cs['ev']:.1f}bb）")
+        lines.append(f"    {cards_to_emoji(cs['combo'])}: {actions_str}（EV {cs['ev']:.1f}bb）")
     return lines
 
 
@@ -276,7 +278,7 @@ def format_action_summary(spot_solution: dict) -> str:
     """Format overall action frequencies for the active position."""
     game = spot_solution["game"]
     position = game["active_position"]
-    board = game["board"]
+    board = cards_to_emoji(game["board"])
     street = game["current_street"]["type"].capitalize()
     pot = game["pot"]
     bet_name = game["bet_display_name"]
@@ -359,7 +361,7 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
 
         if target_cs:
             action_order = [asol["action"]["code"] for asol in spot_solution["action_solutions"]]
-            lines = [f"【{position} {target_cs['combo']}（{hand_name}）】"]
+            lines = [f"【{position} {cards_to_emoji(target_cs['combo'])}（{hand_name}）】"]
             parts = []
             for code in action_order:
                 freq = target_cs["actions"].get(code, 0)
@@ -433,7 +435,7 @@ def format_range_overview(spot_solution: dict, position: str) -> str:
 
     game = spot_solution["game"]
     street = game["current_street"]["type"].capitalize()
-    board = game["board"]
+    board = cards_to_emoji(game["board"])
 
     # Collect hands with combos > 0
     hands = []
@@ -723,7 +725,7 @@ def format_range_by_action(spot_solution: dict, position: str) -> str:
 
     game = spot_solution["game"]
     street = game["current_street"]["type"].capitalize()
-    board = game["board"]
+    board = cards_to_emoji(game["board"])
 
     # Group hands by action (for total counts and fallback)
     action_groups: dict[str, list] = {}

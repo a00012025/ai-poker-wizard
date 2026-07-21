@@ -36,8 +36,8 @@ def test_board_unknown_suits_are_canonicalized_before_api():
     assert_eq(streets[1]["card"], "5s", "bare/unknown paired turn gets legal unused suit")
     full_board = streets[0]["board"] + streets[1]["card"]
     assert_not_in("x", full_board.lower(), "GTOW board params must never contain x")
-    assert_in("579r → 5c7d9h", "; ".join(notes))
-    assert_in("5x → 5s", "; ".join(notes))
+    assert_in("579r → 5♣️7♦️9♥️", "; ".join(notes))
+    assert_in("5x → 5♠️", "; ".join(notes))
 
 
 @test

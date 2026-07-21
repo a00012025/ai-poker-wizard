@@ -26,6 +26,7 @@ from gto_formatter import (
     normalize_hand_name, _COMBO_INDEX, _COMBO_RANKS, _COMBO_SUITS, _RANK_ORDER,
     _get_board_cards, _combo_to_hand_name, combo_index_for_hand as _combo_index_for_hand,
 )
+from card_display import cards_to_emoji
 
 # ── 169-element preflop hand index (ASCII-sorted hand names) ──
 
@@ -728,7 +729,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                                 }
                         deviations.append({
                             "street": street_name,
-                            "spot": f"board {board}",
+                            "spot": f"board {cards_to_emoji(board)}",
                             "hero_action": taken_code,
                             "hero_action_label": _get_action_label(sol_post["action_solutions"], taken_code),
                             "hero_freq": hero_freq_post,
@@ -875,7 +876,7 @@ def main():
                 icm_params = icm_result
 
         icm_tag = f" ICM={icm_params['gametype'].split('PT')[-1]}" if icm_params else ""
-        print(f"[{i+1}/{len(hands)}] {hand_id}: {hero_pos} {hero_hand} ({eff_bb:.1f}bb) "
+        print(f"[{i+1}/{len(hands)}] {hand_id}: {hero_pos} {cards_to_emoji(hero_hand)} ({eff_bb:.1f}bb) "
               f"streets={num_streets}{icm_tag}", end=" ... ", flush=True)
 
         t0 = time.time()
@@ -967,7 +968,7 @@ def main():
             ev_loss = d.get("ev_loss")
             ev_loss_str = f" EV loss: {ev_loss:.2f}bb" if ev_loss is not None else ""
             hero_ev_str = f" EV={d.get('hero_action_ev', d.get('hero_ev', 0)):.2f}bb" if d.get("hero_action_ev") is not None or d.get("hero_ev") is not None else ""
-            print(f"  {d['hand_id']}: {d['hero_position']} {d['hero_hand']} "
+            print(f"  {d['hand_id']}: {d['hero_position']} {cards_to_emoji(d['hero_hand'])} "
                   f"({d['effective_bb']:.0f}bb) [{d['street']}]{hero_ev_str}"
                   f" →{ev_loss_str}")
             print(f"    Hero: {d['hero_action_label']} ({hero_pct:.0f}% GTO)")

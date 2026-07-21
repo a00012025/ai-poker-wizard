@@ -23,27 +23,27 @@ Preflop actions 校正: F-F-F-R2-F-F-F-R9-C → F-F-F-R2.3-F-F-F-R10.3-C
 
 
 ==================================================
-【Flop: 9hAcTh】
+【Flop: 9♥️A♣️T♥️】
 Hero 88 牌型: 口袋對 (88) < 牌面
-【BB 在 Flop AcTh9h】底池 22.100bb
+【BB 在 Flop A♣️T♥️9♥️】底池 22.100bb
   Check: 24.3%（23 combos）
   BET 2.2（10% pot）: 10.2%（10 combos）
   BET 5.5（25% pot）: 31.3%（29 combos）
   BET 11.05（50% pot）: 33.5%（31 combos）
   BET 16.6（75% pot）: 0.7%（1 combos）
 
-【BB 8s8d（88）】
+【BB 8♠️8♦️（88）】
   策略: Check 72%, Bet 2.2（10% pot） 28%, Bet 16.6（75% pot） 1%（EV 2.74bb）
   88 其他花色:
-    8h8d: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
-    8s8h: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
-    8h8c: Check 45%, Bet 2.2（10% pot） 32%, Bet 5.5（25% pot） 23%, Bet 16.6（75% pot） 1%（EV 3.5bb）
-    8d8c: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
-    8s8c: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
+    8♥️8♦️: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8♠️8♥️: Check 40%, Bet 2.2（10% pot） 23%, Bet 5.5（25% pot） 37%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8♥️8♣️: Check 45%, Bet 2.2（10% pot） 32%, Bet 5.5（25% pot） 23%, Bet 16.6（75% pot） 1%（EV 3.5bb）
+    8♦️8♣️: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
+    8♠️8♣️: Check 77%, Bet 2.2（10% pot） 23%, Bet 16.6（75% pot） 1%（EV 2.7bb）
 ⚠ EV 損失 0.26bb（Bet 5.5（25% pot） 2.49bb vs Check 2.75bb）
   → 實際行動: BB R5 5.0bb（solver code: R5.5）
 
-【BB 在 Flop AcTh9h】底池 44.000bb
+【BB 在 Flop A♣️T♥️9♥️】底池 44.000bb
   Fold: 31.0%（9 combos）
   Call: 41.3%（12 combos）
   RAISE 34.5（33% pot）: 9.8%（3 combos）
@@ -55,9 +55,9 @@ Hero 88 牌型: 口袋對 (88) < 牌面
   策略:
     Fold: 100.0%（0.1 combos） EV -0.00bb
   花色差異:
-    8h8c: Fold 100%（EV -0.0bb）
-    8h8d: Fold 100%（EV -0.0bb）
-    8s8h: Fold 100%（EV -0.0bb）
+    8♥️8♣️: Fold 100%（EV -0.0bb）
+    8♥️8♦️: Fold 100%（EV -0.0bb）
+    8♠️8♥️: Fold 100%（EV -0.0bb）
   → 實際行動: BB F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s

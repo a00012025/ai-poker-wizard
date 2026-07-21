@@ -564,8 +564,8 @@ def test_format_hand_detail_specific_combo():
     assert_true(sol is not None, "Solution should exist")
     # Specific combo: Ah8h (no flush draw on diamond board)
     text_specific = format_hand_detail(sol, "Ah8h", "CO")
-    assert_in("Ah8h", text_specific,
-              "Specific combo query should show Ah8h in output")
+    assert_in("A♥️8♥️", text_specific,
+              "Specific combo query should show A♥️8♥️ in output")
     assert_in("A8s", text_specific,
               "Specific combo query should reference parent hand A8s")
     # Compare with aggregated: should be different format

@@ -4,17 +4,17 @@
 ─── Preflop ───
 GTO: Fold 61% / Call 30% / All-in 8%
 
-─── Flop: KdAsAd ───
+─── Flop: K♦️A♠️A♦️ ───
 🎯 三條 (A)
 GTO: RAISE 8.1（33% pot） 58% / Call 41%
 → Hero call ✅ (GTO建議 raise 33% pot)
 
-─── Turn: 2d ───
+─── Turn: 2♦️ ───
 🎯 三條 (A)
 GTO: Call 54% / All-in 46%
 → Hero call ✅
 
-─── River: 3h ───
+─── River: 3♥️ ───
 🎯 三條 (A)
 GTO: Call 100%
 → Hero call ✅

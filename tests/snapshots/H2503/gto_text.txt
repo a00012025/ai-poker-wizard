@@ -19,9 +19,9 @@ Preflop actions 校正: F-F-F-F-R2.2-F-F-C → F-F-F-F-R2.1-F-F-C
     RAISE 2.1（31% pot）: 100.0%（6.0 combos） EV 1.82bb
 
 ==================================================
-【Flop: 4c9d7c】
+【Flop: 4♣️9♦️7♣️】
 Hero 88 牌型: 口袋對 (88)
-【CO 在 Flop 9d7c4c】底池 5.700bb
+【CO 在 Flop 9♦️7♣️4♣️】底池 5.700bb
   Check: 32.7%（146 combos）
   BET 1.15（20% pot）: 9.4%（42 combos）
   BET 1.9（33% pot）: 4.2%（19 combos）
@@ -29,21 +29,21 @@ Hero 88 牌型: 口袋對 (88)
   BET 4.75（83% pot）: 40.8%（182 combos）
   BET 7.1（125% pot）: 1.6%（7 combos）
 
-【CO 8s8d（88）】
+【CO 8♠️8♦️（88）】
   策略: Check 48%, Bet 1.15（20% pot） 3%, Bet 1.9（33% pot） 3%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 32%（EV 4.32bb）
   88 其他花色:
-    8s8h: Check 42%, Bet 1.15（20% pot） 8%, Bet 1.9（33% pot） 2%, Bet 3.15（55% pot） 11%, Bet 4.75（83% pot） 37%（EV 4.3bb）
-    8h8d: Check 48%, Bet 1.15（20% pot） 3%, Bet 1.9（33% pot） 3%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 32%（EV 4.3bb）
-    8h8c: Check 48%, Bet 1.15（20% pot） 12%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 20%（EV 4.6bb）
-    8s8c: Check 48%, Bet 1.15（20% pot） 12%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 20%（EV 4.6bb）
-    8d8c: Check 58%, Bet 1.15（20% pot） 11%, Bet 1.9（33% pot） 4%, Bet 3.15（55% pot） 13%, Bet 4.75（83% pot） 14%（EV 4.6bb）
+    8♠️8♥️: Check 42%, Bet 1.15（20% pot） 8%, Bet 1.9（33% pot） 2%, Bet 3.15（55% pot） 11%, Bet 4.75（83% pot） 37%（EV 4.3bb）
+    8♥️8♦️: Check 48%, Bet 1.15（20% pot） 3%, Bet 1.9（33% pot） 3%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 32%（EV 4.3bb）
+    8♥️8♣️: Check 48%, Bet 1.15（20% pot） 12%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 20%（EV 4.6bb）
+    8♠️8♣️: Check 48%, Bet 1.15（20% pot） 12%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 14%, Bet 4.75（83% pot） 20%（EV 4.6bb）
+    8♦️8♣️: Check 58%, Bet 1.15（20% pot） 11%, Bet 1.9（33% pot） 4%, Bet 3.15（55% pot） 13%, Bet 4.75（83% pot） 14%（EV 4.6bb）
   → 實際行動: CO X（solver code: X）
 
 
 ==================================================
-【Turn: As（Board: 4c9d7cAs）】
+【Turn: A♠️（Board: 4♣️9♦️7♣️A♠️）】
 Hero 88 牌型: 口袋對 (88)
-【CO 在 Turn 9d7c4cAs】底池 5.700bb
+【CO 在 Turn 9♦️7♣️4♣️A♠️】底池 5.700bb
   Check: 39.5%（52 combos）
   BET 1.9（33% pot）: 1.1%（1 combos）
   BET 3.15（55% pot）: 2.0%（3 combos）
@@ -51,21 +51,21 @@ Hero 88 牌型: 口袋對 (88)
   BET 7.1（125% pot）: 36.3%（48 combos）
   BET 11.4（200% pot）: 4.7%（6 combos）
 
-【CO 8s8d（88）】
+【CO 8♠️8♦️（88）】
   策略: Check 90%, Bet 1.9（33% pot） 1%, Bet 3.15（55% pot） 3%, Bet 4.75（83% pot） 5%（EV 3.55bb）
   88 其他花色:
-    8h8c: Check 62%, Bet 1.9（33% pot） 4%, Bet 3.15（55% pot） 10%, Bet 4.75（83% pot） 24%（EV 3.6bb）
-    8s8c: Check 62%, Bet 1.9（33% pot） 5%, Bet 3.15（55% pot） 10%, Bet 4.75（83% pot） 23%（EV 3.6bb）
-    8d8c: Check 66%, Bet 1.15（20% pot） 1%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 7%, Bet 4.75（83% pot） 20%（EV 3.6bb）
-    8s8h: Check 81%, Bet 1.9（33% pot） 1%, Bet 3.15（55% pot） 3%, Bet 4.75（83% pot） 15%（EV 3.6bb）
-    8h8d: Check 88%, Bet 1.9（33% pot） 1%, Bet 3.15（55% pot） 3%, Bet 4.75（83% pot） 7%（EV 3.6bb）
+    8♥️8♣️: Check 62%, Bet 1.9（33% pot） 4%, Bet 3.15（55% pot） 10%, Bet 4.75（83% pot） 24%（EV 3.6bb）
+    8♠️8♣️: Check 62%, Bet 1.9（33% pot） 5%, Bet 3.15（55% pot） 10%, Bet 4.75（83% pot） 23%（EV 3.6bb）
+    8♦️8♣️: Check 66%, Bet 1.15（20% pot） 1%, Bet 1.9（33% pot） 6%, Bet 3.15（55% pot） 7%, Bet 4.75（83% pot） 20%（EV 3.6bb）
+    8♠️8♥️: Check 81%, Bet 1.9（33% pot） 1%, Bet 3.15（55% pot） 3%, Bet 4.75（83% pot） 15%（EV 3.6bb）
+    8♥️8♦️: Check 88%, Bet 1.9（33% pot） 1%, Bet 3.15（55% pot） 3%, Bet 4.75（83% pot） 7%（EV 3.6bb）
   → 實際行動: CO X（solver code: X）
 
 
 ==================================================
-【River: Th（Board: 4c9d7cAsTh）】
+【River: T♥️（Board: 4♣️9♦️7♣️A♠️T♥️）】
 Hero 88 牌型: 口袋對 (88)
-【CO 在 River 9d7c4cAsTh】底池 5.700bb
+【CO 在 River 9♦️7♣️4♣️A♠️T♥️】底池 5.700bb
   Check: 52.8%（27 combos）
   BET 1（18% pot）: 0.2%（0 combos）
   BET 2.5（44% pot）: 14.8%（8 combos）
@@ -73,14 +73,14 @@ Hero 88 牌型: 口袋對 (88)
   BET 5.5（96% pot）: 8.0%（4 combos）
   BET 8.5（149% pot）: 0.6%（0 combos）
 
-【CO 8s8d（88）】
+【CO 8♠️8♦️（88）】
   策略: Check 1%, Bet 2.5（44% pot） 53%, Bet 4（70% pot） 45%（EV 5.39bb）
   88 其他花色:
-    8s8h: Bet 2.5（44% pot） 47%, Bet 4（70% pot） 52%, Bet 8.5（149% pot） 1%（EV 5.4bb）
-    8h8d: Bet 2.5（44% pot） 49%, Bet 4（70% pot） 50%（EV 5.4bb）
-    8h8c: Bet 2.5（44% pot） 59%, Bet 4（70% pot） 40%（EV 5.4bb）
-    8s8c: Check 15%, Bet 2.5（44% pot） 51%, Bet 4（70% pot） 34%（EV 5.4bb）
-    8d8c: Check 34%, Bet 2.5（44% pot） 42%, Bet 4（70% pot） 24%（EV 5.3bb）
+    8♠️8♥️: Bet 2.5（44% pot） 47%, Bet 4（70% pot） 52%, Bet 8.5（149% pot） 1%（EV 5.4bb）
+    8♥️8♦️: Bet 2.5（44% pot） 49%, Bet 4（70% pot） 50%（EV 5.4bb）
+    8♥️8♣️: Bet 2.5（44% pot） 59%, Bet 4（70% pot） 40%（EV 5.4bb）
+    8♠️8♣️: Check 15%, Bet 2.5（44% pot） 51%, Bet 4（70% pot） 34%（EV 5.4bb）
+    8♦️8♣️: Check 34%, Bet 2.5（44% pot） 42%, Bet 4（70% pot） 24%（EV 5.3bb）
 ⚠ EV 損失 0.03bb（Check 5.36bb vs Bet 2.5（44% pot） 5.39bb）
   → 實際行動: CO X（solver code: X）
 

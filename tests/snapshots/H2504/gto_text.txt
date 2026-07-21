@@ -18,76 +18,76 @@ Hero: BB A9s
     All-in: 100.0%（4.0 combos） EV 1.46bb
 
 ==================================================
-【Flop: Qs3dAh】
+【Flop: Q♠️3♦️A♥️】
 Hero A9s 牌型: 頂對 (A) + 後門花聽牌
-【BB 在 Flop AhQs3d】底池 5.500bb
+【BB 在 Flop A♥️Q♠️3♦️】底池 5.500bb
   Check: 100.0%（809 combos）
 
-【BB Ad9d（A9s）】
+【BB A♦️9♦️（A9s）】
   策略: Check 100%（EV 7.35bb）
   A9s 其他花色:
-    Ac9c: Check 100%（EV 7.0bb）
-    As9s: Check 100%（EV 7.2bb）
+    A♣️9♣️: Check 100%（EV 7.0bb）
+    A♠️9♠️: Check 100%（EV 7.2bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 Flop AhQs3d】底池 6.600bb
+【BB 在 Flop A♥️Q♠️3♦️】底池 6.600bb
   Fold: 56.7%（459 combos）
   Call: 25.2%（203 combos）
   RAISE 3.65（33% pot）: 18.1%（146 combos）
 
-【BB Ad9d（A9s）】
+【BB A♦️9♦️（A9s）】
   策略: Call 21%, RAISE 3.65（33% pot） 79%（EV 6.08bb）
   A9s 其他花色:
-    Ac9c: RAISE 3.65（33% pot） 100%（EV 5.7bb）
-    As9s: Call 19%, RAISE 3.65（33% pot） 81%（EV 5.8bb）
+    A♣️9♣️: RAISE 3.65（33% pot） 100%（EV 5.7bb）
+    A♠️9♠️: Call 19%, RAISE 3.65（33% pot） 81%（EV 5.8bb）
   → 實際行動: BB C 1.0bb（solver code: C）
 
 
 ==================================================
-【Turn: Jd（Board: Qs3dAhJd）】
+【Turn: J♦️（Board: Q♠️3♦️A♥️J♦️）】
 Hero A9s 牌型: 頂對 (A) + 堅果花聽牌
-【BB 在 Turn AhQs3dJd】底池 7.700bb
+【BB 在 Turn A♥️Q♠️3♦️J♦️】底池 7.700bb
   Check: 100.0%（194 combos）
 
-【BB Ad9d（A9s）】
+【BB A♦️9♦️（A9s）】
   策略: Check 100%（EV 6.65bb）
   A9s 其他花色:
-    As9s: Check 100%（EV 4.2bb）
+    A♠️9♠️: Check 100%（EV 4.2bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 Turn AhQs3dJd】底池 10.250bb
+【BB 在 Turn A♥️Q♠️3♦️J♦️】底池 10.250bb
   Fold: 25.1%（49 combos）
   Call: 62.8%（122 combos）
   RAISE 6.75（33% pot）: 11.3%（22 combos）
   All-in 10.900: 0.8%（2 combos）
 
-【BB Ad9d（A9s）】
+【BB A♦️9♦️（A9s）】
   策略: Call 100%（EV 5.70bb）
   A9s 其他花色:
-    As9s: Call 37%, RAISE 6.75（33% pot） 29%, All-in 35%（EV 3.4bb）
+    A♠️9♠️: Call 37%, RAISE 6.75（33% pot） 29%, All-in 35%（EV 3.4bb）
   → 實際行動: BB C 2.0bb（solver code: C）
 
 
 ==================================================
-【River: 3c（Board: Qs3dAhJd3c）】
+【River: 3♣️（Board: Q♠️3♦️A♥️J♦️3♣️）】
 Hero A9s 牌型: 頂對 (A)
-【BB 在 River AhQs3dJd3c】底池 12.800bb
+【BB 在 River A♥️Q♠️3♦️J♦️3♣️】底池 12.800bb
   Check: 100.0%（121 combos）
 
-【BB Ad9d（A9s）】
+【BB A♦️9♦️（A9s）】
   策略: Check 100%（EV 7.45bb）
   A9s 其他花色:
-    As9s: Check 100%（EV 7.9bb）
+    A♠️9♠️: Check 100%（EV 7.9bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 River AhQs3dJd3c】底池 21.150bb
+【BB 在 River A♥️Q♠️3♦️J♦️3♣️】底池 21.150bb
   Fold: 40.9%（50 combos）
   Call: 59.1%（72 combos）
 
-【BB Ad9d（A9s）】
-  策略: Call 100%（EV 4.46bb）
+【BB A♦️9♦️（A9s）】
+  策略: Call 100%（EV 4.45bb）
   A9s 其他花色:
-    As9s: Call 100%（EV 5.0bb）
+    A♠️9♠️: Call 100%（EV 5.0bb）
   → 實際行動: BB C 6.4bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -22,43 +22,43 @@ Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2-F-F-F-F-C
     Limp: 13.2%（0.5 combos） EV 2.02bb
 
 ==================================================
-【Flop: KcJc8d】
+【Flop: K♣️J♣️8♦️】
 Hero AQs 牌型: Ace high + 卡順聽牌
-【LJ 在 Flop KcJc8d】底池 5.500bb
+【LJ 在 Flop K♣️J♣️8♦️】底池 5.500bb
   Check: 9.7%（15 combos）
   BET 1.1（20% pot）: 29.5%（46 combos）
   BET 1.8（33% pot）: 42.9%（67 combos）
   BET 3（55% pot）: 17.1%（27 combos）
   BET 4.55（83% pot）: 0.7%（1 combos）
 
-【LJ AsQs（AQs）】
+【LJ A♠️Q♠️（AQs）】
   策略: Check 10%, Bet 1.1（20% pot） 30%, Bet 1.8（33% pot） 43%, Bet 3（55% pot） 17%（EV 3.09bb）
   AQs 其他花色:
-    AhQh: Check 10%, Bet 1.1（20% pot） 30%, Bet 1.8（33% pot） 43%, Bet 3（55% pot） 17%（EV 3.1bb）
-    AcQc: Bet 1.1（20% pot） 45%, Bet 1.8（33% pot） 50%, Bet 3（55% pot） 5%（EV 5.7bb）
-    AdQd: Check 27%, Bet 1.1（20% pot） 49%, Bet 1.8（33% pot） 19%, Bet 3（55% pot） 4%（EV 3.4bb）
+    A♥️Q♥️: Check 10%, Bet 1.1（20% pot） 30%, Bet 1.8（33% pot） 43%, Bet 3（55% pot） 17%（EV 3.1bb）
+    A♣️Q♣️: Bet 1.1（20% pot） 45%, Bet 1.8（33% pot） 50%, Bet 3（55% pot） 5%（EV 5.7bb）
+    A♦️Q♦️: Check 27%, Bet 1.1（20% pot） 49%, Bet 1.8（33% pot） 19%, Bet 3（55% pot） 4%（EV 3.4bb）
   → 實際行動: LJ R1.9 1.9bb（solver code: R1.8）
 
 
 ==================================================
-【Turn: 6s（Board: KcJc8d6s）】
+【Turn: 6♠️（Board: K♣️J♣️8♦️6♠️）】
 Hero AQs 牌型: Ace high + 卡順聽牌
-【LJ 在 Turn KcJc8d6s】底池 9.100bb
+【LJ 在 Turn K♣️J♣️8♦️6♠️】底池 9.100bb
   Check: 38.3%（25 combos）
   BET 3（33% pot）: 2.1%（1 combos）
   BET 5（55% pot）: 59.2%（39 combos）
   BET 7.55（83% pot）: 0.3%（0 combos）
 
-【LJ AsQs（AQs）】
+【LJ A♠️Q♠️（AQs）】
   策略: Check 93%, Bet 3（33% pot） 4%, Bet 5（55% pot） 3%（EV 2.17bb）
   AQs 其他花色:
-    AcQc: Check 53%, Bet 3（33% pot） 7%, Bet 5（55% pot） 41%（EV 5.1bb）
-    AdQd: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
-    AhQh: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
+    A♣️Q♣️: Check 53%, Bet 3（33% pot） 7%, Bet 5（55% pot） 41%（EV 5.1bb）
+    A♦️Q♦️: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
+    A♥️Q♥️: Check 98%, Bet 3（33% pot） 1%, Bet 5（55% pot） 1%（EV 2.2bb）
 ⚠ EV 損失 0.14bb（Bet 7.55（83% pot） 2.03bb vs Check 2.17bb）
   → 實際行動: LJ R7.1 7.1bb（solver code: R7.55）
 
-【LJ 在 Turn KcJc8d6s】底池 29.850bb
+【LJ 在 Turn K♣️J♣️8♦️6♠️】底池 29.850bb
   Fold: 26.4%（0 combos）
   Call: 73.6%（0 combos）
 

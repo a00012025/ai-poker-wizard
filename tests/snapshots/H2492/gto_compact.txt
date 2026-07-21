@@ -3,17 +3,17 @@
 ─── Preflop ───
 GTO: RAISE 2.1（31% pot） 100%
 
-─── Flop: 2cThJd ───
+─── Flop: 2♣️T♥️J♦️ ───
 🎯 Ace high + 後門花聽牌
 GTO: Check 88% / Bet 1.35（20% pot） 7%
 → Hero check ✅
 
-─── Turn: 4s ───
+─── Turn: 4♠️ ───
 🎯 Ace high
 GTO: Check 98%
 → Hero bet 75% pot ❌ (GTO建議 check)
 
-─── River: 8s ───
+─── River: 8♠️ ───
 🎯 Ace high
 GTO: All-in 100%
 → Hero all-in ✅

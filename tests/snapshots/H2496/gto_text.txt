@@ -19,14 +19,14 @@ Hero: BTN 55
     All-in: 100.0%（6.0 combos） EV 1.39bb
 
 ==================================================
-【Flop: 9d9s4h】
+【Flop: 9♦️9♠️4♥️】
 Hero 55 牌型: 口袋對 (55)
 （無 solver 數據）
   → 實際行動: BTN R2.5 2.5bb（solver code: X）
 
 
 ==================================================
-【Turn: 3h（Board: 9d9s4h3h）】
+【Turn: 3♥️（Board: 9♦️9♠️4♥️3♥️）】
 Hero 55 牌型: 口袋對 (55)
 （無 solver 數據）
   → 實際行動: BTN R19.8 19.8bb（solver code: RAI）

@@ -5,10 +5,10 @@
 ─── Preflop ───
 GTO: All-in 100%
 
-─── Flop: 9d9s4h ───
+─── Flop: 9♦️9♠️4♥️ ───
 🎯 口袋對 (55)
 （無 solver 數據）
 
-─── Turn: 3h ───
+─── Turn: 3♥️ ───
 🎯 口袋對 (55)
 （無 solver 數據）

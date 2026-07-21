@@ -5,17 +5,17 @@
 ─── Preflop ───
 GTO: RAISE 2.3（37% pot） 100%
 
-─── Flop: Kc9d3d ───
+─── Flop: K♣️9♦️3♦️ ───
 🎯 Ace high + 後門花聽牌
 GTO: Bet 3.5（55% pot） 48% / Check 40% / Bet 2.1（33% pot） 10%
 → Hero bet 33% pot ✅ (GTO建議 bet 55% pot)
 
-─── Turn: Js ───
+─── Turn: J♠️ ───
 🎯 Ace high + 卡順聽牌
 GTO: Bet 8.8（83% pot） 59% / Bet 5.85（55% pot） 41%
 → Hero check ✅ (GTO建議 bet 83% pot)
 
-─── River: 5h ───
+─── River: 5♥️ ───
 🎯 Ace high
-GTO: Bet 6（57% pot） 64% / Bet 8.5（80% pot） 35%
+GTO: Bet 6（57% pot） 57% / Bet 8.5（80% pot） 43%
 → Hero bet 50% pot ✅
