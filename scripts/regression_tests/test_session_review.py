@@ -35,7 +35,7 @@ def _sample(empty: bool = False) -> dict:
             {"combo": "Q♣J♣", "position": "HJ", "depth": 30.125,
              "boards": "", "desc": "MP flat 後面對 squeeze（對手 BB，你 IP）",
              "street_lines": [
-                 "PF: LJ Raise, HJ Call, BB Raise",
+                 "翻前: LJ Raise, HJ Call, BB Raise",
              ],
              "action_line": "Call→應Fold", "ev_loss": 0.76,
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
@@ -120,6 +120,27 @@ def test_session_review_postflop_bet_not_raise_with_size():
 
 
 @test
+def test_session_review_compacts_preflop_history():
+    assert_eq(
+        sr._format_street_history("preflop", [
+            {"position": "UTG", "code": "F"},
+            {"position": "LJ", "code": "F"},
+        ], "CO", ""),
+        "翻前: Fold to Hero")
+    assert_eq(
+        sr._format_street_history("preflop", [
+            {"position": "UTG", "code": "F"},
+            {"position": "UTG+1", "code": "F"},
+            {"position": "LJ", "code": "F"},
+            {"position": "HJ", "code": "R2"},
+            {"position": "CO", "code": "C"},
+            {"position": "BTN", "code": "F"},
+            {"position": "SB", "code": "F"},
+        ], "BB", ""),
+        "翻前: HJ Raise, CO Call")
+
+
+@test
 def test_session_review_full_message():
     out = sr.render_tg(_sample())
     html = out["html"]
@@ -138,7 +159,7 @@ def test_session_review_full_message():
     assert_in("HJ 30bb", html)
     assert_in("MP flat 後面對 squeeze", html)
     assert_in("1️⃣ Q♣J♣ HJ 30bb｜MP flat 後面對 squeeze", html)
-    assert_in("PF: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
+    assert_in("翻前: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
     assert_in("Call→應Fold", html)
     assert_in("−<b>0.76bb</b>", html)
     assert_in("T♠9♠", html)
