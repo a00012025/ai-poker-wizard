@@ -377,6 +377,67 @@ def _preflop_allin_effective_bb(hand: dict, hero_position: str, position_order: 
     return best
 
 
+def _postflop_allin_effective_bb(hand: dict, hero_position: str) -> float | None:
+    """Infer effective stack from a POST-flop all-in that hero contests.
+
+    The pre-flop cap (:func:`_preflop_allin_effective_bb`) only inspects the
+    pre-flop line, so a shove that lands on the flop/turn/river never pulls the
+    depth down — the raw ``effective_bb`` (often the ``max_raise * 10`` fallback)
+    reaches the solver unchanged.  That solved H3660 at 80bb although hero was
+    ~35bb and all-in: in the deep tree the villain's 42.8 flop shove is a normal
+    raise, so the solver offered hero a re-jam vs flat-call and the coach read
+    hero's forced call as "you should have gone all-in".
+
+    When hero jams, calls a jam, or faces a jam on a street where hero is a live
+    participant, the hand's effective depth is bounded by hero's own stack
+    (effective ≤ hero_start by definition) and by the shove size.  Returns that
+    bound, or ``None`` when no such all-in is present.  Scoped to all-in spots,
+    so non-all-in hands are untouched.
+    """
+    hero_stack = hand.get("hero_starting_stack") or hand.get("effective_bb")
+    try:
+        hero_stack = float(hero_stack) if hero_stack else None
+    except (TypeError, ValueError):
+        hero_stack = None
+    def _is_aggression(code: str | None) -> bool:
+        # A raise/bet "to" amount is a commitment total (a valid stack proxy);
+        # a Call's size is only the amount called on that street, so it must NOT
+        # bound the effective stack (H3660: hero's 20.9 flop call-for-less is not
+        # a 20.9bb stack).
+        if not code:
+            return False
+        c = code.upper()
+        return c[0] in ("R", "B") or c.startswith("AI") or c.startswith("ALL")
+
+    best: float | None = None
+    for st in hand.get("streets") or []:
+        actions = st.get("actions") or []
+        # A shove only bounds hero's effective stack on a street hero actually
+        # contests — an all-in between others that hero folded to does not.
+        if not any(a.get("position") == hero_position for a in actions):
+            continue
+        if not any(a.get("allin") for a in actions):
+            continue
+        # An all-in street hero contests bounds the effective depth by hero's own
+        # stack; each all-in aggression's total is an additional commitment bound.
+        candidates = [hero_stack] if hero_stack else []
+        for a in actions:
+            if not (a.get("allin") and _is_aggression(a.get("action"))):
+                continue
+            try:
+                size = float(a.get("size")) if a.get("size") is not None else None
+            except (TypeError, ValueError):
+                size = None
+            if size and size > 0:
+                candidates.append(size)
+        candidates = [v for v in candidates if v and v > 0]
+        if not candidates:
+            continue
+        eff = min(candidates)
+        best = eff if best is None else min(best, eff)
+    return best
+
+
 def _build_hero_spot_depths(hand: dict, *, is_icm: bool, is_cash: bool,
                             num_players: int | None = None) -> dict | None:
     """D1 per-hero-decision-node solver depths (chip-EV only).
@@ -1568,6 +1629,12 @@ def _run_analysis(hand: dict) -> dict:
     solver_hero_pos = pos_order[hero_preflop_idx]
 
     allin_effective = _preflop_allin_effective_bb(hand, solver_hero_pos, pos_order)
+    # A shove can also land post-flop (H3660): take the tighter of the pre-flop
+    # and post-flop all-in caps so a flop/turn/river jam is not solved at the
+    # deep raw-effective_bb depth.
+    postflop_allin = _postflop_allin_effective_bb(hand, hero_pos)
+    if postflop_allin and (allin_effective is None or postflop_allin < allin_effective):
+        allin_effective = postflop_allin
     if allin_effective and allin_effective < float(hand["effective_bb"]) - 0.5:
         hand = dict(hand)
         hand["effective_bb"] = allin_effective
