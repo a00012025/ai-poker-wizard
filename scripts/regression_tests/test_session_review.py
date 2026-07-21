@@ -113,8 +113,9 @@ def test_session_review_deliberate_enqueue_only():
     assert_true(not any("略過" in t for t in labels), f"skip button must be gone: {labels}")
     assert_true(any("排入佇列" in t for t in labels), "missing spot enqueue button")
     assert_true(any("復盤" in t for t in labels), "missing decision review button")
-    assert_true(any("練" in t for t in labels), "missing decision drill button")
     assert_true(any("入 queue" in t for t in labels), "missing decision enqueue button")
+    assert_true(not any("🎯 練" in t for t in labels),
+                "decision drill buttons make Telegram reply_markup too large")
     # every review button links to the exact hand_id__in filter, not a day range
     review_btns = [b for b in _all_buttons(out["buttons"]) if "復盤" in b["text"]]
     assert_true(review_btns and all("url" in b for b in review_btns),

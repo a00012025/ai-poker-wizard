@@ -7,7 +7,7 @@ North Star §7 不變量 11（回饋延遲預算：session 復盤「能過夜不
 
   • 共幾手、平均 EV loss（單場、**不作趨勢判斷**）
   • EV loss 加總最多的 spot（→ 現在練 / 排入佇列）
-  • EV loss 最高的 8 個具體決策（→ 復盤 / 練習 / 排入佇列）
+  • EV loss 最高的 8 個具體決策（→ 復盤 / 排入佇列；練習由 spot/queue 處方承接）
 
 不變量：**只讀不改本週焦點 spot**（中圈穩定性 §3）。排入動作走既有 `drill_queue`
 （`kind='drill'`/`'review'`，`added_by='session'`），與週掃描產生同構的 rows。口徑沿用
@@ -265,7 +265,7 @@ def render_tg(d: dict) -> dict:
 
     Pure function of ``compute()``'s output — no DB, no network. Returns
     ``{"html": str, "buttons": rows}`` where rows is list[list[button dict]].
-    Buttons: URL (現在練/復盤/練) + callback (排入). callback_data stays
+    Buttons: URL (現在練/復盤) + callback (排入). callback_data stays
     <64B via `srd|srv:{session_id}:{i}` index keys.
     """
     sid = d["session_id"]
@@ -314,8 +314,10 @@ def render_tg(d: dict) -> dict:
             row = []
             if h.get("exact_url"):
                 row.append({"text": f"{m} 📖 復盤", "url": h["exact_url"]})
-            if h.get("drill_url"):
-                row.append({"text": f"{m} 🎯 練", "url": h["drill_url"]})
+            # Decision-level Trainer deep-links are very long; 8 of them can exceed
+            # Telegram's inline-keyboard payload limit and make the whole review fail.
+            # Keep concrete review links here; practice is still available via the
+            # aggregated top-spot drill buttons and by enqueuing this decision.
             row.append({"text": f"{m} 📥 入 queue", "callback_data": f"srv:{sid}:{i}"})
             buttons.append(row)
 
