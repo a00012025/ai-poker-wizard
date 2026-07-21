@@ -14,7 +14,9 @@ import argparse
 import asyncio
 import gzip
 import json
+import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -111,6 +113,53 @@ async def upsert_decisions(conn, decs: list[dict]):
 
 _LIST_BATCH = 500
 
+# Detail-fetch concurrency. The rate-limit probe (2026-07-21) found GTOW never
+# 429s but soft-throttles via latency above ~10 req/s; detail latency (~0.8s)
+# dominates, so concurrency (not a lower interval) is the lever. Defaults picked
+# at the C=8 knee (~7.5 req/s, ~6x the old serial ~1.3/s) with server headroom
+# for the live bot sharing the token. Env-tunable up to the ~C=12 ceiling.
+_DETAIL_CONCURRENCY = max(1, int(os.getenv("GTOW_DETAIL_CONCURRENCY", "8")))
+_DETAIL_MIN_INTERVAL = max(0.0, float(os.getenv("GTOW_DETAIL_MIN_INTERVAL", "0.08")))
+_DETAIL_BATCH = 200          # fetch+write in batches to bound memory
+
+
+async def _fetch_details_concurrent(hids: list[str], on_progress=None,
+                                    _done_base: int = 0, _total: int | None = None
+                                    ) -> dict:
+    """Fetch hand details for `hids` concurrently under a semaphore + a shared
+    min-interval pacer (threads run the blocking client via asyncio.to_thread).
+    Returns {hid: detail_or_None}. Backoff/soft-status handling stays in the
+    client; None means skip-and-retry-later (upload not ready / forbidden)."""
+    sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+    pace_lock = asyncio.Lock()
+    next_slot = [time.monotonic()]
+    results: dict = {}
+    done = [0]
+    total = _total if _total is not None else len(hids)
+    if hids:
+        # Warm the token + client-id cache once, serially, so the first
+        # concurrent batch doesn't race N threads into simultaneous mints /
+        # first-write of .gtow_client_id. (sweep_list usually warms it first;
+        # this makes a detail-only run safe too.)
+        await asyncio.to_thread(gapi._headers)
+
+    async def _one(hid: str):
+        async with sem:
+            async with pace_lock:            # space out issue times a touch
+                now = time.monotonic()
+                wait = max(0.0, next_slot[0] - now)
+                next_slot[0] = max(now, next_slot[0]) + _DETAIL_MIN_INTERVAL
+            if wait:
+                await asyncio.sleep(wait)
+            results[hid] = await asyncio.to_thread(gapi.hand_detail, hid,
+                                                   throttle=False)
+        done[0] += 1
+        if on_progress and (_done_base + done[0]) % 20 == 0:
+            on_progress(_done_base + done[0], total)
+
+    await asyncio.gather(*(_one(h) for h in hids))
+    return results
+
 
 async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     # Preload known ids once (one query) instead of a SELECT per hand — the
@@ -146,8 +195,12 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
         "WHERE detail_status=$1 AND source='online' ORDER BY played_at", status)
     fetched = ndec = skipped_nodata = skipped_zeroloss = reconstruct_fallback = 0
+    # Pass 1 (serial, fast): handle list-only zero-loss hands inline and collect
+    # the ones that actually need a network detail fetch. `limit` caps fetch
+    # attempts this run (dev/smoke); list-only hands never count against it.
+    needs_detail: list[tuple[str, Path, dict]] = []
     for r in rows:
-        if limit and fetched >= limit:
+        if limit and len(needs_detail) >= limit:
             break
         hid = r["gtow_hand_id"]
         played = r["played_at"].isoformat()
@@ -174,27 +227,44 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                 if skipped_zeroloss % 500 == 0:
                     print(f"  list-only sweep: {skipped_zeroloss}/{len(rows)}", flush=True)
                 continue
-        det = gapi.hand_detail(hid)
-        if det is None:
-            # no retrievable analysis yet (upload still processing / forbidden /
-            # no solution) — leave detail_fetched=false so a later run retries.
-            skipped_nodata += 1
-            continue
-        with gzip.open(dp, "wt") as f:
-            json.dump(det, f)
-        hand_row, decs = distill_hand(list_row, det)
-        async with conn.transaction():
-            await upsert_hand(conn, hand_row)
-            await conn.execute(
-                "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
-            await upsert_decisions(conn, decs)
-            await conn.execute(
-                "UPDATE ledger_hands SET detail_fetched=true, detail_status='fetched', raw_path=$2 "
-                "WHERE gtow_hand_id=$1", hid, str(dp.relative_to(ROOT)))
-        fetched += 1
-        ndec += len(decs)
-        if fetched % 100 == 0:
-            print(f"  detail sweep: {fetched}/{len(rows)}", flush=True)
+        needs_detail.append((hid, dp, list_row))
+
+    # Pass 2 (concurrent fetch) + pass 3 (serial DB write), batched to bound
+    # memory. The "detail sweep: done/total" print format is unchanged so the
+    # live progress bar's parser keeps working; total is the fetch-needing count.
+    total_detail = len(needs_detail)
+
+    def _emit(done, tot):
+        print(f"  detail sweep: {done}/{tot}", flush=True)
+
+    for start in range(0, total_detail, _DETAIL_BATCH):
+        chunk = needs_detail[start:start + _DETAIL_BATCH]
+        dets = await _fetch_details_concurrent(
+            [hid for hid, _, _ in chunk], on_progress=_emit,
+            _done_base=start, _total=total_detail)
+        for hid, dp, list_row in chunk:
+            det = dets.get(hid)
+            if det is None:
+                # no retrievable analysis yet (upload still processing /
+                # forbidden / no solution) — leave detail_fetched=false so a
+                # later run retries.
+                skipped_nodata += 1
+                continue
+            with gzip.open(dp, "wt") as f:
+                json.dump(det, f)
+            hand_row, decs = distill_hand(list_row, det)
+            async with conn.transaction():
+                await upsert_hand(conn, hand_row)
+                await conn.execute(
+                    "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
+                await upsert_decisions(conn, decs)
+                await conn.execute(
+                    "UPDATE ledger_hands SET detail_fetched=true, detail_status='fetched', raw_path=$2 "
+                    "WHERE gtow_hand_id=$1", hid, str(dp.relative_to(ROOT)))
+            fetched += 1
+            ndec += len(decs)
+    if total_detail:
+        print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
     if skipped_nodata:
         print(f"  detail sweep: skipped {skipped_nodata} hands with no retrievable "
               f"analysis yet (will retry next run)", flush=True)
