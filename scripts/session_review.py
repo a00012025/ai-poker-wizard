@@ -215,15 +215,17 @@ def _mark_hu_pot(desc: str) -> str:
     return desc.replace(" 底池", " 底池（HU）", 1) if " 底池" in desc else desc
 
 
-def _active_player_count_at_gp(gp: dict) -> int | None:
+def _active_positions_at_gp(gp: dict) -> set[str]:
     players = ((gp.get("real_game") or {}).get("players") or [])
-    if not players:
-        return None
-    return sum(1 for p in players if not p.get("is_folded"))
+    return {str(p.get("position") or "").upper() for p in players
+            if not p.get("is_folded") and p.get("position")}
 
 
 def _gp_is_real_hu(gp: dict, street: str) -> bool:
-    return street != "preflop" and _active_player_count_at_gp(gp) == 2
+    # User-facing HU means the actual remaining seats are SB and BB.
+    # A CO-vs-SB / BTN-vs-BB postflop pot is still a non-HU table spot even
+    # when all other players have folded.
+    return street != "preflop" and _active_positions_at_gp(gp) == {"SB", "BB"}
 
 
 def _is_real_hu_decision(detail: dict | None, *, hero_pos: str, target_street: str,
