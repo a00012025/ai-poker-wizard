@@ -103,7 +103,7 @@ LIMIT {TOP_DECISIONS}
 _HAND_META_SQL = ("SELECT hero_hand, boards, raw_path, position, preflop_depth_bb "
                   "FROM ledger_hands WHERE gtow_hand_id = $1")
 
-STREET_LABELS = {"preflop": "PF", "flop": "Flop", "turn": "Turn", "river": "River"}
+STREET_LABELS = {"preflop": "翻前", "flop": "Flop", "turn": "Turn", "river": "River"}
 
 
 # ── resolve + compute ──────────────────────────────────────────────────────────
@@ -254,8 +254,23 @@ def _action_obj_zh(action: dict | None, street: str) -> str:
 
 def _format_history_action(action: dict, hero_pos: str, street: str) -> str:
     pos = action.get("position") or "?"
-    who = "Hero" if pos == hero_pos else pos
+    who = pos if street == "preflop" else ("Hero" if pos == hero_pos else pos)
     return f"{who} {_action_obj_zh(action, street)}"
+
+
+def _format_street_history(street: str, acts: list[dict], hero_pos: str, boards: str) -> str | None:
+    if street == "preflop":
+        meaningful = [a for a in acts if _norm_code(a.get("code")) != "F"]
+        body = (", ".join(_format_history_action(a, hero_pos, street) for a in meaningful)
+                if meaningful else "Fold to Hero")
+        return f"{STREET_LABELS[street]}: {body}"
+
+    if not acts:
+        return None
+    board = _street_board(boards, street)
+    label = STREET_LABELS[street] + (f" {board}" if board else "")
+    return f"{label}: " + ", ".join(
+        _format_history_action(a, hero_pos, street) for a in acts)
 
 
 def _street_board(boards: str, street: str) -> str:
@@ -332,10 +347,9 @@ def decision_action_context(row: dict) -> dict:
                         continue
                     if s == street and not acts:
                         break
-                    board = _street_board(boards, s)
-                    label = STREET_LABELS[s] + (f" {board}" if board else "")
-                    parts.append(f"{label}: " + ", ".join(
-                        _format_history_action(a, hero_pos, s) for a in acts))
+                    line = _format_street_history(s, acts, hero_pos, boards)
+                    if line:
+                        parts.append(line)
                     if s == street:
                         break
                 selected_action = (sel or {}).get("action") or sga
