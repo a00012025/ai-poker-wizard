@@ -100,20 +100,27 @@ def _throttle(_sleep=time.sleep):
 
 
 def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
-             soft_statuses=(), **kw):
+             soft_statuses=(), throttle: bool = True, **kw):
     """Central request with throttle/backoff/401-retry. request_fn injectable for tests.
 
     soft_statuses: HTTP codes that mean "no data / not ready for this resource"
     rather than a fatal error — return None so the caller can skip and retry
     later (e.g. a single hand whose GTOW upload is still processing -> 404,
     204 no-solution, 403 forbidden config). Everything else >= 400 raises.
+
+    throttle=False skips the global serial pacer so a concurrent caller can
+    manage its own rate limiter (the global _throttle would otherwise serialize
+    threads). Backoff on 429/5xx still applies. Concurrent callers MUST cap their
+    own issue rate — the probe found GTOW soft-throttles via latency (not 429)
+    above ~10 req/s, so keep aggregate rate modest.
     """
     fn = request_fn or requests.request
     reminted = False
     remint_next = False
     for attempt in range(_MAX_RETRIES + 1):
         if request_fn is None:
-            _throttle(_sleep)
+            if throttle:
+                _throttle(_sleep)
             kw["headers"] = _headers(force_remint=remint_next)
             remint_next = False      # consume the remint exactly once
             kw["timeout"] = _TIMEOUT
@@ -162,9 +169,12 @@ def iter_all_hands(since_iso: str, until_iso: str | None = None,
             return
 
 
-def hand_detail(gtow_hand_id: str, request_fn=None) -> dict | None:
+def hand_detail(gtow_hand_id: str, request_fn=None, throttle: bool = True) -> dict | None:
     """Return the hand detail dict, or None if the hand has no retrievable
     analysis yet (204 no-solution / 403 forbidden / 404 upload still
-    processing). Callers should skip None hands and let a later run retry."""
+    processing). Callers should skip None hands and let a later run retry.
+
+    throttle=False lets a concurrent sweep manage its own pacing (see _request)."""
     return _request("GET", f"{API_BASE}/v4/hand-history/hands/{gtow_hand_id}/",
-                    request_fn=request_fn, soft_statuses=(204, 403, 404))
+                    request_fn=request_fn, soft_statuses=(204, 403, 404),
+                    throttle=throttle)

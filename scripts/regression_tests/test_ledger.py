@@ -299,6 +299,79 @@ def test_ingest_detail_status_contract_and_backfill_mode_are_wired():
 
 
 @test
+def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
+    """Concurrent detail fetch: returns {hid: detail|None}, actually overlaps
+    fetches (peak in-flight > 1, capped at the concurrency), and calls the
+    client with throttle=False so the global serial pacer doesn't re-serialize
+    the threads."""
+    import asyncio
+    import threading
+    import time as _time
+    import ledger_ingest
+    import gtow_analyze_api as gapi
+
+    inflight = [0]
+    peak = [0]
+    lock = threading.Lock()
+    seen_throttle = []
+
+    def fake_detail(hid, throttle=True):
+        seen_throttle.append(throttle)
+        with lock:
+            inflight[0] += 1
+            peak[0] = max(peak[0], inflight[0])
+        _time.sleep(0.03)
+        with lock:
+            inflight[0] -= 1
+        return None if hid == "nodata" else {"id": hid}
+
+    orig = gapi.hand_detail
+    oc, oi = ledger_ingest._DETAIL_CONCURRENCY, ledger_ingest._DETAIL_MIN_INTERVAL
+    gapi.hand_detail = fake_detail
+    ledger_ingest._DETAIL_CONCURRENCY = 4
+    ledger_ingest._DETAIL_MIN_INTERVAL = 0.0
+    try:
+        hids = [f"h{i}" for i in range(12)] + ["nodata"]
+        res = asyncio.run(ledger_ingest._fetch_details_concurrent(hids))
+    finally:
+        gapi.hand_detail = orig
+        ledger_ingest._DETAIL_CONCURRENCY = oc
+        ledger_ingest._DETAIL_MIN_INTERVAL = oi
+
+    assert_eq(len(res), 13, "every hand mapped")
+    assert_eq(res["nodata"], None, "soft-skip surfaces as None")
+    assert_eq(res["h0"], {"id": "h0"}, "detail mapped by hid")
+    assert_true(peak[0] > 1, f"fetches overlapped (peak={peak[0]})")
+    assert_true(peak[0] <= 4, f"capped at concurrency (peak={peak[0]})")
+    assert_true(all(t is False for t in seen_throttle),
+                "concurrent fetch bypasses the global throttle")
+
+
+@test
+def test_hand_detail_forwards_throttle_flag():
+    """hand_detail defaults to throttle=True but forwards throttle=False so the
+    concurrent sweep can opt out of the serial pacer."""
+    import gtow_analyze_api as gapi
+
+    captured = {}
+
+    def fake_request(method, url, request_fn=None, soft_statuses=(),
+                     throttle=True, **kw):
+        captured["throttle"] = throttle
+        return {"ok": True}
+
+    orig = gapi._request
+    gapi._request = fake_request
+    try:
+        gapi.hand_detail("x", throttle=False)
+        assert_eq(captured["throttle"], False, "explicit bypass forwarded")
+        gapi.hand_detail("x")
+        assert_eq(captured["throttle"], True, "defaults to throttled")
+    finally:
+        gapi._request = orig
+
+
+@test
 def test_distill_honesty_rules():
     """Synthetic mutations of the fixture exercise every honesty rule (pure fn)."""
     import copy
