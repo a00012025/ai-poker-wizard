@@ -283,17 +283,16 @@ def test_session_review_empty_session():
     assert_eq(len(_all_buttons(out["buttons"])), 0)
 
 @test
-def test_session_review_marks_hu_only_when_real_pot_has_two_unfolded_players():
-    """HU is a real-hand property, not a taxonomy/solver-collapse label.
+def test_session_review_marks_hu_only_for_real_sb_bb_heads_up_pots():
+    """HU means an actual SB-vs-BB heads-up spot, not merely two players left.
 
-    A postflop spot is marked HU only when the archived game point says exactly
-    two players remain un-folded at the hero decision. Three-way pots keep the
-    neutral SRP/3bet/iso label.
+    CO/SB or BTN/BB postflop pots can have exactly two un-folded players, but
+    they are still non-HU table spots and must keep the neutral label.
     """
-    def gp(active_positions):
+    def gp(active_positions, hero_pos="SB"):
         return {
-            "real_game_action": {"position": "CO", "code": "C"},
-            "solved_game_action": {"position": "CO", "code": "C"},
+            "real_game_action": {"position": hero_pos, "code": "C"},
+            "solved_game_action": {"position": hero_pos, "code": "C"},
             "analysis_solved": {"available_actions": [
                 {"selected": True, "action": {"code": "C"}},
                 {"correctness": "BEST_MOVE", "action": {"code": "F"}, "ev": 0},
@@ -307,18 +306,25 @@ def test_session_review_marks_hu_only_when_real_pot_has_two_unfolded_players():
             },
         }
 
-    two_way = {"game_analysis": {"game_points": [gp({"CO", "SB"})]}}
-    three_way = {"game_analysis": {"game_points": [gp({"CO", "BTN", "SB"})]}}
+    sb_bb = {"game_analysis": {"game_points": [gp({"SB", "BB"}, "SB")]}}
+    co_sb = {"game_analysis": {"game_points": [gp({"CO", "SB"}, "CO")]}}
+    btn_bb = {"game_analysis": {"game_points": [gp({"BTN", "BB"}, "BTN")]}}
+    three_way = {"game_analysis": {"game_points": [gp({"CO", "BTN", "SB"}, "CO")]}}
 
     assert_true(sr._is_real_hu_decision(
-        two_way, hero_pos="CO", target_street="flop", target_idx=0))
+        sb_bb, hero_pos="SB", target_street="flop", target_idx=0))
+    assert_true(not sr._is_real_hu_decision(
+        co_sb, hero_pos="CO", target_street="flop", target_idx=0))
+    assert_true(not sr._is_real_hu_decision(
+        btn_bb, hero_pos="BTN", target_street="flop", target_idx=0))
     assert_true(not sr._is_real_hu_decision(
         three_way, hero_pos="CO", target_street="flop", target_idx=0))
     assert_eq(sr.hand_desc({
-        "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
-        "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
-    }, is_real_hu=True), "SRP 底池（HU），Hero CO 對 SB、處於 IP，翻牌面對加注")
+        "spot_category": "flop", "spot_leaf": "flop:SRP:SBvBB:IP:vs_raise",
+        "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "IP", "hero_pos": "SB",
+    }, is_real_hu=True), "SRP 底池（HU），Hero SB 對 BB、處於 IP，翻牌面對加注")
     assert_eq(sr.hand_desc({
         "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
         "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
     }, is_real_hu=False), "SRP 底池，Hero CO 對 SB、處於 IP，翻牌面對加注")
+
