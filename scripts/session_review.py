@@ -123,8 +123,11 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
         entries = qf._as_list(row["source_hands"])
         bias = qf.dominant_action_bias(entries)
         url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
+        desc = drill_desc(row, bias)
+        if await _entries_are_all_real_hu(conn, entries):
+            desc = _mark_hu_pot(desc)
         out.append({
-            "desc": drill_desc(row, bias),
+            "desc": desc,
             "total_ev": round(float(row["total_ev"]), 2),
             "n": row["n"],
             "drill_url": url,
@@ -132,7 +135,7 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
             "enqueue_item": {
                 "kind": "drill", "added_by": "session", "source": "online",
                 "spot_leaf": row["spot_leaf"], "spot_category": row["spot_category"],
-                "label": drill_desc(row, bias), "drill_url": url,
+                "label": desc, "drill_url": url,
                 "action_bias": bias, "bias_key": row["spot_leaf"],
                 "source_hands": entries,
                 "total_ev_loss_bb": round(float(row["total_ev"]), 4),
@@ -158,6 +161,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
         exact_url = hand_urls[0][0] if hand_urls else None
         drill_url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
         action_ctx = decision_action_context(row)
+        is_real_hu = bool(action_ctx.get("is_real_hu"))
         row["max_ev"] = row.get("ev_loss_bb")
         row["worst_street"] = row.get("street")
         row["worst_idx"] = row.get("decision_idx")
@@ -166,7 +170,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
             "position": row.get("hero_pos"),
             "depth": _decision_display_depth(row),
             "boards": row.get("boards") or "",
-            "desc": hand_desc(row),
+            "desc": hand_desc(row, is_real_hu=is_real_hu),
             "street_line": action_ctx.get("street_line") or "",
             "street_lines": action_ctx.get("street_lines") or [],
             "action_line": (action_ctx.get("action_line")
@@ -197,12 +201,68 @@ def drill_desc(row: dict, bias: dict | None) -> str:
     return base + bias_suffix(bias)
 
 
-def hand_desc(row: dict) -> str:
-    return spot_desc_zh({
+def hand_desc(row: dict, *, is_real_hu: bool = False) -> str:
+    desc = spot_desc_zh({
         "spot_category": row.get("spot_category"), "spot_leaf": row.get("spot_leaf"),
         "hero_cat": row.get("hero_cat"), "villain_cat": row.get("villain_cat"),
         "ip_oop": row.get("ip_oop"), "hero_pos": row.get("hero_pos"),
         "street": row.get("spot_category")})
+    return _mark_hu_pot(desc) if is_real_hu else desc
+
+
+def _mark_hu_pot(desc: str) -> str:
+    """Mark an actually heads-up postflop pot in a user-facing spot label."""
+    return desc.replace(" 底池", " 底池（HU）", 1) if " 底池" in desc else desc
+
+
+def _active_player_count_at_gp(gp: dict) -> int | None:
+    players = ((gp.get("real_game") or {}).get("players") or [])
+    if not players:
+        return None
+    return sum(1 for p in players if not p.get("is_folded"))
+
+
+def _gp_is_real_hu(gp: dict, street: str) -> bool:
+    return street != "preflop" and _active_player_count_at_gp(gp) == 2
+
+
+def _is_real_hu_decision(detail: dict | None, *, hero_pos: str, target_street: str,
+                         target_idx: int) -> bool:
+    if not detail or target_street == "preflop":
+        return False
+    gps = ((detail.get("game_analysis") or {}).get("game_points") or [])
+    hero_count: dict[str, int] = {s: 0 for s in ("preflop", "flop", "turn", "river")}
+    for gp in gps:
+        street = _street_of_gp(gp)
+        rga = gp.get("real_game_action") or {}
+        avail = (gp.get("analysis_solved") or {}).get("available_actions") or []
+        is_hero = rga.get("position", "") == hero_pos and any(a.get("selected") for a in avail)
+        if not is_hero:
+            continue
+        idx = hero_count[street]
+        if street == target_street and idx == target_idx:
+            return _gp_is_real_hu(gp, street)
+        hero_count[street] = idx + 1
+    return False
+
+
+async def _entries_are_all_real_hu(conn, entries: list[dict]) -> bool:
+    """True only when every source decision is provably a real two-player postflop pot."""
+    if not entries:
+        return False
+    for e in entries:
+        street = e.get("street") or ""
+        if street == "preflop":
+            return False
+        row = await conn.fetchrow(_HAND_META_SQL, e.get("hand_id"))
+        if not row:
+            return False
+        detail = _load_detail(row.get("raw_path"))
+        if not _is_real_hu_decision(
+            detail, hero_pos=row.get("position") or "", target_street=street,
+            target_idx=int(e.get("decision_idx") or 0)):
+            return False
+    return True
 
 
 _ACTION_ZH = {
@@ -379,6 +439,7 @@ def decision_action_context(row: dict) -> dict:
                     "street_line": " / ".join(parts),
                     "action_line": f"{_action_obj_zh(selected_action, street)}"
                                    f"→應{_action_obj_zh(best_action, street)}",
+                    "is_real_hu": _gp_is_real_hu(gp, street),
                 }
             hero_count[street] = idx + 1
 

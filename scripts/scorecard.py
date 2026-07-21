@@ -46,16 +46,6 @@ FACING_ZH = {"first_to_act": "首動", "vs_bet": "面對下注", "vs_check": "�
              "vs_raise": "面對加注"}
 
 
-def _pot_label(pot: str) -> str:
-    """Human label for postflop pot types.
-
-    The current postflop taxonomy is heads-up by construction (Hero vs the
-    surviving villain in the solved tree).  Make that explicit in user-facing
-    labels so SRP/3bet/iso spots are not mistaken for multiway pools.
-    """
-    return f"{pot} 底池（HU）"
-
-
 # ── human-readable spot description (pure) ─────────────────────────────────
 def spot_desc_zh(row: dict) -> str:
     cat = row["spot_category"]
@@ -63,7 +53,7 @@ def spot_desc_zh(row: dict) -> str:
         key = row.get("diagnosis_key") or "?"
         parts = key.split(":")
         if cat in ("flop", "turn", "river") and len(parts) >= 4:
-            desc = (f"{_pot_label(parts[1])}，你在 {parts[2]}，"
+            desc = (f"{parts[1]} 底池，你在 {parts[2]}，"
                     f"{CAT_ZH[cat]}{FACING_ZH.get(parts[3], parts[3])}")
             hero = row.get("hero_pos") or row.get("hero_cat")
             villain = row.get("villain_cat")
@@ -96,7 +86,7 @@ def spot_desc_zh(row: dict) -> str:
         hero = row.get("hero_pos") or hc or "?"
         matchup = (f"Hero {hero} 對 {vc}、處於 {rel or '?'}"
                    if vc else f"Hero {hero}、處於 {rel or '?'}")
-        return f"{_pot_label(pot)}，{matchup}，{CAT_ZH[cat]}{facing}"
+        return f"{pot} 底池，{matchup}，{CAT_ZH[cat]}{facing}"
     if cat == "RFI":
         return f"{row.get('hero_pos') or hc} 開池"
     if cat == "vsOpen":

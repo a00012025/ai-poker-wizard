@@ -281,3 +281,44 @@ def test_session_review_empty_session():
     assert_in("沒有值得復盤的漏損", out["html"])
     # nothing to enqueue, no skip button → no buttons at all
     assert_eq(len(_all_buttons(out["buttons"])), 0)
+
+@test
+def test_session_review_marks_hu_only_when_real_pot_has_two_unfolded_players():
+    """HU is a real-hand property, not a taxonomy/solver-collapse label.
+
+    A postflop spot is marked HU only when the archived game point says exactly
+    two players remain un-folded at the hero decision. Three-way pots keep the
+    neutral SRP/3bet/iso label.
+    """
+    def gp(active_positions):
+        return {
+            "real_game_action": {"position": "CO", "code": "C"},
+            "solved_game_action": {"position": "CO", "code": "C"},
+            "analysis_solved": {"available_actions": [
+                {"selected": True, "action": {"code": "C"}},
+                {"correctness": "BEST_MOVE", "action": {"code": "F"}, "ev": 0},
+            ]},
+            "real_game": {
+                "current_street": {"type": "FLOP"},
+                "players": [
+                    {"position": p, "is_folded": p not in active_positions}
+                    for p in ["CO", "BTN", "SB", "BB"]
+                ],
+            },
+        }
+
+    two_way = {"game_analysis": {"game_points": [gp({"CO", "SB"})]}}
+    three_way = {"game_analysis": {"game_points": [gp({"CO", "BTN", "SB"})]}}
+
+    assert_true(sr._is_real_hu_decision(
+        two_way, hero_pos="CO", target_street="flop", target_idx=0))
+    assert_true(not sr._is_real_hu_decision(
+        three_way, hero_pos="CO", target_street="flop", target_idx=0))
+    assert_eq(sr.hand_desc({
+        "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
+        "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
+    }, is_real_hu=True), "SRP 底池（HU），Hero CO 對 SB、處於 IP，翻牌面對加注")
+    assert_eq(sr.hand_desc({
+        "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
+        "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
+    }, is_real_hu=False), "SRP 底池，Hero CO 對 SB、處於 IP，翻牌面對加注")
