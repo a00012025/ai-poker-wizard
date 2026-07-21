@@ -793,6 +793,67 @@ def test_postflop_exact_combo_evs_keep_rare_nonzero_range():
 
 
 @test
+def test_postflop_allin_caps_effective_bb_by_hero_stack():
+    """H3660: a flop shove hero contests bounds the effective stack.
+
+    The pre-flop all-in cap ignores post-flop streets, so the raw effective_bb
+    (here the max_raise*10 = 70 fallback) survived and solved hero's ~35bb spot
+    at 80bb.  The post-flop cap bounds it by hero's stack (35.8) and the shove
+    size — but only on a street hero actually contests."""
+    from analyze_hand import _postflop_allin_effective_bb
+    hand = {
+        "hero_position": "SB", "hero_starting_stack": 35.8, "effective_bb": 70.0,
+        "streets": [{"board": "Td5c7c", "actions": [
+            {"position": "SB", "action": "R7.9", "size": 7.9},
+            {"position": "HJ", "action": "R42.8", "size": 42.8, "allin": True},
+            {"position": "SB", "action": "C", "size": 20.9}]}],
+    }
+    # min(hero_stack 35.8, shove 42.8) = 35.8 — even though hero's own call lost
+    # its all-in flag, the villain's flagged shove still bounds the depth.
+    assert_eq(_postflop_allin_effective_bb(hand, "SB"), 35.8)
+    # No post-flop all-in → no cap (non-all-in hands untouched).
+    calm = {**hand, "streets": [{"board": "Td5c7c", "actions": [
+        {"position": "SB", "action": "R7.9", "size": 7.9},
+        {"position": "HJ", "action": "C", "size": 7.9}]}]}
+    assert_true(_postflop_allin_effective_bb(calm, "SB") is None,
+                "a hand with no post-flop shove must not be capped")
+    # A shove between others on a street hero folded out of must not bind hero.
+    not_heros = {**hand, "streets": [{"board": "Td5c7c", "actions": [
+        {"position": "HJ", "action": "R42.8", "size": 42.8, "allin": True},
+        {"position": "CO", "action": "C", "size": 42.8, "allin": True}]}]}
+    assert_true(_postflop_allin_effective_bb(not_heros, "SB") is None,
+                "an all-in hero didn't contest must not bound hero's depth")
+
+
+@test
+def test_analyze_flop_allin_solved_at_hero_stack_not_deep_fallback():
+    """H3660 end-to-end: a flop shove hero calls solves at hero's ~35bb, not the
+    80bb tree the max_raise*10 effective_bb fallback leaves in place.
+
+    In the 80bb tree the villain's 42.8 flop shove looks like a normal raise, so
+    the solver offered hero a re-jam (87%) vs flat-call (12%) and the coach read
+    hero's forced call as '最關鍵的錯誤是跟注而非 all-in'.  At hero's real depth
+    facing the all-in is a pure Call/Fold — no phantom shove option to regret."""
+    from analyze_hand import analyze_hand_full
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral", "hero_hand": "JhJc",
+        "effective_bb": 70.0, "hero_position": "SB", "players_at_table": 7,
+        "hero_starting_stack": 35.8,
+        "player_stacks": [13.9, 94.5, 42.1, 44.6, 73.6, 78.7, 102.8],
+        "preflop_actions": "F-F-R2-F-F-R7-F-C",
+        "streets": [{"board": "Td5c7c", "actions": [
+            {"position": "SB", "action": "R7.9", "size": 7.9},
+            {"position": "HJ", "action": "R42.8", "size": 42.8, "allin": True},
+            {"position": "SB", "action": "C", "size": 20.9, "allin": True}]}],
+    })
+    assert_eq(result["depth"], 35.125,
+              f"flop shove must solve at hero's stack depth, got {result['depth']}")
+    for s in (s for s in result["hero_spots"] if s["street"] == "flop"):
+        assert_eq(float(s["params"]["depth"]), 35.125,
+                  "every flop node must query the shove-depth tree")
+
+
+@test
 def test_analyze_open_node_keeps_deep_depth_under_allin_override():
     """D1d: an all-in that reopens to hero no longer drags the OPEN node to jam
     depth. Hero UTG opens (39bb stack), an early seat jams 19.9bb: the open spot
