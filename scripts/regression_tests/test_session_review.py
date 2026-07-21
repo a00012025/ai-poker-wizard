@@ -5,7 +5,7 @@ invariants that live in the message shape: EV-weighted single-session facts,
 no trend verdict / no percentile, deliberate per-item enqueue (no 全部排入),
 and Telegram-safe callback_data.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from regression_tests.harness import assert_eq, assert_in, assert_not_in, assert_true, test
@@ -62,9 +62,54 @@ def _all_buttons(rows):
 
 
 @test
+def test_session_review_uses_ledger_wall_clock_no_tz_shift():
+    d = _sample()
+    d["started_at"] = datetime(2026, 7, 20, 19, 0, tzinfo=timezone.utc)
+    d["ended_at"] = datetime(2026, 7, 20, 21, 4, tzinfo=timezone.utc)
+    html = sr.render_tg(d)["html"]
+    assert_in("7/20 19:00–21:04", html)
+    assert_not_in("7/21 03:00", html)
+
+
+@test
 def test_session_review_action_line_shows_recommended_action():
     assert_eq(sr.action_line("C", "F"), "Call→應Fold")
     assert_eq(sr.action_line("R2.5", "C"), "Raise→應Call")
+
+
+@test
+def test_session_review_postflop_bet_not_raise_with_size():
+    detail = {
+        "game_analysis": {"game_points": [
+            {"real_game": {"current_street": {"type": "FLOP"}},
+             "real_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "solved_game_action": {"position": "BB", "code": "X", "display_name": "CHECK"},
+             "analysis_solved": {"available_actions": []}},
+            {"real_game": {"current_street": {"type": "FLOP"}},
+             "real_game_action": {"position": "HJ", "code": "R1.8", "display_name": "BET",
+                                  "betsize_by_pot": "0.333"},
+             "solved_game_action": {"position": "HJ", "code": "R1.8", "display_name": "BET",
+                                    "betsize_by_pot": "0.333"},
+             "analysis_solved": {"available_actions": [
+                 {"selected": True, "action": {"position": "HJ", "code": "R1.8",
+                                               "display_name": "BET", "betsize_by_pot": "0.333"},
+                  "correctness": "WRONG_MOVE", "ev": "1"},
+                 {"selected": False, "action": {"position": "HJ", "code": "X",
+                                                "display_name": "CHECK"},
+                  "correctness": "BEST_MOVE", "ev": "2"},
+             ]}},
+        ]}
+    }
+    old_loader = sr._load_detail
+    try:
+        sr._load_detail = lambda _p: detail
+        ctx = sr.decision_action_context({
+            "raw_path": "unused", "street": "flop", "decision_idx": 0,
+            "hero_pos": "HJ", "boards": "Qs9s8c"})
+    finally:
+        sr._load_detail = old_loader
+    assert_in("Flop Qs9s8c: BB Check", ctx["street_line"])
+    assert_eq(ctx["action_line"], "Bet 33%→應Check")
 
 
 @test
@@ -78,6 +123,7 @@ def test_session_review_full_message():
     assert_in("1.9 bb/100", html)   # per100
     assert_in("14.2 bb", html)      # total loss
     # top spot + concrete decision rows surfaced
+    assert_in("EV Loss 最多的情境", html)
     assert_in("turn OOP 面對下注", html)
     assert_in("6.1 bb", html)
     assert_in("最值得回看的 8 個決策", html)
@@ -98,7 +144,7 @@ def test_session_review_no_trend_no_percentile():
     """North Star §2.1/§7-490: single session is descriptive, never a verdict,
     never a percentile baseline."""
     html = sr.render_tg(_sample())["html"]
-    assert_in("不是進步/退步結論", html)   # the variance guard line is present
+    assert_not_in("進步/退步", html)
     assert_not_in("百分位", html)          # no percentile machinery
     assert_not_in("比上週", html)          # no weekly trend comparison
 
@@ -145,6 +191,5 @@ def test_session_review_auto_send_skips_clean_session():
 def test_session_review_empty_session():
     out = sr.render_tg(_sample(empty=True))
     assert_in("沒有值得復盤的漏損", out["html"])
-    assert_in("不是進步/退步結論", out["html"])
     # nothing to enqueue, no skip button → no buttons at all
     assert_eq(len(_all_buttons(out["buttons"])), 0)
