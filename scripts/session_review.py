@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
 import json
 import os
 import sys
@@ -102,6 +103,8 @@ LIMIT {TOP_DECISIONS}
 _HAND_META_SQL = ("SELECT hero_hand, boards, raw_path, position, preflop_depth_bb "
                   "FROM ledger_hands WHERE gtow_hand_id = $1")
 
+STREET_LABELS = {"preflop": "PF", "flop": "Flop", "turn": "Turn", "river": "River"}
+
 
 # ── resolve + compute ──────────────────────────────────────────────────────────
 async def resolve_session(conn, session_id: int | None = None) -> dict | None:
@@ -152,6 +155,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
         hand_urls = qf.gtow_analyze_hands_urls([row["ref_hand_id"]])
         exact_url = hand_urls[0][0] if hand_urls else None
         drill_url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
+        action_ctx = decision_action_context(row)
         row["max_ev"] = row.get("ev_loss_bb")
         row["worst_street"] = row.get("street")
         row["worst_idx"] = row.get("decision_idx")
@@ -161,7 +165,9 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
             "depth": float(row["preflop_depth_bb"]) if row.get("preflop_depth_bb") is not None else None,
             "boards": row.get("boards") or "",
             "desc": hand_desc(row),
-            "action_line": action_line(row.get("taken_code"), row.get("best_code")),
+            "street_line": action_ctx.get("street_line") or "",
+            "action_line": (action_ctx.get("action_line")
+                            or action_line(row.get("taken_code"), row.get("best_code"))),
             "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
             "exact_url": exact_url,
             "drill_url": drill_url,
@@ -201,11 +207,149 @@ _ACTION_ZH = {
 }
 
 
+def _street_of_gp(gp: dict) -> str:
+    t = ((gp.get("real_game") or {}).get("current_street") or {}).get("type", "")
+    t = (t or "").lower()
+    return t if t in {"preflop", "flop", "turn", "river"} else "preflop"
+
+
+def _norm_code(code: str | None) -> str:
+    if not code:
+        return ""
+    c = str(code).upper()
+    if c == "RAI":
+        return "AI"
+    if c.startswith("B"):
+        return "R" + c[1:] if len(c) > 1 else "R"
+    return c
+
+
+def _pct(action: dict | None) -> str:
+    if not action:
+        return ""
+    raw = action.get("betsize_by_pot")
+    if raw in (None, ""):
+        return ""
+    try:
+        return f" {round(float(raw) * 100):.0f}%"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _action_obj_zh(action: dict | None, street: str) -> str:
+    if not action:
+        return "?"
+    code = _norm_code(action.get("code"))
+    display = (action.get("display_name") or "").upper()
+    if code in {"F", "C", "X", "AI"}:
+        return action_zh(code)
+    if code.startswith("R"):
+        # GTOW uses R* codes for both preflop raises and postflop bets/raises.
+        # The display_name tells us whether this node is a first bet or a raise.
+        verb = "Raise" if street == "preflop" or display == "RAISE" else "Bet"
+        return verb + ("" if street == "preflop" else _pct(action))
+    return action_zh(code)
+
+
+def _format_history_action(action: dict, hero_pos: str, street: str) -> str:
+    pos = action.get("position") or "?"
+    who = "Hero" if pos == hero_pos else pos
+    return f"{who} {_action_obj_zh(action, street)}"
+
+
+def _street_board(boards: str, street: str) -> str:
+    if not boards:
+        return ""
+    n = {"flop": 6, "turn": 8, "river": 10}.get(street)
+    return boards[:n] if n else ""
+
+
+def _load_detail(raw_path: str | None) -> dict | None:
+    if not raw_path:
+        return None
+    p = Path(raw_path)
+    if not p.is_absolute():
+        p = ROOT / p
+    try:
+        if p.suffix == ".gz":
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                return json.load(f)
+        with p.open(encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def decision_action_context(row: dict) -> dict:
+    """Return human-readable action history + taken/best action for one decision.
+
+    Uses archived GTOW detail when present. Falls back to code-only labels when
+    raw detail is unavailable, so rendering never depends on filesystem state.
+    """
+    detail = _load_detail(row.get("raw_path"))
+    if not detail:
+        return {}
+
+    target_street = row.get("street") or ""
+    target_idx = int(row.get("decision_idx") or 0)
+    hero_pos = row.get("hero_pos") or row.get("position") or ""
+    boards = row.get("boards") or ""
+    gps = ((detail.get("game_analysis") or {}).get("game_points") or [])
+    actions: dict[str, list[dict]] = {s: [] for s in ("preflop", "flop", "turn", "river")}
+    hero_count: dict[str, int] = {s: 0 for s in ("preflop", "flop", "turn", "river")}
+
+    for gp in gps:
+        rga = gp.get("real_game_action") or {}
+        sga = gp.get("solved_game_action") or rga
+        street = _street_of_gp(gp)
+        pos = rga.get("position", "")
+        avail = (gp.get("analysis_solved") or {}).get("available_actions") or []
+        is_hero = pos == hero_pos and any(a.get("selected") for a in avail)
+
+        if is_hero:
+            idx = hero_count[street]
+            if street == target_street and idx == target_idx:
+                sel = next((a for a in avail if a.get("selected")), None)
+                best = next((a for a in avail if a.get("correctness") == "BEST_MOVE"), None)
+                if best is None and avail:
+                    best = max(avail, key=lambda a: float(a.get("ev") or 0))
+                parts = []
+                for s in ("preflop", "flop", "turn", "river"):
+                    if s == "preflop" and street != "preflop":
+                        continue
+                    if s not in actions:
+                        continue
+                    acts = actions[s]
+                    if s == street:
+                        acts = list(acts)
+                    elif not acts:
+                        continue
+                    if s == street and not acts:
+                        break
+                    board = _street_board(boards, s)
+                    label = STREET_LABELS[s] + (f" {board}" if board else "")
+                    parts.append(f"{label}: " + ", ".join(
+                        _format_history_action(a, hero_pos, s) for a in acts))
+                    if s == street:
+                        break
+                selected_action = (sel or {}).get("action") or sga
+                best_action = (best or {}).get("action")
+                return {
+                    "street_line": " / ".join(parts),
+                    "action_line": f"{_action_obj_zh(selected_action, street)}"
+                                   f"→應{_action_obj_zh(best_action, street)}",
+                }
+            hero_count[street] = idx + 1
+
+        actions[street].append(sga)
+    return {}
+
+
 def action_zh(code: str | None) -> str:
     if not code:
         return "?"
-    c = str(code).upper()
-    if c.startswith("R") and c not in {"RAI"}:
+    c = _norm_code(code)
+    if c.startswith("R"):
         return "Raise"
     return _ACTION_ZH.get(c, str(code))
 
@@ -253,8 +397,10 @@ def should_auto_send(data: dict) -> bool:
 
 
 def _session_span(started, ended) -> str:
-    s = started.astimezone(TPE)
-    e = ended.astimezone(TPE)
+    # ledger_sessions timestamps are GTOW/PokerCraft local wall-clock values.
+    # Do not convert timezone again, or a 19:00 session renders as 03:00.
+    s = started
+    e = ended
     if s.date() == e.date():
         return f"{s.strftime('%-m/%-d')} {s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
     return f"{s.strftime('%-m/%-d %H:%M')} – {e.strftime('%-m/%-d %H:%M')}"
@@ -274,18 +420,16 @@ def render_tg(d: dict) -> dict:
 
     if d["empty"]:
         L.append(f"這場 <b>{d['n_hands']}</b> 手，幾乎都打對了 — 沒有值得復盤的漏損 👍")
-        L.append("（單場數字噪音大，這是「這場長怎樣」，不是進步/退步結論）")
         return {"html": "\n".join(L), "buttons": []}
 
     L.append(f"這場 <b>{d['n_hands']}</b> 手，平均 <b>{d['per100']:.1f} bb/100 決策</b>，"
              f"本場合計漏 <b>{d['total_bb']:.1f} bb</b>。")
-    L.append("（單場數字噪音大，這是「這場長怎樣」，不是進步/退步結論）")
 
     buttons: list[list[dict]] = []
 
     if d["top_spots"]:
         L.append("")
-        L.append("<b>漏最多的情境（EV 加總）</b>")
+        L.append("<b>EV Loss 最多的情境（加總）</b>")
         for i, s in enumerate(d["top_spots"], 1):
             L.append(f"{i}. {escape(s['desc'])} — <b>{s['total_ev']:.1f} bb</b>（{s['n']} 手）")
         for i, s in enumerate(d["top_spots"]):
@@ -306,8 +450,9 @@ def render_tg(d: dict) -> dict:
             pos = escape(str(h.get("position") or "?"))
             depth = depth_label(h.get("depth"))
             depth_part = f" {escape(depth)}" if depth else ""
-            board = f"｜{escape(h['boards'])}" if h.get("boards") else ""
-            L.append(f"{m} {combo}{pos}{depth_part}｜{escape(h['desc'])}{board}｜"
+            street_line = h.get("street_line") or h.get("boards") or ""
+            line_part = f"｜{escape(street_line)}" if street_line else ""
+            L.append(f"{m} {combo}{pos}{depth_part}｜{escape(h['desc'])}{line_part}｜"
                      f"<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>")
         for i, h in enumerate(top_decisions):
             m = marks[i] if i < len(marks) else f"#{i+1}"
