@@ -16,6 +16,8 @@ def test_parse_progress_extracts_done_total():
     from src.ingest_runner import parse_progress
     assert_eq(parse_progress("  detail sweep: 126/241"), (126, 241),
               "detail sweep x/total")
+    assert_eq(parse_progress("  detail write: 126/241"), (126, 241),
+              "detail DB write x/total")
     assert_eq(parse_progress("  list-only sweep: 500/1700"), (500, 1700),
               "list-only sweep x/total")
 
@@ -237,6 +239,42 @@ def test_process_next_sends_live_bar_and_settles():
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),
                 f"settle edit present: {bot.edits}")
+
+
+@test
+def test_pass_surfaces_detail_write_as_heartbeat_progress():
+    """The DB-write phase between 200-hand detail-fetch batches must refresh
+    progress too; otherwise Telegram appears stuck even while rows are writing."""
+    import src.ingest_runner as ir
+
+    seen = []
+
+    async def progress(text, **kw):
+        seen.append((text, kw))
+
+    async def fake_run_script(env, *args, on_line=None):
+        is_ledger = any(str(arg).endswith("ledger_ingest.py") for arg in args)
+        if is_ledger and "--verify" not in args:
+            await on_line("  detail sweep: 200/463")
+            await on_line("  detail write: 20/463")
+            return 0, "INGEST list=500 detail=463 decisions=900"
+        if is_ledger and "--verify" in args:
+            return 0, "VERIFY OK api=500 db=500"
+        return 0, "OK"
+
+    async def run():
+        orig = ir._run_script
+        ir._run_script = fake_run_script
+        try:
+            await ir._pass({}, progress, ("--incremental",), "攝取中")
+        finally:
+            ir._run_script = orig
+
+    asyncio.run(run())
+    assert_true(any("detail write: 20/463" in text for text, _ in seen),
+                f"detail write surfaced: {seen}")
+    assert_true(any(kw.get("raw") == "detail write: 20/463" for _, kw in seen),
+                f"detail write raw passed through: {seen}")
 
 
 # ── full-history import mode ────────────────────────────────────────────────

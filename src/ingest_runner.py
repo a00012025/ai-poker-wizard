@@ -51,14 +51,15 @@ def register_status_message(user_id: int, chat_id: int, message_id: int) -> None
 
 # ── Live progress rendering (pure helpers, unit-tested without a bot) ────────
 
-# `x/total` appears in "detail sweep: 126/241" and "list-only sweep: 500/1700";
+# `x/total` appears in "detail sweep: 126/241", "detail write: 126/241",
+# and "list-only sweep: 500/1700";
 # the plain "list sweep: 320 new..." has no denominator (streaming paginator).
-_FRACTION_RE = re.compile(r"sweep:\s*(\d+)\s*/\s*(\d+)")
+_FRACTION_RE = re.compile(r"(?:sweep|write):\s*(\d+)\s*/\s*(\d+)")
 _COUNT_RE = re.compile(r"list sweep:\s*(\d+)\s+new")
 
 
 def parse_progress(line: str) -> tuple[int, int] | None:
-    """Extract (done, total) from a sweep line, or None if it has no denominator."""
+    """Extract (done, total) from a progress line, or None without a denominator."""
     m = _FRACTION_RE.search(line or "")
     return (int(m.group(1)), int(m.group(2))) if m else None
 
@@ -234,10 +235,10 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     await progress(f"{label}…", stage=label)
 
     async def heartbeat(line):
-        # ledger_ingest prints periodic "  list/detail sweep: ..." progress;
-        # surface it in the toast (raw line drives the live bar) and refresh
-        # the row's liveness heartbeat.
-        if "sweep:" in line:
+        # ledger_ingest prints periodic "list/detail sweep" progress and
+        # "detail write" during the serial DB write between fetch batches;
+        # surface both in the toast and refresh the liveness heartbeat.
+        if "sweep:" in line or "write:" in line:
             await progress(f"{label}：{line.strip()}", stage=label,
                            raw=line.strip())
 

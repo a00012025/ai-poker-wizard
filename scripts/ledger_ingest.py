@@ -242,6 +242,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
         dets = await _fetch_details_concurrent(
             [hid for hid, _, _ in chunk], on_progress=_emit,
             _done_base=start, _total=total_detail)
+        written_in_chunk = 0
         for hid, dp, list_row in chunk:
             det = dets.get(hid)
             if det is None:
@@ -263,6 +264,9 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                     "WHERE gtow_hand_id=$1", hid, str(dp.relative_to(ROOT)))
             fetched += 1
             ndec += len(decs)
+            written_in_chunk += 1
+            if written_in_chunk % 20 == 0:
+                print(f"  detail write: {start + written_in_chunk}/{total_detail}", flush=True)
     if total_detail:
         print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
     if skipped_nodata:
