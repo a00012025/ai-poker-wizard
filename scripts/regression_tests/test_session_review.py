@@ -31,17 +31,26 @@ def _sample(empty: bool = False) -> dict:
             {"desc": "翻前 vsOpen 3bet 位", "total_ev": 4.4, "n": 2,
              "drill_url": None, "enqueue_item": {}},
         ],
-        "top_hands": [] if empty else [
-            {"combo": "T♠9♠", "boards": "8h7c2d5sQc", "desc": "turn barrel",
-             "max_ev": 3.4, "total_ev": 3.4,
+        "top_decisions": [] if empty else [
+            {"combo": "Q♣J♣", "position": "HJ", "depth": 30.125,
+             "boards": "", "desc": "MP flat 後面對 squeeze（對手 BB，你 IP）",
+             "action_line": "Call→應Fold", "ev_loss": 0.76,
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
-             "enqueue_item": {}},
-            {"combo": "A♥Q♦", "boards": "KsJd4c9h", "desc": "面對 3bet fold",
-             "max_ev": 2.6, "total_ev": 2.6,
-             "exact_url": "https://app.gtowizard.com/a", "enqueue_item": {}},
-            {"combo": "K♦K♥", "boards": "Ac8s3s7d2h", "desc": "river call 太寬",
-             "max_ev": 1.8, "total_ev": 1.8,
-             "exact_url": "https://app.gtowizard.com/c", "enqueue_item": {}},
+             "drill_url": "https://app.gtowizard.com/practice?d=1", "enqueue_item": {}},
+            {"combo": "T♠9♠", "position": "CO", "depth": 25.0,
+             "boards": "8h7c2d5sQc", "desc": "turn barrel",
+             "action_line": "Raise→應Call", "ev_loss": 3.4,
+             "exact_url": "https://app.gtowizard.com/a", "drill_url": None, "enqueue_item": {}},
+            {"combo": "A♥Q♦", "position": "UTG+1", "depth": 40.0,
+             "boards": "KsJd4c9h", "desc": "面對 3bet fold",
+             "action_line": "Fold→應Call", "ev_loss": 2.6,
+             "exact_url": "https://app.gtowizard.com/b", "drill_url": None, "enqueue_item": {}},
+        ] + [
+            {"combo": f"A{i}♠", "position": "BTN", "depth": 20.0,
+             "boards": "", "desc": "vsOpen", "action_line": "Fold→應Raise",
+             "ev_loss": 1.0 + i / 10, "exact_url": f"https://app.gtowizard.com/{i}",
+             "drill_url": None, "enqueue_item": {}}
+            for i in range(4, 9)
         ],
         "honesty": {"discarded_n": 6, "low_conf_n": 3},
         "empty": empty,
@@ -50,6 +59,12 @@ def _sample(empty: bool = False) -> dict:
 
 def _all_buttons(rows):
     return [b for row in rows for b in row]
+
+
+@test
+def test_session_review_action_line_shows_recommended_action():
+    assert_eq(sr.action_line("C", "F"), "Call→應Fold")
+    assert_eq(sr.action_line("R2.5", "C"), "Raise→應Call")
 
 
 @test
@@ -62,9 +77,15 @@ def test_session_review_full_message():
     assert_in("283", html)          # hands
     assert_in("1.9 bb/100", html)   # per100
     assert_in("14.2 bb", html)      # total loss
-    # top spot + top hand surfaced
+    # top spot + concrete decision rows surfaced
     assert_in("turn OOP 面對下注", html)
     assert_in("6.1 bb", html)
+    assert_in("最值得回看的 8 個決策", html)
+    assert_in("Q♣J♣", html)
+    assert_in("HJ 30bb", html)
+    assert_in("MP flat 後面對 squeeze", html)
+    assert_in("Call→應Fold", html)
+    assert_in("−<b>0.76bb</b>", html)
     assert_in("T♠9♠", html)
     assert_in("8h7c2d5sQc", html)
     # honesty caveat with session-scoped counts
@@ -91,7 +112,9 @@ def test_session_review_deliberate_enqueue_only():
     assert_true(not any("全部" in t for t in labels), f"unexpected batch button: {labels}")
     assert_true(not any("略過" in t for t in labels), f"skip button must be gone: {labels}")
     assert_true(any("排入佇列" in t for t in labels), "missing spot enqueue button")
-    assert_true(any("復盤" in t for t in labels), "missing hand review button")
+    assert_true(any("復盤" in t for t in labels), "missing decision review button")
+    assert_true(any("練" in t for t in labels), "missing decision drill button")
+    assert_true(any("入 queue" in t for t in labels), "missing decision enqueue button")
     # every review button links to the exact hand_id__in filter, not a day range
     review_btns = [b for b in _all_buttons(out["buttons"]) if "復盤" in b["text"]]
     assert_true(review_btns and all("url" in b for b in review_btns),
