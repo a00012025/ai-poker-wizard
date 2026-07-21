@@ -166,6 +166,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
             "boards": row.get("boards") or "",
             "desc": hand_desc(row),
             "street_line": action_ctx.get("street_line") or "",
+            "street_lines": action_ctx.get("street_lines") or [],
             "action_line": (action_ctx.get("action_line")
                             or action_line(row.get("taken_code"), row.get("best_code"))),
             "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
@@ -260,8 +261,13 @@ def _format_history_action(action: dict, hero_pos: str, street: str) -> str:
 def _street_board(boards: str, street: str) -> str:
     if not boards:
         return ""
-    n = {"flop": 6, "turn": 8, "river": 10}.get(street)
-    return boards[:n] if n else ""
+    if street == "flop":
+        return boards[:6] if len(boards) >= 6 else ""
+    if street == "turn":
+        return boards[6:8] if len(boards) >= 8 else ""
+    if street == "river":
+        return boards[8:10] if len(boards) >= 10 else ""
+    return ""
 
 
 def _load_detail(raw_path: str | None) -> dict | None:
@@ -335,6 +341,7 @@ def decision_action_context(row: dict) -> dict:
                 selected_action = (sel or {}).get("action") or sga
                 best_action = (best or {}).get("action")
                 return {
+                    "street_lines": parts,
                     "street_line": " / ".join(parts),
                     "action_line": f"{_action_obj_zh(selected_action, street)}"
                                    f"→應{_action_obj_zh(best_action, street)}",
@@ -363,6 +370,11 @@ def depth_label(depth: float | None) -> str:
         return ""
     d = float(depth)
     return f"{d:.0f}bb" if abs(d - round(d)) < 0.2 else f"{d:.1f}bb"
+
+
+def decision_mark(i: int) -> str:
+    keycaps = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    return keycaps[i] if i < len(keycaps) else f"{i+1}."
 
 
 async def compute(conn, session: dict) -> dict:
@@ -443,19 +455,25 @@ def render_tg(d: dict) -> dict:
     if top_decisions:
         L.append("")
         L.append(f"<b>最值得回看的 {len(top_decisions)} 個決策</b>")
-        marks = "①②③④⑤⑥⑦⑧⑨⑩"
         for i, h in enumerate(top_decisions):
-            m = marks[i] if i < len(marks) else f"({i+1})"
+            m = decision_mark(i)
             combo = f"{escape(h['combo'])} " if h.get("combo") else ""
             pos = escape(str(h.get("position") or "?"))
             depth = depth_label(h.get("depth"))
             depth_part = f" {escape(depth)}" if depth else ""
-            street_line = h.get("street_line") or h.get("boards") or ""
-            line_part = f"｜{escape(street_line)}" if street_line else ""
-            L.append(f"{m} {combo}{pos}{depth_part}｜{escape(h['desc'])}{line_part}｜"
-                     f"<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>")
+            L.append(f"{m} {combo}{pos}{depth_part}｜{escape(h['desc'])}")
+            street_lines = h.get("street_lines") or []
+            if not street_lines and (h.get("street_line") or h.get("boards")):
+                street_lines = [h.get("street_line") or h.get("boards")]
+            for j, street_line in enumerate(street_lines):
+                suffix = (f"｜<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>"
+                          if j == len(street_lines) - 1 else "")
+                L.append(f"{escape(street_line)}{suffix}")
+            if not street_lines:
+                L.append(f"<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>")
+            L.append("")
         for i, h in enumerate(top_decisions):
-            m = marks[i] if i < len(marks) else f"#{i+1}"
+            m = decision_mark(i)
             row = []
             if h.get("exact_url"):
                 row.append({"text": f"{m} 📖 復盤", "url": h["exact_url"]})

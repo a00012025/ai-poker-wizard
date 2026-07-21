@@ -34,11 +34,18 @@ def _sample(empty: bool = False) -> dict:
         "top_decisions": [] if empty else [
             {"combo": "Q♣J♣", "position": "HJ", "depth": 30.125,
              "boards": "", "desc": "MP flat 後面對 squeeze（對手 BB，你 IP）",
+             "street_lines": [
+                 "PF: LJ Raise, HJ Call, BB Raise",
+             ],
              "action_line": "Call→應Fold", "ev_loss": 0.76,
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
              "drill_url": "https://app.gtowizard.com/practice?d=1", "enqueue_item": {}},
             {"combo": "T♠9♠", "position": "CO", "depth": 25.0,
              "boards": "8h7c2d5sQc", "desc": "turn barrel",
+             "street_lines": [
+                 "Flop 8h7c2d: BB Check, Hero Bet 33%, BB Call",
+                 "Turn 5s: BB Check",
+             ],
              "action_line": "Raise→應Call", "ev_loss": 3.4,
              "exact_url": "https://app.gtowizard.com/a", "drill_url": None, "enqueue_item": {}},
             {"combo": "A♥Q♦", "position": "UTG+1", "depth": 40.0,
@@ -130,10 +137,13 @@ def test_session_review_full_message():
     assert_in("Q♣J♣", html)
     assert_in("HJ 30bb", html)
     assert_in("MP flat 後面對 squeeze", html)
+    assert_in("1️⃣ Q♣J♣ HJ 30bb｜MP flat 後面對 squeeze", html)
+    assert_in("PF: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
     assert_in("Call→應Fold", html)
     assert_in("−<b>0.76bb</b>", html)
     assert_in("T♠9♠", html)
-    assert_in("8h7c2d5sQc", html)
+    assert_in("Flop 8h7c2d: BB Check, Hero Bet 33%, BB Call", html)
+    assert_in("Turn 5s: BB Check｜<b>Raise→應Call</b>", html)
     # honesty caveat with session-scoped counts
     assert_in("limp 6 手未計", html)
     assert_in("3 個低信心未計", html)
