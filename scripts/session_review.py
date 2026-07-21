@@ -7,7 +7,7 @@ North Star §7 不變量 11（回饋延遲預算：session 復盤「能過夜不
 
   • 共幾手、平均 EV loss（單場、**不作趨勢判斷**）
   • EV loss 加總最多的 spot（→ 現在練 / 排入佇列）
-  • EV loss 最高的 3 手（→ 手牌 history / 復盤 study / 排入佇列）
+  • EV loss 最高的 8 個具體決策（→ 復盤 / 練習 / 排入佇列）
 
 不變量：**只讀不改本週焦點 spot**（中圈穩定性 §3）。排入動作走既有 `drill_queue`
 （`kind='drill'`/`'review'`，`added_by='session'`），與週掃描產生同構的 rows。口徑沿用
@@ -32,7 +32,7 @@ from queue_feed import TPE, LOSSY_MIN_BB, pretty_hand  # noqa: E402
 from scorecard import spot_desc_zh  # noqa: E402
 
 TOP_SPOTS = 2
-TOP_HANDS = 3
+TOP_DECISIONS = 8
 
 # ── session-scoped SQL ─────────────────────────────────────────────────────────
 # Membership by session_id (authoritative), honesty by queue_feed._HONEST on the
@@ -85,28 +85,18 @@ ORDER BY sum(ev_loss_bb) DESC
 LIMIT {TOP_SPOTS}
 """
 
-_TOP_HANDS_SQL = f"""
-SELECT gtow_hand_id ref_hand_id, sum(ev_loss_bb) total_ev,
-       (array_agg(spot_leaf     ORDER BY ev_loss_bb DESC))[1] spot_leaf,
-       (array_agg(spot_category ORDER BY ev_loss_bb DESC))[1] spot_category,
-       (array_agg(hero_cat      ORDER BY ev_loss_bb DESC))[1] hero_cat,
-       (array_agg(villain_cat   ORDER BY ev_loss_bb DESC))[1] villain_cat,
-       (array_agg(ip_oop        ORDER BY ev_loss_bb DESC))[1] ip_oop,
-       (array_agg(position      ORDER BY ev_loss_bb DESC))[1] hero_pos,
-       (array_agg(ev_loss_bb    ORDER BY ev_loss_bb DESC))[1] max_ev,
-       (array_agg(approx_flags  ORDER BY ev_loss_bb DESC))[1] approx_flags,
-       (array_agg(played_at     ORDER BY ev_loss_bb DESC))[1] played_at,
-       (array_agg(street        ORDER BY ev_loss_bb DESC))[1] worst_street,
-       (array_agg(decision_idx  ORDER BY ev_loss_bb DESC))[1] worst_idx,
-       jsonb_agg(jsonb_build_object(
+_TOP_DECISIONS_SQL = f"""
+SELECT gtow_hand_id ref_hand_id, street, decision_idx, spot_leaf, spot_category,
+       hero_cat, villain_cat, ip_oop, position hero_pos, ev_loss_bb, approx_flags,
+       played_at, taken_code, best_code, correctness, pot_type, eff_stack, gametype,
+       jsonb_build_array(jsonb_build_object(
            'hand_id', gtow_hand_id, 'street', street,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
-           'src', source) ORDER BY ev_loss_bb DESC) source_hands
+           'taken_code', taken_code, 'best_code', best_code, 'src', source)) source_hands
 FROM ledger_decisions
 WHERE {qf._HONEST} AND ev_loss_bb >= {LOSSY_MIN_BB} AND {_IN_SESSION}
-GROUP BY gtow_hand_id
-ORDER BY sum(ev_loss_bb) DESC
-LIMIT {TOP_HANDS}
+ORDER BY ev_loss_bb DESC, played_at DESC
+LIMIT {TOP_DECISIONS}
 """
 
 _HAND_META_SQL = ("SELECT hero_hand, boards, raw_path, position, preflop_depth_bb "
@@ -146,8 +136,8 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
     return out
 
 
-async def _hand_items(conn, session_id: int) -> list[dict]:
-    rows = await conn.fetch(_TOP_HANDS_SQL, session_id)
+async def _decision_items(conn, session_id: int) -> list[dict]:
+    rows = await conn.fetch(_TOP_DECISIONS_SQL, session_id)
     out = []
     for r in rows:
         row = dict(r)
@@ -158,27 +148,31 @@ async def _hand_items(conn, session_id: int) -> list[dict]:
             row["raw_path"] = meta["raw_path"]
             row["hero_pos"] = meta["position"] or row.get("hero_pos")
             row["preflop_depth_bb"] = meta["preflop_depth_bb"]
-        # Exact-hand Analyze filter — the same reliable `hand_id__in` link the
-        # queue's 📚 來源 sub-menu uses. Owner-preferred over the /solutions Study
-        # node, which falls back to a day-range table when a low-loss hand has no
-        # archived detail JSON (PR #122 skips detail for reconstructable hands).
+        entries = qf._as_list(row["source_hands"])
         hand_urls = qf.gtow_analyze_hands_urls([row["ref_hand_id"]])
         exact_url = hand_urls[0][0] if hand_urls else None
+        drill_url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
+        row["max_ev"] = row.get("ev_loss_bb")
+        row["worst_street"] = row.get("street")
+        row["worst_idx"] = row.get("decision_idx")
         out.append({
             "combo": pretty_hand(row.get("hero_hand")),
+            "position": row.get("hero_pos"),
+            "depth": float(row["preflop_depth_bb"]) if row.get("preflop_depth_bb") is not None else None,
             "boards": row.get("boards") or "",
             "desc": hand_desc(row),
-            "max_ev": round(float(row.get("max_ev") or 0.0), 1),
-            "total_ev": round(float(row["total_ev"]), 1),
+            "action_line": action_line(row.get("taken_code"), row.get("best_code")),
+            "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
             "exact_url": exact_url,
+            "drill_url": drill_url,
             "enqueue_item": {
                 "kind": "review", "added_by": "session", "source": "online",
                 "ref_hand_id": row["ref_hand_id"], "spot_leaf": row.get("spot_leaf"),
                 "spot_category": row.get("spot_category"),
                 "label": qf.review_label(row), "review_url": exact_url,
                 "review_anchor_url": None, "review_anchor_street": None,
-                "source_hands": qf._as_list(row["source_hands"]),
-                "total_ev_loss_bb": round(float(row["total_ev"]), 4),
+                "source_hands": entries,
+                "total_ev_loss_bb": round(float(row.get("ev_loss_bb") or 0.0), 4),
             },
         })
     return out
@@ -202,12 +196,37 @@ def hand_desc(row: dict) -> str:
         "street": row.get("spot_category")})
 
 
+_ACTION_ZH = {
+    "F": "Fold", "C": "Call", "X": "Check", "RAI": "All-in", "AI": "All-in",
+}
+
+
+def action_zh(code: str | None) -> str:
+    if not code:
+        return "?"
+    c = str(code).upper()
+    if c.startswith("R") and c not in {"RAI"}:
+        return "Raise"
+    return _ACTION_ZH.get(c, str(code))
+
+
+def action_line(taken: str | None, best: str | None) -> str:
+    return f"{action_zh(taken)}→應{action_zh(best)}"
+
+
+def depth_label(depth: float | None) -> str:
+    if depth is None:
+        return ""
+    d = float(depth)
+    return f"{d:.0f}bb" if abs(d - round(d)) < 0.2 else f"{d:.1f}bb"
+
+
 async def compute(conn, session: dict) -> dict:
     sid = session["id"]
     ov = await conn.fetchrow(_OVERVIEW_SQL, sid)
     hon = await conn.fetchrow(_HONESTY_SQL, sid)
     spots = await _spot_items(conn, sid)
-    hands = await _hand_items(conn, sid)
+    decisions = await _decision_items(conn, sid)
     return {
         "session_id": sid,
         "started_at": session["started_at"],
@@ -218,7 +237,7 @@ async def compute(conn, session: dict) -> dict:
         "total_bb": float(ov["total_bb"] or 0.0),
         "n_lossy": ov["n_lossy"] or 0,
         "top_spots": spots,
-        "top_hands": hands,
+        "top_decisions": decisions,
         "honesty": {"discarded_n": hon["discarded_n"] or 0,
                     "low_conf_n": hon["low_conf_n"] or 0},
         "empty": (ov["n_lossy"] or 0) == 0,
@@ -246,8 +265,8 @@ def render_tg(d: dict) -> dict:
 
     Pure function of ``compute()``'s output — no DB, no network. Returns
     ``{"html": str, "buttons": rows}`` where rows is list[list[button dict]].
-    Buttons: URL (現在練/手牌/復盤) + callback (排入/略過). callback_data stays
-    <64B via `srd|srv|srx:{session_id}:{i}` index keys.
+    Buttons: URL (現在練/復盤/練) + callback (排入). callback_data stays
+    <64B via `srd|srv:{session_id}:{i}` index keys.
     """
     sid = d["session_id"]
     span = _session_span(d["started_at"], d["ended_at"])
@@ -276,21 +295,28 @@ def render_tg(d: dict) -> dict:
             row.append({"text": "📥 排入佇列", "callback_data": f"srd:{sid}:{i}"})
             buttons.append(row)
 
-    if d["top_hands"]:
+    top_decisions = d.get("top_decisions") or []
+    if top_decisions:
         L.append("")
-        L.append("<b>最貴 3 手</b>")
-        marks = "①②③④⑤"
-        for i, h in enumerate(d["top_hands"]):
+        L.append(f"<b>最值得回看的 {len(top_decisions)} 個決策</b>")
+        marks = "①②③④⑤⑥⑦⑧⑨⑩"
+        for i, h in enumerate(top_decisions):
             m = marks[i] if i < len(marks) else f"({i+1})"
-            combo = f"{escape(h['combo'])} " if h["combo"] else ""
-            board = f"{escape(h['boards'])} " if h["boards"] else ""
-            L.append(f"{m} {combo}{board}— {escape(h['desc'])} −<b>{h['max_ev']:.1f} bb</b>")
-        for i, h in enumerate(d["top_hands"]):
+            combo = f"{escape(h['combo'])} " if h.get("combo") else ""
+            pos = escape(str(h.get("position") or "?"))
+            depth = depth_label(h.get("depth"))
+            depth_part = f" {escape(depth)}" if depth else ""
+            board = f"｜{escape(h['boards'])}" if h.get("boards") else ""
+            L.append(f"{m} {combo}{pos}{depth_part}｜{escape(h['desc'])}{board}｜"
+                     f"<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>")
+        for i, h in enumerate(top_decisions):
             m = marks[i] if i < len(marks) else f"#{i+1}"
             row = []
             if h.get("exact_url"):
                 row.append({"text": f"{m} 📖 復盤", "url": h["exact_url"]})
-            row.append({"text": "📥 排入", "callback_data": f"srv:{sid}:{i}"})
+            if h.get("drill_url"):
+                row.append({"text": f"{m} 🎯 練", "url": h["drill_url"]})
+            row.append({"text": f"{m} 📥 入 queue", "callback_data": f"srv:{sid}:{i}"})
             buttons.append(row)
 
     hon = d["honesty"]

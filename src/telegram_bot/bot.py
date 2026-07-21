@@ -2047,7 +2047,7 @@ class PokerWizardBot:
     async def _session_review_enqueue(self, update: Update,
                                       context: ContextTypes.DEFAULT_TYPE, data: str):
         """srd|srv:<session_id>:<i> — enqueue the i-th session-review spot(drill)/
-        hand(review) into drill_queue (added_by='session', threshold-free). Idempotent
+        decision(review) into drill_queue (added_by='session', threshold-free). Idempotent
         via queue_feed.enqueue_one; the tapped button is relabelled ✅."""
         query = update.callback_query
         if not (self.db and self.db.pool):
@@ -2064,7 +2064,8 @@ class PokerWizardBot:
                 return
             cached = await compute(self.db.pool, session)
             context.application.bot_data.setdefault("srev", {})[sid] = cached
-        items = cached["top_spots"] if kind == "srd" else cached["top_hands"]
+        items = (cached["top_spots"] if kind == "srd"
+                 else (cached.get("top_decisions") or cached.get("top_hands") or []))
         if i >= len(items):
             await query.answer("這個項目已不在清單上。")
             return
