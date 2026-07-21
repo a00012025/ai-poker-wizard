@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 import spot_leaderboard as lb
 from action_bias import dominant_action_bias
+from card_display import cards_to_emoji
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
