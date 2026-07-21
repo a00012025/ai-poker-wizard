@@ -1582,11 +1582,12 @@ class PokerWizardBot:
             await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
 
     async def ingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /ingest — owner-only: queue a GTOW Analyze pull.
+        """Handle /ingest — owner-only: queue an *incremental* GTOW Analyze pull.
 
-        Enqueues a gtow_ingest_requests row; the 5s poller runs the same
-        pipeline as the extension button (per-user DB token)
-        and sends the result as a separate message.
+        Enqueues a gtow_ingest_requests row (mode='incremental'); the 5s poller
+        runs the same pipeline as the extension button (per-user DB token) and
+        edits the reply in place with live progress. For a full-history import
+        use /fullingest.
         """
         user_id = update.effective_user.id
         if not self.admin_chat_id or user_id != self.admin_chat_id:
@@ -1599,12 +1600,65 @@ class PokerWizardBot:
         reused = await enqueue_request(self.db.pool, user_id)
         msg = await update.message.reply_text(
             "⏳ 已有一件同步在跑，完成後會通知你" if reused
-            else "⏳ 已排入同步佇列，完成後會通知你")
+            else "⏳ 已排入增量同步佇列，開始後會即時更新進度…")
         # Hand this reply to the poller so it edits progress in place on claim.
         # On a reused request the in-flight run already owns its own message, so
         # only register when we actually enqueued a fresh one.
         if not reused:
             register_status_message(user_id, msg.chat_id, msg.message_id)
+
+    async def fullingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/fullingest — owner-only: full-history import, behind a confirm menu.
+
+        A full backfill re-sweeps every hand since the ledger epoch and can take
+        many minutes, so it is gated by an explicit inline confirmation. Enqueue
+        happens only on ✅; the same one-open-per-user rule blocks it while any
+        other ingest (incremental or full) is already running.
+        """
+        if not self._is_owner(update):
+            return
+        self.log.info(f"[{self._user_label(update)}] /fullingest")
+        if not self.db or not self.db.pool:
+            await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
+            return
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ 確定全量匯入", callback_data="fullingest:confirm"),
+            InlineKeyboardButton("❌ 取消", callback_data="fullingest:cancel"),
+        ]])
+        await update.message.reply_text(
+            "⚠️ <b>全量匯入</b>會重抓 GTOW 上所有歷史手牌（自 ledger epoch 2026-03 起），"
+            "可能需要數分鐘～十幾分鐘，期間無法同時跑其他同步。\n\n確定要全量匯入嗎？",
+            parse_mode="HTML", reply_markup=kb)
+
+    async def handle_fullingest_button(self, update: Update,
+                                       context: ContextTypes.DEFAULT_TYPE):
+        """Confirm/cancel for /fullingest. On ✅ enqueue mode='full' and hand the
+        (now-edited) confirmation message to the poller for live progress."""
+        query = update.callback_query
+        if not self._is_owner(update):
+            await query.answer("僅限 owner。", show_alert=True)
+            return
+        action = query.data.split(":", 1)[1]
+        if action == "cancel":
+            await query.answer("已取消")
+            await query.edit_message_text("已取消全量匯入。")
+            return
+        await query.answer()
+        if not self.db or not self.db.pool:
+            await query.edit_message_text("⚠️ 資料庫未連線，無法排入攝取佇列")
+            return
+        from src.ingest_runner import enqueue_request, register_status_message
+        user_id = query.from_user.id
+        reused = await enqueue_request(self.db.pool, user_id, mode="full")
+        if reused:
+            await query.edit_message_text(
+                "⏳ 已有一件同步在跑，完成後會通知你（全量匯入未排入，請稍後再試）")
+            return
+        await query.edit_message_text("⏳ 已排入全量匯入佇列，開始後會即時更新進度…")
+        # query.message is the just-edited confirmation message; the poller edits
+        # this same message in place with the live progress bar.
+        register_status_message(user_id, query.message.chat_id,
+                                query.message.message_id)
 
     # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
 
@@ -2436,6 +2490,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(CommandHandler("report", self.report_command))
         self.application.add_handler(CommandHandler("ingest", self.ingest_command))
+        self.application.add_handler(CommandHandler("fullingest", self.fullingest_command))
         self.application.add_handler(CommandHandler("live", self.live_command))
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
@@ -2448,6 +2503,9 @@ class PokerWizardBot:
             CallbackQueryHandler(
                 self.handle_live_button,
                 pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|qdet|qdst|srd|srv):"))
+        self.application.add_handler(
+            CallbackQueryHandler(self.handle_fullingest_button,
+                                 pattern=r"^fullingest:"))
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
