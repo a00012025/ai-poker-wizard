@@ -495,7 +495,7 @@ def render_tg(d: dict) -> dict:
             # Telegram's inline-keyboard payload limit and make the whole review fail.
             # Keep concrete review links here; practice is still available via the
             # aggregated top-spot drill buttons and by enqueuing this decision.
-            row.append({"text": f"{m} 📥 入 queue", "callback_data": f"srv:{sid}:{i}"})
+            row.append({"text": f"{m} 📥 排入佇列", "callback_data": f"srv:{sid}:{i}"})
             buttons.append(row)
 
     hon = d["honesty"]
