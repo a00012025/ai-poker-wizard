@@ -20,94 +20,94 @@ Preflop actions 校正: F-R2.1-F-F-F-F-F-C → F-R2-F-F-F-F-F-C
     Call: 100.0%（12.0 combos） EV 0.11bb
 
 ==================================================
-【Flop: 9sQsJc】
+【Flop: 9♠️Q♠️J♣️】
 Hero Q7o 牌型: 頂對 (Q)
-【BB 在 Flop QsJc9s】底池 5.500bb
+【BB 在 Flop Q♠️J♣️9♠️】底池 5.500bb
   Check: 100.0%（868 combos）
 
-【BB Qc7d（Q7o）】
+【BB Q♣️7♦️（Q7o）】
   策略: Check 100%（EV 0.89bb）
   Q7o 其他花色:
-    Qc7h: Check 100%（EV 0.9bb）
-    Qc7s: Check 100%（EV 1.3bb）
-    Qd7c: Check 100%（EV 0.9bb）
-    Qd7h: Check 100%（EV 0.9bb）
-    Qd7s: Check 100%（EV 1.3bb）
-    Qh7c: Check 100%（EV 0.9bb）
-    Qh7d: Check 100%（EV 0.9bb）
-    Qh7s: Check 100%（EV 1.3bb）
+    Q♣️7♥️: Check 100%（EV 0.9bb）
+    Q♣️7♠️: Check 100%（EV 1.3bb）
+    Q♦️7♣️: Check 100%（EV 0.9bb）
+    Q♦️7♥️: Check 100%（EV 0.9bb）
+    Q♦️7♠️: Check 100%（EV 1.3bb）
+    Q♥️7♣️: Check 100%（EV 0.9bb）
+    Q♥️7♦️: Check 100%（EV 0.9bb）
+    Q♥️7♠️: Check 100%（EV 1.3bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 Flop QsJc9s】底池 7.300bb
+【BB 在 Flop Q♠️J♣️9♠️】底池 7.300bb
   Fold: 54.9%（476 combos）
   Call: 28.5%（247 combos）
   RAISE 4.8（33% pot）: 7.5%（65 combos）
   RAISE 6.8（55% pot）: 3.0%（26 combos）
   All-in 15.000: 6.1%（53 combos）
 
-【BB Qc7d（Q7o）】
+【BB Q♣️7♦️（Q7o）】
   策略: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.79bb）
   Q7o 其他花色:
-    Qc7h: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
-    Qd7h: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
-    Qh7d: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
-    Qd7c: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
-    Qh7c: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
-    Qc7s: Call 100%（EV 1.2bb）
-    Qd7s: Call 100%（EV 1.2bb）
-    Qh7s: Call 100%（EV 1.2bb）
+    Q♣️7♥️: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
+    Q♦️7♥️: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
+    Q♥️7♦️: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
+    Q♦️7♣️: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
+    Q♥️7♣️: Call 99%, RAISE 4.8（33% pot） 1%（EV 0.8bb）
+    Q♣️7♠️: Call 100%（EV 1.2bb）
+    Q♦️7♠️: Call 100%（EV 1.2bb）
+    Q♥️7♠️: Call 100%（EV 1.2bb）
 ⚠ EV 損失 0.11bb（RAISE 4.8（33% pot） 0.68bb vs Call 0.79bb）
   → 實際行動: BB R5 5.0bb（solver code: R4.8）
 
 
 ==================================================
-【Turn: As（Board: 9sQsJcAs）】
+【Turn: A♠️（Board: 9♠️Q♠️J♣️A♠️）】
 Hero Q7o 牌型: 中對 (Q)
-【BB 在 Turn QsJc9sAs】底池 15.100bb
+【BB 在 Turn Q♠️J♣️9♠️A♠️】底池 15.100bb
   Check: 54.4%（33 combos）
   BET 3（20% pot）: 6.7%（4 combos）
   BET 5（33% pot）: 1.4%（1 combos）
   All-in 10.200: 37.5%（23 combos）
 
-【BB Qc7d（Q7o）】
+【BB Q♣️7♦️（Q7o）】
   策略: Check 95%, Bet 3（20% pot） 5%（EV 1.33bb）
   Q7o 其他花色:
-    Qc7h: Check 95%, Bet 3（20% pot） 5%（EV 1.3bb）
-    Qd7c: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
-    Qh7c: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
-    Qd7h: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
-    Qh7d: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
+    Q♣️7♥️: Check 95%, Bet 3（20% pot） 5%（EV 1.3bb）
+    Q♦️7♣️: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
+    Q♥️7♣️: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
+    Q♦️7♥️: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
+    Q♥️7♦️: Check 96%, Bet 3（20% pot） 4%（EV 1.3bb）
   → 實際行動: BB X（solver code: X）
 
 
 ==================================================
-【River: 3s（Board: 9sQsJcAs3s）】
+【River: 3♠️（Board: 9♠️Q♠️J♣️A♠️3♠️）】
 Hero Q7o 牌型: 中對 (Q)
-【BB 在 River QsJc9sAs3s】底池 15.100bb
+【BB 在 River Q♠️J♣️9♠️A♠️3♠️】底池 15.100bb
   Check: 41.2%（12 combos）
   BET 1.5（10% pot）: 6.6%（2 combos）
   BET 5.5（36% pot）: 0.8%（0 combos）
   All-in 10.200: 51.5%（16 combos）
 
-【BB Qc7d（Q7o）】
+【BB Q♣️7♦️（Q7o）】
   策略: Check 100%（EV 3.16bb）
   Q7o 其他花色:
-    Qh7d: Check 7%, All-in 93%（EV 3.1bb）
-    Qh7c: Check 7%, All-in 93%（EV 3.1bb）
-    Qd7c: Check 7%, All-in 93%（EV 3.1bb）
-    Qd7h: Check 7%, All-in 93%（EV 3.1bb）
-    Qc7h: Check 100%（EV 3.2bb）
+    Q♥️7♦️: Check 7%, All-in 93%（EV 3.1bb）
+    Q♥️7♣️: Check 7%, All-in 93%（EV 3.1bb）
+    Q♦️7♣️: Check 7%, All-in 93%（EV 3.1bb）
+    Q♦️7♥️: Check 7%, All-in 93%（EV 3.1bb）
+    Q♣️7♥️: Check 100%（EV 3.2bb）
   → 實際行動: BB X（solver code: X）
 
-【BB 在 River QsJc9sAs3s】底池 16.600bb
+【BB 在 River Q♠️J♣️9♠️A♠️3♠️】底池 16.600bb
   Fold: 0.2%（0 combos）
   Call: 72.1%（9 combos）
   All-in 10.200: 27.7%（3 combos）
 
-【BB Qc7d（Q7o）】
+【BB Q♣️7♦️（Q7o）】
   策略: Call 87%, All-in 13%（EV 7.55bb）
   Q7o 其他花色:
-    Qc7h: Call 87%, All-in 13%（EV 7.5bb）
+    Q♣️7♥️: Call 87%, All-in 13%（EV 7.5bb）
   → 實際行動: BB C 2.5bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

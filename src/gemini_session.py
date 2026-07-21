@@ -54,6 +54,7 @@ from coach_prompts import (  # noqa: F401 — re-exported for existing importers
     _TERM_REPLACEMENTS, _normalize_terms, _GROUNDING_PATTERNS,
     _needs_solver_grounding,
 )
+from card_display import cards_to_emoji
 
 QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
     name="query_next_actions",
@@ -1478,7 +1479,7 @@ class GeminiSessionManager:
             eff_bb = hand_json.get('effective_bb')
             eff_str = f"({eff_bb:.0f}bb)" if eff_bb else ""
             await _update_status(
-                f"📊 辨識完成：{hand_json['hero_position']} {hand_json['hero_hand']} "
+                f"📊 辨識完成：{hand_json['hero_position']} {cards_to_emoji(hand_json['hero_hand'])} "
                 f"{eff_str}，正在查詢 GTO 策略..."
             )
             if not refresh_token:
@@ -1532,7 +1533,7 @@ class GeminiSessionManager:
             eff_str2 = f"({eff_bb2:.0f}bb)" if eff_bb2 else ""
             hand_desc = (
                 f"Hero {hand_json['hero_position']}"
-                f"{'' if hand_json.get('no_hero_hand') else ' ' + hand_json['hero_hand']} "
+                f"{'' if hand_json.get('no_hero_hand') else ' ' + cards_to_emoji(hand_json['hero_hand'])} "
                 f"{eff_str2}\n"
                 f"Preflop: {hand_json['preflop_actions']}"
             )
@@ -1542,7 +1543,7 @@ class GeminiSessionManager:
                     acts = " ".join(
                         f"{a['position']}:{a['action']}" for a in s["actions"]
                     )
-                    hand_desc += f"\n{board} → {acts}"
+                    hand_desc += f"\n{cards_to_emoji(board)} → {acts}"
 
             user_q = user_text.strip() if user_text.strip() else "請分析這手牌"
             if context.get("no_hero_hand"):
@@ -2862,7 +2863,7 @@ class GeminiSessionManager:
             result = eval_hand(hand, board)
         except (ValueError, KeyError) as e:
             return f"無法判斷牌型：{e}。請確認 hand 格式（如 AKo, Th8c）。"
-        return f"{hand} 在 {board}: {result['full_label']}"
+        return f"{cards_to_emoji(hand)} 在 {cards_to_emoji(board)}: {result['full_label']}"
 
     async def _execute_lookup_hand(self, chat_id: int, args: dict) -> str:
         """Look up a hand by ID from the user's history."""
@@ -2906,8 +2907,8 @@ class GeminiSessionManager:
             return "帳本裡沒有符合條件的手牌。"
         lines = ["📒 符合的手牌（EV loss 排序）："]
         for h in hands:
-            lines.append(f"· {h['played_at']} {h['hero_hand']} {h['position'] or ''} "
-                         f"{h['boards'] or ''} — `{h['spot']}` -{h['ev_loss_bb']:.2f}bb "
+            lines.append(f"· {h['played_at']} {cards_to_emoji(h['hero_hand'])} {h['position'] or ''} "
+                         f"{cards_to_emoji(h['boards'] or '')} — `{h['spot']}` -{h['ev_loss_bb']:.2f}bb "
                          f"（{h['correctness']}）· [Analyze]({h['review_url']})")
         return "\n".join(lines)
 
@@ -3188,7 +3189,7 @@ class GeminiSessionManager:
                 board = game.get("board", "")
                 title = f"{position} {st}"
                 if board:
-                    title += f" | {board}"
+                    title += f" | {cards_to_emoji(board)}"
                 img = generate_range_grid(solution, position, title=title)
                 if chat_id not in self.pending_images:
                     self.pending_images[chat_id] = []
@@ -3836,7 +3837,7 @@ class GeminiSessionManager:
 
         lines = [
             "目前分析的手牌：",
-            f"- Hero: {ctx['hero_position']}{'' if ctx.get('no_hero_hand') else ' ' + ctx['hero_hand']}, {float(ctx['depth']) - 0.125:.0f}bb depth",
+            f"- Hero: {ctx['hero_position']}{'' if ctx.get('no_hero_hand') else ' ' + cards_to_emoji(ctx['hero_hand'])}, {float(ctx['depth']) - 0.125:.0f}bb depth",
             f"- Preflop: {ctx['preflop_actions']}",
         ]
 
@@ -3848,7 +3849,7 @@ class GeminiSessionManager:
                 break
             board = state["board"]
             acts = final.get(f"{street_name}_actions", "")
-            lines.append(f"- {street_name.capitalize()}: board={board} | actions={acts}")
+            lines.append(f"- {street_name.capitalize()}: board={cards_to_emoji(board)} | actions={acts}")
 
         # Include range breakdown from cached solutions to prevent hallucination.
         # Gemini tends to fabricate range compositions instead of using tools.

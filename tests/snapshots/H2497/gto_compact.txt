@@ -3,19 +3,19 @@
 ─── Preflop ───
 GTO: Call 100%
 
-─── Flop: 9sQsJc ───
+─── Flop: 9♠️Q♠️J♣️ ───
 🎯 頂對 (Q)
 GTO: Check 100%
 → Hero check ✅
 GTO: Call 99%
 → Hero raise 33% pot ❌ (GTO建議 call)
 
-─── Turn: As ───
+─── Turn: A♠️ ───
 🎯 中對 (Q)
 GTO: Check 95%
 → Hero check ✅
 
-─── River: 3s ───
+─── River: 3♠️ ───
 🎯 中對 (Q)
 GTO: Check 100%
 → Hero check ✅

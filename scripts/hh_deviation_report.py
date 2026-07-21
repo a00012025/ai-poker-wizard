@@ -8,6 +8,7 @@ import time
 from typing import Callable
 
 from hh_deviation_check import check_hand
+from card_display import cards_to_emoji
 from gto_formatter import normalize_hand_name
 
 
@@ -82,7 +83,7 @@ def analyze_hands(
         eff_bb = hand["effective_bb"]
 
         if on_progress:
-            on_progress(i + 1, len(hands), f"{hero_pos} {hero_hand} ({eff_bb:.0f}bb)")
+            on_progress(i + 1, len(hands), f"{hero_pos} {cards_to_emoji(hero_hand)} ({eff_bb:.0f}bb)")
 
         # Compute ICM params with monotonicity enforcement
         icm_params = None
@@ -297,6 +298,7 @@ def format_deviation_report(results: list[dict], threshold_pct: float = 10) -> s
         ev_loss_tag = f" [-{ev_loss:.2f}bb]" if ev_loss is not None and ev_loss > 0.005 else ""
         # Show raw hand (with suits) for postflop to distinguish combos
         display_hand = e.get("raw_hand", e["hand"]) if e["street"] != "preflop" else e["hand"]
+        display_hand = cards_to_emoji(display_hand)
         parts = []
         parts.append(
             f"• {tid_prefix}`{hand_id}` {e['pos']} {display_hand} {ebb}bb"

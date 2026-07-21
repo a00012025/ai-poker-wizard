@@ -35,6 +35,8 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
+from card_display import cards_to_emoji
+
 QUEUE_EV_MIN = 0.10          # bb: a decision enters the drill queue at/above this loss
 SEV_MAJOR = 0.30             # bb: ❌ vs ⚠️ display split
 MAX_DETAIL_BUTTONS = 6       # [Hand N 詳細] buttons on the report
@@ -1105,6 +1107,10 @@ def _boards_str(hand: dict) -> str:
     return "".join(parts)
 
 
+def _display_boards_str(hand: dict) -> str:
+    return cards_to_emoji(_boards_str(hand))
+
+
 def _sizing_snap(taken_code: str, requested) -> bool:
     try:
         req = float(requested)
@@ -1395,11 +1401,11 @@ def process_batch(text: str, date_str: str | None = None,
         hand_id = hand_id_for(block, date_str)
         played_at = base_dt.replace(minute=i % 60)
         entry["hand_id"] = hand_id
-        entry["echo"] = (f"{hand.get('hero_position')} {hand.get('hero_hand')} "
+        entry["echo"] = (f"{hand.get('hero_position')} {cards_to_emoji(hand.get('hero_hand'))} "
                          f"{hand.get('effective_bb')}bb · {hand.get('preflop_actions')}"
-                         + (f" · {_boards_str(hand)}" if _boards_str(hand) else ""))
+                         + (f" · {_display_boards_str(hand)}" if _boards_str(hand) else ""))
 
-        progress(f"[{i}/{len(blocks)}] grading {hand.get('hero_hand')} "
+        progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
         try:
             devmap = grade_hand(hand)

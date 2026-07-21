@@ -3,17 +3,17 @@
 ─── Preflop ───
 GTO: RAISE 2.1（31% pot） 100%
 
-─── Flop: 4c9d7c ───
+─── Flop: 4♣️9♦️7♣️ ───
 🎯 口袋對 (88)
 GTO: Check 48% / Bet 4.75（83% pot） 32% / Bet 3.15（55% pot） 14%
 → Hero check ✅
 
-─── Turn: As ───
+─── Turn: A♠️ ───
 🎯 口袋對 (88)
 GTO: Check 90%
 → Hero check ✅
 
-─── River: Th ───
+─── River: T♥️ ───
 🎯 口袋對 (88)
 GTO: Bet 2.5（44% pot） 53% / Bet 4（70% pot） 45%
 → Hero check ✅ (GTO建議 bet 44% pot)

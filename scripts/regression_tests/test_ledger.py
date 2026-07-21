@@ -1001,12 +1001,12 @@ def test_training_plan_focus_and_readback():
     assert_eq(spot_desc_zh({"spot_leaf": "turn:3bet:EPvSB:IP:[b-c]:vs_bet",
                             "spot_category": "turn", "hero_cat": "EP",
                             "villain_cat": "SB", "ip_oop": "IP"}),
-              "3bet 底池，Hero EP 對 SB、處於 IP，轉牌面對下注")
+              "3bet 底池（HU），Hero EP 對 SB、處於 IP，轉牌面對下注")
     assert_eq(spot_desc_zh({"spot_leaf": "river:SRP:SBvBB:OOP:[b-c]:vs_bet",
                             "spot_category": "river", "diagnosis_level": "parent",
                             "diagnosis_key": "river:SRP:OOP:vs_bet",
                             "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP"}),
-              "SRP 底池，你在 OOP，河牌面對下注（代表：Hero SB 對 BB）")
+              "SRP 底池（HU），你在 OOP，河牌面對下注（代表：Hero SB 對 BB）")
     assert_eq(spot_desc_zh({"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
                             "diagnosis_level": "parent", "diagnosis_key": "MP_vs3bet",
                             "hero_pos": "HJ", "hero_cat": "MP", "villain_cat": "SB",

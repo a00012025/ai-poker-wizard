@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
+from card_display import cards_to_emoji
+
 # Upload analysis timeout (seconds)
 ANALYSIS_TIMEOUT = 1800
 
@@ -831,7 +833,7 @@ class PokerWizardBot:
             # Coach with LLM
             hand_desc = (
                 f"Hand ID: {hand_id}\n"
-                f"Hero {hand['hero_position']} {hand['hero_hand']} "
+                f"Hero {hand['hero_position']} {cards_to_emoji(hand['hero_hand'])} "
                 f"({hand['effective_bb']:.0f}bb, {hand.get('num_players', 8)}人)\n"
                 f"Preflop: {hand['preflop_actions']}"
             )
@@ -841,7 +843,7 @@ class PokerWizardBot:
                     acts = " ".join(
                         f"{a['position']}:{a['action']}" for a in s["actions"]
                     )
-                    hand_desc += f"\n{board} → {acts}"
+                    hand_desc += f"\n{cards_to_emoji(board)} → {acts}"
 
             coaching_prompt = (
                 f"用戶上傳了手牌歷史檔案，想分析這手牌：\n{hand_desc}\n\n"
@@ -929,7 +931,7 @@ class PokerWizardBot:
                         board = last_spot.get("params", {}).get("board", "")
                         title = f"{hero_pos} {st}"
                         if board:
-                            title += f" | {board}"
+                            title += f" | {cards_to_emoji(board)}"
                         solver_pos = last_spot.get("solver_hero_pos", hero_pos)
                         img = generate_range_grid(
                             last_sol, solver_pos, title=title)
@@ -1018,12 +1020,12 @@ class PokerWizardBot:
                     questions.append(f"{hero_pos} 這個 range 面對 3-bet 要怎麼防守？")
                 elif len(streets) > 1:
                     questions.append(
-                        f"{hero_hand} 在這裡應該用什麼 size？")
+                        f"{cards_to_emoji(hero_hand)} 在這裡應該用什麼 size？")
                 elif is_icm:
                     questions.append("這個位置的 push 範圍有多寬？")
                 else:
                     questions.append(
-                        f"{hero_hand} 的 EV 跟其他手牌比如何？")
+                        f"{cards_to_emoji(hero_hand)} 的 EV 跟其他手牌比如何？")
 
                 if is_icm:
                     questions.append("如果對手更短碼，策略會怎麼變？")
@@ -2341,7 +2343,7 @@ class PokerWizardBot:
         """Deterministic hand description for live deep-dive coaching."""
         desc = [
             f"Hand ID: {hand_id}",
-            f"Hero {hand.get('hero_position')} {hand.get('hero_hand')} "
+            f"Hero {hand.get('hero_position')} {cards_to_emoji(hand.get('hero_hand'))} "
             f"({hand.get('effective_bb')}bb, {hand.get('players_at_table') or hand.get('num_players') or 8}人)",
             f"Preflop: {hand.get('preflop_actions')}",
         ]
@@ -2352,7 +2354,7 @@ class PokerWizardBot:
                 + (f"({a.get('size')}bb)" if a.get("size") is not None else "")
                 for a in (street.get("actions") or [])
             )
-            desc.append(f"{board} → {acts}".rstrip())
+            desc.append(f"{cards_to_emoji(board)} → {acts}".rstrip())
         repairs = hand.get("_repairs") or []
         if repairs:
             desc.append("Live parse repairs: " + "；".join(str(r) for r in repairs))

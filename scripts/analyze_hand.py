@@ -44,6 +44,7 @@ from gto_formatter import (
     combo_index_for_hand,
     _combo_idx_in_player_range,
 )
+from card_display import cards_to_emoji
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
@@ -1401,7 +1402,7 @@ def _canonicalize_board_streets(streets: list) -> tuple[list, list[str]]:
             used_suits.add(chosen)
 
         if approximated and cards:
-            notes.append(f"{raw} → {''.join(cards)}")
+            notes.append(f"{raw} → {cards_to_emoji(''.join(cards))}")
         return "".join(cards)
 
     for idx, street in enumerate(streets):
@@ -2035,15 +2036,15 @@ def _run_analysis(hand: dict) -> dict:
         # Always accumulate board cards, even for streets with no actions
         if street_idx == 0:
             board = street.get("board") or street.get("cards") or street.get("card", "")
-            street_header = f"【Flop: {board}】"
+            street_header = f"【Flop: {cards_to_emoji(board)}】"
         elif street_idx == 1:
             card = street.get("card") or street.get("cards", "")
             board += card
-            street_header = f"【Turn: {card}（Board: {board}）】"
+            street_header = f"【Turn: {cards_to_emoji(card)}（Board: {cards_to_emoji(board)}）】"
         elif street_idx == 2:
             card = street.get("card") or street.get("cards", "")
             board += card
-            street_header = f"【River: {card}（Board: {board}）】"
+            street_header = f"【River: {cards_to_emoji(card)}（Board: {cards_to_emoji(board)}）】"
 
         # Skip streets after all-in is resolved (no further betting possible)
         if all_in_resolved:
@@ -2469,8 +2470,8 @@ def _run_analysis(hand: dict) -> dict:
                 # Build display card for turn/river
                 display_card = last_street.get("card", "")
                 street_label = (f"{street_name.capitalize()}: "
-                                f"{display_card}" if display_card
-                                else f"{street_name.capitalize()}: {full_board}")
+                                f"{cards_to_emoji(display_card)}" if display_card
+                                else f"{street_name.capitalize()}: {cards_to_emoji(full_board)}")
                 # Hero hasn't acted on this final street — every recorded
                 # action on it is "before hero" for categorization purposes.
                 actions_before_hero = [
@@ -2977,7 +2978,7 @@ def _run_analysis(hand: dict) -> dict:
     results = []
     results.append("=" * 50)
     hero_label = (f"Hero: {display_hero_pos}" if no_hero_hand
-                  else f"Hero: {display_hero_pos} {hero_hand}")
+                  else f"Hero: {display_hero_pos} {cards_to_emoji(hero_hand)}")
     if is_icm:
         depth_display = depth if isinstance(depth, str) else f"{depth}"
         results.append(hero_label)
@@ -3059,7 +3060,7 @@ def _run_analysis(hand: dict) -> dict:
                         eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
                         eval_result = _eval_hand(eval_input, spot_board)
                         if eval_result["full_label"]:
-                            results.append(f"Hero {hero_hand} 牌型: {eval_result['full_label']}")
+                            results.append(f"Hero {cards_to_emoji(hero_hand)} 牌型: {eval_result['full_label']}")
 
         if display_sol:
             # When no hero hand specified, show only range-level summary (no hero-specific detail).
@@ -3123,7 +3124,7 @@ def _run_analysis(hand: dict) -> dict:
     else:
         mode_str = "MTT"
     compact_hero = (f"♠ {display_hero_pos} | {eff_str} {mode_str}" if no_hero_hand
-                    else f"♠ {display_hero_pos} {hero_hand} | {eff_str} {mode_str}")
+                    else f"♠ {display_hero_pos} {cards_to_emoji(hero_hand)} | {eff_str} {mode_str}")
     compact = [compact_hero]
     if multiway_note:
         # multiway_note already starts with ⚠ — don't double it

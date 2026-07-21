@@ -1662,7 +1662,7 @@ def test_formatter_low_range_exact_combo_not_aggregated():
 
     # Full text shows hero's exact combo and its jam verdict — NOT the
     # aggregate fold.
-    assert_in("【LJ Ac8c（A8s）】", full)
+    assert_in("【LJ A♣️8♣️（A8s）】", full)
     assert_in("All-in 99%", full)
     assert_not_in("【LJ A8s】", full)
     assert_not_in("Fold: 94", full)
@@ -2038,3 +2038,16 @@ def test_h3511_multiway_postflop_has_solver_data_and_overcall_preflop():
     # Hero spot present on every street (preflop + flop + turn + river headers).
     for header in ("【Flop:", "【Turn:", "【River:"):
         assert_in(header, text, f"{header} section must render")
+
+@test
+def test_card_display_helper_is_display_only():
+    """User-facing exact cards use emoji suits; class hands and malformed tokens
+    stay machine-readable/pass-through."""
+    from card_display import card_to_emoji, cards_to_emoji, card_tokens_to_emoji
+
+    assert_eq(card_to_emoji("Ac"), "A♣️")
+    assert_eq(cards_to_emoji("AcKdQs"), "A♣️K♦️Q♠️")
+    assert_eq(cards_to_emoji("T9s"), "T9s")
+    assert_eq(cards_to_emoji("K2o"), "K2o")
+    assert_eq(card_tokens_to_emoji("Hero Ac Kd on board Qs"),
+              "Hero A♣️ K♦️ on board Q♠️")

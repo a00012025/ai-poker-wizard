@@ -1272,7 +1272,7 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
     assert_eq(calls[0]["hero_hand"], "Js8h",
               "solver analysis must receive persisted parsed_json hero hand")
     assert_eq(calls[0]["preflop_actions"], "F-F-F-F-F-F-C-X")
-    assert_in("Hero BB Js8h", bot.session_manager.prompt)
+    assert_in("Hero BB J♠️8♥️", bot.session_manager.prompt)
     assert_true("AA" not in bot.session_manager.prompt,
                 "live detail prompt must not contain a reparse-drifted AA hand")
     assert_true("FOLLOWUP" not in response,
@@ -1540,15 +1540,15 @@ def test_queue_feed_review_and_manual_items():
     manual drill item (kind/added_by/source, ev may be 0)."""
     from datetime import datetime, timezone
     import queue_feed as qf
-    assert_eq(qf.pretty_hand("Qh8c"), "Q♥8♣")                   # suits -> glyphs
-    assert_eq(qf.pretty_hand("AsKd"), "A♠K♦")
+    assert_eq(qf.pretty_hand("Qh8c"), "Q♥️8♣️")                   # suits -> glyphs
+    assert_eq(qf.pretty_hand("AsKd"), "A♠️K♦️")
     assert_eq(qf.pretty_hand("T9s"), "T9s")                     # odd/non-exact passes through
     row = {"spot_category": "river", "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet",
            "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP", "hero_pos": "SB",
            "hero_hand": "Qh8c", "max_ev": 22.7, "approx_flags": ["chipev_grading"],
            "played_at": datetime(2026, 6, 1, 3, 0, tzinfo=timezone.utc), "ref_hand_id": "abc"}
     lbl = qf.review_label(row)
-    assert_true(lbl.startswith("復盤 6/1 Q♥8♣ "))                # exact combo in the label
+    assert_true(lbl.startswith("復盤 6/1 Q♥️8♣️ "))                # exact combo in the label
     assert_in("−22.7bb", lbl)
     assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
     assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))

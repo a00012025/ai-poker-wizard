@@ -31,6 +31,7 @@ import queue_feed as qf  # noqa: E402  (reuse URL/label/enqueue helpers + _HONES
 from action_bias import bias_suffix  # noqa: E402
 from queue_feed import TPE, LOSSY_MIN_BB, pretty_hand  # noqa: E402
 from scorecard import spot_desc_zh  # noqa: E402
+from card_display import cards_to_emoji  # noqa: E402
 
 TOP_SPOTS = 2
 TOP_DECISIONS = 8
@@ -90,6 +91,7 @@ _TOP_DECISIONS_SQL = f"""
 SELECT gtow_hand_id ref_hand_id, street, decision_idx, spot_leaf, spot_category,
        hero_cat, villain_cat, ip_oop, position hero_pos, ev_loss_bb, approx_flags,
        played_at, taken_code, best_code, correctness, pot_type, eff_stack, gametype,
+       played_depth_bb, solver_depth_bb,
        jsonb_build_array(jsonb_build_object(
            'hand_id', gtow_hand_id, 'street', street,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
@@ -162,7 +164,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
         out.append({
             "combo": pretty_hand(row.get("hero_hand")),
             "position": row.get("hero_pos"),
-            "depth": float(row["preflop_depth_bb"]) if row.get("preflop_depth_bb") is not None else None,
+            "depth": _decision_display_depth(row),
             "boards": row.get("boards") or "",
             "desc": hand_desc(row),
             "street_line": action_ctx.get("street_line") or "",
@@ -258,17 +260,35 @@ def _format_history_action(action: dict, hero_pos: str, street: str) -> str:
     return f"{who} {_action_obj_zh(action, street)}"
 
 
-def _format_street_history(street: str, acts: list[dict], hero_pos: str, boards: str) -> str | None:
+def _decision_display_depth(row: dict) -> float | None:
+    """Depth shown next to a concrete decision.
+
+    Prefer the decision-local solver depth: GTOW Analyzer may bind a hand to a
+    much shorter effective stack than the table/opening stack (for example a
+    short blind behind).  Falling back to the played/preflop depth keeps older
+    rows renderable.
+    """
+    for key in ("solver_depth_bb", "played_depth_bb", "preflop_depth_bb"):
+        val = row.get(key)
+        if val is not None:
+            return float(val)
+    return None
+
+
+def _format_street_history(street: str, acts: list[dict], hero_pos: str, boards: str,
+                           *, show_first_to_act: bool = False) -> str | None:
     if street == "preflop":
         meaningful = [a for a in acts if _norm_code(a.get("code")) != "F"]
         body = (", ".join(_format_history_action(a, hero_pos, street) for a in meaningful)
                 if meaningful else "Fold to Hero")
         return f"{STREET_LABELS[street]}: {body}"
 
-    if not acts:
+    if not acts and not show_first_to_act:
         return None
-    board = _street_board(boards, street)
+    board = cards_to_emoji(_street_board(boards, street))
     label = STREET_LABELS[street] + (f" {board}" if board else "")
+    if not acts:
+        return f"{label}: Hero 首動"
     return f"{label}: " + ", ".join(
         _format_history_action(a, hero_pos, street) for a in acts)
 
@@ -345,9 +365,9 @@ def decision_action_context(row: dict) -> dict:
                         acts = list(acts)
                     elif not acts:
                         continue
-                    if s == street and not acts:
-                        break
-                    line = _format_street_history(s, acts, hero_pos, boards)
+                    line = _format_street_history(
+                        s, acts, hero_pos, boards,
+                        show_first_to_act=(s == street and s != "preflop"))
                     if line:
                         parts.append(line)
                     if s == street:
@@ -383,7 +403,8 @@ def depth_label(depth: float | None) -> str:
     if depth is None:
         return ""
     d = float(depth)
-    return f"{d:.0f}bb" if abs(d - round(d)) < 0.2 else f"{d:.1f}bb"
+    bb = f"{d:.0f}bb" if abs(d - round(d)) < 0.2 else f"{d:.1f}bb"
+    return f"有效 {bb}"
 
 
 def decision_mark(i: int) -> str:

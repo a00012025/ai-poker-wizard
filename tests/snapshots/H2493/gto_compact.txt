@@ -3,17 +3,17 @@
 ─── Preflop ───
 GTO: RAISE 2.1（31% pot） 100%
 
-─── Flop: Th5hAh ───
+─── Flop: T♥️5♥️A♥️ ───
 🎯 頂對 (A) + 花聽牌
 GTO: Bet 3.15（55% pot） 74% / Bet 1.9（33% pot） 18% / Bet 4.75（83% pot） 6%
 → Hero bet 20% pot ✅ (GTO建議 bet 55% pot)
 
-─── Turn: 4c ───
+─── Turn: 4♣️ ───
 🎯 頂對 (A) + 花聽牌
 GTO: Bet 6.65（83% pot） 100%
 → Hero bet 75% pot ✅
 
-─── River: 9d ───
+─── River: 9♦️ ───
 🎯 頂對 (A)
 GTO: All-in 75% / Bet 13（61% pot） 25%
 → Hero all-in ✅
