@@ -5,13 +5,13 @@ Every hero decision node (preflop -> river) is classified into a hierarchical
 action line so per-spot EV loss can be aggregated at each level of the tree.
 
 Preflop top-level lines (mirror GTOW drill "Preflop action"):
-  RFI, vsOpen, vsRaiseCall, vsSqueeze, vs3bet, vsCold3bet, vs4bet, vsCold4bet
+  RFI, vsOpen, vsRaiseCall, vsSqueeze, vs3bet, vs4bet, vsCold4bet
   - RFI: by EXACT hero position (UTG_RFI ... SB_RFI); no villain.
   - vsOpen: L1 = exact hero pos (BTN_vsOpen); L2 = opener position CATEGORY
             (BTN_vsOpen_EP). Opener seat collapses to EP/MP/LP/SB/BB.
   - vs3bet/vs4bet/vsRaiseCall/vsSqueeze: rarer -> L1 = hero pos CATEGORY
             (EP_vs3bet); L2 = hero IP/OOP vs the villain (EP_vs3bet_IP).
-  - vsCold3bet: hero did NOT open but faces a 3bet (cold-caller/blind).
+  - flat_vsSqueeze leaf prefix: hero cold-called an open, then faces a squeeze.
   - vsCold4bet: hero opened (or cold), a 3bet then 4bet, hero faces the 4bet.
 
   DISCARDED (not scored): any limp-involved preflop decision (hero limped, or
@@ -127,6 +127,7 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
     opener = last_raiser = three_bettor = None
     callers_since_raise = 0
     caller_before_3bet = False
+    hero_called_open = False
     limpers: list[str] = []
     hero_limped = False
     hero_raised = False
@@ -142,6 +143,8 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
                     hero_limped = True
             else:
                 callers_since_raise += 1
+                if pos == hero and raise_count == 1:
+                    hero_called_open = True
         elif _is_raise(code):
             raise_count += 1
             if raise_count == 1:
@@ -187,23 +190,25 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
                 "villain": opener, "note": ""}
 
     if raise_count == 2:
-        if hero_raised and hero_raise_level == 1:      # hero opened, faces 3bet/squeeze
-            rel = ip_oop(hero, three_bettor, npl)
-            vc = pos_cat(three_bettor)
-            if caller_before_3bet:
+        rel = ip_oop(hero, three_bettor, npl)
+        vc = pos_cat(three_bettor)
+        if caller_before_3bet:
+            if hero_raised and hero_raise_level == 1:      # hero opened, faces squeeze
                 return {"category": "vsSqueeze", "l1": f"{hc}_vsSqueeze",
                         "l2": f"{hc}_vsSqueeze_v{vc}_{rel}",
                         "villain": three_bettor, "note": ""}
-            # The 3-bettor's position drives their 3bet range (an SB 3bet, a BB
-            # 3bet and an IP cold-3bet are very different ranges), so it is part
-            # of the action-line key, not just a stored attribute.
-            return {"category": "vs3bet", "l1": f"{hc}_vs3bet",
-                    "l2": f"{hc}_vs3bet_v{vc}_{rel}",
-                    "villain": three_bettor, "note": ""}
-        # hero did not open but faces a 3bet (cold-caller or blind) -> vsCold3bet
-        rel = ip_oop(hero, three_bettor, npl)
-        return {"category": "vsCold3bet", "l1": f"{hc}_vsCold3bet",
-                "l2": f"{hc}_vsCold3bet_v{pos_cat(three_bettor)}_{rel}",
+            if hero_called_open:                           # hero flat-called, faces squeeze
+                return {"category": "vsSqueeze", "l1": f"{hc}flat_vsSqueeze",
+                        "l2": f"{hc}flat_vsSqueeze_v{vc}_{rel}",
+                        "villain": three_bettor,
+                        "note": "hero flat-called open, then faced squeeze"}
+        # The 3-bettor's position drives their 3bet range (an SB 3bet, a BB
+        # 3bet and an IP 3bet are very different ranges), so it is part of the
+        # action-line key, not just a stored attribute. We intentionally do not
+        # use a separate Cold3bet taxonomy name; caller-vs-squeeze is represented
+        # by the explicit `flat_vsSqueeze` leaf above.
+        return {"category": "vs3bet", "l1": f"{hc}_vs3bet",
+                "l2": f"{hc}_vs3bet_v{vc}_{rel}",
                 "villain": three_bettor, "note": ""}
 
     if raise_count == 3:

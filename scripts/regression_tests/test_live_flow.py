@@ -998,9 +998,9 @@ def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
         ({"spot_category": "vs3bet",
           "spot_leaf": "LP_vs3bet_vLP_OOP"},
          "LP OOP vs LP 3bet"),
-        ({"spot_category": "vsCold3bet",
-          "spot_leaf": "LP_vsCold3bet_vSB_IP"},
-         "LP IP｜Cold vs SB 3bet"),
+        ({"spot_category": "vsSqueeze",
+          "spot_leaf": "LPflat_vsSqueeze_vSB_IP"},
+         "LP IP flat vs SB Squeeze"),
         ({"spot_category": "vs4bet",
           "spot_leaf": "EP_vs4bet_vBB_OOP"},
          "EP OOP vs BB 4bet"),
@@ -1037,7 +1037,8 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
         })
         cold_url = drill_url_for({
             "gtow_hand_id": "live:y", "street": "preflop", "decision_idx": 0,
-            "spot_category": "vsCold3bet", "position": "BB", "hero_cat": "BB",
+            "spot_category": "vsSqueeze", "spot_leaf": "BBflat_vsSqueeze_vSB_OOP",
+            "position": "BB", "hero_cat": "BB",
             "villain_cat": "SB", "pot_type": "Preflop",
             "eff_stack": "short", "_hand": {"hero_position": "BB"},
         })
@@ -1046,7 +1047,7 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     assert_in("fh_start_spot=custom_spot", url)
     assert_in("fh_start_spot=custom_spot", cold_url)
     assert_eq(calls[0][1:], ("turn", 0, "squeezed"))
-    assert_eq(calls[1][1:], ("preflop", 0, "3bet"))
+    assert_eq(calls[1][1:], ("preflop", 0, "squeezed"))
 
 
 @test
@@ -1117,15 +1118,16 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
             "position": "UTG+1", "pot_type": "3bet",
         })
         cold = qf.queue_drill_url_for_decision({
-            "spot_category": "vsCold3bet", "street": "preflop",
-            "decision_idx": 0, "position": "BB", "pot_type": "Preflop",
+            "spot_category": "vsSqueeze", "spot_leaf": "BBflat_vsSqueeze_vSB_OOP",
+            "street": "preflop", "decision_idx": 0, "position": "BB",
+            "pot_type": "Preflop",
         })
     finally:
         qf._load_source_hand = old_load
         gtow_custom_url.build_custom_spot_url = old_build
     assert_in("fh_start_spot=custom_spot", post)
     assert_in("fh_start_spot=custom_spot", cold)
-    assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "3bet")])
+    assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "squeezed")])
 
 
 @test
@@ -1367,7 +1369,7 @@ def test_shared_drill_url_policy():
     u_pf = drill_url_for_spot("flop", hero_cat="BB", villain_cat="LP",
                               ip_oop="OOP", pot_type="SRP")
     assert_eq(u_pf, None)
-    assert_eq(drill_url_for_spot("vsCold3bet", hero_cat="BB"), None)
+    assert_true(drill_url_for_spot("vs3bet", hero_cat="BB"))
     assert_eq(drill_url_for_spot("discarded"), None)
 
 

@@ -1204,13 +1204,16 @@ def drill_url_for(dec: dict) -> str | None:
 
     hand = dec.get("_hand")
     category = dec.get("spot_category")
+    is_flat_vs_squeeze = "flat_vsSqueeze" in str(dec.get("spot_leaf") or "")
     needs_exact = (dec.get("street") in {"flop", "turn", "river"}
-                   or category in {"vsCold3bet", "vsCold4bet"})
+                   or category in {"vsCold3bet", "vsCold4bet"}
+                   or is_flat_vs_squeeze)
     if hand and needs_exact:
         try:
             from gtow_custom_url import build_custom_spot_url
-            pot_type = ({"vsCold3bet": "3bet", "vsCold4bet": "4bet"}.get(category)
-                        or dec.get("pot_type") or "")
+            pot_type = ("squeezed" if is_flat_vs_squeeze else
+                        ({"vsCold3bet": "3bet", "vsCold4bet": "4bet"}.get(category)
+                         or dec.get("pot_type") or ""))
             return build_custom_spot_url(
                 hand, dec["street"], int(dec.get("decision_idx") or 0),
                 pot_type,

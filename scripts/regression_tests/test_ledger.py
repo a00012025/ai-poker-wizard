@@ -215,8 +215,8 @@ def test_list_only_distill_preflop_3bet_line():
     )
     _, decs = distill_hand_from_list(row)
     assert_eq(len(decs), 1)
-    assert_eq(decs[0]["spot_category"], "vsCold3bet")
-    assert_in("vsCold3bet", decs[0]["spot_leaf"])
+    assert_eq(decs[0]["spot_category"], "vs3bet")
+    assert_in("vs3bet", decs[0]["spot_leaf"])
 
 
 @test
@@ -1203,13 +1203,12 @@ def test_build_drill_url_pins_position():
     # our raise+caller taxonomy maps to GTOW's verified possibleSqueeze name.
     squeeze = build_drill_url("vsRaiseCall", "preflop", 20, ["BB"])
     assert_in("fh_actions=possibleSqueeze", squeeze)
-    # cold-facing categories have no GTOW shortcut and require a source hand.
-    for category in ("vsCold3bet", "vsCold4bet"):
-        try:
-            build_drill_url(category, "preflop", 20, ["BB"])
-            assert_true(False, f"{category} must not alias a different shortcut")
-        except SpotNotSupportedError:
-            pass
+    # cold-facing 4bet has no GTOW shortcut and requires a source hand.
+    try:
+        build_drill_url("vsCold4bet", "preflop", 20, ["BB"])
+        assert_true(False, "vsCold4bet must not alias a different shortcut")
+    except SpotNotSupportedError:
+        pass
     # unmapped category raises
     try:
         build_drill_url("bogus", "preflop", 20, ["BTN"])
@@ -1415,10 +1414,19 @@ def test_spot_taxonomy_preflop_lines():
                                    ("SB","F"),("BB","R9")], 8)
     assert_eq(r_bb["l2"], "LP_vs3bet_vBB_IP")
     assert_true(r["l2"] != r_bb["l2"], "SB and BB 3-bet must land in different lines")
-    # vsCold3bet: hero cold (did not open), faces a 3bet (also carries 3-bettor pos)
+    # Non-opener facing a 3bet uses plain vs3bet; no separate Cold3bet wording.
     r = classify_preflop("BB", [("CO","R2.5"),("BTN","R8"),("SB","F")], 8)
-    assert_eq(r["category"], "vsCold3bet"); assert_eq(r["l1"], "BB_vsCold3bet")
-    assert_eq(r["l2"], "BB_vsCold3bet_vLP_OOP")   # BTN (LP) 3-bettor, BB is OOP
+    assert_eq(r["category"], "vs3bet"); assert_eq(r["l1"], "BB_vs3bet")
+    assert_eq(r["l2"], "BB_vs3bet_vLP_OOP")   # BTN (LP) 3-bettor, BB is OOP
+    # Hero flat-called the open, then faces a squeeze: distinct from opener-vs-squeeze.
+    r = classify_preflop("HJ", [("UTG","R2"),("HJ","C"),("CO","F"),("BTN","F"),
+                                ("SB","F"),("BB","R9"),("UTG","F")], 8)
+    assert_eq(r["category"], "vsSqueeze"); assert_eq(r["l1"], "MPflat_vsSqueeze")
+    assert_eq(r["l2"], "MPflat_vsSqueeze_vBB_IP")
+    r = classify_preflop("HJ", [("UTG","F"),("LJ","F"),("HJ","R2"),("CO","C"),
+                                ("BTN","F"),("SB","F"),("BB","R9")], 8)
+    assert_eq(r["category"], "vsSqueeze"); assert_eq(r["l1"], "MP_vsSqueeze")
+    assert_eq(r["l2"], "MP_vsSqueeze_vBB_IP")
     # limp-involved decisions are discarded (limp ranges unreliable)
     r = classify_preflop("BB", [("SB","C")], 8)
     assert_eq(r["category"], "discarded"); assert_eq(r["l1"], "discarded:faced_limp")

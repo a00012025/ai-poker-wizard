@@ -79,8 +79,20 @@ def _preflop_name(row: Mapping, leaf: str, category: str) -> str | None:
         return None
     marker, action, cold = spec
     hero, villain, rel = _preflop_parts(row, leaf, marker)
+    flat = False
+    if category == "vsSqueeze" and "flat_vsSqueeze" in leaf:
+        m = re.match(r"([^_]+)flat_vsSqueeze(?:_v([^_]+))?(?:_([^_]+))?", leaf)
+        if m:
+            hero = str(row.get("hero_cat") or row.get("hero_pos") or m.group(1) or "")
+            villain = str(row.get("villain_cat") or m.group(2) or "")
+            rel = str(row.get("ip_oop") or m.group(3) or "")
+        else:
+            hero, villain, rel = _preflop_parts(row, leaf, "flat_vsSqueeze")
+        flat = True
     actor = " ".join(part for part in (hero, rel) if part and part != "?")
     target = " ".join(part for part in (villain, action) if part)
+    if flat:
+        return f"{actor} flat vs {target}" if actor and target else None
     if cold:
         return f"{actor}｜Cold vs {target}" if actor and target else None
     return f"{actor} vs {target}" if actor and target else None

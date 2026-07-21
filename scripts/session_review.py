@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import queue_feed as qf  # noqa: E402  (reuse URL/label/enqueue helpers + _HONEST)
+from action_bias import bias_suffix  # noqa: E402
 from queue_feed import TPE, LOSSY_MIN_BB, pretty_hand  # noqa: E402
 from scorecard import spot_desc_zh  # noqa: E402
 
@@ -190,7 +191,7 @@ def drill_desc(row: dict, bias: dict | None) -> str:
         "hero_cat": row.get("hero_cat"), "villain_cat": row.get("villain_cat"),
         "ip_oop": row.get("ip_oop"), "hero_pos": row.get("hero_pos"),
         "street": row.get("spot_category")})
-    return base + qf.bias_suffix(bias)
+    return base + bias_suffix(bias)
 
 
 def hand_desc(row: dict) -> str:
