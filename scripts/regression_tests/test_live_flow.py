@@ -1552,6 +1552,22 @@ def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
 
 
 @test
+def test_queue_detail_rebuilds_missing_drill_url_from_sources():
+    """A queued drill with persisted source_hands but NULL drill_url should be
+    repaired lazily on 詳細／練習 instead of immediately telling the user it
+    cannot be reconstructed."""
+    import inspect
+    from telegram_bot.bot import PokerWizardBot
+    src = inspect.getsource(PokerWizardBot._queue_drill_detail)
+    assert_in("source_hands", src)
+    assert_in("queue_drill_url_from_sources", src)
+    assert_in("UPDATE drill_queue SET drill_url=$2", src)
+    assert_true(src.index("queue_drill_url_from_sources")
+                < src.index("這個項目目前沒有可精確重建"),
+                "rebuild must happen before the no-url error")
+
+
+@test
 def test_queue_feed_review_and_manual_items():
     """Review label (combo w/ suits + spot + ⚠近似), review URL fallback, and the
     manual drill item (kind/added_by/source, ev may be 0)."""
