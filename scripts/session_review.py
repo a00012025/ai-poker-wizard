@@ -227,7 +227,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
                 "kind": "review", "added_by": "session", "source": "online",
                 "ref_hand_id": row["ref_hand_id"], "spot_leaf": row.get("spot_leaf"),
                 "spot_category": row.get("spot_category"),
-                "label": qf.review_label(row), "review_url": exact_url,
+                "label": qf.review_label(row), "drill_url": exact_url,
                 "review_anchor_url": None, "review_anchor_street": None,
                 "source_hands": entries,
                 "total_ev_loss_bb": round(float(row.get("ev_loss_bb") or 0.0), 4),
