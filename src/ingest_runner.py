@@ -51,11 +51,27 @@ def register_status_message(user_id: int, chat_id: int, message_id: int) -> None
 
 # ── Live progress rendering (pure helpers, unit-tested without a bot) ────────
 
-# `x/total` appears in "detail sweep: 126/241", "detail write: 126/241",
-# and "list-only sweep: 500/1700";
+# `x/total` appears in "list scan: 100/241", "detail sweep: 126/241",
+# "detail write: 126/241", and "list-only sweep: 500/1700";
 # the plain "list sweep: 320 new..." has no denominator (streaming paginator).
-_FRACTION_RE = re.compile(r"(?:sweep|write):\s*(\d+)\s*/\s*(\d+)")
-_COUNT_RE = re.compile(r"list sweep:\s*(\d+)\s+new")
+_FRACTION_RE = re.compile(r"(?:scan|sweep|write):\s*(\d+)\s*/\s*(\d+)")
+_COUNT_RE = re.compile(r"list (?:sweep|write):\s*(\d+)\s+new")
+
+
+def progress_stage_label(stage_label: str, raw_line: str | None = None) -> str:
+    """Translate machine progress lines into user-facing sub-stages."""
+    line = (raw_line or "").strip()
+    if line.startswith("list scan:"):
+        return "掃描 GTOW 手牌清單"
+    if line.startswith("list write:"):
+        return "寫入新手牌清單"
+    if line.startswith("list-only sweep:"):
+        return "建立零損失摘要"
+    if line.startswith("detail sweep:"):
+        return "下載完整分析"
+    if line.startswith("detail write:"):
+        return "寫入完整分析到 DB"
+    return stage_label
 
 
 def parse_progress(line: str) -> tuple[int, int] | None:
@@ -65,7 +81,7 @@ def parse_progress(line: str) -> tuple[int, int] | None:
 
 
 def parse_running_count(line: str) -> int | None:
-    """Extract the running 'N new' count from a denominator-less list sweep line."""
+    """Extract the running 'N new' count from a denominator-less list line."""
     m = _COUNT_RE.search(line or "")
     return int(m.group(1)) if m else None
 
@@ -108,7 +124,7 @@ def render_status(stage_label: str, parsed: tuple[int, int] | None,
         tail = f" · {eta}" if eta else ""
         lines.append(f"{stage_label} · {bar} {pct}%{tail}（{done}/{total}）")
     elif running_count is not None:
-        lines.append(f"{stage_label} · 已抓 {running_count:,} 筆新手牌…")
+        lines.append(f"{stage_label} · 已發現 {running_count:,} 筆新手牌…")
     else:
         lines.append(f"{stage_label}…")
     done_stages = [f"{k} {v}" for k, v in stage_times.items()]
@@ -138,23 +154,25 @@ class _LiveStatus:
         self._last_text: str | None = None
 
     async def update(self, stage_label: str, raw_line: str | None = None) -> None:
+        display_stage = progress_stage_label(stage_label, raw_line)
         parsed = parse_progress(raw_line) if raw_line else None
         running = parse_running_count(raw_line) if raw_line else None
-        stage_changed = stage_label != self._stage
+        stage_changed = display_stage != self._stage
         if stage_changed:
             # Book the finished stage's duration so the message shows where the
             # time actually went (instruments the pipeline for later perf work).
             if self._stage is not None and self._stage_started_at is not None:
                 self.stage_times[self._stage] = _fmt_dur(
                     self._now() - self._stage_started_at)
-            self._stage = stage_label
+            self._stage = display_stage
             self._stage_started_at = self._now()
+            self.detail_started_at = None
         # Anchor the ETA clock at the first detail-sweep datapoint.
         if parsed and self.detail_started_at is None:
             self.detail_started_at = self._now()
         anchor = self.detail_started_at or self.started_at
         elapsed = self._now() - anchor
-        text = render_status(stage_label, parsed, elapsed, self.stage_times,
+        text = render_status(display_stage, parsed, elapsed, self.stage_times,
                              running_count=running)
         now = self._now()
         if not stage_changed and now - self._last_edit_at < _EDIT_DEBOUNCE_S:
@@ -235,10 +253,10 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     await progress(f"{label}…", stage=label)
 
     async def heartbeat(line):
-        # ledger_ingest prints periodic "list/detail sweep" progress and
-        # "detail write" during the serial DB write between fetch batches;
-        # surface both in the toast and refresh the liveness heartbeat.
-        if "sweep:" in line or "write:" in line:
+        # ledger_ingest prints periodic "list scan/list write/detail sweep"
+        # progress and "detail write" during serial DB writes; surface all of
+        # them in the toast and refresh the liveness heartbeat.
+        if any(marker in line for marker in ("scan:", "sweep:", "write:")):
             await progress(f"{label}：{line.strip()}", stage=label,
                            raw=line.strip())
 

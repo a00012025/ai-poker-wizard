@@ -14,6 +14,8 @@ from regression_tests.harness import assert_eq, assert_in, assert_true, test
 @test
 def test_parse_progress_extracts_done_total():
     from src.ingest_runner import parse_progress
+    assert_eq(parse_progress("  list scan: 100/1241 (12 new)"), (100, 1241),
+              "list scan x/total")
     assert_eq(parse_progress("  detail sweep: 126/241"), (126, 241),
               "detail sweep x/total")
     assert_eq(parse_progress("  detail write: 126/241"), (126, 241),
@@ -68,6 +70,20 @@ def test_render_status_denominatorless_stage_has_no_bar():
     assert_in("攝取中", text, "stage label present")
     assert_true("▓" not in text and "░" not in text, "no bar without denominator")
     assert_in("320", text, "running count shown")
+    assert_in("已發現", text, "count wording says discovered, not fully ingested")
+
+
+@test
+def test_progress_stage_label_translates_machine_lines():
+    from src.ingest_runner import progress_stage_label
+    assert_eq(progress_stage_label("攝取中", "  list scan: 100/1241 (12 new)"),
+              "掃描 GTOW 手牌清單", "list scan label")
+    assert_eq(progress_stage_label("攝取中", "  list write: 500 new..."),
+              "寫入新手牌清單", "list write label")
+    assert_eq(progress_stage_label("攝取中", "  detail sweep: 120/240"),
+              "下載完整分析", "detail fetch label")
+    assert_eq(progress_stage_label("攝取中", "  detail write: 40/240"),
+              "寫入完整分析到 DB", "detail write label")
 
 
 @test
@@ -128,6 +144,26 @@ def test_live_status_stage_change_bypasses_debounce():
 
     edits = asyncio.run(run())
     assert_eq(len(edits), 2, f"stage change bypasses debounce: {edits}")
+
+
+@test
+def test_live_status_substage_change_bypasses_debounce():
+    """The top-level stage may remain 攝取中 while the real sub-stage changes
+    from list scan to detail fetch; that must render immediately."""
+    from src.ingest_runner import _LiveStatus
+
+    async def run():
+        clock = {"t": 1000.0}
+        bot = _FakeBot()
+        live = _LiveStatus(bot, chat_id=1, message_id=2, now=lambda: clock["t"])
+        await live.update("攝取中", "  list scan: 100/1241 (12 new)")
+        await live.update("攝取中", "  detail sweep: 10/240")
+        return bot.edits
+
+    edits = asyncio.run(run())
+    assert_eq(len(edits), 2, f"sub-stage change bypasses debounce: {edits}")
+    assert_in("掃描 GTOW 手牌清單", edits[0], "list scan rendered")
+    assert_in("下載完整分析", edits[1], "detail fetch rendered")
 
 
 @test
@@ -236,6 +272,8 @@ def test_process_next_sends_live_bar_and_settles():
     # The detail-sweep edit rendered a real bar + percentage.
     assert_true(any("▓" in e and "50%" in e for e in bot.edits),
                 f"bar edit present: {bot.edits}")
+    assert_true(any("下載完整分析" in e for e in bot.edits),
+                f"sub-stage label present: {bot.edits}")
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),
                 f"settle edit present: {bot.edits}")

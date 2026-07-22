@@ -112,6 +112,7 @@ async def upsert_decisions(conn, decs: list[dict]):
 
 
 _LIST_BATCH = 500
+_LIST_PAGE_SIZE = max(1, int(os.getenv("GTOW_LIST_PAGE_SIZE", "100")))
 
 # Detail-fetch concurrency. The rate-limit probe (2026-07-21) found GTOW never
 # 429s but soft-throttles via latency above ~10 req/s; detail latency (~0.8s)
@@ -121,6 +122,9 @@ _LIST_BATCH = 500
 _DETAIL_CONCURRENCY = max(1, int(os.getenv("GTOW_DETAIL_CONCURRENCY", "8")))
 _DETAIL_MIN_INTERVAL = max(0.0, float(os.getenv("GTOW_DETAIL_MIN_INTERVAL", "0.08")))
 _DETAIL_BATCH = 200          # fetch+write in batches to bound memory
+_DETAIL_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PROGRESS_EVERY", "10")))
+_WRITE_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_WRITE_PROGRESS_EVERY", "10")))
+_LIST_ONLY_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_LIST_ONLY_PROGRESS_EVERY", "100")))
 
 
 async def _fetch_details_concurrent(hids: list[str], on_progress=None,
@@ -154,7 +158,7 @@ async def _fetch_details_concurrent(hids: list[str], on_progress=None,
             results[hid] = await asyncio.to_thread(gapi.hand_detail, hid,
                                                    throttle=False)
         done[0] += 1
-        if on_progress and (_done_base + done[0]) % 20 == 0:
+        if on_progress and (_done_base + done[0]) % _DETAIL_PROGRESS_EVERY == 0:
             on_progress(_done_base + done[0], total)
 
     await asyncio.gather(*(_one(h) for h in hids))
@@ -166,24 +170,36 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     # 30-day incremental re-sweep is mostly already-known hands.
     known_ids = {r["gtow_hand_id"]
                  for r in await conn.fetch("SELECT gtow_hand_id FROM ledger_hands")}
-    new = known = 0
+    new = known = scanned = total = 0
     batch: list[dict] = []
-    for row in gapi.iter_all_hands(since_iso):
-        if row["hand_id"] in known_ids:
-            known += 1
-            continue
-        known_ids.add(row["hand_id"])
-        lp, _ = raw_paths(row["hand_id"], row["played_at"])
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(lp, "at") as f:
-            f.write(json.dumps(row) + "\n")
-        hand_row = distill_hand_row(row)
-        hand_row["detail_status"] = "pending"
-        batch.append(hand_row)
-        new += 1
-        if len(batch) >= _LIST_BATCH:
-            await upsert_hands_batch(conn, batch); batch = []
-            print(f"  list sweep: {new} new...", flush=True)
+    offset = 0
+    while True:
+        page = gapi.list_hands(since_iso, offset=offset, limit=_LIST_PAGE_SIZE)
+        items = page.get("items", [])
+        total = int(page.get("total", 0) or 0)
+        if not items:
+            break
+        for row in items:
+            scanned += 1
+            if row["hand_id"] in known_ids:
+                known += 1
+                continue
+            known_ids.add(row["hand_id"])
+            lp, _ = raw_paths(row["hand_id"], row["played_at"])
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(lp, "at") as f:
+                f.write(json.dumps(row) + "\n")
+            hand_row = distill_hand_row(row)
+            hand_row["detail_status"] = "pending"
+            batch.append(hand_row)
+            new += 1
+            if len(batch) >= _LIST_BATCH:
+                await upsert_hands_batch(conn, batch); batch = []
+                print(f"  list write: {new} new...", flush=True)
+        offset += len(items)
+        print(f"  list scan: {scanned}/{total} ({new} new)", flush=True)
+        if offset >= total:
+            break
     await upsert_hands_batch(conn, batch)
     return new, known
 
@@ -224,7 +240,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                         "detail_status='skipped_zeroloss' WHERE gtow_hand_id=$1", hid)
                 skipped_zeroloss += 1
                 ndec += len(decs)
-                if skipped_zeroloss % 500 == 0:
+                if skipped_zeroloss % _LIST_ONLY_PROGRESS_EVERY == 0:
                     print(f"  list-only sweep: {skipped_zeroloss}/{len(rows)}", flush=True)
                 continue
         needs_detail.append((hid, dp, list_row))
@@ -265,7 +281,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
             fetched += 1
             ndec += len(decs)
             written_in_chunk += 1
-            if written_in_chunk % 20 == 0:
+            if written_in_chunk % _WRITE_PROGRESS_EVERY == 0:
                 print(f"  detail write: {start + written_in_chunk}/{total_detail}", flush=True)
     if total_detail:
         print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
