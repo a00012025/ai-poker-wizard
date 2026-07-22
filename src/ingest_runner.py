@@ -42,6 +42,7 @@ _PENDING_STATUS: dict[int, tuple[int, int]] = {}
 # Minimum seconds between live message edits within a stage (Telegram rate
 # limits edits; a stage change always edits immediately regardless).
 _EDIT_DEBOUNCE_S = 4.0
+_SUMMARY_MIN_STAGE_S = 10.0
 
 
 def register_status_message(user_id: int, chat_id: int, message_id: int) -> None:
@@ -56,23 +57,25 @@ def register_status_message(user_id: int, chat_id: int, message_id: int) -> None
 # the plain "list sweep: 320 new..." has no denominator (streaming paginator).
 _FRACTION_RE = re.compile(r"(?:scan|sweep|write):\s*(\d+)\s*/\s*(\d+)")
 _COUNT_RE = re.compile(r"list (?:sweep|write):\s*(\d+)\s+new")
+_LIST_SCAN_NEW_RE = re.compile(r"list scan:\s*\d+\s*/\s*\d+\s*\((\d+)\s+new\)")
 
 
 def progress_stage_label(stage_label: str, raw_line: str | None = None) -> str:
     """Translate machine progress lines into user-facing sub-stages."""
     line = (raw_line or "").strip()
     if line.startswith("list scan:"):
-        return "掃描 GTOW 手牌清單"
+        return "比對 GTOW 新手牌清單"
     if line.startswith("list write:"):
         return "寫入新手牌清單"
     if line.startswith("list-only sweep:"):
         return "建立零損失摘要"
     if line.startswith("detail prep:"):
         return "準備完整分析清單"
-    if line.startswith("detail sweep:"):
-        return "下載完整分析"
-    if line.startswith("detail write:"):
-        return "寫入完整分析到 DB"
+    if line.startswith("detail sweep:") or line.startswith("detail write:"):
+        # Detail processing is chunked: fetch a batch, write it, fetch the next
+        # batch.  Use one stable user-facing stage so the live message does not
+        # appear to flap between "download" and "write" every few seconds.
+        return "下載/寫入完整分析"
     return stage_label
 
 
@@ -85,6 +88,12 @@ def parse_progress(line: str) -> tuple[int, int] | None:
 def parse_running_count(line: str) -> int | None:
     """Extract the running 'N new' count from a denominator-less list line."""
     m = _COUNT_RE.search(line or "")
+    return int(m.group(1)) if m else None
+
+
+def parse_list_scan_new_count(line: str) -> int | None:
+    """Extract the discovered-new count from `list scan: done/total (N new)`."""
+    m = _LIST_SCAN_NEW_RE.search(line or "")
     return int(m.group(1)) if m else None
 
 
@@ -115,7 +124,8 @@ def format_eta(done: int, total: int, elapsed_s: float) -> str | None:
 
 def render_status(stage_label: str, parsed: tuple[int, int] | None,
                   elapsed_s: float, stage_times: dict, *,
-                  running_count: int | None = None) -> str:
+                  running_count: int | None = None,
+                  new_count: int | None = None) -> str:
     """Assemble the live status message body."""
     lines = ["⏳ GTOW 手牌同步"]
     if parsed:
@@ -124,12 +134,20 @@ def render_status(stage_label: str, parsed: tuple[int, int] | None,
         bar = render_bar(done, total)
         eta = format_eta(done, total, elapsed_s)
         tail = f" · {eta}" if eta else ""
-        lines.append(f"{stage_label} · {bar} {pct}%{tail}（{done}/{total}）")
+        new_tail = f" · 已發現 {new_count:,} 筆新手牌" if new_count is not None else ""
+        lines.append(f"{stage_label} · {bar} {pct}%{tail}（{done}/{total}）{new_tail}")
     elif running_count is not None:
         lines.append(f"{stage_label} · 已發現 {running_count:,} 筆新手牌…")
     else:
         lines.append(f"{stage_label}…")
-    done_stages = [f"{k} {v}" for k, v in stage_times.items()]
+    done_stages = []
+    for k, v in stage_times.items():
+        if isinstance(v, (int, float)):
+            if v < _SUMMARY_MIN_STAGE_S:
+                continue
+            done_stages.append(f"{k} {_fmt_dur(v)}")
+        else:
+            done_stages.append(f"{k} {v}")
     if done_stages:
         lines.append(f"（{' · '.join(done_stages)}）")
     return "\n".join(lines)
@@ -149,7 +167,7 @@ class _LiveStatus:
         self._now = now
         self.started_at = now()
         self.detail_started_at: float | None = None
-        self.stage_times: dict[str, str] = {}
+        self.stage_times: dict[str, float] = {}
         self._stage: str | None = None
         self._stage_started_at: float | None = None
         self._last_edit_at = 0.0
@@ -159,13 +177,16 @@ class _LiveStatus:
         display_stage = progress_stage_label(stage_label, raw_line)
         parsed = parse_progress(raw_line) if raw_line else None
         running = parse_running_count(raw_line) if raw_line else None
+        new_count = parse_list_scan_new_count(raw_line) if raw_line else None
         stage_changed = display_stage != self._stage
         if stage_changed:
             # Book the finished stage's duration so the message shows where the
             # time actually went (instruments the pipeline for later perf work).
             if self._stage is not None and self._stage_started_at is not None:
-                self.stage_times[self._stage] = _fmt_dur(
-                    self._now() - self._stage_started_at)
+                self.stage_times[self._stage] = (
+                    self.stage_times.get(self._stage, 0.0)
+                    + self._now() - self._stage_started_at
+                )
             self._stage = display_stage
             self._stage_started_at = self._now()
             self.detail_started_at = None
@@ -175,7 +196,7 @@ class _LiveStatus:
         anchor = self.detail_started_at or self.started_at
         elapsed = self._now() - anchor
         text = render_status(display_stage, parsed, elapsed, self.stage_times,
-                             running_count=running)
+                             running_count=running, new_count=new_count)
         now = self._now()
         if not stage_changed and now - self._last_edit_at < _EDIT_DEBOUNCE_S:
             return
@@ -200,6 +221,9 @@ async def _run_script(env: dict, *script_args, on_line=None) -> tuple[int, str]:
     """Run a repo script, streaming stdout lines to on_line; return (rc, tail)."""
     env = dict(env)
     env.pop("POKER_BOT_PROCESS", None)
+    started = time.monotonic()
+    label = " ".join(map(str, script_args))
+    logger.info(f"[ingest-perf] start subprocess: {label}")
     proc = await asyncio.create_subprocess_exec(
         sys.executable, *script_args, cwd=str(ROOT), env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -213,6 +237,8 @@ async def _run_script(env: dict, *script_args, on_line=None) -> tuple[int, str]:
         if on_line:
             await on_line(line.rstrip())
     rc = await proc.wait()
+    elapsed = time.monotonic() - started
+    logger.info(f"[ingest-perf] subprocess rc={rc} elapsed={elapsed:.1f}s: {label}")
     return rc, "".join(lines)[-3000:]
 
 
@@ -252,6 +278,8 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     Returns (summary, verify_rc, verify_tail); raises RuntimeError with a
     user-facing message when any stage fails.
     """
+    pass_started = time.monotonic()
+    logger.info(f"[ingest-perf] pass start label={label} args={ingest_args}")
     await progress(f"{label}…", stage=label)
 
     async def heartbeat(line):
@@ -277,6 +305,10 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     rc_v, out_v = await _run_script(env, "scripts/ledger_ingest.py", "--verify")
     if rc_v not in (0, 2):
         raise RuntimeError(f"對數檢查失敗 (rc={rc_v}): {_tail(out_v)}")
+    logger.info(
+        f"[ingest-perf] pass done label={label} elapsed={time.monotonic() - pass_started:.1f}s "
+        f"verify_rc={rc_v} summary={summary}"
+    )
     return summary, rc_v, _tail(out_v)
 
 
@@ -295,6 +327,10 @@ async def run_pipeline(refresh_token: str, progress, *, mode: str = "incremental
     Returns the final result text; raises RuntimeError with a user-facing
     message on failure.
     """
+    pipeline_started = time.monotonic()
+    logger.info(
+        f"[ingest-perf] pipeline start mode={mode} allow_full_sweep={allow_full_sweep}"
+    )
     env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
     escalated = False
     guard_skipped = False
@@ -329,6 +365,10 @@ async def run_pipeline(refresh_token: str, progress, *, mode: str = "incremental
     if re.search(r"\blist=0 detail=0\b", summary):
         result += ("\n（歷史手牌都已在資料庫，沒有新增）" if full_import
                    else "\n（沒有新手牌 — 若剛上傳，GTOW 可能還在處理，稍後再點一次）")
+    logger.info(
+        f"[ingest-perf] pipeline done mode={mode} elapsed={time.monotonic() - pipeline_started:.1f}s "
+        f"full_import={full_import} escalated={escalated} guard_skipped={guard_skipped}"
+    )
     return result
 
 

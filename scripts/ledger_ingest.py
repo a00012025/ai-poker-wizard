@@ -136,6 +136,8 @@ _DETAIL_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PROGRESS_EVERY", "10"
 _WRITE_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_WRITE_PROGRESS_EVERY", "10")))
 _LIST_ONLY_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_LIST_ONLY_PROGRESS_EVERY", "100")))
 _DETAIL_PREP_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PREP_PROGRESS_EVERY", "100")))
+_LIST_ONLY_BATCH = max(1, int(os.getenv("GTOW_LIST_ONLY_BATCH", "200")))
+_INCREMENTAL_OVERLAP_HOURS = max(0.0, float(os.getenv("GTOW_INCREMENTAL_OVERLAP_HOURS", "12")))
 
 
 async def _fetch_details_concurrent(hids: list[str], on_progress=None,
@@ -215,6 +217,23 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     return new, known
 
 
+async def incremental_since(conn) -> str:
+    """Return the GTOW list lower bound for incremental ingest.
+
+    The first implementation always re-swept trailing 30 days to catch late HH
+    uploads, which is safe but scans thousands of already-known hands. Use the
+    latest ingested online hand as a watermark with a generous overlap; verify
+    still escalates to full backfill if this misses anything.
+    """
+    max_played = await conn.fetchval(
+        "SELECT max(played_at) FROM ledger_hands WHERE source='online'")
+    if max_played is None:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+    else:
+        since_dt = max_played - timedelta(hours=_INCREMENTAL_OVERLAP_HOURS)
+    return since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = False
                        ) -> tuple[int, int, int, int]:
     status = "skipped_zeroloss" if backfill_skipped else "pending"
@@ -227,6 +246,25 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
     # the ones that actually need a network detail fetch. `limit` caps fetch
     # attempts this run (dev/smoke); list-only hands never count against it.
     needs_detail: list[tuple[str, Path, dict]] = []
+    zero_hids: list[str] = []
+    zero_decs: list[dict] = []
+
+    async def flush_zero_batch():
+        if not zero_hids:
+            return
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
+                zero_hids)
+            await upsert_decisions(conn, zero_decs)
+            await conn.execute(
+                "UPDATE ledger_hands SET detail_fetched=false, "
+                "detail_status='skipped_zeroloss' "
+                "WHERE gtow_hand_id = ANY($1::text[])",
+                zero_hids)
+        zero_hids.clear()
+        zero_decs.clear()
+
     for idx, r in enumerate(rows, start=1):
         if limit and len(needs_detail) >= limit:
             break
@@ -244,19 +282,24 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                 reconstruct_fallback += 1
                 print(f"  list-only fallback {hid}: {exc}", flush=True)
             else:
-                async with conn.transaction():
-                    await conn.execute(
-                        "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
-                    await upsert_decisions(conn, decs)
-                    await conn.execute(
-                        "UPDATE ledger_hands SET detail_fetched=false, "
-                        "detail_status='skipped_zeroloss' WHERE gtow_hand_id=$1", hid)
+                zero_hids.append(hid)
+                zero_decs.extend(decs)
                 skipped_zeroloss += 1
                 ndec += len(decs)
-                if skipped_zeroloss % _LIST_ONLY_PROGRESS_EVERY == 0:
-                    print(f"  list-only sweep: {skipped_zeroloss}/{len(rows)}", flush=True)
+                if len(zero_hids) >= _LIST_ONLY_BATCH:
+                    await flush_zero_batch()
+                if idx % _LIST_ONLY_PROGRESS_EVERY == 0:
+                    print(f"  list-only sweep: {idx}/{len(rows)} "
+                          f"({skipped_zeroloss} zero-loss)", flush=True)
                 continue
         needs_detail.append((hid, dp, list_row))
+        if idx % _LIST_ONLY_PROGRESS_EVERY == 0:
+            print(f"  list-only sweep: {idx}/{len(rows)} "
+                  f"({skipped_zeroloss} zero-loss)", flush=True)
+    await flush_zero_batch()
+    if rows:
+        print(f"  list-only sweep: {min(len(rows), idx if 'idx' in locals() else 0)}/{len(rows)} "
+              f"({skipped_zeroloss} zero-loss)", flush=True)
     if rows:
         print(f"  detail prep: {min(len(rows), idx if 'idx' in locals() else 0)}/{len(rows)}", flush=True)
 
@@ -393,8 +436,7 @@ async def amain() -> int:
                   f"skipped_zeroloss={n_zero} reconstruct_fallback={n_fallback}")
             return 0
         if a.incremental:
-            since_dt = datetime.now(timezone.utc) - timedelta(days=30)
-            since = since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            since = await incremental_since(conn)
         else:
             since = f"{a.since}T00:00:00.000Z" if "T" not in a.since else a.since
         n_new, n_known = await sweep_list(conn, since)
