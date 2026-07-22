@@ -28,14 +28,41 @@ def cluster_sessions(hands: list[dict]) -> list[dict]:
     return sessions
 
 
-def _finish(hands: list[dict]) -> dict:
-    tourneys = sorted({h["tournament_id"] for h in hands if h["tournament_id"]})
+def _max_concurrent_tables(hands: list[dict]) -> int:
+    """Max distinct tournaments within a ±WINDOW neighborhood.
+
+    The old implementation rebuilt a set by scanning every hand for every
+    hand in a session (O(n²)); a 36k-hand rebuild spent most of its time here.
+    Hands are already sorted by played_at, so a sliding window preserves the
+    same semantics in O(n).
+    """
+    counts: dict[str, int] = {}
+    left = right = 0
     max_cc = 1
     for h in hands:
-        cc = {g["tournament_id"] for g in hands
-              if g["tournament_id"] and abs((g["played_at"] - h["played_at"]).total_seconds())
-              <= WINDOW.total_seconds()}
-        max_cc = max(max_cc, len(cc) or 1)
+        lo = h["played_at"] - WINDOW
+        hi = h["played_at"] + WINDOW
+        while right < len(hands) and hands[right]["played_at"] <= hi:
+            tid = hands[right].get("tournament_id")
+            if tid:
+                counts[tid] = counts.get(tid, 0) + 1
+            right += 1
+        while left < len(hands) and hands[left]["played_at"] < lo:
+            tid = hands[left].get("tournament_id")
+            if tid:
+                nxt = counts.get(tid, 0) - 1
+                if nxt > 0:
+                    counts[tid] = nxt
+                else:
+                    counts.pop(tid, None)
+            left += 1
+        max_cc = max(max_cc, len(counts) or 1)
+    return max_cc
+
+
+def _finish(hands: list[dict]) -> dict:
+    tourneys = sorted({h["tournament_id"] for h in hands if h["tournament_id"]})
+    max_cc = _max_concurrent_tables(hands)
     start, end = hands[0]["played_at"], hands[-1]["played_at"]
     return {"started_at": start, "ended_at": end,
             "duration_min": (end - start).total_seconds() / 60,

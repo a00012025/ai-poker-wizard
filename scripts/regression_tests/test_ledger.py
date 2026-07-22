@@ -968,6 +968,29 @@ def test_raw_paths_for_normalized_utc_still_use_gtow_local_month():
 # ── Phase 1 Ledger: session clustering ──
 
 @test
+def test_session_concurrency_sliding_window_matches_naive_semantics():
+    from datetime import datetime, timedelta, timezone
+    from ledger_sessions import WINDOW, _max_concurrent_tables
+
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    hands = [
+        {"played_at": t0 + timedelta(minutes=0), "tournament_id": "A"},
+        {"played_at": t0 + timedelta(minutes=4), "tournament_id": "B"},
+        {"played_at": t0 + timedelta(minutes=8), "tournament_id": "A"},
+        {"played_at": t0 + timedelta(minutes=16), "tournament_id": "C"},
+        {"played_at": t0 + timedelta(minutes=35), "tournament_id": "D"},
+        {"played_at": t0 + timedelta(minutes=36), "tournament_id": None},
+    ]
+    expected = 1
+    for h in hands:
+        cc = {g["tournament_id"] for g in hands
+              if g["tournament_id"] and abs((g["played_at"] - h["played_at"]).total_seconds())
+              <= WINDOW.total_seconds()}
+        expected = max(expected, len(cc) or 1)
+    assert_eq(_max_concurrent_tables(hands), expected)
+
+
+@test
 def test_session_clustering():
     from datetime import datetime, timedelta, timezone
     from ledger_sessions import cluster_sessions
