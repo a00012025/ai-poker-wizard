@@ -51,8 +51,8 @@ def register_status_message(user_id: int, chat_id: int, message_id: int) -> None
 
 # ── Live progress rendering (pure helpers, unit-tested without a bot) ────────
 
-# `x/total` appears in "list scan: 100/241", "detail sweep: 126/241",
-# "detail write: 126/241", and "list-only sweep: 500/1700";
+# `x/total` appears in "list scan: 100/241", "detail prep: 100/241",
+# "detail sweep: 126/241", "detail write: 126/241", and "list-only sweep: 500/1700";
 # the plain "list sweep: 320 new..." has no denominator (streaming paginator).
 _FRACTION_RE = re.compile(r"(?:scan|sweep|write):\s*(\d+)\s*/\s*(\d+)")
 _COUNT_RE = re.compile(r"list (?:sweep|write):\s*(\d+)\s+new")
@@ -67,6 +67,8 @@ def progress_stage_label(stage_label: str, raw_line: str | None = None) -> str:
         return "寫入新手牌清單"
     if line.startswith("list-only sweep:"):
         return "建立零損失摘要"
+    if line.startswith("detail prep:"):
+        return "準備完整分析清單"
     if line.startswith("detail sweep:"):
         return "下載完整分析"
     if line.startswith("detail write:"):

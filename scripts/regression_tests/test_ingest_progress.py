@@ -5,6 +5,11 @@ tested without a bot or network (fake clock + fake bot recording edits).
 """
 
 import asyncio
+import gzip
+import json
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 
 from regression_tests.harness import assert_eq, assert_in, assert_true, test
 
@@ -80,6 +85,8 @@ def test_progress_stage_label_translates_machine_lines():
               "掃描 GTOW 手牌清單", "list scan label")
     assert_eq(progress_stage_label("攝取中", "  list write: 500 new..."),
               "寫入新手牌清單", "list write label")
+    assert_eq(progress_stage_label("攝取中", "  detail prep: 100/1241"),
+              "準備完整分析清單", "detail prep label")
     assert_eq(progress_stage_label("攝取中", "  detail sweep: 120/240"),
               "下載完整分析", "detail fetch label")
     assert_eq(progress_stage_label("攝取中", "  detail write: 40/240"),
@@ -313,6 +320,51 @@ def test_pass_surfaces_detail_write_as_heartbeat_progress():
                 f"detail write surfaced: {seen}")
     assert_true(any(kw.get("raw") == "detail write: 20/463" for _, kw in seen),
                 f"detail write raw passed through: {seen}")
+
+
+@test
+def test_load_list_rows_reads_each_monthly_archive_once():
+    """Detail prep must not reopen/rescan the same monthly gzip once per hand.
+
+    A 1k-hand session used to sit silently after `list sweep: 1000 new...`
+    because every pending hand called _find_list_row(), causing O(N*month_file)
+    gzip scans before any detail progress could render.
+    """
+    import ledger_ingest as li
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "2026-07.jsonl.gz"
+        with gzip.open(path, "wt") as f:
+            f.write(json.dumps({"hand_id": "h1", "v": 1}) + "\n")
+            f.write(json.dumps({"hand_id": "h2", "v": 2}) + "\n")
+
+        rows = [
+            {"gtow_hand_id": "h1", "played_at": datetime(2026, 7, 22, tzinfo=timezone.utc)},
+            {"gtow_hand_id": "h2", "played_at": datetime(2026, 7, 22, tzinfo=timezone.utc)},
+        ]
+        opened = {"n": 0}
+        orig_raw_paths = li.raw_paths
+        orig_gzip_open = li.gzip.open
+
+        def fake_raw_paths(hand_id, played_at):
+            return path, Path(td) / f"{hand_id}.json.gz"
+
+        def counting_open(*args, **kwargs):
+            if Path(args[0]) == path:
+                opened["n"] += 1
+            return orig_gzip_open(*args, **kwargs)
+
+        li.raw_paths = fake_raw_paths
+        li.gzip.open = counting_open
+        try:
+            found = li._load_list_rows(rows)
+        finally:
+            li.raw_paths = orig_raw_paths
+            li.gzip.open = orig_gzip_open
+
+    assert_eq(opened["n"], 1, "monthly gzip opened once")
+    assert_eq(found["h1"]["v"], 1, "first row loaded")
+    assert_eq(found["h2"]["v"], 2, "second row loaded")
 
 
 # ── full-history import mode ────────────────────────────────────────────────

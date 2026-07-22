@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -125,6 +126,7 @@ _DETAIL_BATCH = 200          # fetch+write in batches to bound memory
 _DETAIL_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PROGRESS_EVERY", "10")))
 _WRITE_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_WRITE_PROGRESS_EVERY", "10")))
 _LIST_ONLY_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_LIST_ONLY_PROGRESS_EVERY", "100")))
+_DETAIL_PREP_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PREP_PROGRESS_EVERY", "100")))
 
 
 async def _fetch_details_concurrent(hids: list[str], on_progress=None,
@@ -210,20 +212,22 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
     rows = await conn.fetch(
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
         "WHERE detail_status=$1 AND source='online' ORDER BY played_at", status)
+    list_rows = _load_list_rows(rows)
     fetched = ndec = skipped_nodata = skipped_zeroloss = reconstruct_fallback = 0
     # Pass 1 (serial, fast): handle list-only zero-loss hands inline and collect
     # the ones that actually need a network detail fetch. `limit` caps fetch
     # attempts this run (dev/smoke); list-only hands never count against it.
     needs_detail: list[tuple[str, Path, dict]] = []
-    for r in rows:
+    for idx, r in enumerate(rows, start=1):
         if limit and len(needs_detail) >= limit:
             break
         hid = r["gtow_hand_id"]
         played = r["played_at"].isoformat()
         _, dp = raw_paths(hid, played)
         dp.parent.mkdir(parents=True, exist_ok=True)
-        lp, _ = raw_paths(hid, played)
-        list_row = _find_list_row(lp, hid)
+        list_row = list_rows[hid]
+        if idx % _DETAIL_PREP_PROGRESS_EVERY == 0:
+            print(f"  detail prep: {idx}/{len(rows)}", flush=True)
         if not backfill_skipped and should_skip_zeroloss_detail(list_row):
             try:
                 _hand_row, decs = distill_hand_from_list(list_row)
@@ -244,6 +248,8 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                     print(f"  list-only sweep: {skipped_zeroloss}/{len(rows)}", flush=True)
                 continue
         needs_detail.append((hid, dp, list_row))
+    if rows:
+        print(f"  detail prep: {min(len(rows), idx if 'idx' in locals() else 0)}/{len(rows)}", flush=True)
 
     # Pass 2 (concurrent fetch) + pass 3 (serial DB write), batched to bound
     # memory. The "detail sweep: done/total" print format is unchanged so the
@@ -298,6 +304,40 @@ def _find_list_row(list_path: Path, hand_id: str) -> dict:
             if row["hand_id"] == hand_id:
                 return row
     raise RuntimeError(f"list row for {hand_id} not in {list_path}")
+
+
+def _load_list_rows(rows) -> dict[str, dict]:
+    """Load all list archive rows needed by a detail pass.
+
+    The old path called _find_list_row() per pending hand, reopening and
+    scanning the same monthly gzip thousands of times before the first detail
+    progress line. Load each touched month once instead.
+    """
+    wanted_by_path: dict[Path, set[str]] = defaultdict(set)
+    for r in rows:
+        hid = r["gtow_hand_id"]
+        played = r["played_at"].isoformat()
+        lp, _ = raw_paths(hid, played)
+        wanted_by_path[lp].add(hid)
+
+    found: dict[str, dict] = {}
+    for list_path, wanted in wanted_by_path.items():
+        with gzip.open(list_path, "rt") as f:
+            for line in f:
+                row = json.loads(line)
+                hid = row.get("hand_id")
+                if hid in wanted:
+                    found[hid] = row
+                    if len(found.keys() & wanted) == len(wanted):
+                        break
+
+    missing = [r["gtow_hand_id"] for r in rows if r["gtow_hand_id"] not in found]
+    if missing:
+        raise RuntimeError(
+            f"list rows missing from raw archive: {', '.join(missing[:5])}"
+            + ("..." if len(missing) > 5 else "")
+        )
+    return found
 
 
 async def verify(conn) -> int:
