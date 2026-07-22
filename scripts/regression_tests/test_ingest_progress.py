@@ -30,6 +30,15 @@ def test_parse_progress_extracts_done_total():
 
 
 @test
+def test_parse_list_scan_new_count():
+    from src.ingest_runner import parse_list_scan_new_count
+    assert_eq(parse_list_scan_new_count("  list scan: 1000/2701 (555 new)"), 555,
+              "list scan exposes actual new-hand count")
+    assert_eq(parse_list_scan_new_count("  detail sweep: 100/200"), None,
+              "non-list-scan lines have no new-hand count")
+
+
+@test
 def test_parse_progress_none_without_denominator():
     from src.ingest_runner import parse_progress
     assert_eq(parse_progress("  list sweep: 320 new..."), None,
@@ -82,15 +91,15 @@ def test_render_status_denominatorless_stage_has_no_bar():
 def test_progress_stage_label_translates_machine_lines():
     from src.ingest_runner import progress_stage_label
     assert_eq(progress_stage_label("攝取中", "  list scan: 100/1241 (12 new)"),
-              "掃描 GTOW 手牌清單", "list scan label")
+              "比對 GTOW 新手牌清單", "list scan label")
     assert_eq(progress_stage_label("攝取中", "  list write: 500 new..."),
               "寫入新手牌清單", "list write label")
     assert_eq(progress_stage_label("攝取中", "  detail prep: 100/1241"),
               "準備完整分析清單", "detail prep label")
     assert_eq(progress_stage_label("攝取中", "  detail sweep: 120/240"),
-              "下載完整分析", "detail fetch label")
+              "下載/寫入完整分析", "detail fetch label")
     assert_eq(progress_stage_label("攝取中", "  detail write: 40/240"),
-              "寫入完整分析到 DB", "detail write label")
+              "下載/寫入完整分析", "detail write label")
 
 
 @test
@@ -101,6 +110,32 @@ def test_render_status_detail_stage_has_bar_and_eta():
     assert_in("50%", text, "percentage")
     assert_in("120/240", text, "fraction")
     assert_true("剩約" in text, "eta present")
+
+
+@test
+def test_render_status_list_scan_shows_new_count_separately():
+    from src.ingest_runner import render_status
+    text = render_status("比對 GTOW 新手牌清單", (1000, 2701), 30.0, {},
+                         new_count=555)
+    assert_in("1000/2701", text, "scanned/total still visible")
+    assert_in("已發現 555 筆新手牌", text, "new-hand count is separate")
+
+
+@test
+def test_render_status_summary_hides_tiny_stages():
+    from src.ingest_runner import render_status
+    text = render_status("重建 sessions", None, 60.0, {
+        "攝取中": 4.0,
+        "比對 GTOW 新手牌清單": 57.0,
+        "寫入新手牌清單": 1.0,
+        "建立零損失摘要": 168.0,
+        "補 spot 分類": 7.0,
+    })
+    assert_in("比對 GTOW 新手牌清單 57s", text, "slow scan shown")
+    assert_in("建立零損失摘要 2m48s", text, "slow zero-loss stage shown")
+    assert_true("攝取中 4s" not in text, "tiny setup hidden")
+    assert_true("寫入新手牌清單 1s" not in text, "tiny write hidden")
+    assert_true("補 spot 分類 7s" not in text, "sub-10s stage hidden")
 
 
 # ── _LiveStatus debounce / no-op / error handling ──────────────────────────
@@ -169,8 +204,27 @@ def test_live_status_substage_change_bypasses_debounce():
 
     edits = asyncio.run(run())
     assert_eq(len(edits), 2, f"sub-stage change bypasses debounce: {edits}")
-    assert_in("掃描 GTOW 手牌清單", edits[0], "list scan rendered")
-    assert_in("下載完整分析", edits[1], "detail fetch rendered")
+    assert_in("比對 GTOW 新手牌清單", edits[0], "list scan rendered")
+    assert_in("下載/寫入完整分析", edits[1], "detail fetch rendered")
+
+
+@test
+def test_live_status_does_not_flap_between_detail_fetch_and_write():
+    """Detail is processed in fetch/write chunks; the UI should render one
+    stable stage instead of alternating labels every batch."""
+    from src.ingest_runner import _LiveStatus
+
+    async def run():
+        clock = {"t": 1000.0}
+        bot = _FakeBot()
+        live = _LiveStatus(bot, chat_id=1, message_id=2, now=lambda: clock["t"])
+        await live.update("攝取中", "  detail sweep: 10/240")
+        await live.update("攝取中", "  detail write: 10/240")
+        return bot.edits, live
+
+    edits, live = asyncio.run(run())
+    assert_eq(len(edits), 1, f"same displayed stage should debounce: {edits}")
+    assert_eq(live._stage, "下載/寫入完整分析", "stable detail stage")
 
 
 @test
@@ -279,7 +333,7 @@ def test_process_next_sends_live_bar_and_settles():
     # The detail-sweep edit rendered a real bar + percentage.
     assert_true(any("▓" in e and "50%" in e for e in bot.edits),
                 f"bar edit present: {bot.edits}")
-    assert_true(any("下載完整分析" in e for e in bot.edits),
+    assert_true(any("下載/寫入完整分析" in e for e in bot.edits),
                 f"sub-stage label present: {bot.edits}")
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),

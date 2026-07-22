@@ -913,6 +913,28 @@ def test_ingest_raw_paths():
     assert_true(str(ld).endswith("data/gtow_raw/list/2026-05.jsonl.gz"))
 
 
+@test
+def test_incremental_since_uses_watermark_overlap():
+    """Incremental ingest should not re-scan a fixed 30-day window when a
+    latest ingested hand exists; use a watermark plus safety overlap instead."""
+    import asyncio
+    from datetime import datetime, timezone
+    import ledger_ingest as li
+
+    class FakeConn:
+        async def fetchval(self, sql):
+            return datetime(2026, 7, 22, 19, 35, 19, tzinfo=timezone.utc)
+
+    orig = li._INCREMENTAL_OVERLAP_HOURS
+    li._INCREMENTAL_OVERLAP_HOURS = 12
+    try:
+        since = asyncio.run(li.incremental_since(FakeConn()))
+    finally:
+        li._INCREMENTAL_OVERLAP_HOURS = orig
+    assert_eq(since, "2026-07-22T07:35:19.000Z",
+              "watermark minus overlap, not now-30d")
+
+
 # ── Phase 1 Ledger: session clustering ──
 
 @test
