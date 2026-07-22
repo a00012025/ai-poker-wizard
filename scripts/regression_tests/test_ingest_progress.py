@@ -5,6 +5,11 @@ tested without a bot or network (fake clock + fake bot recording edits).
 """
 
 import asyncio
+import gzip
+import json
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 
 from regression_tests.harness import assert_eq, assert_in, assert_true, test
 
@@ -14,6 +19,8 @@ from regression_tests.harness import assert_eq, assert_in, assert_true, test
 @test
 def test_parse_progress_extracts_done_total():
     from src.ingest_runner import parse_progress
+    assert_eq(parse_progress("  list scan: 100/1241 (12 new)"), (100, 1241),
+              "list scan x/total")
     assert_eq(parse_progress("  detail sweep: 126/241"), (126, 241),
               "detail sweep x/total")
     assert_eq(parse_progress("  detail write: 126/241"), (126, 241),
@@ -68,6 +75,22 @@ def test_render_status_denominatorless_stage_has_no_bar():
     assert_in("攝取中", text, "stage label present")
     assert_true("▓" not in text and "░" not in text, "no bar without denominator")
     assert_in("320", text, "running count shown")
+    assert_in("已發現", text, "count wording says discovered, not fully ingested")
+
+
+@test
+def test_progress_stage_label_translates_machine_lines():
+    from src.ingest_runner import progress_stage_label
+    assert_eq(progress_stage_label("攝取中", "  list scan: 100/1241 (12 new)"),
+              "掃描 GTOW 手牌清單", "list scan label")
+    assert_eq(progress_stage_label("攝取中", "  list write: 500 new..."),
+              "寫入新手牌清單", "list write label")
+    assert_eq(progress_stage_label("攝取中", "  detail prep: 100/1241"),
+              "準備完整分析清單", "detail prep label")
+    assert_eq(progress_stage_label("攝取中", "  detail sweep: 120/240"),
+              "下載完整分析", "detail fetch label")
+    assert_eq(progress_stage_label("攝取中", "  detail write: 40/240"),
+              "寫入完整分析到 DB", "detail write label")
 
 
 @test
@@ -128,6 +151,26 @@ def test_live_status_stage_change_bypasses_debounce():
 
     edits = asyncio.run(run())
     assert_eq(len(edits), 2, f"stage change bypasses debounce: {edits}")
+
+
+@test
+def test_live_status_substage_change_bypasses_debounce():
+    """The top-level stage may remain 攝取中 while the real sub-stage changes
+    from list scan to detail fetch; that must render immediately."""
+    from src.ingest_runner import _LiveStatus
+
+    async def run():
+        clock = {"t": 1000.0}
+        bot = _FakeBot()
+        live = _LiveStatus(bot, chat_id=1, message_id=2, now=lambda: clock["t"])
+        await live.update("攝取中", "  list scan: 100/1241 (12 new)")
+        await live.update("攝取中", "  detail sweep: 10/240")
+        return bot.edits
+
+    edits = asyncio.run(run())
+    assert_eq(len(edits), 2, f"sub-stage change bypasses debounce: {edits}")
+    assert_in("掃描 GTOW 手牌清單", edits[0], "list scan rendered")
+    assert_in("下載完整分析", edits[1], "detail fetch rendered")
 
 
 @test
@@ -236,6 +279,8 @@ def test_process_next_sends_live_bar_and_settles():
     # The detail-sweep edit rendered a real bar + percentage.
     assert_true(any("▓" in e and "50%" in e for e in bot.edits),
                 f"bar edit present: {bot.edits}")
+    assert_true(any("下載完整分析" in e for e in bot.edits),
+                f"sub-stage label present: {bot.edits}")
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),
                 f"settle edit present: {bot.edits}")
@@ -275,6 +320,51 @@ def test_pass_surfaces_detail_write_as_heartbeat_progress():
                 f"detail write surfaced: {seen}")
     assert_true(any(kw.get("raw") == "detail write: 20/463" for _, kw in seen),
                 f"detail write raw passed through: {seen}")
+
+
+@test
+def test_load_list_rows_reads_each_monthly_archive_once():
+    """Detail prep must not reopen/rescan the same monthly gzip once per hand.
+
+    A 1k-hand session used to sit silently after `list sweep: 1000 new...`
+    because every pending hand called _find_list_row(), causing O(N*month_file)
+    gzip scans before any detail progress could render.
+    """
+    import ledger_ingest as li
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "2026-07.jsonl.gz"
+        with gzip.open(path, "wt") as f:
+            f.write(json.dumps({"hand_id": "h1", "v": 1}) + "\n")
+            f.write(json.dumps({"hand_id": "h2", "v": 2}) + "\n")
+
+        rows = [
+            {"gtow_hand_id": "h1", "played_at": datetime(2026, 7, 22, tzinfo=timezone.utc)},
+            {"gtow_hand_id": "h2", "played_at": datetime(2026, 7, 22, tzinfo=timezone.utc)},
+        ]
+        opened = {"n": 0}
+        orig_raw_paths = li.raw_paths
+        orig_gzip_open = li.gzip.open
+
+        def fake_raw_paths(hand_id, played_at):
+            return path, Path(td) / f"{hand_id}.json.gz"
+
+        def counting_open(*args, **kwargs):
+            if Path(args[0]) == path:
+                opened["n"] += 1
+            return orig_gzip_open(*args, **kwargs)
+
+        li.raw_paths = fake_raw_paths
+        li.gzip.open = counting_open
+        try:
+            found = li._load_list_rows(rows)
+        finally:
+            li.raw_paths = orig_raw_paths
+            li.gzip.open = orig_gzip_open
+
+    assert_eq(opened["n"], 1, "monthly gzip opened once")
+    assert_eq(found["h1"]["v"], 1, "first row loaded")
+    assert_eq(found["h2"]["v"], 2, "second row loaded")
 
 
 # ── full-history import mode ────────────────────────────────────────────────
