@@ -263,7 +263,23 @@ def test_session_review_callback_data_telegram_safe():
         cb = b.get("callback_data")
         if cb is not None:
             assert_true(len(cb.encode()) <= 64, f"callback_data too long: {cb}")
-            assert_true(cb.split(":")[0] in {"srd", "srv"}, f"bad callback: {cb}")
+            assert_true(cb.split(":")[0] in {"srd2", "srv2"}, f"bad callback: {cb}")
+
+
+@test
+def test_session_review_callback_key_survives_session_id_rebuild():
+    """Callback identity must not depend on ledger_sessions.id, which is
+    delete/reinserted by every ingest session rebuild."""
+    before = _sample()
+    after = dict(before)
+    after["session_id"] = 1409
+    assert_eq(sr.session_callback_key(before), sr.session_callback_key(after))
+    out = sr.render_tg(before)
+    callbacks = [b.get("callback_data") for b in _all_buttons(out["buttons"])
+                 if b.get("callback_data")]
+    assert_true(callbacks, "session review has enqueue callbacks")
+    assert_true(all(":42:" not in cb for cb in callbacks),
+                f"volatile session id leaked into callbacks: {callbacks}")
 
 
 @test
@@ -327,4 +343,3 @@ def test_session_review_marks_hu_only_for_real_sb_bb_heads_up_pots():
         "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
         "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
     }, is_real_hu=False), "SRP 底池，Hero CO 對 SB、處於 IP，翻牌面對加注")
-

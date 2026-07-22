@@ -327,9 +327,14 @@ def mix_queue_quota(rows: list[dict], drill_slots: int, review_slots: int,
 
 
 def qex_submenu(decisions: list[dict], queue_id: int) -> list[dict]:
-    """Sub-menu rows for a review item's decisions (§6.2). Each row carries the
-    numeric ledger_decisions.id in callback_data — NEVER the spot_leaf string,
-    which blows Telegram's 64-byte callback_data limit."""
+    """Sub-menu rows for a review item's decisions (§6.2).
+
+    New rows carry the stable ledger decision identity
+    ``gtow_hand_id/street/decision_idx``.  ``ledger_decisions.id`` is volatile
+    because re-ingesting a hand deletes and re-inserts that hand's decisions.
+    NEVER put the spot_leaf string in callback_data; it blows Telegram's
+    64-byte limit.
+    """
     from scorecard import spot_desc_zh
     st_order = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
     rows = []
@@ -347,8 +352,15 @@ def qex_submenu(decisions: list[dict], queue_id: int) -> list[dict]:
         # description needs truncation. Frequency/BEST_MOVE details live in
         # GTOW Study; this picker only answers which line to add.
         desc_budget = max(0, 60 - len(prefix) - len(suffix))
+        hid = d.get("gtow_hand_id")
+        if hid and d.get("street") is not None and d.get("decision_idx") is not None:
+            callback_data = f"qad2:{queue_id}:{hid}:{d['street']}:{int(d['decision_idx'])}"
+        else:
+            # Backward-compatible fallback for unit/dry-run callers that have
+            # not supplied the stable identity.
+            callback_data = f"qad:{queue_id}:{d['id']}"
         rows.append({"text": prefix + desc[:desc_budget] + suffix,
-                     "callback_data": f"qad:{queue_id}:{d['id']}"})
+                     "callback_data": callback_data})
     return rows
 
 

@@ -49,6 +49,11 @@ FROM ledger_sessions ORDER BY ended_at DESC LIMIT 1
 """
 _SESSION_BY_ID_SQL = _LATEST_SESSION_SQL.replace(
     "ORDER BY ended_at DESC LIMIT 1", "WHERE id = $1")
+_SESSION_BY_KEY_SQL = _LATEST_SESSION_SQL.replace(
+    "ORDER BY ended_at DESC LIMIT 1",
+    "WHERE abs(extract(epoch from started_at)::bigint - $1) <= 1 "
+    "  AND abs(extract(epoch from ended_at)::bigint - $2) <= 1 "
+    "ORDER BY ended_at DESC LIMIT 1")
 
 _OVERVIEW_SQL = f"""
 SELECT count(*) n,
@@ -112,6 +117,46 @@ STREET_LABELS = {"preflop": "翻前", "flop": "Flop", "turn": "Turn", "river": "
 async def resolve_session(conn, session_id: int | None = None) -> dict | None:
     row = (await conn.fetchrow(_SESSION_BY_ID_SQL, session_id) if session_id
            else await conn.fetchrow(_LATEST_SESSION_SQL))
+    return dict(row) if row else None
+
+
+_B36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def _b36(n: int) -> str:
+    n = int(n)
+    if n < 0:
+        raise ValueError("base36 only supports non-negative integers")
+    if n == 0:
+        return "0"
+    out = []
+    while n:
+        n, rem = divmod(n, 36)
+        out.append(_B36_ALPHABET[rem])
+    return "".join(reversed(out))
+
+
+def _unb36(s: str) -> int:
+    return int(s, 36)
+
+
+def session_callback_key(d: dict) -> str:
+    """Stable, Telegram-short session key for callbacks.
+
+    ``ledger_sessions.id`` is volatile because the ingest pipeline rebuilds the
+    table from scratch.  The session's wall-clock span is stable for the same
+    hand cluster, so use start/end epoch seconds instead.
+    """
+    return f"{_b36(int(d['started_at'].timestamp()))}.{_b36(int(d['ended_at'].timestamp()))}"
+
+
+async def resolve_session_key(conn, key: str) -> dict | None:
+    try:
+        start_s, end_s = key.split(".", 1)
+        start_epoch, end_epoch = _unb36(start_s), _unb36(end_s)
+    except Exception:
+        return None
+    row = await conn.fetchrow(_SESSION_BY_KEY_SQL, start_epoch, end_epoch)
     return dict(row) if row else None
 
 
@@ -522,9 +567,10 @@ def render_tg(d: dict) -> dict:
     Pure function of ``compute()``'s output — no DB, no network. Returns
     ``{"html": str, "buttons": rows}`` where rows is list[list[button dict]].
     Buttons: URL (現在練/復盤) + callback (排入). callback_data stays
-    <64B via `srd|srv:{session_id}:{i}` index keys.
+    <64B via `srd2|srv2:{stable_session_key}:{i}` index keys.
     """
     sid = d["session_id"]
+    skey = session_callback_key(d)
     span = _session_span(d["started_at"], d["ended_at"])
     L = [f"🔍 <b>這場復盤</b> · {escape(span)}", ""]
 
@@ -546,7 +592,7 @@ def render_tg(d: dict) -> dict:
             row = []
             if s.get("drill_url"):
                 row.append({"text": f"🎯 現在練：{s['desc'][:16]}", "url": s["drill_url"]})
-            row.append({"text": "📥 排入佇列", "callback_data": f"srd:{sid}:{i}"})
+            row.append({"text": "📥 排入佇列", "callback_data": f"srd2:{skey}:{i}"})
             buttons.append(row)
 
     top_decisions = d.get("top_decisions") or []
@@ -579,7 +625,7 @@ def render_tg(d: dict) -> dict:
             # Telegram's inline-keyboard payload limit and make the whole review fail.
             # Keep concrete review links here; practice is still available via the
             # aggregated top-spot drill buttons and by enqueuing this decision.
-            row.append({"text": f"{m} 📥 排入佇列", "callback_data": f"srv:{sid}:{i}"})
+            row.append({"text": f"{m} 📥 排入佇列", "callback_data": f"srv2:{skey}:{i}"})
             buttons.append(row)
 
     hon = d["honesty"]

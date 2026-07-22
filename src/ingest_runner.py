@@ -413,7 +413,10 @@ async def _send_session_review(pool, bot, user_id, application=None):
         if not should_auto_send(data):
             return
         if application is not None:   # warm the callback cache (recompute fallback exists)
-            application.bot_data.setdefault("srev", {})[data["session_id"]] = data
+            from session_review import session_callback_key
+            cache = application.bot_data.setdefault("srev", {})
+            cache[data["session_id"]] = data
+            cache[session_callback_key(data)] = data
         out = render_tg(data)
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb = [[InlineKeyboardButton(b["text"], url=b.get("url"),
