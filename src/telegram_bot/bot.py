@@ -1818,7 +1818,7 @@ class PokerWizardBot:
                 async with conn.transaction():
                     item = await conn.fetchrow(
                         "SELECT id, spot_leaf, spot_category, label, drill_url, "
-                        "kind, n_sources, bias_direction, bias_n, "
+                        "source_hands, kind, n_sources, bias_direction, bias_n, "
                         "bias_ev_loss_bb, bias_share, "
                         "gtow_drill_id, gtow_drill_name, gtow_settings_hash, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
@@ -1829,6 +1829,18 @@ class PokerWizardBot:
                             query, context, chat_id, "找不到這個 Drill queue item。",
                             None, new_message=new_message)
                         return
+                    if not item["drill_url"]:
+                        from queue_feed import _as_list, queue_drill_url_from_sources
+                        rebuilt_url = await queue_drill_url_from_sources(
+                            conn, _as_list(item["source_hands"]))
+                        if rebuilt_url:
+                            item = await conn.fetchrow(
+                                "UPDATE drill_queue SET drill_url=$2, "
+                                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                                "gtow_settings_hash=NULL, "
+                                "gtow_drill_synced_at=NULL, last_added=NOW() "
+                                "WHERE id=$1 RETURNING *",
+                                queue_id, rebuilt_url)
                     if not item["drill_url"]:
                         await _present_queue_detail(
                             query, context, chat_id,
