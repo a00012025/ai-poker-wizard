@@ -234,8 +234,11 @@ async def _run_script(env: dict, *script_args, on_line=None) -> tuple[int, str]:
             break
         line = raw.decode(errors="replace")
         lines.append(line)
+        stripped = line.rstrip()
+        if stripped.startswith(("[ledger-perf]", "[session-perf]")):
+            logger.info(f"[ingest-perf] {stripped}")
         if on_line:
-            await on_line(line.rstrip())
+            await on_line(stripped)
     rc = await proc.wait()
     elapsed = time.monotonic() - started
     logger.info(f"[ingest-perf] subprocess rc={rc} elapsed={elapsed:.1f}s: {label}")

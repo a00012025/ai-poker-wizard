@@ -923,7 +923,7 @@ def test_incremental_since_uses_watermark_overlap():
 
     class FakeConn:
         async def fetchval(self, sql):
-            return datetime(2026, 7, 22, 19, 35, 19, tzinfo=timezone.utc)
+            return datetime(2026, 7, 22, 11, 35, 19, tzinfo=timezone.utc)
 
     orig = li._INCREMENTAL_OVERLAP_HOURS
     li._INCREMENTAL_OVERLAP_HOURS = 12
@@ -932,7 +932,37 @@ def test_incremental_since_uses_watermark_overlap():
     finally:
         li._INCREMENTAL_OVERLAP_HOURS = orig
     assert_eq(since, "2026-07-22T07:35:19.000Z",
-              "watermark minus overlap, not now-30d")
+              "watermark minus overlap in GTOW wall-clock time, not now-30d")
+
+
+@test
+def test_gtow_played_at_z_is_site_wall_clock_not_utc():
+    """GTOW Analyze labels the HH wall-clock as Z; store real UTC instead.
+
+    Live evidence: a hand ingested at 2026-07-22 11:47 UTC had raw
+    played_at='2026-07-22T19:35:19Z'. Treating that as true UTC created
+    future hands and shifted Taipei day windows by +8h.
+    """
+    from datetime import timezone
+    from ledger_ingest import _ts
+
+    dt = _ts("2026-07-22T19:35:19Z")
+    assert_eq(dt.isoformat(), "2026-07-22T11:35:19+00:00",
+              "GTOW wall-clock Taipei time converted to real UTC")
+    assert_true(dt.tzinfo is timezone.utc, "stored timestamp is UTC-aware")
+
+
+@test
+def test_raw_paths_for_normalized_utc_still_use_gtow_local_month():
+    """After DB normalization, detail prep must still find local-month archives."""
+    from datetime import datetime, timezone
+    from ledger_ingest import raw_paths
+
+    # 2026-06-30 16:30 UTC is 2026-07-01 00:30 Taipei; raw GTOW list/detail
+    # archives are keyed by the GTOW/Taipei wall-clock month (2026-07).
+    ld, dp = raw_paths("abc-123", datetime(2026, 6, 30, 16, 30, tzinfo=timezone.utc))
+    assert_true(str(dp).endswith("data/gtow_raw/detail/2026-07/abc-123.json.gz"))
+    assert_true(str(ld).endswith("data/gtow_raw/list/2026-07.jsonl.gz"))
 
 
 # ── Phase 1 Ledger: session clustering ──

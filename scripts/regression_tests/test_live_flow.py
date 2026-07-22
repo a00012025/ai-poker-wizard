@@ -1590,6 +1590,11 @@ def test_queue_feed_review_and_manual_items():
     # no raw_path -> Study link can't build -> day-range Analyze fallback
     assert_true(qf.review_url(row).startswith("https://app.gtowizard.com/analyze"))
     assert_true(qf.review_url({"ref_hand_id": "x"}) is None)   # no played_at -> no link
+    # Normalized UTC storage must render GTOW/Taipei date, not raw UTC or +8h double-shift.
+    evening = dict(row, played_at=datetime(2026, 7, 22, 11, 35, tzinfo=timezone.utc))
+    assert_true(qf.review_label(evening).startswith("復盤 7/22 Q♥️8♣️ "))
+    assert_in("2026-07-22", qf.review_url(evening))
+    assert_not_in("2026-07-23", qf.review_url(evening))
     dec = {"gtow_hand_id": "h9", "street": "flop", "decision_idx": 1, "spot_category": "flop",
            "spot_leaf": "flop:SRP:BBvLP:OOP:[x-b]:vs_bet", "hero_cat": "BB", "villain_cat": "LP",
            "ip_oop": "OOP", "position": "BB", "pot_type": "SRP", "eff_stack": "medium",

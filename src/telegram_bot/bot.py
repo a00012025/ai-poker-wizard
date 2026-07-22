@@ -154,7 +154,13 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
 
     for source in live:
         played_at = source.get("played_at")
-        date_text = played_at.strftime("%-m/%-d") if hasattr(played_at, "strftime") else "線下"
+        if hasattr(played_at, "astimezone"):
+            from queue_feed import TPE
+            date_text = played_at.astimezone(TPE).strftime("%-m/%-d")
+        elif hasattr(played_at, "strftime"):
+            date_text = played_at.strftime("%-m/%-d")
+        else:
+            date_text = "線下"
         detail = " ".join(part for part in (
             date_text, source.get("position"), source.get("hero_hand")) if part)
         ev = float(source.get("ev_loss_bb") or 0.0)

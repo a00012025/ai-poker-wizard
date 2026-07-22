@@ -10,9 +10,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spot_leaderboard import analyze_table_url
+
+TPE = ZoneInfo("Asia/Taipei")
 
 
 async def resolve_owner_chat_id(pool) -> int | None:
@@ -164,7 +167,7 @@ async def query_ledger_hands(pool, category=None, spot=None, min_ev_loss=0.5,
         rows = await conn.fetch(sql, *args)
     out = []
     for r in rows:
-        day = r["played_at"].astimezone().strftime("%Y-%m-%d")
+        day = r["played_at"].astimezone(TPE).strftime("%Y-%m-%d")
         out.append({"hand_id": r["gtow_hand_id"][:8], "played_at": day,
                     "hero_hand": r["hero_hand"], "position": r["position"],
                     "boards": r["boards"], "spot": r["spot_leaf"],

@@ -5,6 +5,7 @@ import os
 import random
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from dotenv import load_dotenv
@@ -13,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 from gtow_analyze_api import hand_detail
+
+TPE = ZoneInfo("Asia/Taipei")
 
 
 async def main():
@@ -35,7 +38,7 @@ async def main():
             h["gtow_hand_id"])
         ok = abs(api_loss - db_loss) < 1e-4
         mismatches += (not ok)
-        lines.append(f"| {h['gtow_hand_id'][:8]} | {h['played_at']:%m-%d} "
+        lines.append(f"| {h['gtow_hand_id'][:8]} | {h['played_at'].astimezone(TPE):%m-%d} "
                      f"| {db_loss:.3f} | {api_loss:.3f} | {'✅' if ok else '❌'} |")
     report = ("# Fidelity check (20 random lossy hands)\n\n"
               "| hand | date | ledger bb | api bb | match |\n|---|---|---|---|---|\n"

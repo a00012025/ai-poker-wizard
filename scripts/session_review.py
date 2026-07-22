@@ -552,10 +552,10 @@ def should_auto_send(data: dict) -> bool:
 
 
 def _session_span(started, ended) -> str:
-    # ledger_sessions timestamps are GTOW/PokerCraft local wall-clock values.
-    # Do not convert timezone again, or a 19:00 session renders as 03:00.
-    s = started
-    e = ended
+    # ledger timestamps are stored as real UTC instants; owner-facing reports
+    # render in Taipei / GTOW site time.
+    s = started.astimezone(TPE)
+    e = ended.astimezone(TPE)
     if s.date() == e.date():
         return f"{s.strftime('%-m/%-d')} {s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
     return f"{s.strftime('%-m/%-d %H:%M')} – {e.strftime('%-m/%-d %H:%M')}"

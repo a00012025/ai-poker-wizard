@@ -3,7 +3,7 @@
 
 Modes:
   --backfill --since 2026-03-01   full list sweep + full detail sweep
-  --incremental                   re-sweep trailing 30 days (late-upload safe)
+  --incremental                   re-sweep latest ingested hand minus overlap
   --verify                        API total vs DB count since 3/1; exit 2 on mismatch
   --backfill-skipped              fetch detail for list-only zero-loss hands
   --limit N                       cap detail fetches this run (dev/smoke)
@@ -20,6 +20,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from dotenv import load_dotenv
@@ -38,6 +39,7 @@ from ledger_distill import (
 )
 
 RAW = ROOT / "data" / "gtow_raw"
+GTOW_PLAYED_AT_TZ = ZoneInfo(os.getenv("GTOW_PLAYED_AT_TZ", "Asia/Taipei"))
 EPOCH_SINCE = "2026-02-28T16:00:00.000Z"     # 2026-03-01 Taipei
 HAND_COLS = [
     "gtow_hand_id", "played_at", "tournament_id", "tournament_name",
@@ -60,14 +62,52 @@ DEC_COLS = [
 ]
 
 
-def raw_paths(hand_id: str, played_at: str):
-    ym = played_at[:7]
+def _gtow_archive_month(played_at) -> str:
+    """Month key for GTOW raw archives.
+
+    GTOW Analyze's `played_at` currently arrives as a GTOW/site wall-clock
+    timestamp suffixed with `Z` (for example `2026-07-22T19:35:19Z` during a
+    19:35 Taipei session).  Raw list/detail archives are keyed by that wall
+    clock month.  Once stored in Postgres we normalize to real UTC, so datetime
+    inputs must be converted back to the GTOW wall-clock timezone before
+    choosing the archive month.
+    """
+    if isinstance(played_at, str):
+        return played_at[:7]
+    if isinstance(played_at, datetime):
+        dt = played_at if played_at.tzinfo else played_at.replace(tzinfo=timezone.utc)
+        return dt.astimezone(GTOW_PLAYED_AT_TZ).strftime("%Y-%m")
+    raise TypeError(f"unsupported played_at for raw archive path: {played_at!r}")
+
+
+def raw_paths(hand_id: str, played_at):
+    ym = _gtow_archive_month(played_at)
     return (RAW / "list" / f"{ym}.jsonl.gz",
             RAW / "detail" / ym / f"{hand_id}.json.gz")
 
 
-def _ts(v):  # ISO str -> aware datetime for asyncpg
-    return datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
+def _ts(v):  # GTOW Analyze played_at -> real UTC datetime for asyncpg
+    if not isinstance(v, str):
+        return v
+    if v.endswith("Z"):
+        # Despite the suffix, GTOW Analyze returns the HH's displayed/site
+        # wall-clock time.  Treat it as GTOW_PLAYED_AT_TZ local time and store
+        # a real UTC instant so DB day/week windows are honest.
+        local = datetime.fromisoformat(v[:-1]).replace(tzinfo=GTOW_PLAYED_AT_TZ)
+        return local.astimezone(timezone.utc)
+    return datetime.fromisoformat(v)
+
+
+def _gtow_wall_clock_iso(dt: datetime) -> str:
+    """Format a datetime for GTOW Analyze filters.
+
+    GTOW's list API returns and filters on site wall-clock strings with a `Z`
+    suffix, so convert stored UTC back to GTOW_PLAYED_AT_TZ before formatting.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(GTOW_PLAYED_AT_TZ)
+    return local.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def _hand_vals(h: dict) -> list:
@@ -140,6 +180,21 @@ _LIST_ONLY_BATCH = max(1, int(os.getenv("GTOW_LIST_ONLY_BATCH", "200")))
 _INCREMENTAL_OVERLAP_HOURS = max(0.0, float(os.getenv("GTOW_INCREMENTAL_OVERLAP_HOURS", "12")))
 
 
+def _perf(event: str, **fields) -> None:
+    """Emit machine-readable ingest timing for Docker logs.
+
+    `src.ingest_runner` forwards these lines to the application logger without
+    surfacing them in the Telegram progress message.
+    """
+    parts = [f"[ledger-perf] {event}"]
+    for key, value in fields.items():
+        if isinstance(value, float):
+            parts.append(f"{key}={value:.3f}")
+        else:
+            parts.append(f"{key}={value}")
+    print(" ".join(parts), flush=True)
+
+
 async def _fetch_details_concurrent(hids: list[str], on_progress=None,
                                     _done_base: int = 0, _total: int | None = None
                                     ) -> dict:
@@ -181,13 +236,21 @@ async def _fetch_details_concurrent(hids: list[str], on_progress=None,
 async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     # Preload known ids once (one query) instead of a SELECT per hand — the
     # 30-day incremental re-sweep is mostly already-known hands.
+    started = time.monotonic()
+    known_started = time.monotonic()
     known_ids = {r["gtow_hand_id"]
                  for r in await conn.fetch("SELECT gtow_hand_id FROM ledger_hands")}
+    known_query_s = time.monotonic() - known_started
     new = known = scanned = total = 0
     batch: list[dict] = []
+    pages = 0
+    api_s = archive_write_s = db_write_s = 0.0
     offset = 0
     while True:
+        api_started = time.monotonic()
         page = gapi.list_hands(since_iso, offset=offset, limit=_LIST_PAGE_SIZE)
+        api_s += time.monotonic() - api_started
+        pages += 1
         items = page.get("items", [])
         total = int(page.get("total", 0) or 0)
         if not items:
@@ -200,20 +263,31 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
             known_ids.add(row["hand_id"])
             lp, _ = raw_paths(row["hand_id"], row["played_at"])
             lp.parent.mkdir(parents=True, exist_ok=True)
+            archive_started = time.monotonic()
             with gzip.open(lp, "at") as f:
                 f.write(json.dumps(row) + "\n")
+            archive_write_s += time.monotonic() - archive_started
             hand_row = distill_hand_row(row)
             hand_row["detail_status"] = "pending"
             batch.append(hand_row)
             new += 1
             if len(batch) >= _LIST_BATCH:
-                await upsert_hands_batch(conn, batch); batch = []
+                db_started = time.monotonic()
+                await upsert_hands_batch(conn, batch)
+                db_write_s += time.monotonic() - db_started
+                batch = []
                 print(f"  list write: {new} new...", flush=True)
         offset += len(items)
         print(f"  list scan: {scanned}/{total} ({new} new)", flush=True)
         if offset >= total:
             break
+    db_started = time.monotonic()
     await upsert_hands_batch(conn, batch)
+    db_write_s += time.monotonic() - db_started
+    _perf("list", since=since_iso, elapsed_s=time.monotonic() - started,
+          known_query_s=known_query_s, api_s=api_s,
+          archive_write_s=archive_write_s, db_write_s=db_write_s,
+          pages=pages, scanned=scanned, new=new, known=known)
     return new, known
 
 
@@ -231,16 +305,24 @@ async def incremental_since(conn) -> str:
         since_dt = datetime.now(timezone.utc) - timedelta(days=30)
     else:
         since_dt = max_played - timedelta(hours=_INCREMENTAL_OVERLAP_HOURS)
-    return since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    since = _gtow_wall_clock_iso(since_dt)
+    _perf("incremental_since", max_played=max_played.isoformat() if max_played else None,
+          overlap_hours=_INCREMENTAL_OVERLAP_HOURS, since=since)
+    return since
 
 
 async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = False
                        ) -> tuple[int, int, int, int]:
+    started = time.monotonic()
     status = "skipped_zeroloss" if backfill_skipped else "pending"
+    pending_started = time.monotonic()
     rows = await conn.fetch(
         "SELECT gtow_hand_id, played_at FROM ledger_hands "
         "WHERE detail_status=$1 AND source='online' ORDER BY played_at", status)
+    pending_query_s = time.monotonic() - pending_started
+    load_started = time.monotonic()
     list_rows = _load_list_rows(rows)
+    load_list_rows_s = time.monotonic() - load_started
     fetched = ndec = skipped_nodata = skipped_zeroloss = reconstruct_fallback = 0
     # Pass 1 (serial, fast): handle list-only zero-loss hands inline and collect
     # the ones that actually need a network detail fetch. `limit` caps fetch
@@ -248,10 +330,14 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
     needs_detail: list[tuple[str, Path, dict]] = []
     zero_hids: list[str] = []
     zero_decs: list[dict] = []
+    prep_started = time.monotonic()
+    zero_write_s = fetch_s = detail_write_s = 0.0
 
     async def flush_zero_batch():
+        nonlocal zero_write_s
         if not zero_hids:
             return
+        flush_started = time.monotonic()
         async with conn.transaction():
             await conn.execute(
                 "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
@@ -262,6 +348,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                 "detail_status='skipped_zeroloss' "
                 "WHERE gtow_hand_id = ANY($1::text[])",
                 zero_hids)
+        zero_write_s += time.monotonic() - flush_started
         zero_hids.clear()
         zero_decs.clear()
 
@@ -269,7 +356,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
         if limit and len(needs_detail) >= limit:
             break
         hid = r["gtow_hand_id"]
-        played = r["played_at"].isoformat()
+        played = r["played_at"]
         _, dp = raw_paths(hid, played)
         dp.parent.mkdir(parents=True, exist_ok=True)
         list_row = list_rows[hid]
@@ -302,6 +389,7 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
               f"({skipped_zeroloss} zero-loss)", flush=True)
     if rows:
         print(f"  detail prep: {min(len(rows), idx if 'idx' in locals() else 0)}/{len(rows)}", flush=True)
+    prep_s = time.monotonic() - prep_started
 
     # Pass 2 (concurrent fetch) + pass 3 (serial DB write), batched to bound
     # memory. The "detail sweep: done/total" print format is unchanged so the
@@ -313,14 +401,17 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
 
     for start in range(0, total_detail, _DETAIL_BATCH):
         chunk = needs_detail[start:start + _DETAIL_BATCH]
+        fetch_started = time.monotonic()
         dets = await _fetch_details_concurrent(
             [hid for hid, _, _ in chunk], on_progress=_emit,
             _done_base=start, _total=total_detail)
+        fetch_s += time.monotonic() - fetch_started
         written_in_chunk = 0
         hand_rows: list[dict] = []
         hand_updates: list[tuple[str, str]] = []
         all_decs: list[dict] = []
         fetched_hids: list[str] = []
+        write_started = time.monotonic()
         for hid, dp, list_row in chunk:
             det = dets.get(hid)
             if det is None:
@@ -352,11 +443,19 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
                     "UPDATE ledger_hands SET detail_fetched=true, "
                     "detail_status='fetched', raw_path=$2 WHERE gtow_hand_id=$1",
                     hand_updates)
+        detail_write_s += time.monotonic() - write_started
     if total_detail:
         print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
     if skipped_nodata:
         print(f"  detail sweep: skipped {skipped_nodata} hands with no retrievable "
               f"analysis yet (will retry next run)", flush=True)
+    _perf("detail", elapsed_s=time.monotonic() - started,
+          pending_query_s=pending_query_s, load_list_rows_s=load_list_rows_s,
+          prep_s=prep_s, zero_write_s=zero_write_s, fetch_s=fetch_s,
+          detail_write_s=detail_write_s, pending=len(rows),
+          needs_detail=total_detail, fetched=fetched,
+          skipped_nodata=skipped_nodata, skipped_zeroloss=skipped_zeroloss,
+          reconstruct_fallback=reconstruct_fallback, decisions=ndec)
     return fetched, ndec, skipped_zeroloss, reconstruct_fallback
 
 
@@ -379,7 +478,7 @@ def _load_list_rows(rows) -> dict[str, dict]:
     wanted_by_path: dict[Path, set[str]] = defaultdict(set)
     for r in rows:
         hid = r["gtow_hand_id"]
-        played = r["played_at"].isoformat()
+        played = r["played_at"]
         lp, _ = raw_paths(hid, played)
         wanted_by_path[lp].add(hid)
 

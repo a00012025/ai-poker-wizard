@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -49,15 +50,22 @@ async def rebuild():
     load_dotenv(ROOT / ".env")
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     try:
+        started = time.monotonic()
         # online-only: live hands carry a synthetic capture timestamp, not a
         # real play time — clustering them would fabricate sessions.
+        fetch_started = time.monotonic()
         rows = await conn.fetch(
             "SELECT gtow_hand_id, played_at, tournament_id FROM ledger_hands "
             "WHERE source='online' ORDER BY played_at")
+        fetch_s = time.monotonic() - fetch_started
+        cluster_started = time.monotonic()
         sessions = cluster_sessions([dict(r) for r in rows])
+        cluster_s = time.monotonic() - cluster_started
+        write_started = time.monotonic()
         async with conn.transaction():
             await conn.execute("UPDATE ledger_hands SET session_id=NULL")
             await conn.execute("DELETE FROM ledger_sessions")
+            assignments: list[tuple[str, int]] = []
             for s in sessions:
                 sid = await conn.fetchval(
                     "INSERT INTO ledger_sessions (started_at, ended_at, duration_min, "
@@ -65,9 +73,28 @@ async def rebuild():
                     "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
                     s["started_at"], s["ended_at"], s["duration_min"],
                     json.dumps(s["tournaments"]), s["max_concurrent_tables"], s["hands_count"])
-                await conn.execute(
-                    "UPDATE ledger_hands SET session_id=$1 WHERE gtow_hand_id = ANY($2)",
-                    sid, s["hand_ids"])
+                assignments.extend((hid, sid) for hid in s["hand_ids"])
+            await conn.execute(
+                "CREATE TEMP TABLE tmp_ledger_session_assign "
+                "(gtow_hand_id text PRIMARY KEY, session_id bigint) ON COMMIT DROP")
+            await conn.copy_records_to_table(
+                "tmp_ledger_session_assign",
+                records=assignments,
+                columns=("gtow_hand_id", "session_id"),
+            )
+            await conn.execute(
+                "UPDATE ledger_hands h SET session_id=a.session_id "
+                "FROM tmp_ledger_session_assign a "
+                "WHERE h.gtow_hand_id=a.gtow_hand_id AND h.source='online'")
+        write_s = time.monotonic() - write_started
+        elapsed_s = time.monotonic() - started
+        print(
+            "[session-perf] rebuild "
+            f"elapsed_s={elapsed_s:.3f} fetch_s={fetch_s:.3f} "
+            f"cluster_s={cluster_s:.3f} write_s={write_s:.3f} "
+            f"hands={len(rows)} sessions={len(sessions)}",
+            flush=True,
+        )
         print(f"SESSIONS rebuilt: {len(sessions)}")
     finally:
         await conn.close()
