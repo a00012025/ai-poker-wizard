@@ -69,13 +69,13 @@ def _all_buttons(rows):
 
 
 @test
-def test_session_review_uses_ledger_wall_clock_no_tz_shift():
+def test_session_review_renders_normalized_utc_in_taipei_time():
     d = _sample()
-    d["started_at"] = datetime(2026, 7, 20, 19, 0, tzinfo=timezone.utc)
-    d["ended_at"] = datetime(2026, 7, 20, 21, 4, tzinfo=timezone.utc)
+    d["started_at"] = datetime(2026, 7, 20, 11, 0, tzinfo=timezone.utc)
+    d["ended_at"] = datetime(2026, 7, 20, 13, 4, tzinfo=timezone.utc)
     html = sr.render_tg(d)["html"]
     assert_in("7/20 19:00–21:04", html)
-    assert_not_in("7/21 03:00", html)
+    assert_not_in("7/20 11:00", html)
 
 
 @test
