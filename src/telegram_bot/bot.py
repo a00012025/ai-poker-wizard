@@ -2033,14 +2033,16 @@ class PokerWizardBot:
             return
         parts = (update.message.text or "").split()
         sid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        from session_review import compute, render_tg, resolve_session
+        from session_review import compute, render_tg, resolve_session, session_callback_key
         session = await resolve_session(self.db.pool, sid)
         if not session:
             await update.message.reply_text(
                 "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。")
             return
         data = await compute(self.db.pool, session)
-        context.application.bot_data.setdefault("srev", {})[data["session_id"]] = data
+        cache = context.application.bot_data.setdefault("srev", {})
+        cache[data["session_id"]] = data
+        cache[session_callback_key(data)] = data
         out = render_tg(data)
         await update.message.reply_text(
             out["html"], parse_mode="HTML", disable_web_page_preview=True,
@@ -2048,25 +2050,31 @@ class PokerWizardBot:
 
     async def _session_review_enqueue(self, update: Update,
                                       context: ContextTypes.DEFAULT_TYPE, data: str):
-        """srd|srv:<session_id>:<i> — enqueue the i-th session-review spot(drill)/
+        """srd|srv:<session_id>:<i> or srd2|srv2:<stable_key>:<i> — enqueue the i-th session-review spot(drill)/
         decision(review) into drill_queue (added_by='session', threshold-free). Idempotent
         via queue_feed.enqueue_one; the tapped button is relabelled ✅."""
         query = update.callback_query
         if not (self.db and self.db.pool):
             await query.answer("Database not connected.")
             return
-        kind, sid_s, i_s = data.split(":")
-        sid, i = int(sid_s), int(i_s)
-        cached = context.application.bot_data.get("srev", {}).get(sid)
+        kind, session_ref, i_s = data.split(":")
+        i = int(i_s)
+        stable = kind in {"srd2", "srv2"}
+        cache_key = session_ref if stable else int(session_ref)
+        cached = context.application.bot_data.get("srev", {}).get(cache_key)
         if cached is None:
-            from session_review import compute, resolve_session
-            session = await resolve_session(self.db.pool, sid)
+            from session_review import (compute, resolve_session,
+                                        resolve_session_key, session_callback_key)
+            session = (await resolve_session_key(self.db.pool, session_ref) if stable
+                       else await resolve_session(self.db.pool, int(session_ref)))
             if not session:
                 await query.answer("找不到這個 session。")
                 return
             cached = await compute(self.db.pool, session)
-            context.application.bot_data.setdefault("srev", {})[sid] = cached
-        items = (cached["top_spots"] if kind == "srd"
+            cache = context.application.bot_data.setdefault("srev", {})
+            cache[cached["session_id"]] = cached
+            cache[session_callback_key(cached)] = cached
+        items = (cached["top_spots"] if kind.startswith("srd")
                  else (cached.get("top_decisions") or cached.get("top_hands") or []))
         if i >= len(items):
             await query.answer("這個項目已不在清單上。")
@@ -2098,7 +2106,7 @@ class PokerWizardBot:
             await context.bot.send_message(chat_id, "找不到這個復盤項的來源手。")
             return
         rows = await self.db.pool.fetch(
-            "SELECT id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
+            "SELECT id, gtow_hand_id, street, decision_idx, spot_category, spot_leaf, hero_cat, "
             "villain_cat, ip_oop, position, ev_loss_bb "
             "FROM ledger_decisions "
             "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
@@ -2120,18 +2128,30 @@ class PokerWizardBot:
 
     async def _queue_add_manual(self, update: Update,
                                 context: ContextTypes.DEFAULT_TYPE,
-                                queue_id: int, decision_id: int):
-        """qad:<queue_id>:<decision_id> — add one graded decision as a manual
+                                queue_id: int, decision_ref):
+        """qad:<queue_id>:<decision_id> or
+        qad2:<queue_id>:<gtow_hand_id>:<street>:<decision_idx> — add one graded decision as a manual
         drill (kind='drill', added_by='manual', source='manual'), §6.2."""
         query = update.callback_query
         chat_id = update.effective_chat.id
         if not (self.db and self.db.pool):
             await query.answer("Database not connected.")
             return
-        dec = await self.db.pool.fetchrow(
+        select_cols = (
             "SELECT id, gtow_hand_id, street, decision_idx, spot_category, spot_leaf, "
             "hero_cat, villain_cat, ip_oop, position, pot_type, eff_stack, ev_loss_bb "
-            "FROM ledger_decisions WHERE id=$1", decision_id)
+            "FROM ledger_decisions ")
+        if isinstance(decision_ref, tuple):
+            hid, street, decision_idx = decision_ref
+            dec = await self.db.pool.fetchrow(
+                select_cols +
+                "WHERE gtow_hand_id=$1 AND street=$2 AND decision_idx=$3",
+                hid, street, decision_idx)
+        else:
+            # Backward compatibility for old Telegram messages emitted before
+            # stable qad2 callbacks existed.
+            dec = await self.db.pool.fetchrow(
+                select_cols + "WHERE id=$1", int(decision_ref))
         if not dec:
             await query.answer("找不到這個決策。")
             return
@@ -2161,7 +2181,8 @@ class PokerWizardBot:
         qdst:<queue_id> — refresh the same detail menu and practice results;
         qcl:<queue_id> — mark a queue item cleared (writes cleared_at);
         qex:<queue_id> — expand a review item into its decisions to hand-pick;
-        qad:<queue_id>:<decision_id> — add one decision as a manual drill."""
+        qad:<queue_id>:<decision_id> — add one decision as a manual drill
+        qad2:<queue_id>:<gtow_hand_id>:<street>:<decision_idx> — stable add."""
         query = update.callback_query
         data = query.data or ""
         chat_id = update.effective_chat.id
@@ -2265,7 +2286,14 @@ class PokerWizardBot:
             await self._queue_add_manual(update, context, int(qid), int(did))
             return
 
-        if data.startswith("srd:") or data.startswith("srv:"):
+        if data.startswith("qad2:"):
+            _, qid, hid, street, didx = data.split(":", 4)
+            await self._queue_add_manual(
+                update, context, int(qid), (hid, street, int(didx)))
+            return
+
+        if (data.startswith("srd:") or data.startswith("srv:")
+                or data.startswith("srd2:") or data.startswith("srv2:")):
             await self._session_review_enqueue(update, context, data)
             return
 
@@ -2505,7 +2533,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qsrc|qraw|qdet|qdst|srd|srv):"))
+                pattern=r"^(lvd|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))

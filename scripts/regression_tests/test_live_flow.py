@@ -1502,22 +1502,22 @@ def test_queue_feed_quota_mix():
 
 @test
 def test_queue_feed_qex_submenu_callback_data():
-    """qex sub-menu: numeric decision ids in callback_data (never the spot_leaf
+    """qex sub-menu: stable decision keys in callback_data (never the spot_leaf
     string — 64-byte limit), street order, and only material EV loss appears.
     Solver frequency / BEST_MOVE metadata belongs in Study, not this picker."""
     import queue_feed as qf
     decs = [
-        {"id": 71, "street": "river", "decision_idx": 0, "spot_category": "river",
+        {"id": 71, "gtow_hand_id": "TM586000071", "street": "river", "decision_idx": 0, "spot_category": "river",
          "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet", "hero_cat": "SB",
          "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 22.7},
-        {"id": 70, "street": "flop", "decision_idx": 0, "spot_category": "flop",
+        {"id": 70, "gtow_hand_id": "TM586000070", "street": "flop", "decision_idx": 0, "spot_category": "flop",
          "spot_leaf": "flop:SRP:SBvBB:OOP:[b-c]:first_to_act", "hero_cat": "SB",
          "villain_cat": "BB", "ip_oop": "OOP", "position": "SB", "ev_loss_bb": 0.0,
          "taken_freq": 0.023, "correctness": "INACCURACY"},
     ]
     rows = qf.qex_submenu(decs, 123456)
-    assert_eq(rows[0]["callback_data"], "qad:123456:70")        # flop first (street order)
-    assert_eq(rows[1]["callback_data"], "qad:123456:71")
+    assert_eq(rows[0]["callback_data"], "qad2:123456:TM586000070:flop:0")  # flop first
+    assert_eq(rows[1]["callback_data"], "qad2:123456:TM586000071:river:0")
     assert_true(all(len(r["callback_data"]) <= 64 for r in rows))
     assert_true(all(len(r["text"]) <= 60 for r in rows))
     assert_true(all(term not in rows[0]["text"] for term in
@@ -1528,6 +1528,23 @@ def test_queue_feed_qex_submenu_callback_data():
     from telegram_bot.bot import PokerWizardBot
     src = inspect.getsource(PokerWizardBot._queue_expand_review)
     assert_not_in("taken_freq", src)
+
+
+@test
+def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
+    """Dry-run/unit callers without hand identity can still use the old numeric
+    callback; production DB rows should provide gtow_hand_id and use qad2."""
+    import queue_feed as qf
+    rows = qf.qex_submenu([{
+        "id": 70, "street": "flop", "decision_idx": 0,
+        "spot_category": "flop", "spot_leaf": "flop:x",
+        "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP",
+        "position": "SB", "ev_loss_bb": 0.0,
+    }], 123456)
+    assert_eq(rows[0]["callback_data"], "qad:123456:70")
+    import inspect
+    from telegram_bot.bot import PokerWizardBot
+    src = inspect.getsource(PokerWizardBot._queue_expand_review)
     assert_not_in("freq_diff", src)
     assert_not_in("correctness", src)
     assert_not_in("含打對的決策", src)
