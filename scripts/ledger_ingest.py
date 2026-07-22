@@ -85,6 +85,17 @@ def _hand_upsert_sql() -> str:
             f"ON CONFLICT (gtow_hand_id) DO UPDATE SET {upd}")
 
 
+def _decision_upsert_sql() -> str:
+    cols = ", ".join(DEC_COLS)
+    ph = ", ".join(f"${i+1}" for i in range(len(DEC_COLS)))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}"
+                    for c in DEC_COLS if c not in ("gtow_hand_id", "street", "decision_idx"))
+    return (
+        f"INSERT INTO ledger_decisions ({cols}) VALUES ({ph}) "
+        f"ON CONFLICT (gtow_hand_id, street, decision_idx) DO UPDATE SET {upd}"
+    )
+
+
 async def upsert_hand(conn, h: dict):
     await conn.execute(_hand_upsert_sql(), *_hand_vals(h))
 
@@ -94,22 +105,20 @@ async def upsert_hands_batch(conn, rows: list[dict]):
         await conn.executemany(_hand_upsert_sql(), [_hand_vals(h) for h in rows])
 
 
+def _decision_vals(d: dict) -> list:
+    vals = [d.get(c) for c in DEC_COLS]
+    vals[DEC_COLS.index("played_at")] = _ts(d["played_at"])
+    vals[DEC_COLS.index("approx_flags")] = json.dumps(d["approx_flags"])
+    vals[DEC_COLS.index("spot_keys")] = (
+        json.dumps(d["spot_keys"]) if d.get("spot_keys") is not None else None)
+    vals[DEC_COLS.index("discarded")] = bool(d.get("discarded", False))
+    vals[DEC_COLS.index("limp_origin")] = bool(d.get("limp_origin", False))
+    return vals
+
+
 async def upsert_decisions(conn, decs: list[dict]):
-    for d in decs:
-        vals = [d.get(c) for c in DEC_COLS]
-        vals[DEC_COLS.index("played_at")] = _ts(d["played_at"])
-        vals[DEC_COLS.index("approx_flags")] = json.dumps(d["approx_flags"])
-        vals[DEC_COLS.index("spot_keys")] = (
-            json.dumps(d["spot_keys"]) if d.get("spot_keys") is not None else None)
-        vals[DEC_COLS.index("discarded")] = bool(d.get("discarded", False))
-        vals[DEC_COLS.index("limp_origin")] = bool(d.get("limp_origin", False))
-        cols = ", ".join(DEC_COLS)
-        ph = ", ".join(f"${i+1}" for i in range(len(DEC_COLS)))
-        upd = ", ".join(f"{c}=EXCLUDED.{c}"
-                        for c in DEC_COLS if c not in ("gtow_hand_id", "street", "decision_idx"))
-        await conn.execute(
-            f"INSERT INTO ledger_decisions ({cols}) VALUES ({ph}) "
-            f"ON CONFLICT (gtow_hand_id, street, decision_idx) DO UPDATE SET {upd}", *vals)
+    if decs:
+        await conn.executemany(_decision_upsert_sql(), [_decision_vals(d) for d in decs])
 
 
 _LIST_BATCH = 500
@@ -265,6 +274,10 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
             [hid for hid, _, _ in chunk], on_progress=_emit,
             _done_base=start, _total=total_detail)
         written_in_chunk = 0
+        hand_rows: list[dict] = []
+        hand_updates: list[tuple[str, str]] = []
+        all_decs: list[dict] = []
+        fetched_hids: list[str] = []
         for hid, dp, list_row in chunk:
             det = dets.get(hid)
             if det is None:
@@ -276,19 +289,26 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
             with gzip.open(dp, "wt") as f:
                 json.dump(det, f)
             hand_row, decs = distill_hand(list_row, det)
-            async with conn.transaction():
-                await upsert_hand(conn, hand_row)
-                await conn.execute(
-                    "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1", hid)
-                await upsert_decisions(conn, decs)
-                await conn.execute(
-                    "UPDATE ledger_hands SET detail_fetched=true, detail_status='fetched', raw_path=$2 "
-                    "WHERE gtow_hand_id=$1", hid, str(dp.relative_to(ROOT)))
+            hand_rows.append(hand_row)
+            fetched_hids.append(hid)
+            all_decs.extend(decs)
+            hand_updates.append((hid, str(dp.relative_to(ROOT))))
             fetched += 1
             ndec += len(decs)
             written_in_chunk += 1
             if written_in_chunk % _WRITE_PROGRESS_EVERY == 0:
                 print(f"  detail write: {start + written_in_chunk}/{total_detail}", flush=True)
+        if fetched_hids:
+            async with conn.transaction():
+                await upsert_hands_batch(conn, hand_rows)
+                await conn.execute(
+                    "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
+                    fetched_hids)
+                await upsert_decisions(conn, all_decs)
+                await conn.executemany(
+                    "UPDATE ledger_hands SET detail_fetched=true, "
+                    "detail_status='fetched', raw_path=$2 WHERE gtow_hand_id=$1",
+                    hand_updates)
     if total_detail:
         print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
     if skipped_nodata:
