@@ -283,6 +283,16 @@ def test_session_review_callback_key_survives_session_id_rebuild():
 
 
 @test
+def test_session_review_decision_enqueue_persists_review_url_as_drill_url():
+    """Decision-level queue rows use drill_queue.drill_url for their Analyze
+    review link; a dead review_url key is ignored by enqueue_one."""
+    import inspect
+    src = inspect.getsource(sr._decision_items)
+    assert_in('"drill_url": exact_url', src)
+    assert_not_in('"review_url": exact_url', src)
+
+
+@test
 def test_session_review_auto_send_skips_clean_session():
     """Sync auto-append fires only when there's something to review (§7-11 依從):
     non-empty → push, clean/empty → stay silent (manual /review still works)."""
