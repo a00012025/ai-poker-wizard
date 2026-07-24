@@ -492,12 +492,15 @@ def test_live_parse_block_applies_card_literal_gate():
     from live_flow import parse_block
 
     class _Resp:
-        text = json.dumps({"hand": {
-            "players_at_table": 8, "effective_bb": 50,
-            "hero_position": "BB", "hero_hand": "Jd7d",
-            "preflop_actions": "F-R2-F-F-F-F-F-C",
-            "streets": [{"board": "Jc9d3h", "actions": []}],
-        }})
+        text = json.dumps({
+            "effective_bb": 50, "hero_position": "BB", "hero_hand": "Jd7d",
+            "preflop_actions": [
+                {"actor": "UTG+1", "action": "raise"},
+                {"actor": "HERO", "action": "call"},
+            ],
+            "streets": [{"board_text": "J93", "actions": [
+                {"action": "check"}, {"action": "check"}]}],
+        })
 
     class _Models:
         def generate_content(self, **_kwargs):
@@ -511,7 +514,7 @@ def test_live_parse_block_applies_card_literal_gate():
     assert_true(hand is not None and not hand.get("_refused"))
     assert_eq(hand["hero_hand"], "Qd7d")
     assert_eq(hand["streets"][0]["board"][0::2], "Q93")
-    assert_true(any(n.startswith("hero_hand") for n in hand["_repairs"]))
+    assert_true(any(n.startswith("flop") for n in hand["_repairs"]))
 
     # raw duplicates hero's Jd on the flop -> honest refusal sentinel
     refused = parse_block("Eff 50bb u+1 open hero bb Jd7d call\nJd93 x x",
@@ -521,33 +524,33 @@ def test_live_parse_block_applies_card_literal_gate():
 
 
 @test
-def test_live_parse_block_retries_when_gemini_drops_checkthrough_street():
-    """Observed live batch: 'A x x' was merged into the river, producing
-    raw 3 streets vs parsed 2. parse_block should retry with a precise street
-    alignment hint before refusing, so normal user shorthand grades."""
+def test_live_parse_block_structured_tokens_keep_checkthrough_streets():
+    """The narrow street-token schema keeps 'A x x' as its own street rather
+    than letting a full-hand model merge it into the river."""
     from live_flow import parse_block
 
     block = ("Eff 30bb Hero utg raise As5s hj call\n"
              "KsJ 2 rainbow hero bet 2bb hj call\n"
              "A x x\n"
              "2 Hero bet 7bb lj call")
-    first = json.dumps({"hand": {
-        "players_at_table": 8, "effective_bb": 30,
+    payload = json.dumps({
+        "effective_bb": 30,
         "hero_position": "UTG", "hero_hand": "As5s",
-        "preflop_actions": "R2-F-F-C-F-F-F-F",
-        "streets": [{"board": "KsJc2d", "actions": []},
-                    {"card": "Ac", "actions": []}],
-    }})
-    second = json.dumps({"hand": {
-        "players_at_table": 8, "effective_bb": 30,
-        "hero_position": "UTG", "hero_hand": "As5s",
-        "preflop_actions": "R2-F-F-F-C-F-F-F",
-        "streets": [
-            {"board": "KsJc2d", "actions": []},
-            {"card": "Ad", "actions": []},
-            {"card": "2h", "actions": []},
+        "preflop_actions": [
+            {"actor": "HERO", "action": "raise"},
+            {"actor": "HJ", "action": "call"},
         ],
-    }})
+        "streets": [
+            {"board_text": "KsJ 2 rainbow", "actions": [
+                {"actor": "HERO", "action": "bet", "size_bb": 2},
+                {"actor": "HJ", "action": "call"}]},
+            {"board_text": "A", "actions": [
+                {"action": "check"}, {"action": "check"}]},
+            {"board_text": "2", "actions": [
+                {"actor": "HERO", "action": "bet", "size_bb": 7},
+                {"actor": "HJ", "action": "call"}]},
+        ],
+    })
 
     class _Resp:
         def __init__(self, text):
@@ -556,10 +559,12 @@ def test_live_parse_block_retries_when_gemini_drops_checkthrough_street():
     class _Models:
         def __init__(self):
             self.prompts = []
+            self.calls = []
 
         def generate_content(self, **kwargs):
             self.prompts.append(kwargs["contents"])
-            return _Resp(first if len(self.prompts) == 1 else second)
+            self.calls.append(kwargs)
+            return _Resp(payload)
 
     class _Client:
         def __init__(self):
@@ -571,23 +576,28 @@ def test_live_parse_block_retries_when_gemini_drops_checkthrough_street():
     assert_eq(len(hand["streets"]), 3)
     assert_eq(hand["streets"][1]["card"], "Ah")
     assert_eq(hand["streets"][2]["card"], "2c")
-    assert_true(len(client.models.prompts) == 2)
-    assert_in("不能省略", client.models.prompts[1])
+    assert_eq(len(client.models.prompts), 1)
+    assert_eq(client.models.calls[0]["model"], "gemini-3.6-flash")
+    assert_in("LOW", str(
+        client.models.calls[0]["config"].thinking_config.thinking_level))
 
 
 @test
-def test_live_parse_block_uses_preflop_fallback_when_llm_omits_seats():
-    """If Gemini returns a syntactically present but too-short preflop line,
-    parse_block must not pass it to validation; use the deterministic one-line
-    fallback instead."""
+def test_live_parse_block_replays_preflop_tokens_into_full_seat_line():
+    """Gemini never emits a seat string; replay pads all implicit folds."""
     from live_flow import parse_block
 
     class _Resp:
-        text = json.dumps({"hand": {
-            "players_at_table": 8, "effective_bb": 25,
+        text = json.dumps({
+            "effective_bb": 25,
             "hero_position": "HJ", "hero_hand": "QQ",
-            "preflop_actions": "F-F-F-R2-R6-AI",
-        }})
+            "preflop_actions": [
+                {"actor": "HERO", "action": "raise"},
+                {"actor": "CO", "action": "raise", "size_bb": 6},
+                {"actor": "HERO", "action": "all_in"},
+            ],
+            "streets": [],
+        })
 
     class _Models:
         def generate_content(self, **_kwargs):
@@ -600,7 +610,306 @@ def test_live_parse_block_uses_preflop_fallback_when_llm_omits_seats():
                        client=_Client())
     assert_true(hand is not None and not hand.get("_refused"))
     assert_eq(hand["preflop_actions"], "F-F-F-R2-R6-F-F-F-AI25")
-    assert_true(any("LLM 漏座位" in n for n in hand.get("_repairs", [])))
+
+
+@test
+def test_live_token_replay_assigns_continuation_actors_without_position_shift():
+    """The model supplies lexical facts only; deterministic replay owns seats.
+
+    Regression for Hand 2: CO folds after SB's 3bet, then BTN calls.  Omitting
+    BB's implicit fold must not shift CO's fold or BTN's continuation call.
+    """
+    from live_flow import replay_live_action_tokens
+
+    block = ("Eff 35bb Co raise hero btn call 7s8s sb raise 7bb co fold hero call\n"
+             "Ac5c6d b4 call\n"
+             "4s x b8 fold")
+    tokens = {
+        "effective_bb": 35, "hero_position": "BTN", "hero_hand": "7s8s",
+        "preflop_actions": [
+            {"actor": "CO", "action": "raise"},
+            {"actor": "HERO", "action": "call"},
+            {"actor": "SB", "action": "raise", "size_bb": 7},
+            {"actor": "CO", "action": "fold"},
+            {"actor": "HERO", "action": "call"},
+        ],
+        "streets": [
+            {"board_text": "Ac5c6d", "actions": [
+                {"action": "bet", "size_bb": 4}, {"action": "call"}]},
+            {"board_text": "4s", "actions": [
+                {"action": "check"}, {"action": "bet", "size_bb": 8},
+                {"action": "fold"}]},
+        ],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    assert_eq(hand["preflop_actions"], "F-F-F-F-R2-C-R7-F-F-C")
+    assert_eq([(a["position"], a["action"]) for a in hand["streets"][0]["actions"]],
+              [("SB", "R4"), ("BTN", "C")])
+    assert_eq([(a["position"], a["action"]) for a in hand["streets"][1]["actions"]],
+              [("SB", "X"), ("BTN", "R8"), ("SB", "F")])
+
+
+@test
+def test_live_token_replay_keeps_explicit_lj_fold_and_hj_call():
+    """Regression for Hand 3: explicit LJ fold cannot become a live ghost."""
+    from live_flow import replay_live_action_tokens
+
+    block = ("Eff 40bb Lj raise hj call hero co raise 7bb jj Lj fold hj call\n"
+             "752r x b10 fold")
+    tokens = {
+        "effective_bb": 40, "hero_position": "CO", "hero_hand": "JJ",
+        "preflop_actions": [
+            {"actor": "LJ", "action": "raise"},
+            {"actor": "HJ", "action": "call"},
+            {"actor": "HERO", "action": "raise", "size_bb": 7},
+            {"actor": "LJ", "action": "fold"},
+            {"actor": "HJ", "action": "call"},
+        ],
+        "streets": [{"board_text": "752r", "actions": [
+            {"action": "check"}, {"action": "bet", "size_bb": 10},
+            {"action": "fold"}]}],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    assert_eq(hand["preflop_actions"], "F-F-R2-C-R7-F-F-F-F-C")
+    assert_eq([(a["position"], a["action"]) for a in hand["streets"][0]["actions"]],
+              [("HJ", "X"), ("CO", "R10"), ("HJ", "F")])
+
+
+@test
+def test_live_token_replay_btn_shove_bb_call_is_not_unopened():
+    from live_flow import replay_live_action_tokens
+
+    tokens = {
+        "effective_bb": 7, "hero_position": "BB", "hero_hand": "Q9o",
+        "preflop_actions": [
+            {"actor": "BTN", "action": "all_in", "size_bb": 7},
+            {"actor": "HERO", "action": "call"},
+        ],
+        "streets": [],
+    }
+    hand = replay_live_action_tokens("Btn all in 7bb hero bb call Q9o", tokens)
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-AI7-F-C")
+
+
+@test
+def test_live_token_replay_expands_check_around_over_live_players():
+    from live_flow import replay_live_action_tokens
+
+    block = ("Eff 14bb Hero hj raise AQo sb call bb call\n"
+             "K82r x around\n"
+             "7 sb bet 3bb fold fold")
+    tokens = {
+        "effective_bb": 14, "hero_position": "HJ", "hero_hand": "AQo",
+        "preflop_actions": [
+            {"actor": "HERO", "action": "raise"},
+            {"actor": "SB", "action": "call"},
+            {"actor": "BB", "action": "call"},
+        ],
+        "streets": [
+            {"board_text": "K82r", "actions": [{"action": "check_around"}]},
+            {"board_text": "7", "actions": [
+                {"actor": "SB", "action": "bet", "size_bb": 3},
+                {"action": "fold"}, {"action": "fold"}]},
+        ],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    assert_eq([(a["position"], a["action"]) for a in hand["streets"][0]["actions"]],
+              [("SB", "X"), ("BB", "X"), ("HJ", "X")])
+    assert_eq([(a["position"], a["action"]) for a in hand["streets"][1]["actions"]],
+              [("SB", "R3"), ("BB", "F"), ("HJ", "F")])
+
+
+@test
+def test_live_token_replay_preserves_limp_and_calculates_pot_fraction():
+    from live_flow import replay_live_action_tokens
+
+    limp = {
+        "effective_bb": 50, "hero_position": "SB", "hero_hand": "76o",
+        "preflop_actions": [
+            {"actor": "HERO", "action": "limp"},
+            {"actor": "BB", "action": "check"},
+        ],
+        "streets": [{"board_text": "Q72r", "actions": [
+            {"action": "check"}, {"action": "check"}]}],
+    }
+    hand = replay_live_action_tokens(
+        "Eff 50bb Hero sb call 76o bb x\nQ72r x x", limp)
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-C-X")
+
+    fraction = {
+        "effective_bb": 100, "hero_position": "SB", "hero_hand": "Ah6h",
+        "preflop_actions": [
+            {"actor": "CO", "action": "raise"},
+            {"actor": "BTN", "action": "call"},
+            {"actor": "HERO", "action": "raise", "size_bb": 10},
+            {"actor": "CO", "action": "fold"},
+            {"actor": "BTN", "action": "call"},
+        ],
+        "streets": [{"board_text": "Kc2cJs", "actions": [
+            {"actor": "HERO", "action": "bet", "pot_fraction": 0.25},
+            {"actor": "BTN", "action": "call"}]}],
+    }
+    hand2 = replay_live_action_tokens(
+        "Eff 100bb co raise btn call hero sb 3b Ah6h co fold btn call\n"
+        "Kc2cJs hero bet 1/4 btn call", fraction)
+    flop = hand2["streets"][0]["actions"]
+    assert_eq(flop[0]["size"], 5.75)
+    assert_eq(flop[0]["action"], "R5.75")
+
+
+@test
+def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
+    from live_flow import LiveReplayError, replay_live_action_tokens
+
+    missing = {
+        "effective_bb": None, "hero_position": "BB", "hero_hand": "Q9o",
+        "preflop_actions": [{"actor": "BTN", "action": "raise"},
+                            {"actor": "HERO", "action": "call"}],
+        "streets": [],
+    }
+    try:
+        replay_live_action_tokens("Btn raise hero bb call Q9o", missing)
+        assert_true(False, "missing effective stack must refuse")
+    except LiveReplayError as exc:
+        assert_in("effective_bb", str(exc))
+
+    conflict = {
+        "effective_bb": 50, "hero_position": "LJ", "hero_hand": "44",
+        "preflop_actions": [{"actor": "HERO", "action": "raise"},
+                            {"actor": "BB", "action": "call"}],
+        "streets": [{"board_text": "4hQh2c", "actions": [
+            {"action": "bet", "size_bb": 2.5},
+            {"actor": "BB", "action": "raise", "size_bb": 8},
+            {"actor": "HERO", "action": "call"}]}],
+    }
+    try:
+        replay_live_action_tokens(
+            "Hero 50bb Lj open 44 bb call\n"
+            "4hQh2c bet 2.5 bb raise 8bb hero call", conflict)
+        assert_true(False, "same actor cannot bet and immediately raise")
+    except LiveReplayError as exc:
+        assert_in("expected", str(exc))
+
+
+@test
+def test_live_token_replay_missing_postflop_size_is_flagged_not_invented():
+    from live_flow import replay_live_action_tokens
+
+    tokens = {
+        "effective_bb": 30, "hero_position": "BB", "hero_hand": "AJo",
+        "preflop_actions": [{"actor": "BTN", "action": "raise"},
+                            {"actor": "HERO", "action": "call"}],
+        "streets": [{"board_text": "K72r", "actions": [
+            {"action": "check"}, {"action": "bet"}, {"action": "fold"}]}],
+    }
+    hand = replay_live_action_tokens(
+        "Eff 30bb btn raise hero bb call AJo\nK72r x bet fold", tokens)
+    assert_eq(hand["streets"][0]["actions"][1]["action"], "R")
+    assert_true(any("size_missing" in flag for flag in hand["_parse_flags"]))
+
+
+@test
+def test_live_parser_diff_compares_exact_sizes_and_emits_review_template():
+    from live_parser_diff import field_summary, render_report
+
+    old = {
+        "players_at_table": 8, "effective_bb": 35,
+        "hero_position": "BTN", "hero_hand": "78s",
+        "preflop_actions": "F-F-F-F-R2-C-R7-F-F-C",
+        "streets": [{"street": "flop", "board": "Ac5c6d", "actions": [
+            {"position": "SB", "action": "R4"},
+            {"position": "BTN", "action": "C"}]}],
+    }
+    new = json.loads(json.dumps(old))
+    new["streets"][0]["actions"][0]["size"] = 4.0
+    new["_parse_trace"] = [{"source": "b4", "actor": "SB"}]
+    assert_eq(field_summary(old, new), ["streets"])
+    report = render_report([{
+        "gtow_hand_id": "live:test", "raw_text": "Ac5c6d b4 call",
+        "changed_fields": ["streets"], "old": old, "new": new,
+    }], "gemini-3.6-flash")
+    assert_in("VERDICT: [ ] OLD correct", report)
+    assert_in("GOLD_JSON:", report)
+    assert_in("TOKEN_TRACE:", report)
+
+
+@test
+def test_live_process_batch_does_not_run_legacy_actor_repairs_after_replay():
+    """Once token replay owns actor attribution, process_batch must persist
+    that faithful parse instead of passing it through the old Gemini repair
+    heuristics a second time."""
+    import live_flow
+
+    replayed = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 35.0, "hero_position": "BTN", "hero_hand": "7s8s",
+        "preflop_actions": "F-F-F-F-R2-C-R7-F-F-C",
+        "streets": [{"street": "flop", "board": "Ac5c6d", "actions": [
+            {"position": "SB", "action": "R4", "size": 4.0},
+            {"position": "BTN", "action": "C"}]}],
+        "_parse_trace": [{"source": "b4", "actor": "SB"}],
+        "_parse_flags": [],
+    }
+    originals = (
+        live_flow.parse_block, live_flow.grade_hand_with_escalation,
+        live_flow.apply_raw_preflop_actions, live_flow.repair_hu_pot,
+        live_flow.time.sleep,
+    )
+    legacy_called = []
+    live_flow.parse_block = lambda _block: json.loads(json.dumps(replayed))
+    live_flow.grade_hand_with_escalation = lambda _hand: (
+        {}, set(), {"attempted": False})
+    live_flow.apply_raw_preflop_actions = lambda *_args: legacy_called.append(
+        "raw") or False
+    live_flow.repair_hu_pot = lambda hand: legacy_called.append("hu") or hand
+    live_flow.time.sleep = lambda _seconds: None
+    try:
+        result = live_flow.process_batch(
+            "Eff 35bb Co raise hero btn call 7s8s sb raise 7bb co fold hero call\n"
+            "Ac5c6d b4 call", date_str="2026-07-24", progress=lambda _x: None)
+    finally:
+        (live_flow.parse_block, live_flow.grade_hand_with_escalation,
+         live_flow.apply_raw_preflop_actions, live_flow.repair_hu_pot,
+         live_flow.time.sleep) = originals
+    assert_eq(legacy_called, [])
+    stored = json.loads(result["hands"][0]["hand_row"]["parsed_json"])
+    assert_eq(stored["preflop_actions"], replayed["preflop_actions"])
+    assert_eq(stored["_parse_trace"], replayed["_parse_trace"])
+
+
+@test
+def test_live_process_batch_skips_solver_for_parse_uncertain_hand():
+    import live_flow
+
+    replayed = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 30.0, "hero_position": "BB", "hero_hand": "AJo",
+        "preflop_actions": "F-F-F-F-F-R2-F-C",
+        "streets": [{"street": "flop", "board": "Kc7d2h", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "BTN", "action": "R"},
+            {"position": "BB", "action": "F"}]}],
+        "_parse_trace": [{"source": "bet", "actor": "BTN"}],
+        "_parse_flags": ["street1:BTN:size_missing"],
+    }
+    originals = (
+        live_flow.parse_block, live_flow.grade_hand_with_escalation,
+        live_flow.time.sleep,
+    )
+    live_flow.parse_block = lambda _block: json.loads(json.dumps(replayed))
+    live_flow.grade_hand_with_escalation = lambda _hand: (
+        (_ for _ in ()).throw(AssertionError("solver must not run")))
+    live_flow.time.sleep = lambda _seconds: None
+    try:
+        result = live_flow.process_batch(
+            "Eff 30bb btn raise hero bb call AJo\nK72r x bet fold",
+            date_str="2026-07-24", progress=lambda _x: None)
+    finally:
+        (live_flow.parse_block, live_flow.grade_hand_with_escalation,
+         live_flow.time.sleep) = originals
+    assert_true(result["hands"][0]["ok"])
+    assert_true(all(row["excluded"]
+                    for row in result["hands"][0]["dec_rows"]))
 
 
 @test
@@ -878,10 +1187,8 @@ def test_live_repair_street_actions_restores_dropped_leading_check():
 
 @test
 def flop_b4_is_bet():
-    """Observed Hand 2: raw flop 'b4 call' was parsed as a lone SB Call,
-    creating an orphan-call validator failure.  The raw HU action hints must
-    restore the dropped bet before HU alternation assigns SB bet / BTN call."""
-    from live_flow import parse_block, repair_hu_pot
+    """Observed Hand 2: lexical b4/call is replayed as SB bet / BTN call."""
+    from live_flow import parse_block
     from hand_validator import validate_hand
 
     block = ("Eff 35bb Co raise hero btn call 7s8s sb raise 7bb co fold hero call\n"
@@ -889,19 +1196,25 @@ def flop_b4_is_bet():
              "4s x b8 fold")
 
     class _Resp:
-        text = json.dumps({"hand": {
-            "gametype": "MTTGeneral", "players_at_table": 8, "effective_bb": 35,
+        text = json.dumps({
+            "effective_bb": 35,
             "hero_position": "BTN", "hero_hand": "7s8s",
-            "preflop_actions": "F-F-F-F-R2-C-R7-F-C",
-            "streets": [
-                {"street": "flop", "board": "Ac5c6d", "actions": [
-                    {"position": "SB", "action": "C"}]},
-                {"street": "turn", "card": "4s", "actions": [
-                    {"position": "SB", "action": "X"},
-                    {"position": "BTN", "action": "R8"},
-                    {"position": "SB", "action": "F"}]},
+            "preflop_actions": [
+                {"actor": "CO", "action": "raise"},
+                {"actor": "HERO", "action": "call"},
+                {"actor": "SB", "action": "raise", "size_bb": 7},
+                {"actor": "CO", "action": "fold"},
+                {"actor": "HERO", "action": "call"},
             ],
-        }})
+            "streets": [
+                {"board_text": "Ac5c6d", "actions": [
+                    {"action": "bet", "size_bb": 4},
+                    {"action": "call"}]},
+                {"board_text": "4s", "actions": [
+                    {"action": "check"}, {"action": "bet", "size_bb": 8},
+                    {"action": "fold"}]},
+            ],
+        })
 
     class _Models:
         def generate_content(self, **_kwargs):
@@ -912,11 +1225,7 @@ def flop_b4_is_bet():
 
     h = parse_block(block, client=_Client())
     assert_true(h is not None and not h.get("_refused"), "parses")
-    assert_true(any("flop 補回原文開頭 bet" in n for n in h.get("_repairs", [])),
-                f"repair note missing: {h.get('_repairs')}")
-    h = repair_hu_pot(h)
     assert_eq(h["preflop_actions"], "F-F-F-F-R2-C-R7-F-F-C")
-    assert_eq(h["preflop_actions_for_pot"], "F-F-F-F-R2-C-R7-F-C")
     rep = validate_hand(h)
     assert_true(rep.ok, f"must be legal: {[i.message for i in rep.hard]}")
     flop = next(s for s in h["streets"] if (s.get("board") or "").startswith("Ac5c6"))
@@ -1503,6 +1812,25 @@ def test_live_confidence_reflects_repairs():
     hand["_repairs"] = ["r"] * 9
     _, decs = build_hand_rows(hand, "live:x", ts, "raw", {})
     assert_true(all(d["confidence"] == 0.6 for d in decs), "floor at 0.6")
+
+
+@test
+def test_missing_token_size_excludes_live_decisions_from_stats():
+    """An attributable but unsized action stays reviewable while §5.2
+    excludes every dependent decision from EV statistics."""
+    import copy
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows
+
+    hand = copy.deepcopy(_LIVE_HAND1)
+    hand["_parse_flags"] = ["preflop:UTG+1:size_missing"]
+    _, decs = build_hand_rows(
+        hand, "live:unsized", datetime(2026, 7, 10, tzinfo=timezone.utc),
+        "raw", {})
+    assert_true(decs)
+    assert_true(all(d["excluded"] for d in decs))
+    assert_true(all(d["confidence"] == 0.5 for d in decs))
+    assert_true(all("parse_uncertain" in d["approx_flags"] for d in decs))
 
 
 @test
