@@ -2422,92 +2422,34 @@ class GeminiSessionManager:
                     f"[chat={chat_id}] Follow-up retry {attempt+1}/3: {e}")
                 await asyncio.sleep(2 * (attempt + 1))
 
-    def _initial_claims_verdict(self, body: str, context: dict, user_text: str):
-        """Verify the initial coaching prose against the solver data it was
-        grounded on. Pure (no API): whitelist = combos/classes named by the
-        solver text, the compact card, the user's message, hero's hand and the
-        board. Returns a coach_facts.Verdict."""
-        from coach_facts import initial_verdict_facts, verify_claims, _question_board, Ctx
-        facts = initial_verdict_facts(
-            [context.get("text") or "", context.get("text_compact") or "",
-             user_text or ""],
-            context)
-        board = _question_board(Ctx(question="", hand_context=context))
-        return verify_claims(body, facts, board)
-
     async def _verified_initial_coaching(self, chat_id: int, coaching_prompt: str,
                                           context: dict, user_text: str, *,
                                           on_status=None, user_id: int | None = None,
                                           refresh_token: str | None = None,
                                           usage_acc: dict | None = None,
                                           disable_tools: bool = False) -> str:
-        """Generate the initial coaching verdict THROUGH the fact verifier.
+        """Generate the initial coaching verdict.
 
-        §14.7: every user-visible output surface routes through fact
-        verification — including the primary verdict, which previously
-        bypassed it entirely (only P0/P1 follow-ups were verified). Flow:
-        generate → verify combo claims → on violation, regenerate once with
-        the violations named (the failed attempt is dropped from history) →
-        still failing, serve a loud fallback instead of unverified prose
-        (§14.2: the deterministic GTO card was already sent separately)."""
-        async def _generate(prompt: str) -> str:
-            for attempt in range(3):
-                try:
-                    return await self._chat_with_tools(
-                        chat_id, prompt, on_status=on_status, user_id=user_id,
-                        refresh_token=refresh_token, usage_acc=usage_acc,
-                        force_tool_eligible=False, disable_tools=disable_tools)
-                except genai_errors.ServerError as e:
-                    if attempt == 2:
-                        raise
-                    self._logger.warning(
-                        f"[chat={chat_id}] Coaching retry {attempt+1}/3: {e}")
-                    await asyncio.sleep(2 * (attempt + 1))
-
-        def _drop_last_exchange():
-            hist = self.histories.get(chat_id, [])
-            if len(hist) >= 2:
-                self.histories[chat_id] = hist[:-2]
-
-        result = await _generate(coaching_prompt)
-        # Verify the body only — FOLLOWUP suggestion lines are questions, not
-        # factual claims, and may name arbitrary hands.
-        body, _ = self._extract_followups(result)
-        verdict = self._initial_claims_verdict(body, context, user_text)
-        if verdict.ok:
-            return result
-
-        self._logger.warning(
-            f"[chat={chat_id}] initial coaching failed claim verification "
-            f"(violations={verdict.violations}); regenerating")
-        _drop_last_exchange()
-        retry_prompt = (
-            coaching_prompt
-            + "\n\n⚠️ 重要：你上一版回覆提到了 GTO 數據中不存在的牌（"
-            + ", ".join(dict.fromkeys(verdict.violations))
-            + "）。重寫回覆：只允許談論上面 GTO 數據、牌面、或用戶訊息中"
-              "實際出現的牌/組合；數據沒提到的具體牌不要指名。")
-        result = await _generate(retry_prompt)
-        body, _ = self._extract_followups(result)
-        verdict = self._initial_claims_verdict(body, context, user_text)
-        if verdict.ok:
-            return result
-
-        self._logger.warning(
-            f"[chat={chat_id}] initial coaching failed claim verification twice "
-            f"(violations={verdict.violations}); serving grounded fallback")
-        _drop_last_exchange()
-        fallback = (
-            "⚠️ 教練評語兩次提及 solver 數據中不存在的牌（"
-            + ", ".join(dict.fromkeys(verdict.violations))
-            + "），已攔下以免誤導。\n"
-              "請以上方 GTO 數據卡為準；想深入哪一手牌或哪個範圍，直接問我 — "
-              "follow-up 會走 solver 事實驗證管線回答。")
-        hist = self.histories.get(chat_id, [])
-        hist.append(types.Content(role="user", parts=[types.Part(text=coaching_prompt)]))
-        hist.append(types.Content(role="model", parts=[types.Part(text=fallback)]))
-        self.histories[chat_id] = hist[-20:]
-        return fallback
+        The initial combo-whitelist verifier is intentionally disabled: it was
+        too coarse to distinguish solver-frequency claims from ordinary poker
+        heuristics (H3689: mentioning TT as a possible stronger hand), causing
+        useful analysis to be replaced by a warning. Follow-up answers still use
+        the grounded solver/coach_facts verification path when users ask for
+        ranges, specific combos, or hypotheticals.
+        """
+        for attempt in range(3):
+            try:
+                return await self._chat_with_tools(
+                    chat_id, coaching_prompt, on_status=on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                    usage_acc=usage_acc, force_tool_eligible=False,
+                    disable_tools=disable_tools)
+            except genai_errors.ServerError as e:
+                if attempt == 2:
+                    raise
+                self._logger.warning(
+                    f"[chat={chat_id}] Coaching retry {attempt+1}/3: {e}")
+                await asyncio.sleep(2 * (attempt + 1))
 
     async def _chat_with_tools(self, chat_id: int, user_text: str,
                                 on_status: Callable[[str], Any] | None = None,

@@ -86,30 +86,30 @@ def test_expand_range_tokens():
 
 
 @test
-def test_initial_verdict_verification():
-    """§14.7: the initial coaching verdict is verified against its own
-    grounding — hands the solver text/user/hero/board never mention are
-    violations; whitelisted + range-expanded mentions pass."""
-    import coach_facts as cf
+def test_initial_coaching_does_not_block_heuristic_combo_examples():
+    """H3689: initial coaching no longer runs the coarse combo whitelist.
+
+    The draft can mention TT as a generic stronger-hand heuristic without the
+    whole analysis being replaced by a fallback warning. Follow-up/range answers
+    remain grounded through coach_facts; this test only locks the initial surface.
+    """
+    import asyncio
+    import types as py_types
     from gemini_session import GeminiSessionManager as GSM
-    context = {
-        "text": "UTG open 範圍：TT+ / AQs+。hero 的 AJo 混合跟注 30%。防守 Q2s-Q4s。",
-        "text_compact": "✅ Call 70%",
-        "hand": {"hero_hand": "AdJc"},
-        "solutions": [{"game": {"board": "Qh9s3d"}}],
-    }
-    ok_body = ("你的 AdJc（AJo）在這裡跟注沒問題；對手 TT+ 與 AQs 的組合壓制你，"
-               "但 Q3s 這類防守牌會棄掉。Qh9s3d 的板面偏乾。")
-    v = GSM._initial_claims_verdict(None, ok_body, context, "AJo 這手怎麼打")
-    assert_true(v.ok, f"clean body flagged: {v.violations}")
-    bad_body = "對手這裡的加注範圍主要是 KQs 和 76s 這種牌。"
-    v2 = GSM._initial_claims_verdict(None, bad_body, context, "AJo 這手怎麼打")
-    assert_true(not v2.ok, "invented hands must be flagged")
-    assert_true("KQs" in v2.violations and "76s" in v2.violations, v2.violations)
-    # user-named hands are fair game (question tokens, not invented claims)
-    v3 = GSM._initial_claims_verdict(None, "相比 KTs，你這手更該跟注。",
-                                     context, "如果我拿 KTs 呢")
-    assert_true(v3.ok, f"user-mentioned hand flagged: {v3.violations}")
+
+    manager = object.__new__(GSM)
+    draft = "Flop 上 JJ 很難讓比你好的牌（Kx、TT）棄牌，所以 check back 較好。"
+
+    async def fake_chat_with_tools(self, chat_id, user_text, **kwargs):
+        return draft
+
+    manager._chat_with_tools = py_types.MethodType(fake_chat_with_tools, manager)
+    result = asyncio.run(manager._verified_initial_coaching(
+        1, "prompt", {"text_compact": "♠ BTN JJ | 40bb MTT"}, "H3689"))
+
+    assert_eq(result, draft)
+    assert_not_in("已攔下", result)
+    assert_not_in("本次 GTO 資料卡未驗證", result)
 
 
 @test
