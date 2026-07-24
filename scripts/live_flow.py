@@ -28,8 +28,10 @@ import time
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -201,8 +203,12 @@ def _clean_word(tok: str) -> str:
 
 def _norm_pos(tok: str) -> str | None:
     t = _clean_word(tok)
-    if re.match(r"^(utg|u)\d+$", t):
-        return "UTG+" + t.lstrip("utg").lstrip("u")
+    glued = re.match(r"^(?:utg|u)(\d+)$", t)
+    if glued:
+        # ``u1/u2`` are position aliases; ``u8/u9`` mean UTG at an
+        # 8-/9-handed table, not the nonexistent UTG+8/UTG+9 positions.
+        n = int(glued.group(1))
+        return f"UTG+{n}" if n <= 2 else "UTG"
     return _POS_ALIASES.get(t)
 
 
@@ -946,77 +952,557 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     }
 
 
-LIVE_HINT = (
-    "補充：這是現場手牌速記，底池絕大多數是兩人。翻牌後只列實際行動的玩家，"
-    "絕對不要替沒被提到的玩家（尤其已棄牌的 SB/BB）補 check。"
-    "若有人 re-raise（3bet）後寫「對手 call / +1 call」，那是【原加注者】的 "
-    "continuation call（接在 N 個位置之後），不是後面位置的冷跟注。"
-    "所有手牌與牌面 rank 必須逐字抄用戶原文，不可把 Q 改成 J 或改任何 rank；"
-    "只有原文沒給花色時才補合法花色。")
+LiveActionKind = Literal[
+    "fold", "call", "limp", "check", "bet", "raise", "all_in",
+    "check_around",
+]
+
+
+class LiveLexAction(BaseModel):
+    """One lexical action copied from the raw note, before actor replay."""
+
+    actor: str | None = None
+    action: LiveActionKind
+    size_bb: float | None = None
+    pot_fraction: float | None = None
+    source: str | None = None
+
+
+class LiveLexStreet(BaseModel):
+    board_text: str
+    actions: list[LiveLexAction] = Field(default_factory=list)
+
+
+class LiveTokenizedHand(BaseModel):
+    """Gemini's narrow contract: lexical facts, never a completed hand."""
+
+    effective_bb: float | None = None
+    hero_position: str | None = None
+    hero_hand: str | None = None
+    preflop_actions: list[LiveLexAction] = Field(default_factory=list)
+    streets: list[LiveLexStreet] = Field(default_factory=list)
+
+
+LIVE_TOKEN_PROMPT = """You are a lexical tokenizer for live poker shorthand.
+
+Do NOT construct a poker hand and do NOT infer an omitted actor. Copy only
+facts explicitly present in the source into the response schema.
+
+Rules:
+- actor is HERO or an explicit seat (UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN,
+  SB, BB) only when the source attaches that actor to this action.
+  Otherwise actor=null. Preserve action order exactly.
+- Normalize +1/u1/u+1 to UTG+1, +2/u2/u+2 to UTG+2, and bu to BTN.
+- Normalize fold/f, call/c, check/x, bet/b, raise/r/open/3b/3bet,
+  all-in/jam/shove. A preflop open-limp or blind completion is action=limp,
+  not call.
+- "x around" or "check around" is exactly ONE check_around token. A poker
+  state machine expands it. A solitary "x" is check, never check_around.
+- size_bb is only an explicit absolute BB amount. pot_fraction is only an
+  explicit pot fraction such as 1/4, 33%, half-pot. Never invent or convert.
+- A stack header ("Eff 30bb", "CO 15.5bb") is metadata, never a raise.
+  Bare pair/hand literals such as 33, 55, A8s are cards, never bet sizes.
+  A bare number is a size only when attached to b/r/bet/raise/to/all-in.
+- source copies the shortest exact source fragment supporting this action.
+- board_text copies the leading board/card text on each street line.
+- Extract effective stack, hero position and hero hand only when present.
+  Leave missing fields null; never assume 100bb or invent cards/suits.
+- Ignore pot annotations, results, "wins", and tournament-stage notes.
+- One input contains one hand. Never merge a second hand into the first.
+"""
+
+
+class LiveReplayError(ValueError):
+    """The lexical stream cannot form one legal, attributable poker hand."""
+
+
+def _live_actor(actor: str | None, hero_position: str) -> str | None:
+    if not actor:
+        return None
+    if _clean_word(actor) == "hero":
+        return hero_position
+    return _norm_pos(actor)
+
+
+def _actor_from_source(source: str | None, hero_position: str) -> str | None:
+    """Recover an explicit lexical actor the model forgot to normalize."""
+    toks = re.split(r"\s+", source or "")
+    if any(_clean_word(tok) == "hero" for tok in toks):
+        return hero_position
+    for tok in toks:
+        pos = _norm_pos(tok)
+        if pos:
+            return pos
+    return None
+
+
+def _extract_live_metadata(block: str) -> dict:
+    """Extract metadata literals without requiring a complete action parse."""
+    lines = [line.strip() for line in block.splitlines()
+             if line.strip() and not _is_noise(line)]
+    if not lines:
+        return {}
+    toks = re.split(r"\s+", lines[0])
+    hero_idx = next(
+        (i for i, tok in enumerate(toks) if _clean_word(tok) == "hero"), None)
+    hero_hand, _street_hints = _extract_literal_hints(block)
+    effective = _effective_bb_from_preflop_tokens(toks, hero_idx)
+    hero_position = None
+    if hero_idx is not None:
+        # Position may follow a stack phrase: "hero has 16bb +1 raise".
+        for tok in toks[hero_idx + 1:hero_idx + 7]:
+            pos = _norm_pos(tok)
+            if pos:
+                hero_position = pos
+                break
+            if _canon_hand_token(tok):
+                break
+    if hero_position is None and hero_hand:
+        hand_idx = next(
+            (i for i, tok in enumerate(toks)
+             if _canon_hand_token(tok) == hero_hand), None)
+        if hand_idx is not None:
+            nearby = list(reversed(toks[max(0, hand_idx - 5):hand_idx]))
+            nearby += toks[hand_idx + 1:hand_idx + 6]
+            hero_position = next(
+                (_norm_pos(tok) for tok in nearby if _norm_pos(tok)), None)
+    out = {"hero_hand": hero_hand, "hero_position": hero_position}
+    if effective is not None:
+        out["effective_bb"] = float(effective)
+    return out
+
+
+def _clockwise(order: list[str], actor: str, seats: set[str]) -> list[str]:
+    idx = order.index(actor)
+    return [
+        order[(idx + step) % len(order)]
+        for step in range(1, len(order) + 1)
+        if order[(idx + step) % len(order)] in seats
+    ]
+
+
+def _fmt_bb(value: float) -> str:
+    return f"{round(float(value), 3):g}"
+
+
+def _token_action_code(
+        token: dict, effective_bb: float, *, preflop: bool,
+        first_aggression: bool, pot: float | None = None) -> tuple[str, float | None]:
+    """Return parser action code and the action's target street contribution."""
+    action = token.get("action")
+    explicit = token.get("size_bb")
+    fraction = token.get("pot_fraction")
+    size = float(explicit) if explicit is not None else None
+    if size is None and fraction is not None and pot is not None and action == "bet":
+        size = round(float(pot) * float(fraction), 3)
+    if action == "fold":
+        return "F", None
+    if action in {"call", "limp"}:
+        return "C", None
+    if action == "check":
+        return "X", None
+    if action == "all_in":
+        size = size if size is not None else effective_bb
+        return "AI" + _fmt_bb(size), size
+    if action in {"bet", "raise"}:
+        # Bare live "open/raise" means the project's standard 2bb open only
+        # for the first preflop aggression. Never invent a 3bet/postflop size.
+        if size is None and preflop and first_aggression:
+            size = 2.0
+        return "R" + (_fmt_bb(size) if size is not None else ""), size
+    raise LiveReplayError(f"unsupported action token: {action}")
+
+
+def _replay_preflop(
+        tokens: list[dict], hero: str, effective_bb: float,
+        order: list[str]) -> tuple[str, dict]:
+    active = set(order)
+    involved: set[str] = set()
+    all_in: set[str] = set()
+    pending = list(order)
+    events: list[tuple[str, str]] = []
+    flags: list[str] = []
+    trace: list[dict] = []
+    contributions = {seat: 0.0 for seat in order}
+    contributions["SB"] = 0.5
+    contributions["BB"] = 1.0
+    current_bet = 1.0
+    aggression_count = 0
+    pot_known = True
+
+    def implicit_fold(seat: str) -> None:
+        events.append((seat, "F"))
+        active.discard(seat)
+        involved.discard(seat)
+        trace.append({"street": "preflop", "actor": seat, "action": "F",
+                      "resolution": "implicit_fold"})
+
+    for index, token in enumerate(tokens):
+        action = token.get("action")
+        if action == "check_around":
+            raise LiveReplayError("check_around is not valid preflop")
+        explicit = (_live_actor(token.get("actor"), hero)
+                    or _actor_from_source(token.get("source"), hero))
+        if token.get("actor") and not explicit:
+            raise LiveReplayError(
+                f"preflop token {index}: unknown actor {token.get('actor')}")
+        if explicit:
+            if explicit not in pending:
+                expected = pending[0] if pending else "none"
+                raise LiveReplayError(
+                    f"preflop token {index}: {explicit} acted out of turn; "
+                    f"expected {expected}")
+            while pending and pending[0] != explicit:
+                seat = pending[0]
+                if seat in involved:
+                    raise LiveReplayError(
+                        f"preflop token {index}: missing action from {seat} "
+                        f"before explicit {explicit}")
+                pending.pop(0)
+                implicit_fold(seat)
+            actor = pending.pop(0)
+            resolution = "explicit"
+        else:
+            # After aggression, unlabeled f/c belongs to the next previously
+            # involved responder; untouched seats in between are implicit
+            # folds. This prevents the classic continuation-call seat shift.
+            while pending and pending[0] not in involved:
+                implicit_fold(pending.pop(0))
+            if not pending:
+                raise LiveReplayError(
+                    f"preflop token {index}: no deterministic actor")
+            actor = pending.pop(0)
+            resolution = "betting_order"
+
+        if actor not in active and action != "fold":
+            raise LiveReplayError(
+                f"preflop token {index}: {actor} already folded")
+        code, target = _token_action_code(
+            token, effective_bb, preflop=True,
+            first_aggression=aggression_count == 0)
+        events.append((actor, code))
+        trace.append({
+            "street": "preflop", "token_index": index,
+            "source": token.get("source"), "actor": actor, "action": code,
+            "resolution": resolution,
+        })
+
+        if action == "fold":
+            active.discard(actor)
+            involved.discard(actor)
+        elif action == "check":
+            if actor != "BB" or current_bet > contributions[actor]:
+                raise LiveReplayError(
+                    f"preflop token {index}: illegal check by {actor}")
+            involved.add(actor)
+        elif action in {"call", "limp"}:
+            if action == "limp" and current_bet > 1:
+                raise LiveReplayError(
+                    f"preflop token {index}: limp facing a raise")
+            contributions[actor] = current_bet
+            involved.add(actor)
+        else:
+            involved.add(actor)
+            if action == "all_in":
+                all_in.add(actor)
+            aggression_count += 1
+            if target is None:
+                flags.append(f"preflop:{actor}:size_missing")
+                pot_known = False
+            else:
+                if target <= current_bet and action != "all_in":
+                    raise LiveReplayError(
+                        f"preflop token {index}: raise size {target:g} "
+                        f"is not above {current_bet:g}")
+                contributions[actor] = target
+                current_bet = max(current_bet, target)
+            responders = active - {actor} - all_in
+            pending = _clockwise(order, actor, responders)
+
+    # Untouched seats after the last recorded decision are implicit folds.
+    for seat in list(pending):
+        if seat not in involved:
+            implicit_fold(seat)
+    line = _events_to_preflop_actions(events, players=len(order))
+    if not line:
+        raise LiveReplayError("could not assemble preflop actions")
+    return line, {
+        "active": active, "all_in": all_in, "trace": trace, "flags": flags,
+        "pot": sum(contributions.values()) if pot_known else None,
+        "invested": contributions,
+    }
+
+
+def _replay_streets(
+        streets: list[dict], hero: str, effective_bb: float, order: list[str],
+        state: dict) -> tuple[list[dict], list[dict], list[str]]:
+    post_order = order[-2:] + order[:-2]
+    active = set(state["active"])
+    all_in = set(state["all_in"])
+    invested = dict(state["invested"])
+    pot = state["pot"]
+    trace: list[dict] = []
+    flags: list[str] = []
+    out: list[dict] = []
+
+    for street_index, street in enumerate(streets):
+        eligible = active - all_in
+        pending = [seat for seat in post_order if seat in eligible]
+        street_contrib = {seat: 0.0 for seat in order}
+        current_bet = 0.0
+        current_bet_unknown = False
+        actions: list[dict] = []
+
+        def emit(actor: str, token: dict, token_index: int,
+                 resolution: str) -> None:
+            nonlocal pending, current_bet, current_bet_unknown, pot
+            if not pending or actor != pending[0]:
+                expected = pending[0] if pending else "none"
+                raise LiveReplayError(
+                    f"street {street_index + 1} token {token_index}: "
+                    f"{actor} acted out of turn; expected {expected}")
+            token = dict(token)
+            action = token.get("action")
+            if action == "all_in" and token.get("size_bb") is None:
+                # Postflop action sizes are street contributions. A sizeless
+                # shove is the player's remaining effective stack, not the
+                # original full-stack amount.
+                token["size_bb"] = max(
+                    0.0, effective_bb - invested.get(actor, 0.0))
+            code, target = _token_action_code(
+                token, effective_bb, preflop=False,
+                first_aggression=current_bet == 0, pot=pot)
+            if action == "check" and (
+                    current_bet_unknown or current_bet > street_contrib[actor]):
+                raise LiveReplayError(
+                    f"street {street_index + 1}: {actor} checked facing a bet")
+            if (action in {"call", "limp"} and not current_bet_unknown
+                    and current_bet <= street_contrib[actor]):
+                raise LiveReplayError(
+                    f"street {street_index + 1}: orphan call by {actor}")
+            if action in {"bet", "raise", "all_in"}:
+                if target is None:
+                    flags.append(
+                        f"street{street_index + 1}:{actor}:size_missing")
+                    pot = None
+                    current_bet_unknown = True
+                else:
+                    if current_bet and target <= current_bet:
+                        raise LiveReplayError(
+                            f"street {street_index + 1}: raise size "
+                            f"{target:g} is not above {current_bet:g}")
+                    delta = max(0.0, target - street_contrib[actor])
+                    if pot is not None:
+                        pot += delta
+                    invested[actor] = invested.get(actor, 0.0) + delta
+                    street_contrib[actor] = target
+                    current_bet = max(current_bet, target)
+                    current_bet_unknown = False
+            elif action in {"call", "limp"}:
+                if current_bet_unknown:
+                    pot = None
+                else:
+                    delta = max(0.0, current_bet - street_contrib[actor])
+                    if pot is not None:
+                        pot += delta
+                    invested[actor] = invested.get(actor, 0.0) + delta
+                    street_contrib[actor] = current_bet
+
+            row = {"position": actor, "action": code}
+            if target is not None:
+                row["size"] = target
+            actions.append(row)
+            pending.pop(0)
+            trace.append({
+                "street": ("flop", "turn", "river")[street_index],
+                "token_index": token_index, "source": token.get("source"),
+                "actor": actor, "action": code, "resolution": resolution,
+            })
+            if action == "fold":
+                active.discard(actor)
+            elif action == "all_in":
+                all_in.add(actor)
+            if action in {"bet", "raise", "all_in"}:
+                responders = (active - all_in) - {actor}
+                pending = _clockwise(post_order, actor, responders)
+
+        for token_index, token in enumerate(street.get("actions") or []):
+            if token.get("action") == "check_around":
+                if current_bet or current_bet_unknown:
+                    raise LiveReplayError(
+                        f"street {street_index + 1}: check_around facing a bet")
+                for actor in list(pending):
+                    emit(actor, {"action": "check",
+                                 "source": token.get("source")},
+                         token_index, "check_around")
+                continue
+            explicit = (_live_actor(token.get("actor"), hero)
+                        or _actor_from_source(token.get("source"), hero))
+            if token.get("actor") and not explicit:
+                raise LiveReplayError(
+                    f"street {street_index + 1} token {token_index}: "
+                    f"unknown actor {token.get('actor')}")
+            actor = explicit or (pending[0] if pending else None)
+            if actor is None:
+                raise LiveReplayError(
+                    f"street {street_index + 1} token {token_index}: "
+                    "no deterministic actor")
+            emit(actor, token, token_index,
+                 "explicit" if explicit else "betting_order")
+
+        # A later street proves the current street was complete. Do not invent
+        # omitted checks/calls to bridge an incomplete action line.
+        if street_index + 1 < len(streets) and pending:
+            raise LiveReplayError(
+                f"street {street_index + 1} incomplete; waiting for "
+                f"{', '.join(pending)}")
+        row = {
+            "street": ("flop", "turn", "river")[street_index],
+            "actions": actions,
+        }
+        if street_index == 0:
+            row["board"] = street.get("board_text") or ""
+        else:
+            row["card"] = street.get("board_text") or ""
+        out.append(row)
+    return out, trace, flags
+
+
+def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
+    """Build a complete hand from lexical tokens using poker rules only."""
+    from hh_parser import POSITION_ORDERS
+
+    raw_blocks = split_batch(block)
+    if len(raw_blocks) != 1:
+        raise LiveReplayError(
+            f"expected one hand block, found {len(raw_blocks)}")
+    data = json.loads(json.dumps(tokenized))
+    fallback = parse_simple_preflop_block(block)
+    raw_metadata = _extract_live_metadata(block)
+    for key, value in raw_metadata.items():
+        if value is not None:
+            data[key] = value
+    hero_hint, _street_hints = _extract_literal_hints(block)
+    if fallback:
+        for key in ("effective_bb", "hero_position", "hero_hand"):
+            if fallback.get(key) is not None:
+                data[key] = fallback[key]
+    if hero_hint:
+        data["hero_hand"] = hero_hint
+    for token in data.get("preflop_actions") or []:
+        source_tokens = re.split(r"\s+", token.get("source") or "")
+        # Structured-output models occasionally copy a bare pocket pair after
+        # "raise" into size_bb. The raw literal gate knows it is hero's hand;
+        # only bb-suffixed/to-attached numbers are legal size evidence.
+        if (token.get("size_bb") is not None and data.get("hero_hand")
+                and any(_canon_hand_token(word) == data["hero_hand"]
+                        for word in source_tokens)
+                and not any(_bb_number_with_unit(word) is not None
+                            for word in source_tokens)
+                and "to" not in [_clean_word(word) for word in source_tokens]):
+            token["size_bb"] = None
+
+    missing = [
+        key for key in ("effective_bb", "hero_position", "hero_hand")
+        if data.get(key) in (None, "")
+    ]
+    if missing:
+        raise LiveReplayError("missing required metadata: " + ", ".join(missing))
+    hero = _norm_pos(str(data["hero_position"]))
+    if not hero:
+        raise LiveReplayError(
+            f"invalid hero_position: {data.get('hero_position')}")
+    effective_bb = float(data["effective_bb"])
+    if effective_bb <= 0:
+        raise LiveReplayError("effective_bb must be positive")
+    order = POSITION_ORDERS[8]
+    if hero not in order:
+        raise LiveReplayError(f"hero_position not valid for 8-max: {hero}")
+
+    preflop, state = _replay_preflop(
+        data.get("preflop_actions") or [], hero, effective_bb, order)
+    streets, street_trace, street_flags = _replay_streets(
+        data.get("streets") or [], hero, effective_bb, order, state)
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": effective_bb, "hero_position": hero,
+        "hero_hand": data["hero_hand"], "preflop_actions": preflop,
+        "streets": streets,
+        "_parse_trace": state["trace"] + street_trace,
+        "_parse_flags": state["flags"] + street_flags,
+    }
+    return hand
+
+
+def _live_token_config(model: str):
+    from google.genai import types
+
+    kwargs = {
+        "system_instruction": LIVE_TOKEN_PROMPT,
+        "response_mime_type": "application/json",
+        "response_schema": LiveTokenizedHand,
+    }
+    if model.startswith("gemini-3."):
+        kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW)
+    else:
+        kwargs["temperature"] = 0
+        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    return types.GenerateContentConfig(**kwargs)
 
 
 def parse_block(block: str, client=None, model: str | None = None,
                 extra_hint: str = "") -> dict | None:
-    """Parse one live-hand block. Returns the hand dict (with
-    ``hand["_repairs"]`` notes when the card-literal gate changed anything),
-    ``{"_refused": [reasons]}`` when the raw literals are internally impossible
-    (refuse honestly, never feed the solver a corrupted hand), or None when
-    parsing failed outright."""
-    from google import genai
-    from google.genai import types
-    from src.gemini_session import PARSE_PROMPT
+    """Tokenize one live hand, deterministically replay it, then lock cards.
 
+    Gemini is deliberately not allowed to assign omitted actors or construct
+    ``preflop_actions``. Structural contradictions return ``_refused`` rather
+    than being silently repaired into a different hand.
+    """
+    from google import genai
+
+    raw_blocks = split_batch(block)
+    if len(raw_blocks) != 1:
+        return {"_refused": [
+            f"輸入包含 {len(raw_blocks)} 手，必須先分手再解析"]}
     client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    model = model or os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
-    prompt = f"{PARSE_PROMPT}\n\n{LIVE_HINT}"
+    model = model or os.getenv(
+        "GEMINI_LIVE_PARSE_MODEL", "gemini-3.6-flash")
+    contents = block
     if extra_hint:
-        prompt += f"\n\n{extra_hint}"
-    prompt += f"\n\n用戶訊息：\n{block}"
+        contents += f"\n\nTokenizer correction: {extra_hint}"
     fallback = parse_simple_preflop_block(block)
-    literal_retry_used = False
-    attempt = 0
-    while attempt < 3:
-        attempt += 1
+    if fallback and not _raw_street_lines(block):
+        fallback["_parse_trace"] = [{
+            "street": "preflop", "resolution": "raw_deterministic",
+        }]
+        fallback["_parse_flags"] = []
+        return fallback
+    for attempt in range(2):
         try:
             resp = client.models.generate_content(
-                model=model, contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)))
-            text = resp.text or ""
-            m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-            js = m.group(1) if m else text.strip()
-            hand = json.loads(js).get("hand")
-        except Exception:
-            if attempt >= 2:
-                return fallback
-            time.sleep(1.5)
-            continue
-        if hand and hand.get("hero_position") and hand.get("preflop_actions") \
-                and hand.get("hero_hand"):
-            if fallback:
-                npl = hand.get("players_at_table") or fallback.get("players_at_table") or 8
-                toks = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
-                fb_toks = [t for t in (fallback.get("preflop_actions") or "").split("-") if t]
-                if len(toks) < npl <= len(fb_toks):
-                    fallback["_repairs"] = ["單行 preflop 速記 deterministic parse（LLM 漏座位）"]
-                    return fallback
+                model=model, contents=contents,
+                config=_live_token_config(model))
+            tokenized = LiveTokenizedHand.model_validate_json(
+                resp.text or "").model_dump(exclude_none=True)
+            hand = replay_live_action_tokens(block, tokenized)
             gated, notes = repair_card_literals_from_block(block, hand)
             if gated is None:
-                if _is_street_count_refusal(notes) and not literal_retry_used:
-                    literal_retry_used = True
-                    prompt += f"\n\n{_street_alignment_retry_hint(block, notes)}"
-                    time.sleep(0.5)
-                    continue
                 return {"_refused": notes or ["牌面字面值衝突"]}
             if notes:
                 gated["_repairs"] = notes
-            gated2, action_notes = repair_street_actions_from_block(block, gated)
-            if action_notes:
-                gated2["_repairs"] = list(gated2.get("_repairs") or []) + action_notes
-                gated = gated2
             return gated
-        return fallback
+        except LiveReplayError as exc:
+            return {"_refused": [str(exc)]}
+        except Exception:
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            # Deterministic fallback is safe only for preflop-only rows.
+            if fallback and not _raw_street_lines(block):
+                fallback["_repairs"] = ["LLM tokenizer 失敗，使用 preflop deterministic parse"]
+                return fallback
+            return None
     return None
 
 
@@ -1260,7 +1746,9 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     # less certain judgment. Floor at 0.6 (repairs are deterministic and
     # user-echoed, never blind guesses).
     n_repairs = len(hand.get("_repairs") or [])
-    parse_conf = round(max(0.6, 1.0 - 0.1 * n_repairs), 2)
+    parse_flags = list(hand.get("_parse_flags") or [])
+    parse_conf = (0.5 if parse_flags
+                  else round(max(0.6, 1.0 - 0.1 * n_repairs), 2))
     escalation_state = escalation_state or {}
     escalation_depth = escalation_state.get("depth")
     escalation_failed_keys = escalation_state.get("failed_keys") or set()
@@ -1270,13 +1758,14 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
         flags = ["chipev_grading", "live_phase_unknown"]
+        flags.extend(f"parse:{flag}" for flag in parse_flags)
         if key in escalated_keys:
             flags.append(f"depth_escalated:{int(escalation_depth or _next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
         elif key in escalation_failed_keys:
             flags.append("depth_escalation_failed")
         elif key in escalation_offrange_keys:
             flags.append(f"depth_escalation_offrange:{int(escalation_depth or 0)}")
-        excluded = False
+        excluded = bool(parse_flags)
         ev_loss = taken = best = taken_freq = None
         if abs(depth - nearest_depth(depth)) > 3.0:
             flags.append("depth_snap_gap")
@@ -1286,7 +1775,11 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
         # 的區域（§0），必須掛旗（§5.2 誠實層）
         if spot["street"] != "preflop" and spot.get("villain_cat") == "multi":
             flags.append("multiway_recast")
-        if dev is None or dev.get("ungraded"):
+        if parse_flags:
+            flags.append("parse_uncertain")
+            taken = spot.get("hero_action_raw")
+            dev = None
+        elif dev is None or dev.get("ungraded"):
             reason = (dev or {}).get("reason", "not_graded")
             flags.append(f"unsolved:{reason}")
             excluded = True
@@ -1473,12 +1966,13 @@ def process_batch(text: str, date_str: str | None = None,
         result["hands"].append(entry)
         hand = parse_block(block)
         if hand is None or hand.get("_refused"):
-            entry["error"] = "parse_failed" if hand is None else "literal_conflict"
+            entry["error"] = "parse_failed" if hand is None else "parse_refused"
             entry["refusal"] = list((hand or {}).get("_refused") or [])
             result["totals"]["parse_failed"] += 1
             continue
         repairs = list(hand.pop("_repairs", []))
-        if hero_folded_but_acts(hand):
+        token_replayed = bool(hand.get("_parse_trace"))
+        if not token_replayed and hero_folded_but_acts(hand):
             # hero's own preflop action mis-seated — reparse with precise
             # feedback before repair_hu_pot strips hero's street actions
             hint = (f"上一次解析矛盾：hero（{hand.get('hero_position')}）的 preflop 動作"
@@ -1489,14 +1983,15 @@ def process_batch(text: str, date_str: str | None = None,
             if hand2 and not hand2.get("_refused") and not hero_folded_but_acts(hand2):
                 repairs = list(hand2.pop("_repairs", [])) + ["矛盾重解析（hero preflop 動作歸屬）"]
                 hand = hand2
-        if apply_raw_preflop_actions(block, hand):
+        if not token_replayed and apply_raw_preflop_actions(block, hand):
             repairs.append("preflop 動作依原文校正")
-        pre_repair = json.dumps(hand, sort_keys=True)
-        hand = repair_hu_pot(hand)
-        if json.dumps(hand, sort_keys=True) != pre_repair:
-            repairs.append("HU pot 動作歸屬修補")
+        if not token_replayed:
+            pre_repair = json.dumps(hand, sort_keys=True)
+            hand = repair_hu_pot(hand)
+            if json.dumps(hand, sort_keys=True) != pre_repair:
+                repairs.append("HU pot 動作歸屬修補")
         ghost = find_ghost(hand)
-        if ghost:
+        if ghost and not token_replayed:
             # semantic contradiction (a live preflop seat never acts in a HU
             # pot) — one precise-feedback reparse, else refuse honestly.
             actors = sorted({a.get("position") for st in hand.get("streets") or []
@@ -1539,11 +2034,19 @@ def process_batch(text: str, date_str: str | None = None,
 
         progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
-        try:
-            devmap, escalated_keys, escalation_state = grade_hand_with_escalation(hand)
-        except Exception as e:
-            entry["error"] = f"grading_failed: {e}"
-            continue
+        if hand.get("_parse_flags"):
+            # The action line is attributable but not solver-safe (typically
+            # an omitted bet size). Preserve it for review, never spend an API
+            # call or let it enter EV statistics.
+            devmap, escalated_keys = {}, set()
+            escalation_state = {"attempted": False}
+        else:
+            try:
+                devmap, escalated_keys, escalation_state = (
+                    grade_hand_with_escalation(hand))
+            except Exception as e:
+                entry["error"] = f"grading_failed: {e}"
+                continue
         if repairs:
             hand["_repairs"] = repairs   # audit trail into ledger parsed_json
         hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap,
