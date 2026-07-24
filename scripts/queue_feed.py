@@ -686,7 +686,7 @@ async def remove_source_hand(conn, hand_id: str) -> None:
     rows as resend fallout.
     """
     rows = await conn.fetch(
-        "SELECT id, source_hands, added_by, kind FROM drill_queue "
+        "SELECT id, source_hands, added_by, kind, drill_url FROM drill_queue "
         "WHERE status IN ('pending','prescribed') "
         "AND source_hands::text LIKE '%' || $1 || '%'", hand_id)
     for r in rows:
@@ -706,15 +706,32 @@ async def remove_source_hand(conn, hand_id: str) -> None:
                 "WHERE id=$1", r["id"])
             continue
         total = round(sum(float(s.get("ev_loss_bb") or 0) for s in kept), 4)
-        drill_url = await queue_drill_url_from_sources(conn, kept)
-        await conn.execute(
-            "UPDATE drill_queue SET source_hands=$2::jsonb, "
-            "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
-            "gtow_drill_id=NULL, gtow_drill_name=NULL, "
-            "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
-            "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
-            "WHERE id=$1",
-            r["id"], json.dumps(kept), total, len(kept), drill_url)
+        old_url = r.get("drill_url") if hasattr(r, "get") else r["drill_url"]
+        try:
+            rebuilt_url = await queue_drill_url_from_sources(conn, kept)
+        except Exception as exc:
+            log.warning("queue source URL rebuild failed for row %s: %s",
+                        r["id"], exc, exc_info=True)
+            rebuilt_url = None
+        if rebuilt_url is None:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4 WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept))
+        elif rebuilt_url == old_url:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5 WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
+        else:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
+                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
+                "WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
 
 
 # ── online scan ──────────────────────────────────────────────────────────────

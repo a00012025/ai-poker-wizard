@@ -1159,33 +1159,47 @@ def _next_depth_up(effective_bb: float) -> float | None:
     return float(min(higher)) if higher else None
 
 
-def grade_hand_with_escalation(hand: dict) -> tuple[dict, set]:
-    """Grade at the hand's depth; for any node the solver returns offrange,
-    re-grade once at the next depth bracket up and adopt only those nodes.
+def grade_hand_with_escalation(hand: dict) -> tuple[dict, set, dict]:
+    """Grade at the hand's depth and honestly track one-depth escalation.
 
-    Returns (devmap, escalated_keys). escalated_keys are (street, idx) tuples
-    rescued at the higher depth — the caller flags them depth_escalated (§5.2).
+    Returns ``(devmap, escalated_keys, escalation_state)``. ``escalated_keys``
+    are nodes rescued at the higher depth. ``escalation_state`` distinguishes
+    no attempt, successful attempt that still returned offrange, and raised
+    attempt; the renderer must not imply an attempted offrange retry when the
+    retry call failed before producing solver data.
     """
     base = grade_hand(hand)
     offrange = {k for k, d in base.items()
                 if d.get("ungraded") and d.get("reason") == "offrange"}
+    state = {
+        "attempted": False, "failed": False, "depth": None,
+        "failed_keys": set(), "offrange_after_attempt_keys": set(),
+    }
     if not offrange:
-        return base, set()
+        return base, set(), state
     up = _next_depth_up(float(hand.get("effective_bb") or 0))
     if up is None:
-        return base, set()
+        return base, set(), state
+    state["attempted"] = True
+    state["depth"] = int(up)
     h2 = {**hand, "effective_bb": up}
     try:
         esc = grade_hand(h2)
-    except Exception:
-        return base, set()
+    except Exception as exc:
+        log.warning("live depth escalation failed at %sbb: %s", up, exc,
+                    exc_info=True)
+        state["failed"] = True
+        state["failed_keys"] = set(offrange)
+        return base, set(), state
     rescued: set = set()
     for k in offrange:
         d2 = esc.get(k)
         if d2 is not None and not d2.get("ungraded"):
             base[k] = d2
             rescued.add(k)
-    return base, rescued
+        elif d2 is not None and d2.get("reason") == "offrange":
+            state["offrange_after_attempt_keys"].add(k)
+    return base, rescued, state
 
 
 def _boards_str(hand: dict) -> str:
@@ -1210,7 +1224,8 @@ def _sizing_snap(taken_code: str, requested) -> bool:
 
 def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                     raw_text: str, devmap: dict,
-                    escalated_keys=frozenset()) -> tuple[dict, list[dict]]:
+                    escalated_keys=frozenset(),
+                    escalation_state: dict | None = None) -> tuple[dict, list[dict]]:
     """Assemble the ledger_hands row + ledger_decisions rows (graded + honest)."""
     from spot_categorizer import compute_pot_type_from_preflop
     from spot_taxonomy import walk_spots_from_parsed
@@ -1226,13 +1241,21 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     # user-echoed, never blind guesses).
     n_repairs = len(hand.get("_repairs") or [])
     parse_conf = round(max(0.6, 1.0 - 0.1 * n_repairs), 2)
+    escalation_state = escalation_state or {}
+    escalation_depth = escalation_state.get("depth")
+    escalation_failed_keys = escalation_state.get("failed_keys") or set()
+    escalation_offrange_keys = escalation_state.get("offrange_after_attempt_keys") or set()
 
     for spot in walk_spots_from_parsed(hand):
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
         flags = ["chipev_grading", "live_phase_unknown"]
         if key in escalated_keys:
-            flags.append(f"depth_escalated:{int(_next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
+            flags.append(f"depth_escalated:{int(escalation_depth or _next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
+        elif key in escalation_failed_keys:
+            flags.append("depth_escalation_failed")
+        elif key in escalation_offrange_keys:
+            flags.append(f"depth_escalation_offrange:{int(escalation_depth or 0)}")
         excluded = False
         ev_loss = taken = best = taken_freq = None
         if abs(depth - nearest_depth(depth)) > 3.0:
@@ -1499,14 +1522,14 @@ def process_batch(text: str, date_str: str | None = None,
         progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
         try:
-            devmap, escalated_keys = grade_hand_with_escalation(hand)
+            devmap, escalated_keys, escalation_state = grade_hand_with_escalation(hand)
         except Exception as e:
             entry["error"] = f"grading_failed: {e}"
             continue
         if repairs:
             hand["_repairs"] = repairs   # audit trail into ledger parsed_json
         hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap,
-                                             escalated_keys)
+                                             escalated_keys, escalation_state)
         entry["ok"] = True
         entry["hand_row"] = hand_row
         for d in dec_rows:
@@ -1526,7 +1549,11 @@ def process_batch(text: str, date_str: str | None = None,
                     "discarded": d["discarded"], "limp_origin": d["limp_origin"],
                     "depth_escalated": next(
                         (int(f.split(":", 1)[1]) for f in d["approx_flags"]
-                         if f.startswith("depth_escalated:")), None)}
+                         if f.startswith("depth_escalated:")), None),
+                    "depth_escalation_failed": "depth_escalation_failed" in d["approx_flags"],
+                    "depth_escalation_offrange": next(
+                        (int(f.split(":", 1)[1]) for f in d["approx_flags"]
+                         if f.startswith("depth_escalation_offrange:")), None)}
             entry["decisions"].append(disp)
             result["totals"]["decisions"] += 1
             if not d["excluded"]:
@@ -1848,7 +1875,9 @@ def render_session_page(result: dict, page: int = 0,
             first = offrange[0]
             L.append(f"　❓ {first['street']} 起未評分：偏離 GTO 建議後，"
                      f"你的牌已在該線範圍外")
-            if _next_depth_up(float((h.get('hand_row') or {}).get('preflop_depth_bb') or 0)):
+            if any(d.get("depth_escalation_failed") for d in offrange):
+                L.append("　（升格評分失敗，保留原深度未評分）")
+            elif any(d.get("depth_escalation_offrange") for d in offrange):
                 L.append("　（已嘗試升一格近似，仍無範圍）")
         L.append("")
 

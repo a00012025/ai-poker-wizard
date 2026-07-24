@@ -3039,13 +3039,16 @@ def remove_source_hand_recomputes_or_clears_open_rows():
             assert_eq(args, ("old-hand",))
             return [
                 {"id": 1, "kind": "drill", "added_by": "auto",
+                 "drill_url": "https://old.example/drill",
                  "source_hands": json.dumps([
                      {"hand_id": "old-hand", "ev_loss_bb": 0.25},
                      {"hand_id": "keep-hand", "ev_loss_bb": 0.35},
                  ])},
                 {"id": 2, "kind": "drill", "added_by": "live",
+                 "drill_url": "https://old-empty.example/drill",
                  "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.4}]},
                 {"id": 3, "kind": "drill", "added_by": "manual",
+                 "drill_url": "https://manual.example/drill",
                  "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.7}]},
             ]
 
@@ -3074,12 +3077,118 @@ def remove_source_hand_recomputes_or_clears_open_rows():
     assert_in("n_sources=0", conn.execs[1][0])
     assert_eq(conn.execs[1][1], (2,))
     assert_in("source_hands=$2::jsonb", conn.execs[2][0])
+    assert_not_in("drill_url=$5", conn.execs[2][0])
+    assert_not_in("gtow_drill_id=NULL", conn.execs[2][0])
     assert_eq(json.loads(conn.execs[2][1][1]), [])
-    assert_eq(conn.execs[2][1][2:], (0, 0, None))
+    assert_eq(conn.execs[2][1][2:], (0, 0))
     assert_eq(rebuilt_calls, [
         [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}],
         [],
     ])
+
+
+@test
+def remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
+    import asyncio
+    import json
+    import queue_feed as qf
+
+    class FakeConn:
+        def __init__(self):
+            self.execs = []
+
+        async def fetch(self, _sql, *_args):
+            return [{
+                "id": 10, "kind": "drill", "added_by": "auto",
+                "drill_url": "https://old.example/keep",
+                "source_hands": [
+                    {"hand_id": "old-hand", "ev_loss_bb": 0.2},
+                    {"hand_id": "keep-hand", "ev_loss_bb": 0.5},
+                ],
+            }]
+
+        async def execute(self, sql, *args):
+            self.execs.append((sql, args))
+
+    orig_rebuild = qf.queue_drill_url_from_sources
+    async def rebuild_none(_conn, _kept):
+        return None
+    qf.queue_drill_url_from_sources = rebuild_none
+    try:
+        conn = FakeConn()
+        asyncio.run(qf.remove_source_hand(conn, "old-hand"))
+    finally:
+        qf.queue_drill_url_from_sources = orig_rebuild
+
+    assert_eq(len(conn.execs), 1)
+    sql, args = conn.execs[0]
+    assert_in("source_hands=$2::jsonb", sql)
+    assert_not_in("drill_url=$5", sql)
+    assert_not_in("gtow_drill_id=NULL", sql)
+    assert_eq(json.loads(args[1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.5}])
+    assert_eq(args[2:], (0.5, 1))
+
+
+@test
+def depth_escalation_failure_is_honest_in_state_and_rendering():
+    import live_flow
+
+    calls = []
+    orig_grade = live_flow.grade_hand
+    orig_next = live_flow._next_depth_up
+    orig_log_disabled = live_flow.log.disabled
+
+    def fake_grade(hand):
+        calls.append(hand.get("effective_bb"))
+        if len(calls) == 1:
+            return {("flop", 0): {"street": "flop", "ungraded": True,
+                                  "reason": "offrange"}}
+        raise RuntimeError("GTOW unavailable")
+
+    live_flow.grade_hand = fake_grade
+    live_flow._next_depth_up = lambda _bb: 17.0
+    live_flow.log.disabled = True
+    try:
+        devmap, rescued, state = live_flow.grade_hand_with_escalation({"effective_bb": 15})
+    finally:
+        live_flow.grade_hand = orig_grade
+        live_flow._next_depth_up = orig_next
+        live_flow.log.disabled = orig_log_disabled
+
+    assert_eq(calls, [15, 17.0])
+    assert_eq(rescued, set())
+    assert_true(state["failed"], "raised escalation marked failed")
+    assert_in(("flop", 0), state["failed_keys"])
+    assert_true(devmap[("flop", 0)]["ungraded"], "base offrange preserved")
+
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [{
+        "street": "flop", "idx": 0, "leaf": "l", "ev_loss": None,
+        "severity": "❓", "taken": "C", "best": None, "taken_label": None,
+        "best_label": None, "gto_freq": None, "ungraded_reason": "offrange",
+        "discarded": False, "limp_origin": False, "depth_escalated": None,
+        "depth_escalation_failed": True, "depth_escalation_offrange": None,
+    }]
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_in("升格評分失敗", html)
+    assert_not_in("已嘗試升一格近似，仍無範圍", html)
+
+
+@test
+def depth_escalation_successful_offrange_keeps_existing_rendering():
+    import live_flow
+
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [{
+        "street": "flop", "idx": 0, "leaf": "l", "ev_loss": None,
+        "severity": "❓", "taken": "C", "best": None, "taken_label": None,
+        "best_label": None, "gto_freq": None, "ungraded_reason": "offrange",
+        "discarded": False, "limp_origin": False, "depth_escalated": None,
+        "depth_escalation_failed": False, "depth_escalation_offrange": 17,
+    }]
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_in("已嘗試升一格近似，仍無範圍", html)
+    assert_not_in("升格評分失敗", html)
 
 
 @test
