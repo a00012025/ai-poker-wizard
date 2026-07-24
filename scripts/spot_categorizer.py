@@ -320,8 +320,8 @@ def compute_pot_type_from_preflop(preflop_actions: str,
                 any_call_before_raise = True
             elif max_level == 1:
                 saw_call_after_first_raise = True
-        elif code in ("R", "RR", "RRR", "RRRR"):
-            if code == "RR" and saw_call_after_first_raise:
+        elif code in ("R", "RR", "RRR", "RRRR", "AI"):
+            if new_level == 2 and saw_call_after_first_raise:
                 squeeze = True
             saw_raise = True
             if new_level > max_level:

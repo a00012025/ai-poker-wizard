@@ -74,6 +74,36 @@ def _convert_hero_position_to_8max(hero_pos: str, num_players: int) -> str:
     return hero_pos
 
 
+def _hero_continuation_context(pf_parts: list[str], num_players: int,
+                               hero_idx: int) -> tuple[list[str], str | None]:
+    """Return actions before hero's next preflop turn and hero's action.
+
+    Continuation tokens rotate through players who survived the first pass.
+    Folded players are removed immediately; all-in players are never eligible
+    to act again.  This is needed to query the solver at hero's actual node
+    rather than at the first player still pending after the initial round.
+    """
+    active = [
+        i for i in range(min(num_players, len(pf_parts)))
+        if pf_parts[i] not in ("F", "") and not pf_parts[i].startswith("AI")
+    ]
+    cursor = 0
+    before_hero: list[str] = []
+    for raw in pf_parts[num_players:]:
+        if not active:
+            break
+        cursor %= len(active)
+        actor = active[cursor]
+        if actor == hero_idx:
+            return before_hero, raw
+        before_hero.append(raw)
+        if raw == "F" or raw.startswith("AI"):
+            active.pop(cursor)
+        else:
+            cursor = (cursor + 1) % len(active)
+    return before_hero, None
+
+
 def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool,
                  combo_idx: int | None = None) -> float | None:
     """Extract EV for hero's hand from a spot solution.
@@ -552,26 +582,24 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             so_far = "-".join(full_first_round) if full_first_round else ""
             norm_code = _normalize_preflop_action(code, pf_gametype, pf_depth, so_far, pf_stacks)
             full_first_round.append(norm_code)
-        full_first_pf = "-".join(full_first_round)
 
-        # Hero's continuation action
-        active = [i for i in range(num_players) if pf_parts_n[i] not in ("F", "")]
-        cont_idx = 0
-        hero_cont_raw = None
-        for j in range(num_players, len(pf_parts_n)):
-            if cont_idx >= len(active):
-                cont_idx = 0
-            if active[cont_idx] == hero_idx_n:
-                hero_cont_raw = pf_parts_n[j]
-                break
-            cont_idx += 1
+        # Include every intervening continuation action so the solver query
+        # lands on hero's actual node (e.g. CO folds before BTN faces squeeze).
+        before_hero_cont, hero_cont_raw = _hero_continuation_context(
+            pf_parts_n, num_players, hero_idx_n)
 
         if hero_cont_raw:
-            hero_cont = _normalize_preflop_action(hero_cont_raw, pf_gametype, pf_depth,
-                                                   full_first_pf, pf_stacks)
+            second_prefix_parts = list(full_first_round)
+            for code in before_hero_cont:
+                so_far = "-".join(second_prefix_parts)
+                second_prefix_parts.append(_normalize_preflop_action(
+                    code, pf_gametype, pf_depth, so_far, pf_stacks))
+            second_prefix = "-".join(second_prefix_parts)
+            hero_cont = _normalize_preflop_action(
+                hero_cont_raw, pf_gametype, pf_depth, second_prefix, pf_stacks)
             try:
                 sol2 = get_spot_solution(gametype=pf_gametype, depth=pf_depth,
-                                          stacks=pf_stacks, preflop_actions=full_first_pf)
+                                          stacks=pf_stacks, preflop_actions=second_prefix)
             except Exception:
                 sol2 = None
 
@@ -579,7 +607,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             if sol2 is None and icm_gametype and pf_gametype == icm_gametype:
                 try:
                     sol2 = get_spot_solution(gametype=gametype, depth=depth,
-                                              preflop_actions=full_first_pf)
+                                              preflop_actions=second_prefix)
                 except Exception:
                     sol2 = None
 
