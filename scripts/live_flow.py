@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -36,6 +37,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from card_display import cards_to_emoji
+
+log = logging.getLogger(__name__)
 
 QUEUE_EV_MIN = 0.10          # bb: a decision enters the drill queue at/above this loss
 SEV_MAJOR = 0.30             # bb: ❌ vs ⚠️ display split
@@ -424,7 +427,7 @@ def _is_aggr_code(code: str | None) -> bool:
 
 
 def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list[str]]:
-    """Conservatively repair dropped leading HU checks from raw live shorthand.
+    """Conservatively repair exact HU street-action drops from raw shorthand.
 
     Observed failure: raw turn ``9 x b10 f`` (OOP checks, hero bets, OOP folds)
     was parsed as ``SB b10, hero fold``.  Poker rules allow that corrupted
@@ -432,6 +435,12 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
     action hints are exactly one action longer and the missing action is a
     leading check before an aggression, insert the check; ``repair_hu_pot`` will
     then reassign positions by strict HU alternation.
+
+    Observed Hand 2 failure: raw flop ``Ac5c6d b4 call`` was parsed as a lone
+    ``SB Call``.  That is not a legal poker action, but the fix is still gated
+    to exact HU evidence: raw hints must be ``[R, C]`` and the parsed street
+    must be only the caller (or a leading check + caller) before we restore the
+    OOP bet owner.
     """
     from hh_parser import POSITION_ORDERS
 
@@ -447,13 +456,55 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
     postflop_order = order[-2:] + order[:-2]  # SB, BB, UTG, ...
     notes: list[str] = []
 
+    def raw_preflop_hu_actors() -> list[str]:
+        """Return OOP/IP HU actors only when the raw preflop line proves them.
+
+        The [R,C] orphan-call repair inserts a missing bettor.  Unlike the
+        older dropped-leading-check repair, it must not infer that bettor from
+        parsed postflop actors, because those actors may be exactly the corrupt
+        LLM output being repaired.
+        """
+        lines = [ln.strip() for ln in (block or "").splitlines()
+                 if ln.strip() and not _is_noise(ln)]
+        if lines:
+            toks = re.split(r"\s+", lines[0])
+            hero_pos = repaired.get("hero_position")
+            if hero_pos:
+                hero_idx = next((i for i, tok in enumerate(toks)
+                                 if _clean_word(tok) == "hero"), None)
+                eff = (_effective_bb_from_preflop_tokens(toks, hero_idx)
+                       or str(repaired.get("effective_bb") or ""))
+                last: dict[str, str] = {}
+                for pos, code in _live_preflop_events(toks, hero_pos, eff):
+                    last[pos] = code
+                live = [p for p, c in last.items() if c != "F" and p in postflop_order]
+                if len(live) == 2:
+                    return sorted(live, key=postflop_order.index)
+        return []
+
+    raw_heads_up = raw_preflop_hu_actors()
+
     for idx, (st, hints) in enumerate(zip(streets, hints_by_street)):
         actions = st.get("actions") or []
         actors = {a.get("position") for a in actions if a.get("position")}
-        if len(actors) != 2 or not hints or len(actions) + 1 != len(hints):
+        if not hints:
             continue
         parsed_classes = [_action_class(a.get("action")) for a in actions]
         hint_classes = [_action_class(h) for h in hints]
+        if raw_heads_up and hint_classes == ["R", "C"] and parsed_classes in (["C"], ["X", "C"]):
+            bet = {"position": raw_heads_up[0], "action": hints[0]}
+            m = re.match(r"^[RAI]+(\d+(?:\.\d+)?)$", hints[0], re.I)
+            if m:
+                bet["size"] = float(m.group(1))
+            call_src = actions[-1] if actions else {}
+            call = dict(call_src)
+            call["position"] = raw_heads_up[1]
+            call["action"] = hints[1]
+            st["actions"] = [bet, call]
+            notes.append(f"{_street_name(idx)} 補回原文開頭 bet")
+            continue
+        if len(actors) != 2 or len(actions) + 1 != len(hints):
+            continue
         if (hint_classes[0] != "X" or not actions or not _is_aggr_code(actions[0].get("action"))
                 or parsed_classes != hint_classes[1:]):
             continue
@@ -1100,6 +1151,57 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     return out
 
 
+def _next_depth_up(effective_bb: float) -> float | None:
+    """Next AVAILABLE_DEPTHS integer strictly above the base bracket, else None."""
+    from gto_api import AVAILABLE_DEPTHS, nearest_depth
+    base = int(nearest_depth(effective_bb))          # e.g. 15 -> 14
+    higher = [d for d in AVAILABLE_DEPTHS if d > base]
+    return float(min(higher)) if higher else None
+
+
+def grade_hand_with_escalation(hand: dict) -> tuple[dict, set, dict]:
+    """Grade at the hand's depth and honestly track one-depth escalation.
+
+    Returns ``(devmap, escalated_keys, escalation_state)``. ``escalated_keys``
+    are nodes rescued at the higher depth. ``escalation_state`` distinguishes
+    no attempt, successful attempt that still returned offrange, and raised
+    attempt; the renderer must not imply an attempted offrange retry when the
+    retry call failed before producing solver data.
+    """
+    base = grade_hand(hand)
+    offrange = {k for k, d in base.items()
+                if d.get("ungraded") and d.get("reason") == "offrange"}
+    state = {
+        "attempted": False, "failed": False, "depth": None,
+        "failed_keys": set(), "offrange_after_attempt_keys": set(),
+    }
+    if not offrange:
+        return base, set(), state
+    up = _next_depth_up(float(hand.get("effective_bb") or 0))
+    if up is None:
+        return base, set(), state
+    state["attempted"] = True
+    state["depth"] = int(up)
+    h2 = {**hand, "effective_bb": up}
+    try:
+        esc = grade_hand(h2)
+    except Exception as exc:
+        log.warning("live depth escalation failed at %sbb: %s", up, exc,
+                    exc_info=True)
+        state["failed"] = True
+        state["failed_keys"] = set(offrange)
+        return base, set(), state
+    rescued: set = set()
+    for k in offrange:
+        d2 = esc.get(k)
+        if d2 is not None and not d2.get("ungraded"):
+            base[k] = d2
+            rescued.add(k)
+        elif d2 is not None and d2.get("reason") == "offrange":
+            state["offrange_after_attempt_keys"].add(k)
+    return base, rescued, state
+
+
 def _boards_str(hand: dict) -> str:
     parts = []
     for st in hand.get("streets") or []:
@@ -1121,7 +1223,9 @@ def _sizing_snap(taken_code: str, requested) -> bool:
 
 
 def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
-                    raw_text: str, devmap: dict) -> tuple[dict, list[dict]]:
+                    raw_text: str, devmap: dict,
+                    escalated_keys=frozenset(),
+                    escalation_state: dict | None = None) -> tuple[dict, list[dict]]:
     """Assemble the ledger_hands row + ledger_decisions rows (graded + honest)."""
     from spot_categorizer import compute_pot_type_from_preflop
     from spot_taxonomy import walk_spots_from_parsed
@@ -1137,11 +1241,21 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     # user-echoed, never blind guesses).
     n_repairs = len(hand.get("_repairs") or [])
     parse_conf = round(max(0.6, 1.0 - 0.1 * n_repairs), 2)
+    escalation_state = escalation_state or {}
+    escalation_depth = escalation_state.get("depth")
+    escalation_failed_keys = escalation_state.get("failed_keys") or set()
+    escalation_offrange_keys = escalation_state.get("offrange_after_attempt_keys") or set()
 
     for spot in walk_spots_from_parsed(hand):
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
         flags = ["chipev_grading", "live_phase_unknown"]
+        if key in escalated_keys:
+            flags.append(f"depth_escalated:{int(escalation_depth or _next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
+        elif key in escalation_failed_keys:
+            flags.append("depth_escalation_failed")
+        elif key in escalation_offrange_keys:
+            flags.append(f"depth_escalation_offrange:{int(escalation_depth or 0)}")
         excluded = False
         ev_loss = taken = best = taken_freq = None
         if abs(depth - nearest_depth(depth)) > 3.0:
@@ -1279,7 +1393,7 @@ def spot_label_zh(dec: dict) -> str:
 # implementation (§5.2, PR #92 dedup spirit). live_flow re-exports it for its
 # own persist path; a re-offending leaf merges into its OPEN row (pending OR
 # prescribed) with per-entry key dedupe so re-imports never inflate totals.
-from queue_feed import enqueue  # noqa: E402,F401  (shared upsert; used by persist)
+from queue_feed import enqueue, remove_source_hand  # noqa: E402,F401  (shared upsert; used by persist/overwrite)
 
 
 # ── DB upserts ───────────────────────────────────────────────────────────────
@@ -1408,13 +1522,14 @@ def process_batch(text: str, date_str: str | None = None,
         progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
         try:
-            devmap = grade_hand(hand)
+            devmap, escalated_keys, escalation_state = grade_hand_with_escalation(hand)
         except Exception as e:
             entry["error"] = f"grading_failed: {e}"
             continue
         if repairs:
             hand["_repairs"] = repairs   # audit trail into ledger parsed_json
-        hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap)
+        hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap,
+                                             escalated_keys, escalation_state)
         entry["ok"] = True
         entry["hand_row"] = hand_row
         for d in dec_rows:
@@ -1431,7 +1546,14 @@ def process_batch(text: str, date_str: str | None = None,
                     "best_label": dev.get("gto_action_label") if graded else None,
                     "gto_freq": dev.get("gto_freq") if graded else None,
                     "ungraded_reason": reason,
-                    "discarded": d["discarded"], "limp_origin": d["limp_origin"]}
+                    "discarded": d["discarded"], "limp_origin": d["limp_origin"],
+                    "depth_escalated": next(
+                        (int(f.split(":", 1)[1]) for f in d["approx_flags"]
+                         if f.startswith("depth_escalated:")), None),
+                    "depth_escalation_failed": "depth_escalation_failed" in d["approx_flags"],
+                    "depth_escalation_offrange": next(
+                        (int(f.split(":", 1)[1]) for f in d["approx_flags"]
+                         if f.startswith("depth_escalation_offrange:")), None)}
             entry["decisions"].append(disp)
             result["totals"]["decisions"] += 1
             if not d["excluded"]:
@@ -1442,8 +1564,53 @@ def process_batch(text: str, date_str: str | None = None,
         d_rows = [dict(d) for d in dec_rows]
         entry["dec_rows"] = d_rows
         all_dec_rows.extend(d_rows)
+        try:
+            from gtow_solution_url import build_last_hero_hand_url
+            entry["review_url"] = build_last_hero_hand_url(
+                hand, [d for d in d_rows if not d.get("excluded")])
+        except Exception:
+            log.debug("live review_url generation failed for %s", hand_id,
+                      exc_info=True)
+            entry["review_url"] = None
         time.sleep(0.3)
 
+    result["queue"] = select_queue_items(all_dec_rows)
+    return result
+
+
+def _recompute_totals(hands: list[dict]) -> dict:
+    """Recompute live-session totals from current display decisions."""
+    decisions = graded = mistakes = parse_failed = 0
+    for h in hands:
+        if not h.get("ok"):
+            parse_failed += 1
+            continue
+        for d in h.get("decisions") or []:
+            decisions += 1
+            if d.get("ev_loss") is not None:
+                graded += 1
+            if (d.get("ev_loss") is not None and d.get("ev_loss") >= QUEUE_EV_MIN
+                    and not d.get("discarded")):
+                mistakes += 1
+    return {"hands": len(hands), "decisions": decisions, "graded": graded,
+            "mistakes": mistakes, "parse_failed": parse_failed}
+
+
+def splice_hand(result: dict, hand_idx: int, new_entry: dict) -> dict:
+    """Replace ``hands[hand_idx]`` while preserving display idx.
+
+    Resend edits one hand in-place, so the surrounding session must keep its
+    original hand numbering while totals and practice queue are derived from
+    the current hand payloads only.
+    """
+    new_entry = dict(new_entry)
+    new_entry["idx"] = result["hands"][hand_idx]["idx"]
+    result["hands"][hand_idx] = new_entry
+    result["totals"] = _recompute_totals(result["hands"])
+    all_dec_rows: list[dict] = []
+    for h in result["hands"]:
+        if h.get("ok"):
+            all_dec_rows.extend(h.get("dec_rows") or [])
     result["queue"] = select_queue_items(all_dec_rows)
     return result
 
@@ -1467,6 +1634,123 @@ async def persist(result: dict) -> None:
                 item["spot_leaf"])
     finally:
         await conn.close()
+
+
+def process_resend_block(block: str, date_str: str | None = None) -> dict:
+    """Parse/grade one corrected live hand block. Pure of DB.
+
+    A failed replacement is returned as a display-shaped failed hand and must be
+    reported without mutating the old ledger/session/queue footprint.
+    """
+    single = process_batch(block, date_str)
+    if single.get("hands"):
+        return single["hands"][0]
+    return {
+        "idx": 1, "ok": False, "hand_id": None, "error": "parse_failed",
+        "refusal": ["空白或無法辨識"], "decisions": [],
+        "repairs": [], "raw": block,
+    }
+
+
+def resend_entry_is_graded(entry: dict) -> bool:
+    """True only for replacement hands safe to apply destructively."""
+    return bool(entry.get("ok") and any(
+        not d.get("excluded") for d in (entry.get("dec_rows") or [])))
+
+
+def resend_failure_message(hand_idx: int, entry: dict) -> str:
+    """Owner-facing message for a failed corrected block; no DB changes made."""
+    if entry.get("ok") and not resend_entry_is_graded(entry):
+        title = "沒有可評分決策"
+        help_text = "這次重傳雖然可解析，但沒有任何可入帳的已評分決策；原本的 ledger / queue / session 已保留不變。"
+    else:
+        title, help_text = _failure_help({**entry, "idx": hand_idx + 1})
+    bits = [f"⚠️ Hand {hand_idx + 1} 重傳未套用：{title}", help_text]
+    repairs = entry.get("repairs") or []
+    if repairs:
+        bits.append("校正：" + "；".join(_repair_explanation(str(r)) for r in repairs))
+    return "\n".join(bits)
+
+
+async def overwrite_hand(conn, session_id: int, hand_idx: int,
+                         new_entry: dict, page: int | None = None) -> dict:
+    """Atomically overwrite one hand's ledger/queue/session footprint.
+
+    ``new_entry`` must already be parsed/graded off the event loop. Failed or
+    ungraded replacements are deliberately non-destructive and return
+    ``ok=False`` without deleting old ledger rows or updating ``live_sessions``.
+    """
+    if not resend_entry_is_graded(new_entry):
+        return {"ok": False, "error": "replacement_failed", "entry": new_entry}
+
+    async with conn.transaction():
+        session = await load_session(conn, session_id, for_update=True)
+        if not session:
+            return {"ok": False, "error": "session_missing", "entry": new_entry}
+
+        result = session["result"]
+        old = result["hands"][hand_idx]
+        old_hand_id = old.get("hand_id")
+
+        if old_hand_id:
+            await conn.execute(
+                "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1",
+                old_hand_id)
+            await conn.execute(
+                "DELETE FROM ledger_hands WHERE gtow_hand_id=$1",
+                old_hand_id)
+            await remove_source_hand(conn, old_hand_id)
+
+        await write_hand(conn, new_entry["hand_row"], new_entry["dec_rows"])
+
+        result = splice_hand(result, hand_idx, new_entry)
+        await enqueue(conn, result["queue"])
+        for item in result["queue"]:
+            item["queue_id"] = await conn.fetchval(
+                "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
+                "AND status IN ('pending','prescribed') "
+                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+                item["spot_leaf"])
+        page = hand_idx // PER_PAGE if page is None else page
+        await update_session_result(conn, session_id, result, page)
+        return {"ok": True, "session": session, "result": result, "page": page}
+
+
+async def save_session(conn, session_key: str, chat_id: int,
+                       result: dict) -> int:
+    """Insert/replace a live session; returns its id. Idempotent on key."""
+    return await conn.fetchval(
+        "INSERT INTO live_sessions (session_key, chat_id, result_json) "
+        "VALUES ($1, $2, $3) "
+        "ON CONFLICT (session_key) DO UPDATE SET "
+        "result_json = EXCLUDED.result_json, chat_id = EXCLUDED.chat_id "
+        "RETURNING id",
+        session_key, chat_id, json.dumps(result, ensure_ascii=False, default=str))
+
+
+async def set_session_message(conn, session_id: int, message_id: int) -> None:
+    await conn.execute(
+        "UPDATE live_sessions SET message_id=$2 WHERE id=$1",
+        session_id, message_id)
+
+
+async def load_session(conn, session_id: int, *, for_update: bool = False) -> dict | None:
+    sql = ("SELECT id, session_key, chat_id, message_id, page, result_json "
+           "FROM live_sessions WHERE id=$1"
+           + (" FOR UPDATE" if for_update else ""))
+    row = await conn.fetchrow(sql, session_id)
+    if not row:
+        return None
+    return {"id": row["id"], "session_key": row["session_key"],
+            "chat_id": row["chat_id"], "message_id": row["message_id"],
+            "page": row["page"], "result": json.loads(row["result_json"])}
+
+
+async def update_session_result(conn, session_id: int, result: dict,
+                                page: int) -> None:
+    await conn.execute(
+        "UPDATE live_sessions SET result_json=$2, page=$3 WHERE id=$1",
+        session_id, json.dumps(result, ensure_ascii=False, default=str), page)
 
 
 # ── TG rendering (HTML + inline-button payload) ──────────────────────────────
@@ -1511,78 +1795,144 @@ def _failure_help(h: dict) -> tuple[str, str]:
     )
 
 
-def render_tg_html(result: dict) -> str:
+PER_PAGE = 10
+
+_POT_TYPE_ZH = {
+    "single_raised": "單加注池", "srp": "單加注池", "limped": "跛入池",
+    "3bet": "3bet 池", "4bet": "4bet 池", "5bet": "5bet 池",
+    "squeezed": "擠壓池", "cold4bet": "cold 4bet 池",
+}
+
+
+def _pot_type_zh(pot_type: str | None) -> str:
+    return _POT_TYPE_ZH.get(str(pot_type or "").lower(), str(pot_type or ""))
+
+
+def _hand_severity(h: dict) -> str:
+    sevs = [d["severity"] for d in h.get("decisions") or []
+            if not d.get("discarded")]
+    if "❌" in sevs:
+        return "❌"
+    if "⚠️" in sevs:
+        return "⚠️"
+    if any(d.get("ungraded_reason") for d in h.get("decisions") or []):
+        return "❓"
+    return "✅"
+
+
+def _hand_desc_line(h: dict) -> str:
+    if not h.get("ok"):
+        title, _help = _failure_help(h)
+        return f"<b>Hand {h['idx']}</b> · ❗ 無法評分：{escape(title)}"
+    row = h.get("hand_row") or {}
+    hand = cards_to_emoji(row.get("hero_hand") or "")
+    pos = row.get("position") or ""
+    depth = row.get("preflop_depth_bb")
+    depth_s = f"{depth:g}bb" if depth else ""
+    pot = _pot_type_zh(row.get("pot_type"))
+    sev = _hand_severity(h)
+    wrench = " 🔧" if h.get("repairs") else ""
+    bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev]
+    return " · ".join(b for b in bits if b) + wrench
+
+
+def render_session_page(result: dict, page: int = 0,
+                        per_page: int = PER_PAGE) -> tuple[str, bool, bool]:
+    if per_page <= 0:
+        raise ValueError("per_page must be positive")
     t = result["totals"]
-    L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 個決策節點</b>"]
-    clean_ok = t["graded"] - t["mistakes"]
-    L.append(f"✅ {clean_ok} 無明顯偏差 · ⚠️❌ {t['mistakes']} 偏差 · "
-             f"❓ {t['decisions'] - t['graded']} 無解")
+    hands = result["hands"]
+    pages = max(1, (len(hands) + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    lo, hi = page * per_page, page * per_page + per_page
+    n_offrange = sum(
+        1 for h in hands if h.get("ok")
+        and any(d.get("ungraded_reason") for d in h["decisions"])
+        and not any(d["ev_loss"] is not None and d["ev_loss"] >= QUEUE_EV_MIN
+                    and not d["discarded"] for d in h["decisions"]))
+    L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 決策</b>　(第 {page+1}/{pages} 頁)"]
+    L.append(f"⚠️❌ {t['mistakes']} 偏差 · ❓ {n_offrange} 待深挖 · ✅ 其餘無明顯偏差")
     L.append("")
 
-    flagged = []
-    clean_hands, partial, failed = [], [], []
-    for h in result["hands"]:
+    for h in hands[lo:hi]:
+        L.append(_hand_desc_line(h))
         if not h.get("ok"):
-            failed.append(h)
+            _title, help_text = _failure_help(h)
+            L.append(f"　{escape(help_text)}")
+            L.append("")
             continue
-        devs = [d for d in h["decisions"]
-                if d["ev_loss"] is not None and d["ev_loss"] >= QUEUE_EV_MIN
-                and not d["discarded"]]
-        offrange = [d for d in h["decisions"] if d.get("ungraded_reason") == "offrange"]
-        if devs:
-            flagged.append((h, devs, offrange))
-        elif offrange:
-            partial.append((h, offrange))
-        else:
-            clean_hands.append(h)
-
-    for h, devs, offrange in flagged:
-        L.append(f"<b>Hand {h['idx']}</b> {escape(h['echo'] or '')}")
-        for d in devs:
+        for d in h["decisions"]:
+            if d["ev_loss"] is None or d["ev_loss"] < QUEUE_EV_MIN or d["discarded"]:
+                continue
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
-            L.append(f"{d['severity']} {d['street']} {escape(d['taken_label'] or d['taken'] or '?')}"
-                     f" → 主線 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb")
+            approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
+            L.append(f"　{d['severity']} {d['street']} "
+                     f"{escape(d['taken_label'] or d['taken'] or '?')} → "
+                     f"建議 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb{approx}")
+        offrange = [d for d in h["decisions"] if d.get("ungraded_reason") == "offrange"]
         if offrange:
-            L.append(f"❓ 另有 {len(offrange)} 個節點未評分（偏離主線後，你的牌已在該線範圍外）")
+            first = offrange[0]
+            L.append(f"　❓ {first['street']} 起未評分：偏離 GTO 建議後，"
+                     f"你的牌已在該線範圍外")
+            if any(d.get("depth_escalation_failed") for d in offrange):
+                L.append("　（升格評分失敗，保留原深度未評分）")
+            elif any(d.get("depth_escalation_offrange") for d in offrange):
+                L.append("　（已嘗試升一格近似，仍無範圍）")
         L.append("")
 
-    for h, offrange in partial:
-        first = offrange[0]
-        L.append(f"❓ <b>Hand {h['idx']}</b> {escape(h['echo'] or '')} — "
-                 f"{first['street']} 起未評分：前面的動作偏離主線，"
-                 f"你的牌不在該線的 GTO 範圍內")
-    if partial:
-        L.append("")
+    if result.get("queue"):
+        L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看）")
+    L.append("⚠️ chipEV 近似（現場賽段未知）；limp 節點不評分。要更正某手：點該手的 🔁 重傳。")
+    return "\n".join(L), page > 0, page < pages - 1
 
-    if clean_hands:
-        ids = ", ".join(f"Hand {h['idx']}" for h in clean_hands)
-        L.append(f"✅ 無明顯偏差：{ids}")
-    for h in failed:
-        title, help_text = _failure_help(h)
-        L.append(f"❗ <b>Hand {h['idx']}</b> 無法安全評分：{escape(title)}")
-        L.append(f"　原因 / 怎麼修：{escape(help_text)}")
-        raw_lines = (h.get("raw") or "").strip().splitlines()
-        if raw_lines:
-            L.append(f"　原文開頭：{escape(raw_lines[0][:80])}")
-            L.append("　可直接重傳這一手；建議格式：Header / Flop / Turn / River 各一行。")
 
-    repaired = [h for h in result["hands"] if h.get("ok") and h.get("repairs")]
-    if repaired:
-        L.append("")
-        L.append(f"🔧 {len(repaired)} 手已自動校正後送 solver（這不是偏差）：")
-        L.append("　請只核對每手 echo 是否符合你的原意；若不對，重傳該手即可。")
-        for h in repaired:
-            reasons = "；".join(_repair_explanation(str(r)) for r in h["repairs"])
-            L.append(f"・Hand {h['idx']} {escape(h.get('echo') or '')}")
-            L.append(f"　校正：{escape(reasons)}")
-    if result["queue"]:
-        L.append("")
-        L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看，週日課表會帶到）")
-    L.append("")
-    L.append("⚠️ 評分為 chipEV 近似（現場賽段未知）；limp pot 節點不評分。"
-             "解析有誤請重傳單手，或回覆更正，例如「Hand 3 的 turn 是 Ah、river 是 2c」。")
-    return "\n".join(L)
+def render_tg_html(result: dict) -> str:
+    """Back-compat shim: first page only."""
+    return render_session_page(result, 0)[0]
+
+
+def session_page_buttons(result: dict, session_id: int, page: int,
+                         per_page: int = PER_PAGE) -> list[list[dict]]:
+    """Per-hand button rows for one page + prev/next nav."""
+    if per_page <= 0:
+        raise ValueError("per_page must be positive")
+    hands = result["hands"]
+    pages = max(1, (len(hands) + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    rows: list[list[dict]] = []
+    for h in hands[page * per_page: page * per_page + per_page]:
+        idx0 = h["idx"] - 1
+        if not h.get("ok"):
+            rows.append([{"text": "🔁 重傳",
+                          "callback_data": f"lvr:{session_id}:{idx0}"}])
+            continue
+        row: list[dict] = []
+        if h.get("review_url"):
+            row.append({"text": f"復盤 H{h['idx']}", "url": h["review_url"]})
+        row.append({"text": "💬 教練", "callback_data": f"lvd:{h['hand_id']}"})
+        row.append({"text": "➕ 加練", "callback_data": f"lvadd:{session_id}:{idx0}"})
+        row.append({"text": "🔁 重傳", "callback_data": f"lvr:{session_id}:{idx0}"})
+        rows.append(row)
+    nav: list[dict] = []
+    if page > 0:
+        nav.append({"text": "◀ 上一頁", "callback_data": f"lvpg:{session_id}:{page-1}"})
+    if page < pages - 1:
+        nav.append({"text": "下一頁 ▶", "callback_data": f"lvpg:{session_id}:{page+1}"})
+    if nav:
+        rows.append(nav)
+    return rows
+
+
+def result_for_json_out(result: dict) -> dict:
+    """Return the full bot/session payload as JSON-compatible data.
+
+    The Telegram bot persists this payload into ``live_sessions`` and later
+    features (add/resend) need the original ``hand_row`` + ``dec_rows``.  Keep
+    the full result intact while normalizing datetime/Decimal-like values via
+    ``default=str``.
+    """
+    return json.loads(json.dumps(result, ensure_ascii=False, default=str))
 
 
 def report_buttons(result: dict) -> list[list[dict]]:
@@ -1631,11 +1981,8 @@ def main():
     if not a.dry_run:
         asyncio.run(persist(result))
     if a.json_out:
-        slim = json.loads(json.dumps(result, default=str))
-        for h in slim["hands"]:
-            h.pop("dec_rows", None)
-            h.pop("hand_row", None)
-        Path(a.json_out).write_text(json.dumps(slim, ensure_ascii=False, default=str))
+        full = result_for_json_out(result)
+        Path(a.json_out).write_text(json.dumps(full, ensure_ascii=False))
 
     # human summary
     t = result["totals"]
