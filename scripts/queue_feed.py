@@ -265,6 +265,27 @@ def drill_label(row: dict, action_bias: dict | None = None) -> str:
     return compact_spot_name(row)
 
 
+def _decision_effective_depth(row: dict) -> float | None:
+    """Depth to use when replaying/navigating a specific ledger decision.
+
+    ``ledger_hands.preflop_depth_bb`` is the hero/list-row stack for audit.  The
+    solver tree for a decision is bounded by the opponent that can contest hero
+    (effectively ``min(hero stack, max remaining opponent stack)`` preflop, and
+    GTOW records that as ``ledger_decisions.solver_depth_bb``).  Study/custom
+    links must use the decision depth, falling back to the played/list depth only
+    when the game point did not expose one.
+    """
+    for key in ("solver_depth_bb", "played_depth_bb", "preflop_depth_bb"):
+        value = row.get(key)
+        try:
+            depth = float(value)
+        except (TypeError, ValueError):
+            continue
+        if depth > 0:
+            return depth
+    return None
+
+
 def review_url(row: dict) -> str | None:
     """Review link. PREFERRED: the /solutions Study node for the worst decision,
     built from the archived hand detail (the owner reads their exact combo there).
@@ -301,7 +322,7 @@ def _study_solution_url(row: dict) -> str | None:
             detail = json.loads(fh.read())
         return build_hand_solution_url(
             detail, hero_pos, street, int(idx),
-            preflop_depth_bb=row.get("preflop_depth_bb"),
+            preflop_depth_bb=_decision_effective_depth(row),
         )
     except Exception:
         return None
@@ -402,6 +423,7 @@ _QUEUE_DECISION_SQL = """
 SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
        d.pot_type, d.eff_stack, d.ev_loss_bb, d.taken_code, d.best_code, d.gametype,
+       d.played_depth_bb, d.solver_depth_bb,
        h.source hand_source, h.raw_path, h.raw_text, h.parsed_json,
        h.position hand_position, h.preflop_depth_bb
 FROM ledger_decisions d
@@ -433,7 +455,7 @@ def _load_source_hand(dec: dict) -> dict:
         return parsed
 
     raw_path = dec.get("raw_path")
-    depth = dec.get("preflop_depth_bb")
+    depth = _decision_effective_depth(dec)
     hero_pos = dec.get("hand_position") or dec.get("position")
     if not (raw_path and depth is not None and hero_pos):
         raise ValueError("online ledger hand is missing archive/depth/position")
@@ -689,10 +711,12 @@ SELECT gtow_hand_id ref_hand_id,
        (array_agg(villain_cat   ORDER BY ev_loss_bb DESC))[1] villain_cat,
        (array_agg(ip_oop        ORDER BY ev_loss_bb DESC))[1] ip_oop,
        (array_agg(position      ORDER BY ev_loss_bb DESC))[1] hero_pos,
-       (array_agg(ev_loss_bb    ORDER BY ev_loss_bb DESC))[1] max_ev,
-       (array_agg(approx_flags  ORDER BY ev_loss_bb DESC))[1] approx_flags,
-       (array_agg(played_at     ORDER BY ev_loss_bb DESC))[1] played_at,
-       (array_agg(street        ORDER BY ev_loss_bb DESC))[1] worst_street,
+       (array_agg(ev_loss_bb       ORDER BY ev_loss_bb DESC))[1] max_ev,
+       (array_agg(approx_flags     ORDER BY ev_loss_bb DESC))[1] approx_flags,
+       (array_agg(played_depth_bb  ORDER BY ev_loss_bb DESC))[1] played_depth_bb,
+       (array_agg(solver_depth_bb  ORDER BY ev_loss_bb DESC))[1] solver_depth_bb,
+       (array_agg(played_at        ORDER BY ev_loss_bb DESC))[1] played_at,
+       (array_agg(street           ORDER BY ev_loss_bb DESC))[1] worst_street,
        (array_agg(decision_idx  ORDER BY ev_loss_bb DESC))[1] worst_idx,
        jsonb_agg(jsonb_build_object(
            'hand_id', gtow_hand_id, 'street', street,
@@ -711,7 +735,8 @@ _HAND_META_SQL = ("SELECT hero_hand, raw_path, position, preflop_depth_bb FROM l
                   "WHERE gtow_hand_id = $1")
 _HAND_DECISIONS_SQL = """
 SELECT street, decision_idx, taken_freq, spot_category, spot_leaf, hero_cat,
-       villain_cat, ip_oop, position, ev_loss_bb, approx_flags
+       villain_cat, ip_oop, position, ev_loss_bb, approx_flags,
+       played_depth_bb, solver_depth_bb
 FROM ledger_decisions
 WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded
   AND confidence >= 0.8
@@ -776,21 +801,32 @@ async def _build_review_items(conn, since) -> list[dict]:
             row["preflop_depth_bb"] = meta["preflop_depth_bb"]
         decisions = [dict(d) for d in await conn.fetch(
             _HAND_DECISIONS_SQL, r["ref_hand_id"])]
+        worst_dec = next((d for d in decisions
+                          if d.get("street") == row.get("worst_street")
+                          and int(d.get("decision_idx") or 0) == int(row.get("worst_idx") or 0)), None)
         anchor = low_frequency_anchor(
             decisions, row.get("worst_street"), row.get("worst_idx"))
         anchor_url = None
         if anchor:
+            anchor_dec = next((d for d in decisions
+                               if d.get("street") == anchor.get("street")
+                               and int(d.get("decision_idx") or 0) == int(anchor.get("decision_idx") or 0)), None)
             anchor_url = _study_solution_url(dict(
-                row, worst_street=anchor["street"],
+                row, **(anchor_dec or {}), worst_street=anchor["street"],
                 worst_idx=anchor["decision_idx"]))
         if anchor_url:
             row["review_anchor_street"] = anchor["street"]
+        context = dict(row, **(worst_dec or {}),
+                       worst_street=row.get("worst_street"),
+                       worst_idx=row.get("worst_idx"),
+                       max_ev=row.get("max_ev"),
+                       hero_pos=row.get("hero_pos") or (worst_dec or {}).get("position"))
         items.append({
             "kind": "review", "added_by": "auto", "source": "online",
             "ref_hand_id": row["ref_hand_id"], "spot_leaf": row["spot_leaf"],
-            "spot_category": row["spot_category"], "label": review_label(row),
-            "drill_url": review_url(row), "review_anchor_url": anchor_url,
-            "review_anchor_street": row.get("review_anchor_street"),
+            "spot_category": row["spot_category"], "label": review_label(context),
+            "drill_url": review_url(context), "review_anchor_url": anchor_url,
+            "review_anchor_street": context.get("review_anchor_street"),
             "source_hands": _as_list(row["source_hands"]),
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
         })

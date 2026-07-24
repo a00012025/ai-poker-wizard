@@ -1383,6 +1383,7 @@ def test_postflop_leaderboard_uses_exact_source_hand_custom_trainer():
     assert_in("d.decision_idx", sql)
     assert_in("h.raw_path", sql)
     assert_in("h.preflop_depth_bb", sql)
+    assert_in("d.solver_depth_bb", sql)
 
 
 @test

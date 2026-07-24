@@ -1748,9 +1748,10 @@ def test_review_solution_url_replays_real_line_at_preflop_depth():
 
 
 @test
-def test_queue_review_study_url_passes_preflop_depth():
-    """queue_feed must pass ledger_hands.preflop_depth_bb into the strict
-    real-action review-link builder; otherwise it silently revives R2.1."""
+def test_queue_review_study_url_passes_decision_effective_depth():
+    """queue_feed must pass the ledger decision solver depth into the strict
+    real-action review-link builder; ledger_hands.preflop_depth_bb is only the
+    hero/list-row stack and can be too deep when short blinds remain."""
     import gzip
     import tempfile
     import gtow_solution_url
@@ -1768,12 +1769,24 @@ def test_queue_review_study_url_passes_preflop_depth():
         try:
             url = qf._study_solution_url({
                 "raw_path": raw.name, "hero_pos": "CO", "worst_street": "river",
-                "worst_idx": 0, "preflop_depth_bb": 37.513,
+                "worst_idx": 0, "preflop_depth_bb": 50.0,
+                "played_depth_bb": 50.0, "solver_depth_bb": 11.0,
             })
         finally:
             gtow_solution_url.build_hand_solution_url = old
     assert_in("depth=40.125", url)
-    assert_eq(calls, [("CO", "river", 0, {"preflop_depth_bb": 37.513})])
+    assert_eq(calls, [("CO", "river", 0, {"preflop_depth_bb": 11.0})])
+
+
+@test
+def test_queue_review_study_url_falls_back_to_played_depth_when_solver_missing():
+    import queue_feed as qf
+    assert_eq(qf._decision_effective_depth({
+        "preflop_depth_bb": 50.0, "played_depth_bb": 50.0, "solver_depth_bb": 11.0,
+    }), 11.0)
+    assert_eq(qf._decision_effective_depth({
+        "preflop_depth_bb": 37.5, "played_depth_bb": 37.5, "solver_depth_bb": None,
+    }), 37.5)
 
 
 @test
