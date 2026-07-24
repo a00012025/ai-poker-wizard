@@ -14,10 +14,12 @@ Status: DONE_WITH_CONCERNS
   - Added `result_for_json_out(...)` to normalize the full result through JSON with `default=str`, preserving `hand_row` and `dec_rows` while serializing datetimes safely.
 - `scripts/regression_tests/test_live_flow.py`
   - Added regression coverage proving JSON/session payloads retain `dec_rows`, retain `hand_row`, serialize datetimes to strings, and still render with `render_session_page`.
+  - Updated the existing `/live` subprocess token regression so its fake `live_flow` and DB pool exercise the new success path imports: `save_session`, final `reply_text`, and `set_session_message`, while preserving the original `GTOW_REFRESH_TOKEN` / `POKER_BOT_PROCESS` assertions and asserting no failure edit occurred.
 
 ## Validation
 - `python -m py_compile scripts/live_flow.py scripts/regression_tests/test_live_flow.py src/telegram_bot/bot.py` → PASS
 - `python scripts/regression_test.py -k live_json_out_retains_dec_rows_and_still_renders` → PASS (`1 passed, 0 failed`)
+- `python scripts/regression_test.py -k test_live_batch_subprocess_receives_owner_db_token` → PASS (`1 passed, 0 failed`)
 
 ## Concerns / Follow-ups
 - Manual Telegram integration was not run in this environment.

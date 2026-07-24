@@ -62,19 +62,31 @@ def test_live_batch_subprocess_receives_owner_db_token():
     import types
     from src.telegram_bot.bot import PokerWizardBot
 
-    captured = {}
+    captured = {
+        "save_session": False,
+        "set_session_message": False,
+        "reply_texts": [],
+        "failure_edits": [],
+    }
+
+    class _SentMessage:
+        def __init__(self, message_id):
+            self.message_id = message_id
+
+        async def edit_text(self, *args, **kwargs):
+            captured["failure_edits"].append((args, kwargs))
+
+        async def delete(self):
+            captured["status_deleted"] = True
 
     class _Message:
         text = "/live Eff 20bb hero btn open AsKd"
+        _next_message_id = 100
 
         async def reply_text(self, *args, **kwargs):
-            return self
-
-        async def edit_text(self, *args, **kwargs):
-            return None
-
-        async def delete(self):
-            return None
+            captured["reply_texts"].append((args, kwargs))
+            self._next_message_id += 1
+            return _SentMessage(self._next_message_id)
 
     class _Proc:
         returncode = 0
@@ -85,18 +97,54 @@ def test_live_batch_subprocess_receives_owner_db_token():
     async def fake_subprocess(*args, **kwargs):
         captured["env"] = kwargs.get("env")
         out_path = Path(args[args.index("--json-out") + 1])
-        out_path.write_text('{"hands": [], "queue": [], "totals": {}}')
+        out_path.write_text(json.dumps({
+            "date": "2026-07-24",
+            "hands": [],
+            "queue": [],
+            "totals": {"hands": 0, "decisions": 0, "mistakes": 0},
+        }))
         return _Proc()
+
+    class _Acquire:
+        async def __aenter__(self):
+            return types.SimpleNamespace(name="fake-conn")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    def fake_session_page_buttons(result, session_id, page):
+        assert_eq(session_id, 77)
+        assert_eq(page, 0)
+        return [[{"text": "next", "callback_data": "lvpg:77:1"}]]
+
+    async def fake_save_session(conn, session_key, chat_id, result):
+        captured["save_session"] = True
+        captured["session_key"] = session_key
+        captured["chat_id"] = chat_id
+        captured["saved_result"] = result
+        return 77
+
+    async def fake_set_session_message(conn, session_id, message_id):
+        captured["set_session_message"] = True
+        captured["set_session_args"] = (session_id, message_id)
 
     fake_live = types.SimpleNamespace(
         split_batch=lambda text: [text],
-        render_tg_html=lambda result: "ok",
-        report_buttons=lambda result: [],
+        hand_id_for=lambda text, date_str: f"live:{date_str}:fakehash",
+        render_session_page=lambda result, page: ("ok page 0", False, False),
+        session_page_buttons=fake_session_page_buttons,
+        save_session=fake_save_session,
+        set_session_message=fake_set_session_message,
     )
 
     async def run_case():
         bot = PokerWizardBot.__new__(PokerWizardBot)
         bot.log = logging.getLogger("regression-live-token")
+        bot.db = types.SimpleNamespace(pool=_Pool())
 
         async def get_token(user_id):
             return "owner-db-refresh"
@@ -105,6 +153,7 @@ def test_live_batch_subprocess_receives_owner_db_token():
         bot._user_label = lambda update: "owner"
         update = types.SimpleNamespace(
             effective_user=types.SimpleNamespace(id=556028753),
+            effective_chat=types.SimpleNamespace(id=556028753),
             message=_Message(),
         )
         await bot._process_live_batch(update, "Eff 20bb hero btn open AsKd")
@@ -131,6 +180,14 @@ def test_live_batch_subprocess_receives_owner_db_token():
     assert_eq(captured["env"]["GTOW_REFRESH_TOKEN"], "owner-db-refresh")
     assert_true("POKER_BOT_PROCESS" not in captured["env"],
                 "child CLI must use its explicit refresh token")
+    assert_true(captured["save_session"], "session persisted on success")
+    assert_eq(captured["session_key"], "live:2026-07-24:fakehash")
+    assert_eq(captured["chat_id"], 556028753)
+    assert_true(captured["reply_texts"], "success page sent")
+    assert_eq(captured["reply_texts"][-1][0][0], "ok page 0")
+    assert_true(captured["set_session_message"], "session message id stored")
+    assert_eq(captured["set_session_args"], (77, 102))
+    assert_eq(captured["failure_edits"], [])
 
 
 @test
