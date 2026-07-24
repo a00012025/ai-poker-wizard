@@ -229,12 +229,12 @@ Add to `scripts/regression_tests/test_live_flow.py`:
 from live_flow import _next_depth_up
 
 
-@test("next depth bracket up: 15bb -> 17")
+@test
 def next_depth_up_15():
     assert_eq(_next_depth_up(15.0), 17.0)
 
 
-@test("next depth bracket up: at top returns None")
+@test
 def next_depth_up_top():
     assert_true(_next_depth_up(100.0) is None, "no bracket above 100")
 ```
@@ -377,7 +377,7 @@ def _mk_result(n):
                        "parse_failed": 0}, "queue": [], "hands": hands}
 
 
-@test("session page splits at PER_PAGE with prev/next flags")
+@test
 def page_split():
     result = _mk_result(23)
     html0, prev0, next0 = render_session_page(result, 0)
@@ -389,7 +389,7 @@ def page_split():
     assert_true(prev2 and not next2, "last page no next")
 
 
-@test("no 無明顯偏差 roll-up list line and no bulk 🔧 section")
+@test
 def no_rollup_no_bulk():
     result = _mk_result(2)
     result["hands"][0]["repairs"] = ["HU pot 動作歸屬修補"]
@@ -399,14 +399,14 @@ def no_rollup_no_bulk():
     assert_in("🔧", html)  # per-hand marker present instead
 
 
-@test("clean hand shows its own description line with ✅")
+@test
 def clean_hand_line():
     html, _p, _n = render_session_page(_mk_result(1), 0)
     assert_in("Hand 1", html)
     assert_in("✅", html)
 
 
-@test("live deviation sub-line says 建議 not 主線")
+@test
 def live_render_terminology():
     result = _mk_result(1)
     result["hands"][0] = _mk_hand(1, sev="❌")
@@ -555,7 +555,7 @@ Add to `scripts/regression_tests/test_live_flow.py`:
 from live_flow import session_page_buttons
 
 
-@test("each ok hand gets 復盤/教練/加練/重傳; failed gets only 重傳; nav present")
+@test
 def per_hand_buttons():
     result = _mk_result(12)                       # 2 pages
     result["hands"][1]["ok"] = False
@@ -854,7 +854,7 @@ Add to `scripts/regression_tests/test_live_flow.py`:
 from live_flow import splice_hand
 
 
-@test("splice_hand replaces one hand, keeps idx, recomputes totals")
+@test
 def splice_recompute():
     result = _mk_result(3)
     new_entry = _mk_hand(2, sev="❌")
@@ -1134,7 +1134,7 @@ from live_flow import parse_block, repair_hu_pot
 from hand_validator import validate_hand
 
 
-@test("live: flop b4 is SB's bet, not an orphan call (Hand 2)")
+@test
 def flop_b4_is_bet():
     block = ("Eff 35bb Co raise hero btn call 7s8s sb raise 7bb co fold hero call\n"
              "Ac5c6d b4 call\n"
