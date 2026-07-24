@@ -842,10 +842,12 @@ def test_live_hero_folded_but_acts_contradiction():
 
 @test
 def test_live_report_shows_repairs_and_refusal_echo():
-    """Repair visibility contract: any hand the pipeline auto-repaired is
-    listed under 🔧 with what changed (the owner's acceptance check is
-    eyeballing each echo — invisible repairs defeat it); a refused/failed hand
-    echoes its raw first line back so the owner can rewrite it."""
+    """Repair visibility contract (Task 4 paginated per-hand card): a hand the
+    pipeline auto-repaired carries a 🔧 marker on its one-line description —
+    full repair-diff detail moves to the 🔁 resend flow (Task 8), not the
+    report itself, per the auditability invariant (marker stays, bulk section
+    goes). A refused/failed hand surfaces its refusal reason inline so the
+    owner knows what to fix and can resend that one hand."""
     from live_flow import render_tg_html
     dec = {"street": "flop", "idx": 0, "leaf": "flop:SRP:BBvEP:OOP:first_to_act",
            "ev_loss": 0.2, "severity": "⚠️", "taken": "X", "best": "R3",
@@ -870,11 +872,9 @@ def test_live_report_shows_repairs_and_refusal_echo():
     }
     html = render_tg_html(result)
     assert_in("🔧", html)
-    assert_in("hero_hand Jd7d→Qd7d", html)
-    assert_in("這不是偏差", html)
+    assert_true("Hand 1" in html)
     assert_true("Hand 2" in html)                       # clean hand untouched
     assert_in("river 出現重複牌", html)                  # refusal reason surfaced
-    assert_in("Eff 50bb hero co KsJd open bb call", html)  # raw echoed for rewrite
     assert_in("重傳", html)
 
 
@@ -2564,3 +2564,70 @@ def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
         "solutions": [None],
     }, "9c6s")
     assert_eq(own, [])
+
+
+# ── Task 4: paginated per-hand renderer ─────────────────────────────────────
+from live_flow import render_session_page, PER_PAGE
+
+
+def _mk_hand(idx, sev="✅", repaired=False, failed=False):
+    if failed:
+        return {"idx": idx, "ok": False, "error": "validation_failed",
+                "refusal": [], "validation_hard": ["這條線不能重播成合法牌局"],
+                "raw": "Eff 35bb ...", "decisions": [], "repairs": []}
+    ev = {"✅": None, "⚠️": 0.15, "❌": 0.5}[sev]
+    decs = ([] if ev is None else [{
+        "street": "flop", "idx": 0, "leaf": "l", "ev_loss": ev,
+        "severity": sev, "taken": "C", "best": "F", "taken_label": "Call",
+        "best_label": "Fold", "gto_freq": 1.0, "ungraded_reason": None,
+        "discarded": False, "limp_origin": False, "depth_escalated": None}])
+    return {"idx": idx, "ok": True, "hand_id": f"live:x:{idx}",
+            "echo": "CO A7s 30bb · ...", "repairs": (["x"] if repaired else []),
+            "review_url": "https://app.gtowizard.com/solutions?x", "decisions": decs,
+            "hand_row": {"hero_hand": "A7s", "position": "CO",
+                         "preflop_depth_bb": 30.0, "pot_type": "single_raised"}}
+
+
+def _mk_result(n):
+    hands = [_mk_hand(i + 1) for i in range(n)]
+    return {"totals": {"hands": n, "decisions": n, "graded": n, "mistakes": 0,
+                       "parse_failed": 0}, "queue": [], "hands": hands}
+
+
+@test
+def page_split():
+    result = _mk_result(23)
+    html0, prev0, next0 = render_session_page(result, 0)
+    assert_true(not prev0 and next0, "page0 has next, no prev")
+    assert_in("(第 1/3 頁)", html0)
+    _h1, prev1, next1 = render_session_page(result, 1)
+    assert_true(prev1 and next1, "middle page has both")
+    _h2, prev2, next2 = render_session_page(result, 2)
+    assert_true(prev2 and not next2, "last page no next")
+
+
+@test
+def no_rollup_no_bulk():
+    result = _mk_result(2)
+    result["hands"][0]["repairs"] = ["HU pot 動作歸屬修補"]
+    html, _p, _n = render_session_page(result, 0)
+    assert_true("無明顯偏差：" not in html, "roll-up list removed")
+    assert_true("已自動校正後送 solver" not in html, "bulk repair section removed")
+    assert_in("🔧", html)  # per-hand marker present instead
+
+
+@test
+def clean_hand_line():
+    html, _p, _n = render_session_page(_mk_result(1), 0)
+    assert_in("Hand 1", html)
+    assert_in("✅", html)
+
+
+@test
+def live_render_terminology():
+    result = _mk_result(1)
+    result["hands"][0] = _mk_hand(1, sev="❌")
+    result["totals"]["mistakes"] = 1
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("建議", html)
+    assert_true("主線" not in html, "must not contain 主線")

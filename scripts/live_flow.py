@@ -1591,78 +1591,97 @@ def _failure_help(h: dict) -> tuple[str, str]:
     )
 
 
-def render_tg_html(result: dict) -> str:
+PER_PAGE = 10
+
+_POT_TYPE_ZH = {
+    "single_raised": "單加注池", "srp": "單加注池", "limped": "跛入池",
+    "3bet": "3bet 池", "4bet": "4bet 池", "5bet": "5bet 池",
+    "squeezed": "擠壓池", "cold4bet": "cold 4bet 池",
+}
+
+
+def _pot_type_zh(pot_type: str | None) -> str:
+    return _POT_TYPE_ZH.get(str(pot_type or "").lower(), str(pot_type or ""))
+
+
+def _hand_severity(h: dict) -> str:
+    sevs = [d["severity"] for d in h.get("decisions") or []
+            if not d.get("discarded")]
+    if "❌" in sevs:
+        return "❌"
+    if "⚠️" in sevs:
+        return "⚠️"
+    if any(d.get("ungraded_reason") for d in h.get("decisions") or []):
+        return "❓"
+    return "✅"
+
+
+def _hand_desc_line(h: dict) -> str:
+    if not h.get("ok"):
+        title, _help = _failure_help(h)
+        return f"<b>Hand {h['idx']}</b> · ❗ 無法評分：{escape(title)}"
+    row = h.get("hand_row") or {}
+    hand = cards_to_emoji(row.get("hero_hand") or "")
+    pos = row.get("position") or ""
+    depth = row.get("preflop_depth_bb")
+    depth_s = f"{depth:g}bb" if depth else ""
+    pot = _pot_type_zh(row.get("pot_type"))
+    sev = _hand_severity(h)
+    wrench = " 🔧" if h.get("repairs") else ""
+    bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev]
+    return " · ".join(b for b in bits if b) + wrench
+
+
+def render_session_page(result: dict, page: int = 0,
+                        per_page: int = PER_PAGE) -> tuple[str, bool, bool]:
     t = result["totals"]
-    L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 個決策節點</b>"]
-    clean_ok = t["graded"] - t["mistakes"]
-    L.append(f"✅ {clean_ok} 無明顯偏差 · ⚠️❌ {t['mistakes']} 偏差 · "
-             f"❓ {t['decisions'] - t['graded']} 無解")
+    hands = result["hands"]
+    pages = max(1, (len(hands) + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    lo, hi = page * per_page, page * per_page + per_page
+    n_offrange = sum(
+        1 for h in hands if h.get("ok")
+        and any(d.get("ungraded_reason") for d in h["decisions"])
+        and not any(d["ev_loss"] is not None and d["ev_loss"] >= QUEUE_EV_MIN
+                    and not d["discarded"] for d in h["decisions"]))
+    L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 決策</b>　(第 {page+1}/{pages} 頁)"]
+    L.append(f"⚠️❌ {t['mistakes']} 偏差 · ❓ {n_offrange} 待深挖 · ✅ 其餘無明顯偏差")
     L.append("")
 
-    flagged = []
-    clean_hands, partial, failed = [], [], []
-    for h in result["hands"]:
+    for h in hands[lo:hi]:
+        L.append(_hand_desc_line(h))
         if not h.get("ok"):
-            failed.append(h)
+            _title, help_text = _failure_help(h)
+            L.append(f"　{escape(help_text)}")
+            L.append("")
             continue
-        devs = [d for d in h["decisions"]
-                if d["ev_loss"] is not None and d["ev_loss"] >= QUEUE_EV_MIN
-                and not d["discarded"]]
-        offrange = [d for d in h["decisions"] if d.get("ungraded_reason") == "offrange"]
-        if devs:
-            flagged.append((h, devs, offrange))
-        elif offrange:
-            partial.append((h, offrange))
-        else:
-            clean_hands.append(h)
-
-    for h, devs, offrange in flagged:
-        L.append(f"<b>Hand {h['idx']}</b> {escape(h['echo'] or '')}")
-        for d in devs:
+        for d in h["decisions"]:
+            if d["ev_loss"] is None or d["ev_loss"] < QUEUE_EV_MIN or d["discarded"]:
+                continue
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
-            L.append(f"{d['severity']} {d['street']} {escape(d['taken_label'] or d['taken'] or '?')}"
-                     f" → 主線 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb")
+            approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
+            L.append(f"　{d['severity']} {d['street']} "
+                     f"{escape(d['taken_label'] or d['taken'] or '?')} → "
+                     f"建議 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb{approx}")
+        offrange = [d for d in h["decisions"] if d.get("ungraded_reason") == "offrange"]
         if offrange:
-            L.append(f"❓ 另有 {len(offrange)} 個節點未評分（偏離主線後，你的牌已在該線範圍外）")
+            first = offrange[0]
+            L.append(f"　❓ {first['street']} 起未評分：偏離 GTO 建議後，"
+                     f"你的牌已在該線範圍外")
+            if _next_depth_up(float((h.get('hand_row') or {}).get('preflop_depth_bb') or 0)):
+                L.append("　（已嘗試升一格近似，仍無範圍）")
         L.append("")
 
-    for h, offrange in partial:
-        first = offrange[0]
-        L.append(f"❓ <b>Hand {h['idx']}</b> {escape(h['echo'] or '')} — "
-                 f"{first['street']} 起未評分：前面的動作偏離主線，"
-                 f"你的牌不在該線的 GTO 範圍內")
-    if partial:
-        L.append("")
+    if result.get("queue"):
+        L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看）")
+    L.append("⚠️ chipEV 近似（現場賽段未知）；limp 節點不評分。要更正某手：點該手的 🔁 重傳。")
+    return "\n".join(L), page > 0, page < pages - 1
 
-    if clean_hands:
-        ids = ", ".join(f"Hand {h['idx']}" for h in clean_hands)
-        L.append(f"✅ 無明顯偏差：{ids}")
-    for h in failed:
-        title, help_text = _failure_help(h)
-        L.append(f"❗ <b>Hand {h['idx']}</b> 無法安全評分：{escape(title)}")
-        L.append(f"　原因 / 怎麼修：{escape(help_text)}")
-        raw_lines = (h.get("raw") or "").strip().splitlines()
-        if raw_lines:
-            L.append(f"　原文開頭：{escape(raw_lines[0][:80])}")
-            L.append("　可直接重傳這一手；建議格式：Header / Flop / Turn / River 各一行。")
 
-    repaired = [h for h in result["hands"] if h.get("ok") and h.get("repairs")]
-    if repaired:
-        L.append("")
-        L.append(f"🔧 {len(repaired)} 手已自動校正後送 solver（這不是偏差）：")
-        L.append("　請只核對每手 echo 是否符合你的原意；若不對，重傳該手即可。")
-        for h in repaired:
-            reasons = "；".join(_repair_explanation(str(r)) for r in h["repairs"])
-            L.append(f"・Hand {h['idx']} {escape(h.get('echo') or '')}")
-            L.append(f"　校正：{escape(reasons)}")
-    if result["queue"]:
-        L.append("")
-        L.append(f"📥 已加入練習佇列 {len(result['queue'])} 條行動線（/queue 查看，週日課表會帶到）")
-    L.append("")
-    L.append("⚠️ 評分為 chipEV 近似（現場賽段未知）；limp pot 節點不評分。"
-             "解析有誤請重傳單手，或回覆更正，例如「Hand 3 的 turn 是 Ah、river 是 2c」。")
-    return "\n".join(L)
+def render_tg_html(result: dict) -> str:
+    """Back-compat shim: first page only."""
+    return render_session_page(result, 0)[0]
 
 
 def report_buttons(result: dict) -> list[list[dict]]:
