@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from card_display import cards_to_emoji
+from gto_formatter import normalize_hand_name
 
 log = logging.getLogger(__name__)
 
@@ -662,7 +663,8 @@ def repair_card_literals_from_block(block: str, hand: dict) -> tuple[dict | None
     """Lock hero/board card literals to the raw live note before grading.
 
     Returns ``(repaired_copy, notes)``. ``notes`` lists every literal actually
-    changed — surfaced as 🔧 in the report so the owner can audit the echo
+    changed — surfaced as 「已自動校正」 in the report so the owner can audit
+    the echo
     (repairs must never be invisible). Returns ``(None, [reason])`` — an honest
     refusal — when the raw literals cannot be applied faithfully: a duplicated
     exact card, or raw street lines that don't align 1:1 with the parsed
@@ -1254,7 +1256,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     dec_rows: list[dict] = []
     total_loss = 0.0
     # Parse confidence is REAL, not nominal (§5.2/§7.2): every visible repair
-    # (🔧 echo / literal-gate note) knocks it down — a repaired parse is a
+    # (auto-correction echo / literal-gate note) knocks it down — a repaired parse is a
     # less certain judgment. Floor at 0.6 (repairs are deterministic and
     # user-echoed, never blind guesses).
     n_repairs = len(hand.get("_repairs") or [])
@@ -1842,15 +1844,15 @@ def _hand_desc_line(h: dict) -> str:
         title, _help = _failure_help(h)
         return f"<b>Hand {h['idx']}</b> · ❗ 無法評分：{escape(title)}"
     row = h.get("hand_row") or {}
-    hand = cards_to_emoji(row.get("hero_hand") or "")
+    hand = normalize_hand_name(row.get("hero_hand") or "")
     pos = row.get("position") or ""
     depth = row.get("preflop_depth_bb")
     depth_s = f"{depth:g}bb" if depth else ""
     pot = _pot_type_zh(row.get("pot_type"))
     sev = _hand_severity(h)
-    wrench = " 🔧" if h.get("repairs") else ""
+    correction = " · 已自動校正" if h.get("repairs") else ""
     bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev]
-    return " · ".join(b for b in bits if b) + wrench
+    return " · ".join(b for b in bits if b) + correction
 
 
 def render_session_page(result: dict, page: int = 0,

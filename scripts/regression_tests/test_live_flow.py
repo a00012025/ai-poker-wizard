@@ -795,7 +795,8 @@ def test_live_repair_hu_pot_continuation_ghost_call():
     BTN calls. Gemini can put the post-3bet call on CO, leaving CO as a
     postflop ghost and omitting BTN's continuation call. In a HU pot both
     fixes are forced by the known actors (same determinism contract as the
-    round-1 ghost-caller fold), and the change is surfaced as a 🔧 repair."""
+    round-1 ghost-caller fold), and the change is surfaced as an explicit
+    auto-correction marker."""
     from live_flow import repair_hu_pot, find_ghost
     bad = {"players_at_table": 8, "effective_bb": 100, "hero_position": "SB",
            "hero_hand": "Ah6h",
@@ -980,7 +981,7 @@ def test_live_hero_folded_but_acts_contradiction():
 @test
 def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     """Repair visibility contract (Task 4 paginated per-hand card): a hand the
-    pipeline auto-repaired carries a 🔧 marker on that hand's one-line
+    pipeline auto-repaired carries an explicit marker on that hand's one-line
     description, while clean hands do not. Full repair-diff detail moves to the
     🔁 resend flow (Task 8), not the report itself, per the auditability
     invariant (marker stays, bulk section goes). A refused/failed hand surfaces
@@ -1012,8 +1013,8 @@ def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     lines = html.splitlines()
     hand1_line = next((line for line in lines if "Hand 1" in line), "")
     hand2_line = next((line for line in lines if "Hand 2" in line), "")
-    assert_in("🔧", hand1_line)
-    assert_not_in("🔧", hand2_line)                     # clean hand untouched
+    assert_in("已自動校正", hand1_line)
+    assert_not_in("已自動校正", hand2_line)             # clean hand untouched
     assert_in("river 出現重複牌", html)                  # refusal reason surfaced
     assert_in("重傳", html)
 
@@ -2907,6 +2908,20 @@ def live_report_uses_compact_pot_labels_and_hides_unopened():
 
 
 @test
+def live_report_displays_hand_classes_without_exact_suits():
+    import live_flow
+
+    result = _mk_result(2)
+    result["hands"][0]["hand_row"]["hero_hand"] = "5c5h"
+    result["hands"][1]["hand_row"]["hero_hand"] = "Kh8h"
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_in("<b>Hand 1</b> · CO 55", html)
+    assert_in("<b>Hand 2</b> · CO K8s", html)
+    assert_not_in("5♣️5♥️", html)
+    assert_not_in("K♥️8♥️", html)
+
+
+@test
 def raw_preflop_line_overrides_extra_llm_continuation_fold():
     import live_flow
 
@@ -2971,7 +2986,7 @@ def no_rollup_no_bulk():
     html, _p, _n = render_session_page(result, 0)
     assert_true("無明顯偏差：" not in html, "roll-up list removed")
     assert_true("已自動校正後送 solver" not in html, "bulk repair section removed")
-    assert_in("🔧", html)  # per-hand marker present instead
+    assert_in("已自動校正", html)  # per-hand marker present instead
 
 
 @test
