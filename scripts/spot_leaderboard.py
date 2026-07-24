@@ -81,6 +81,7 @@ def sample_sql(since=None) -> str:
 SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        d.spot_leaf, d.hero_cat, d.villain_cat, d.ip_oop, d.position,
        d.pot_type, d.eff_stack, d.ev_loss_bb, d.correctness, d.gametype,
+       d.played_depth_bb, d.solver_depth_bb,
        h.played_at, h.hero_hand, h.position hand_position, h.boards,
        h.total_ev_loss_bb, h.source hand_source, h.raw_path, h.parsed_json,
        h.preflop_depth_bb
