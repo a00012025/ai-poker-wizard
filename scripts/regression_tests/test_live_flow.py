@@ -841,13 +841,14 @@ def test_live_hero_folded_but_acts_contradiction():
 
 
 @test
-def test_live_report_shows_repairs_and_refusal_echo():
+def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     """Repair visibility contract (Task 4 paginated per-hand card): a hand the
-    pipeline auto-repaired carries a 🔧 marker on its one-line description —
-    full repair-diff detail moves to the 🔁 resend flow (Task 8), not the
-    report itself, per the auditability invariant (marker stays, bulk section
-    goes). A refused/failed hand surfaces its refusal reason inline so the
-    owner knows what to fix and can resend that one hand."""
+    pipeline auto-repaired carries a 🔧 marker on that hand's one-line
+    description, while clean hands do not. Full repair-diff detail moves to the
+    🔁 resend flow (Task 8), not the report itself, per the auditability
+    invariant (marker stays, bulk section goes). A refused/failed hand surfaces
+    its refusal reason inline so the owner knows what to fix and can resend
+    that one hand."""
     from live_flow import render_tg_html
     dec = {"street": "flop", "idx": 0, "leaf": "flop:SRP:BBvEP:OOP:first_to_act",
            "ev_loss": 0.2, "severity": "⚠️", "taken": "X", "best": "R3",
@@ -871,9 +872,11 @@ def test_live_report_shows_repairs_and_refusal_echo():
         "queue": [],
     }
     html = render_tg_html(result)
-    assert_in("🔧", html)
-    assert_true("Hand 1" in html)
-    assert_true("Hand 2" in html)                       # clean hand untouched
+    lines = html.splitlines()
+    hand1_line = next((line for line in lines if "Hand 1" in line), "")
+    hand2_line = next((line for line in lines if "Hand 2" in line), "")
+    assert_in("🔧", hand1_line)
+    assert_not_in("🔧", hand2_line)                     # clean hand untouched
     assert_in("river 出現重複牌", html)                  # refusal reason surfaced
     assert_in("重傳", html)
 
@@ -2604,6 +2607,18 @@ def page_split():
     assert_true(prev1 and next1, "middle page has both")
     _h2, prev2, next2 = render_session_page(result, 2)
     assert_true(prev2 and not next2, "last page no next")
+
+
+@test
+def render_session_page_rejects_non_positive_per_page():
+    result = _mk_result(1)
+    for bad in (0, -3):
+        try:
+            render_session_page(result, 0, per_page=bad)
+        except ValueError as exc:
+            assert_in("per_page must be positive", str(exc))
+        else:
+            raise AssertionError(f"per_page={bad} should raise ValueError")
 
 
 @test

@@ -1634,6 +1634,8 @@ def _hand_desc_line(h: dict) -> str:
 
 def render_session_page(result: dict, page: int = 0,
                         per_page: int = PER_PAGE) -> tuple[str, bool, bool]:
+    if per_page <= 0:
+        raise ValueError("per_page must be positive")
     t = result["totals"]
     hands = result["hands"]
     pages = max(1, (len(hands) + per_page - 1) // per_page)
