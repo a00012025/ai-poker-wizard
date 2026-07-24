@@ -529,6 +529,20 @@ def test_pot_type_from_preflop_srp_hero_is_opener():
 
 
 @test
+def test_pot_type_from_preflop_short_stack_open_shove_is_srp():
+    """BTN open-shove is still an opened single-raised pot."""
+    from spot_categorizer import compute_pot_type_from_preflop
+    assert_eq(compute_pot_type_from_preflop("F-F-F-F-F-AI7-F-C", 8), "SRP")
+
+
+@test
+def test_pot_type_from_preflop_all_in_squeeze():
+    from spot_categorizer import compute_pot_type_from_preflop
+    assert_eq(compute_pot_type_from_preflop(
+        "F-F-R2-C-AI12-F-F-F-F-F", 8), "squeezed")
+
+
+@test
 def test_pot_type_from_preflop_3bet():
     from spot_categorizer import compute_pot_type_from_preflop
     # UTG opens, HJ 3bets, UTG calls
