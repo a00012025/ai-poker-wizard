@@ -2912,6 +2912,15 @@ def session_page_buttons_rejects_non_positive_per_page():
 
 # ── Task 8: single-hand resend / in-place overwrite ──────────────────────────
 
+
+def _resend_dec_row(hand_id="new-hand", ev=0.0, excluded=False):
+    return {
+        "gtow_hand_id": hand_id, "street": "flop", "decision_idx": 0,
+        "spot_category": "flop", "spot_leaf": "flop:test",
+        "ev_loss_bb": ev, "excluded": excluded, "discarded": False,
+        "limp_origin": False, "approx_flags": [], "spot_keys": [],
+    }
+
 @test
 def splice_recompute():
     from live_flow import splice_hand
@@ -2929,7 +2938,17 @@ def splice_recompute():
 def remove_source_hand_recomputes_or_clears_open_rows():
     import asyncio
     import json
+    import queue_feed as qf
     from queue_feed import remove_source_hand
+
+    rebuilt_calls = []
+    orig_rebuild = qf.queue_drill_url_from_sources
+
+    async def fake_rebuild(_conn, kept):
+        rebuilt_calls.append(list(kept))
+        return "https://rebuilt.example/drill" if kept else None
+
+    qf.queue_drill_url_from_sources = fake_rebuild
 
     class FakeConn:
         def __init__(self):
@@ -2954,20 +2973,33 @@ def remove_source_hand_recomputes_or_clears_open_rows():
             self.execs.append((sql, args))
 
     conn = FakeConn()
-    asyncio.run(remove_source_hand(conn, "old-hand"))
+    try:
+        asyncio.run(remove_source_hand(conn, "old-hand"))
+    finally:
+        qf.queue_drill_url_from_sources = orig_rebuild
 
     assert_eq(len(conn.execs), 3)
     assert_in("source_hands=$2::jsonb", conn.execs[0][0])
     assert_eq(conn.execs[0][1][0], 1)
     assert_eq(json.loads(conn.execs[0][1][1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}])
-    assert_eq(conn.execs[0][1][2:], (0.35, 1))
+    assert_eq(conn.execs[0][1][2:], (0.35, 1, "https://rebuilt.example/drill"))
+    assert_in("drill_url=$5", conn.execs[0][0])
+    assert_in("gtow_drill_id=NULL", conn.execs[0][0])
+    assert_in("gtow_training_started_at=NULL", conn.execs[0][0])
+    assert_in("gtow_baseline_totals=NULL", conn.execs[0][0])
     assert_in("clear_reason='resend'", conn.execs[1][0])
     assert_in("source_hands='[]'::jsonb", conn.execs[1][0])
+    assert_in("drill_url=NULL", conn.execs[1][0])
+    assert_in("gtow_drill_id=NULL", conn.execs[1][0])
     assert_in("n_sources=0", conn.execs[1][0])
     assert_eq(conn.execs[1][1], (2,))
     assert_in("source_hands=$2::jsonb", conn.execs[2][0])
     assert_eq(json.loads(conn.execs[2][1][1]), [])
-    assert_eq(conn.execs[2][1][2:], (0, 0))
+    assert_eq(conn.execs[2][1][2:], (0, 0, None))
+    assert_eq(rebuilt_calls, [
+        [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}],
+        [],
+    ])
 
 
 @test
@@ -3064,6 +3096,94 @@ def resend_pending_message_intercepts_and_applies_once():
 
 
 @test
+def overwrite_hand_locks_session_and_updates_ledger_queue_session_atomically():
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from live_flow import overwrite_hand
+
+    result = _mk_result(2)
+    result["date"] = "2026-07-24"
+    result["hands"][0]["hand_id"] = "old-hand"
+    new_entry = _mk_hand(1, sev="✅")
+    new_entry["hand_id"] = "new-hand"
+    new_entry["hand_row"] = {"gtow_hand_id": "new-hand", "source": "live"}
+    new_entry["dec_rows"] = [_resend_dec_row("new-hand")]
+
+    class Tx:
+        async def __aenter__(self):
+            conn.events.append("tx_enter")
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            conn.events.append("tx_exit")
+            return False
+
+    class Conn:
+        def __init__(self):
+            self.events = []
+            self.execs = []
+        def transaction(self):
+            return Tx()
+        async def fetchrow(self, sql, *args):
+            self.events.append(("fetchrow", sql, args))
+            assert_in("FOR UPDATE", sql)
+            assert_eq(args, (42,))
+            return {"id": 42, "session_key": "s", "chat_id": 99,
+                    "message_id": 777, "page": 0,
+                    "result_json": json.dumps(result)}
+        async def fetch(self, sql, *args):
+            self.events.append(("fetch", sql, args))
+            return []
+        async def execute(self, sql, *args):
+            self.events.append(("execute", sql, args))
+            self.execs.append((sql, args))
+        async def fetchval(self, sql, *args):
+            self.events.append(("fetchval", sql, args))
+            return None
+
+    conn = Conn()
+    out = asyncio.run(overwrite_hand(conn, 42, 0, new_entry))
+
+    assert_true(out["ok"], "overwrite succeeds")
+    assert_eq(conn.events[0], "tx_enter")
+    assert_eq(conn.events[-1], "tx_exit")
+    assert_true(any("DELETE FROM ledger_decisions" in sql for sql, _args in conn.execs))
+    assert_true(any("INSERT INTO ledger_hands" in sql for sql, _args in conn.execs))
+    session_updates = [args for sql, args in conn.execs if "UPDATE live_sessions" in sql]
+    assert_eq(len(session_updates), 1)
+    assert_eq(session_updates[0][0], 42)
+    assert_eq(session_updates[0][2], 0)
+
+
+@test
+def overwrite_hand_failed_replacement_is_non_destructive():
+    import asyncio
+    from live_flow import overwrite_hand
+
+    class Conn:
+        def __init__(self):
+            self.touched = False
+        def transaction(self):
+            self.touched = True
+            raise AssertionError("failed replacement must not open a transaction")
+
+    conn = Conn()
+    out = asyncio.run(overwrite_hand(
+        conn, 42, 0, {"ok": False, "error": "parse_failed", "decisions": []}))
+
+    assert_true(not out["ok"], "failed replacement rejected")
+    assert_eq(out["error"], "replacement_failed")
+    assert_true(not conn.touched, "no DB mutation path touched")
+
+    conn2 = Conn()
+    out2 = asyncio.run(overwrite_hand(
+        conn2, 42, 0, {"ok": True, "error": None, "dec_rows": [
+            _resend_dec_row("new-hand", excluded=True)], "decisions": []}))
+    assert_true(not out2["ok"], "fully ungraded replacement rejected")
+    assert_true(not conn2.touched, "ungraded replacement also leaves DB untouched")
+
+
+@test
 def apply_live_resend_overwrites_session_and_edits_original_message():
     import asyncio
     import logging
@@ -3071,7 +3191,7 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
     from types import SimpleNamespace
     from telegram_bot.bot import PokerWizardBot
 
-    captured = {}
+    captured = {"acquires": 0}
     result = _mk_result(2)
     result["date"] = "2026-07-24"
     session = {"id": 42, "chat_id": 99, "message_id": 777,
@@ -3079,7 +3199,8 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
 
     class Acquire:
         async def __aenter__(self):
-            return SimpleNamespace(name="conn")
+            captured["acquires"] += 1
+            return SimpleNamespace(name=f"conn{captured['acquires']}")
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
@@ -3108,24 +3229,25 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         assert_eq(sid, 42)
         return session
 
-    import live_flow as real_live
-
-    async def fake_overwrite(_conn, loaded, hand_idx, block):
-        assert_true(loaded is session)
-        captured.update(hand_idx=hand_idx, block=block)
+    def fake_process(block, date):
+        captured.update(process_block=block, process_date=date,
+                        acquires_during_process=captured["acquires"])
         new = _mk_hand(2, sev="❌")
-        new["dec_rows"] = []
-        return real_live.splice_hand(loaded["result"], hand_idx, new)
+        new["dec_rows"] = [_resend_dec_row("new-hand", ev=0.5)]
+        return new
 
-    async def fake_update(_conn, sid, updated, page):
-        captured.update(update_sid=sid, update_page=page,
-                        updated_mistakes=updated["totals"]["mistakes"])
+    async def fake_overwrite(_conn, sid, hand_idx, new_entry):
+        captured.update(sid=sid, hand_idx=hand_idx, new_entry=new_entry)
+        updated = {**session, "result": new_entry and result}
+        result["hands"][hand_idx] = new_entry
+        result["totals"]["mistakes"] = 1
+        return {"ok": True, "session": session, "result": result, "page": 0}
 
     fake_live = SimpleNamespace(
-        PER_PAGE=10,
-        load_session=fake_load,
+        load_session=fake_load, process_resend_block=fake_process,
         overwrite_hand=fake_overwrite,
-        update_session_result=fake_update,
+        resend_entry_is_graded=lambda entry: bool(entry.get("ok") and entry.get("dec_rows")),
+        resend_failure_message=lambda _idx, _entry: "failed",
         set_session_message=lambda _conn, _sid, _mid: None,
         render_session_page=lambda res, page: (f"rendered page {page} mistakes {res['totals']['mistakes']}", False, False),
         session_page_buttons=lambda res, sid, page: [[{"text": "ok", "callback_data": "noop:1"}]],
@@ -3145,11 +3267,12 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         else:
             sys.modules["live_flow"] = orig_live
 
+    assert_eq(captured["process_block"], "corrected block")
+    assert_eq(captured["process_date"], "2026-07-24")
+    assert_eq(captured["acquires_during_process"], 1)  # initial read released before write acquire
     assert_eq(captured["hand_idx"], 1)
-    assert_eq(captured["block"], "corrected block")
-    assert_eq(captured["update_sid"], 42)
-    assert_eq(captured["update_page"], 0)
-    assert_eq(captured["updated_mistakes"], 1)
+    assert_eq(captured["sid"], 42)
+    assert_eq(captured["new_entry"]["decisions"][0]["severity"], "❌")
     assert_true(captured.get("status_deleted"), "status message removed")
     assert_eq(captured["edit"][1]["chat_id"], 99)
     assert_eq(captured["edit"][1]["message_id"], 777)
@@ -3230,6 +3353,76 @@ def resend_pending_ignores_non_owner_in_shared_chat():
 
 
 @test
+def apply_live_resend_failed_replacement_is_non_destructive():
+    import asyncio
+    import logging
+    import sys
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {"overwrite": False}
+    session = {"id": 42, "chat_id": 99, "message_id": 777,
+               "result": {"date": "2026-07-24", "hands": []}}
+
+    class Acquire:
+        async def __aenter__(self):
+            return SimpleNamespace(name="conn")
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    class StatusMsg:
+        async def edit_text(self, text):
+            captured["status_edit"] = text
+        async def delete(self):
+            captured["status_deleted"] = True
+
+    class Message:
+        async def reply_text(self, *args, **kwargs):
+            captured["initial_reply"] = args[0]
+            return StatusMsg()
+
+    async def fake_load(_conn, _sid):
+        return session
+
+    def fake_process(_block, _date):
+        return {"ok": False, "error": "validation_failed",
+                "validation_hard": ["這條線不能重播成合法牌局"],
+                "decisions": [], "repairs": []}
+
+    async def fake_overwrite(*_args):
+        captured["overwrite"] = True
+        raise AssertionError("failed replacement must not overwrite")
+
+    fake_live = SimpleNamespace(
+        load_session=fake_load, process_resend_block=fake_process,
+        overwrite_hand=fake_overwrite,
+        resend_entry_is_graded=lambda entry: False,
+        resend_failure_message=lambda idx, entry: f"failure {idx} {entry['error']}",
+        render_session_page=None, session_page_buttons=None, set_session_message=None,
+    )
+    orig_live = sys.modules.get("live_flow")
+    sys.modules["live_flow"] = fake_live
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.db = SimpleNamespace(pool=Pool())
+        bot.log = logging.getLogger("regression-resend-failed")
+        update = SimpleNamespace(message=Message())
+        asyncio.run(bot._apply_live_resend(update, SimpleNamespace(), 42, 0, "bad"))
+    finally:
+        if orig_live is None:
+            sys.modules.pop("live_flow", None)
+        else:
+            sys.modules["live_flow"] = orig_live
+
+    assert_true(not captured["overwrite"], "failed parse did not touch DB overwrite")
+    assert_eq(captured["status_edit"], "failure 0 validation_failed")
+
+
+@test
 def apply_live_resend_fallback_persists_new_message_id():
     import asyncio
     import logging
@@ -3277,19 +3470,22 @@ def apply_live_resend_fallback_persists_new_message_id():
         assert_eq(sid, 42)
         return session
 
-    async def fake_overwrite(_conn, loaded, hand_idx, block):
-        captured.update(hand_idx=hand_idx, block=block)
-        return loaded["result"]
+    def fake_process(_block, _date):
+        return {"ok": True, "decisions": [],
+                "dec_rows": [_resend_dec_row("new-hand")], "hand_row": {}}
 
-    async def fake_update(_conn, sid, updated, page):
-        captured.update(update_sid=sid, update_page=page)
+    async def fake_overwrite(_conn, sid, hand_idx, new_entry):
+        captured.update(hand_idx=hand_idx, sid=sid, new_entry=new_entry)
+        return {"ok": True, "session": session, "result": result, "page": 0}
 
     async def fake_set_message(_conn, sid, message_id):
         captured.update(set_sid=sid, set_message_id=message_id)
 
     fake_live = SimpleNamespace(
-        PER_PAGE=10, load_session=fake_load, overwrite_hand=fake_overwrite,
-        update_session_result=fake_update, set_session_message=fake_set_message,
+        load_session=fake_load, process_resend_block=fake_process,
+        overwrite_hand=fake_overwrite, set_session_message=fake_set_message,
+        resend_entry_is_graded=lambda entry: bool(entry.get("ok") and entry.get("dec_rows")),
+        resend_failure_message=lambda _idx, _entry: "failed",
         render_session_page=lambda _res, page: (f"fallback page {page}", False, False),
         session_page_buttons=lambda _res, _sid, _page: [],
     )

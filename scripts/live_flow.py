@@ -1561,25 +1561,62 @@ async def persist(result: dict) -> None:
         await conn.close()
 
 
-async def overwrite_hand(conn, session: dict, hand_idx: int, block: str) -> dict:
-    """Reparse+grade one corrected hand and replace its ledger/queue footprint."""
-    result = session["result"]
-    old = result["hands"][hand_idx]
-    old_hand_id = old.get("hand_id")
-    date_str = result.get("date")
+def process_resend_block(block: str, date_str: str | None = None) -> dict:
+    """Parse/grade one corrected live hand block. Pure of DB.
 
+    A failed replacement is returned as a display-shaped failed hand and must be
+    reported without mutating the old ledger/session/queue footprint.
+    """
     single = process_batch(block, date_str)
     if single.get("hands"):
-        new_entry = single["hands"][0]
+        return single["hands"][0]
+    return {
+        "idx": 1, "ok": False, "hand_id": None, "error": "parse_failed",
+        "refusal": ["空白或無法辨識"], "decisions": [],
+        "repairs": [], "raw": block,
+    }
+
+
+def resend_entry_is_graded(entry: dict) -> bool:
+    """True only for replacement hands safe to apply destructively."""
+    return bool(entry.get("ok") and any(
+        not d.get("excluded") for d in (entry.get("dec_rows") or [])))
+
+
+def resend_failure_message(hand_idx: int, entry: dict) -> str:
+    """Owner-facing message for a failed corrected block; no DB changes made."""
+    if entry.get("ok") and not resend_entry_is_graded(entry):
+        title = "沒有可評分決策"
+        help_text = "這次重傳雖然可解析，但沒有任何可入帳的已評分決策；原本的 ledger / queue / session 已保留不變。"
     else:
-        new_entry = {
-            "idx": old.get("idx", hand_idx + 1), "ok": False,
-            "hand_id": None, "error": "parse_failed",
-            "refusal": ["空白或無法辨識"], "decisions": [],
-            "repairs": [], "raw": block,
-        }
+        title, help_text = _failure_help({**entry, "idx": hand_idx + 1})
+    bits = [f"⚠️ Hand {hand_idx + 1} 重傳未套用：{title}", help_text]
+    repairs = entry.get("repairs") or []
+    if repairs:
+        bits.append("校正：" + "；".join(_repair_explanation(str(r)) for r in repairs))
+    return "\n".join(bits)
+
+
+async def overwrite_hand(conn, session_id: int, hand_idx: int,
+                         new_entry: dict, page: int | None = None) -> dict:
+    """Atomically overwrite one hand's ledger/queue/session footprint.
+
+    ``new_entry`` must already be parsed/graded off the event loop. Failed or
+    ungraded replacements are deliberately non-destructive and return
+    ``ok=False`` without deleting old ledger rows or updating ``live_sessions``.
+    """
+    if not resend_entry_is_graded(new_entry):
+        return {"ok": False, "error": "replacement_failed", "entry": new_entry}
 
     async with conn.transaction():
+        session = await load_session(conn, session_id, for_update=True)
+        if not session:
+            return {"ok": False, "error": "session_missing", "entry": new_entry}
+
+        result = session["result"]
+        old = result["hands"][hand_idx]
+        old_hand_id = old.get("hand_id")
+
         if old_hand_id:
             await conn.execute(
                 "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1",
@@ -1589,8 +1626,7 @@ async def overwrite_hand(conn, session: dict, hand_idx: int, block: str) -> dict
                 old_hand_id)
             await remove_source_hand(conn, old_hand_id)
 
-        if new_entry.get("ok"):
-            await write_hand(conn, new_entry["hand_row"], new_entry["dec_rows"])
+        await write_hand(conn, new_entry["hand_row"], new_entry["dec_rows"])
 
         result = splice_hand(result, hand_idx, new_entry)
         await enqueue(conn, result["queue"])
@@ -1600,7 +1636,9 @@ async def overwrite_hand(conn, session: dict, hand_idx: int, block: str) -> dict
                 "AND status IN ('pending','prescribed') "
                 "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
                 item["spot_leaf"])
-    return result
+        page = hand_idx // PER_PAGE if page is None else page
+        await update_session_result(conn, session_id, result, page)
+        return {"ok": True, "session": session, "result": result, "page": page}
 
 
 async def save_session(conn, session_key: str, chat_id: int,
@@ -1621,10 +1659,11 @@ async def set_session_message(conn, session_id: int, message_id: int) -> None:
         session_id, message_id)
 
 
-async def load_session(conn, session_id: int) -> dict | None:
-    row = await conn.fetchrow(
-        "SELECT id, session_key, chat_id, message_id, page, result_json "
-        "FROM live_sessions WHERE id=$1", session_id)
+async def load_session(conn, session_id: int, *, for_update: bool = False) -> dict | None:
+    sql = ("SELECT id, session_key, chat_id, message_id, page, result_json "
+           "FROM live_sessions WHERE id=$1"
+           + (" FOR UPDATE" if for_update else ""))
+    row = await conn.fetchrow(sql, session_id)
     if not row:
         return None
     return {"id": row["id"], "session_key": row["session_key"],

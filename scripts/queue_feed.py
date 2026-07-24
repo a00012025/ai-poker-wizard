@@ -699,13 +699,22 @@ async def remove_source_hand(conn, hand_id: str) -> None:
             await conn.execute(
                 "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
                 "clear_reason='resend', source_hands='[]'::jsonb, "
-                "total_ev_loss_bb=0, n_sources=0 WHERE id=$1", r["id"])
+                "total_ev_loss_bb=0, n_sources=0, drill_url=NULL, "
+                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
+                "WHERE id=$1", r["id"])
             continue
         total = round(sum(float(s.get("ev_loss_bb") or 0) for s in kept), 4)
+        drill_url = await queue_drill_url_from_sources(conn, kept)
         await conn.execute(
             "UPDATE drill_queue SET source_hands=$2::jsonb, "
-            "total_ev_loss_bb=$3, n_sources=$4 WHERE id=$1",
-            r["id"], json.dumps(kept), total, len(kept))
+            "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
+            "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+            "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+            "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
+            "WHERE id=$1",
+            r["id"], json.dumps(kept), total, len(kept), drill_url)
 
 
 # ── online scan ──────────────────────────────────────────────────────────────

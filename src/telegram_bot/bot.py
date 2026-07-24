@@ -1796,20 +1796,39 @@ class PokerWizardBot:
 
     async def _apply_live_resend(self, update, context, session_id: int,
                                  hand_idx: int, block: str):
-        from live_flow import (PER_PAGE, load_session, overwrite_hand,
-                               render_session_page, session_page_buttons,
-                               set_session_message, update_session_result)
+        from live_flow import (load_session, overwrite_hand, process_resend_block,
+                               render_session_page, resend_entry_is_graded,
+                               resend_failure_message, session_page_buttons,
+                               set_session_message)
 
         msg = await update.message.reply_text("🔁 重新解析並覆蓋中…")
         async with self.db.pool.acquire() as conn:
-            session = await load_session(conn, session_id)
-            if not session:
-                await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
-                return
-            result = await overwrite_hand(conn, session, hand_idx, block)
-            page = hand_idx // PER_PAGE
-            await update_session_result(conn, session_id, result, page)
+            session_hint = await load_session(conn, session_id)
+        if not session_hint:
+            await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
+            return
 
+        # Gemini + solver grading is synchronous; do it off the event loop and
+        # before acquiring the write transaction/connection.
+        new_entry = await asyncio.to_thread(
+            process_resend_block, block, session_hint["result"].get("date"))
+        if not resend_entry_is_graded(new_entry):
+            await msg.edit_text(resend_failure_message(hand_idx, new_entry))
+            return
+
+        async with self.db.pool.acquire() as conn:
+            applied = await overwrite_hand(conn, session_id, hand_idx, new_entry)
+        if not applied.get("ok"):
+            if applied.get("error") == "session_missing":
+                await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
+            else:
+                await msg.edit_text(resend_failure_message(
+                    hand_idx, applied.get("entry") or new_entry))
+            return
+
+        session = applied["session"]
+        result = applied["result"]
+        page = applied["page"]
         html, _prev, _next = render_session_page(result, page)
         markup = self._rows_to_markup(
             session_page_buttons(result, session_id, page))
