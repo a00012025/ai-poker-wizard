@@ -3023,7 +3023,7 @@ def lvr_callback_prompts_for_single_hand_and_records_pending_state():
     finally:
         live_flow.load_session = orig_load
 
-    assert_eq(bot._live_resend_pending[99], (42, 1))
+    assert_eq(bot._live_resend_pending[99], (556028753, 42, 1))
     assert_true(context.bot.sent, "resend prompt sent")
     prompt = context.bot.sent[0][0][1]
     assert_in("Hand 2", prompt)
@@ -3044,7 +3044,7 @@ def resend_pending_message_intercepts_and_applies_once():
 
     bot = object.__new__(PokerWizardBot)
     bot.log = logging.getLogger("regression-resend-intercept")
-    bot._live_resend_pending = {99: (42, 1)}
+    bot._live_resend_pending = {99: (556028753, 42, 1)}
     bot._live_pending = set()
     bot._user_locks = {}
     bot._user_lock = PokerWizardBot._user_lock.__get__(bot, PokerWizardBot)
@@ -3126,6 +3126,7 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         load_session=fake_load,
         overwrite_hand=fake_overwrite,
         update_session_result=fake_update,
+        set_session_message=lambda _conn, _sid, _mid: None,
         render_session_page=lambda res, page: (f"rendered page {page} mistakes {res['totals']['mistakes']}", False, False),
         session_page_buttons=lambda res, sid, page: [[{"text": "ok", "callback_data": "noop:1"}]],
     )
@@ -3153,3 +3154,161 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
     assert_eq(captured["edit"][1]["chat_id"], 99)
     assert_eq(captured["edit"][1]["message_id"], 777)
     assert_in("Hand 2 已更新", update.message.replies[-1][0][0])
+
+
+@test
+def resend_pending_handle_message_no_reentrant_lock_deadlock():
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    called = {}
+
+    async def run_case():
+        async def fake_apply(update, context, sid, hand_idx, block):
+            called.update(sid=sid, hand_idx=hand_idx, block=block)
+
+        bot = object.__new__(PokerWizardBot)
+        bot.log = logging.getLogger("regression-resend-handle-message")
+        bot._live_resend_pending = {99: (556028753, 42, 1)}
+        bot._live_pending = set()
+        bot._user_locks = {}
+        bot._user_lock = PokerWizardBot._user_lock.__get__(bot, PokerWizardBot)
+        bot._apply_live_resend = fake_apply
+        bot._touch_user = lambda _update: asyncio.sleep(0)
+        bot._has_gto_token = lambda _user_id: asyncio.sleep(0, result=True)
+        bot._user_label = lambda _update: "owner"
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(id=99),
+            effective_user=SimpleNamespace(id=556028753),
+            message=SimpleNamespace(text="corrected block"),
+        )
+        await asyncio.wait_for(bot.handle_message(update, SimpleNamespace()), 0.5)
+
+    asyncio.run(run_case())
+    assert_eq(called, {"sid": 42, "hand_idx": 1, "block": "corrected block"})
+
+
+@test
+def resend_pending_ignores_non_owner_in_shared_chat():
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    called = {"apply": False, "hh": False}
+
+    async def fake_apply(*_args):
+        called["apply"] = True
+
+    async def fake_find(_chat_id, _text):
+        return {"hand_id": "hh1", "hero_position": "CO", "hero_hand": "AsKd"}
+
+    async def fake_analyze(_update, _hand, _text):
+        called["hh"] = True
+
+    bot = object.__new__(PokerWizardBot)
+    bot.log = logging.getLogger("regression-resend-shared-chat")
+    bot._live_resend_pending = {99: (556028753, 42, 1)}
+    bot._live_pending = set()
+    bot._apply_live_resend = fake_apply
+    bot._find_hh_hand = fake_find
+    bot._analyze_hh_hand = fake_analyze
+    bot.db = None
+    bot._user_label = lambda _update: "other-user"
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=123456),
+        message=SimpleNamespace(text="not the owner"),
+    )
+    asyncio.run(bot._handle_message_inner(update, SimpleNamespace()))
+
+    assert_true(not called["apply"], "non-owner must not apply resend")
+    assert_true(called["hh"], "non-owner continues through normal handling")
+    assert_eq(bot._live_resend_pending[99], (556028753, 42, 1))
+
+
+@test
+def apply_live_resend_fallback_persists_new_message_id():
+    import asyncio
+    import logging
+    import sys
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+    result = _mk_result(1)
+    result["date"] = "2026-07-24"
+    session = {"id": 42, "chat_id": 99, "message_id": 777, "result": result}
+
+    class Acquire:
+        async def __aenter__(self):
+            return SimpleNamespace(name="conn")
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    class SentMessage:
+        def __init__(self, message_id):
+            self.message_id = message_id
+        async def edit_text(self, text):
+            captured["status_edit"] = text
+        async def delete(self):
+            captured["status_deleted"] = True
+
+    class Message:
+        def __init__(self):
+            self.replies = []
+            self.next_id = 900
+        async def reply_text(self, *args, **kwargs):
+            self.replies.append((args, kwargs))
+            self.next_id += 1
+            return SentMessage(self.next_id)
+
+    class ChatBot:
+        async def edit_message_text(self, *args, **kwargs):
+            raise RuntimeError("old message gone")
+
+    async def fake_load(_conn, sid):
+        assert_eq(sid, 42)
+        return session
+
+    async def fake_overwrite(_conn, loaded, hand_idx, block):
+        captured.update(hand_idx=hand_idx, block=block)
+        return loaded["result"]
+
+    async def fake_update(_conn, sid, updated, page):
+        captured.update(update_sid=sid, update_page=page)
+
+    async def fake_set_message(_conn, sid, message_id):
+        captured.update(set_sid=sid, set_message_id=message_id)
+
+    fake_live = SimpleNamespace(
+        PER_PAGE=10, load_session=fake_load, overwrite_hand=fake_overwrite,
+        update_session_result=fake_update, set_session_message=fake_set_message,
+        render_session_page=lambda _res, page: (f"fallback page {page}", False, False),
+        session_page_buttons=lambda _res, _sid, _page: [],
+    )
+    orig_live = sys.modules.get("live_flow")
+    sys.modules["live_flow"] = fake_live
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.db = SimpleNamespace(pool=Pool())
+        bot.log = logging.getLogger("regression-resend-fallback")
+        bot.log.disabled = True
+        update = SimpleNamespace(message=Message())
+        context = SimpleNamespace(bot=ChatBot())
+        asyncio.run(bot._apply_live_resend(update, context, 42, 0, "corrected"))
+    finally:
+        if orig_live is None:
+            sys.modules.pop("live_flow", None)
+        else:
+            sys.modules["live_flow"] = orig_live
+
+    assert_eq(captured["set_sid"], 42)
+    assert_eq(captured["set_message_id"], 902)
+    assert_in("fallback page 0", update.message.replies[-1][0][0])

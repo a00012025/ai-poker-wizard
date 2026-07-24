@@ -326,8 +326,9 @@ class PokerWizardBot:
         self._user_locks: dict[int, asyncio.Lock] = {}
         # chats whose NEXT text message is a /live hand batch
         self._live_pending: set[int] = set()
-        # chats whose NEXT text message replaces one hand in a live session
-        self._live_resend_pending: dict[int, tuple[int, int]] = {}
+        # chats whose NEXT text message replaces one hand in a live session:
+        # chat_id -> (owner_user_id, session_id, hand_idx)
+        self._live_resend_pending: dict[int, tuple[int, int, int]] = {}
 
     def _user_lock(self, chat_id: int) -> asyncio.Lock:
         """Get or create a per-user lock to serialize message handling."""
@@ -697,12 +698,13 @@ class PokerWizardBot:
 
         self.log.info(f"[{label}] Message: {user_text[:300]}")
 
-        # /live resend mode: this message is the corrected single-hand block
-        if chat_id in self._live_resend_pending:
-            sid, hand_idx = self._live_resend_pending.pop(chat_id)
-            async with self._user_lock(chat_id):
-                await self._apply_live_resend(
-                    update, context, sid, hand_idx, user_text or "")
+        # /live resend mode: only the owner who tapped 🔁 may satisfy the
+        # pending correction. In shared chats, other users must not consume it.
+        resend_pending = self._live_resend_pending.get(chat_id)
+        if resend_pending and resend_pending[0] == user_id:
+            _owner_id, sid, hand_idx = self._live_resend_pending.pop(chat_id)
+            await self._apply_live_resend(
+                update, context, sid, hand_idx, user_text or "")
             return
 
         # /live capture mode: this message is the live-hand batch
@@ -1796,7 +1798,7 @@ class PokerWizardBot:
                                  hand_idx: int, block: str):
         from live_flow import (PER_PAGE, load_session, overwrite_hand,
                                render_session_page, session_page_buttons,
-                               update_session_result)
+                               set_session_message, update_session_result)
 
         msg = await update.message.reply_text("🔁 重新解析並覆蓋中…")
         async with self.db.pool.acquire() as conn:
@@ -1825,9 +1827,11 @@ class PokerWizardBot:
                 return
             except Exception:
                 self.log.warning("live resend edit_message_text failed", exc_info=True)
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=markup)
+        async with self.db.pool.acquire() as conn:
+            await set_session_message(conn, session_id, sent.message_id)
 
     async def _send_or_edit_session_page(self, query, session: dict, page: int):
         """Re-render one live session page and edit the report message in place."""
@@ -2357,7 +2361,7 @@ class PokerWizardBot:
                 return
             await query.answer()
             h = session["result"]["hands"][hand_idx_i]
-            self._live_resend_pending[chat_id] = (int(sid), hand_idx_i)
+            self._live_resend_pending[chat_id] = (user_id, int(sid), hand_idx_i)
             reps = "；".join(
                 _repair_explanation(str(r)) for r in (h.get("repairs") or [])
             ) or "無"
