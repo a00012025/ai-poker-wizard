@@ -2,7 +2,7 @@
 playwright>=1.40.0
 python-telegram-bot[job-queue]>=20.0
 anthropic>=0.34.0
-google-genai>=1.0.0
+google-genai>=1.63.0
 
 # Data processing
 pandas>=2.0.0
