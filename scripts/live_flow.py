@@ -1100,6 +1100,43 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     return out
 
 
+def _next_depth_up(effective_bb: float) -> float | None:
+    """Next AVAILABLE_DEPTHS integer strictly above the base bracket, else None."""
+    from gto_api import AVAILABLE_DEPTHS, nearest_depth
+    base = int(nearest_depth(effective_bb))          # e.g. 15 -> 14
+    higher = [d for d in AVAILABLE_DEPTHS if d > base]
+    return float(min(higher)) if higher else None
+
+
+def grade_hand_with_escalation(hand: dict) -> tuple[dict, set]:
+    """Grade at the hand's depth; for any node the solver returns offrange,
+    re-grade once at the next depth bracket up and adopt only those nodes.
+
+    Returns (devmap, escalated_keys). escalated_keys are (street, idx) tuples
+    rescued at the higher depth — the caller flags them depth_escalated (§5.2).
+    """
+    base = grade_hand(hand)
+    offrange = {k for k, d in base.items()
+                if d.get("ungraded") and d.get("reason") == "offrange"}
+    if not offrange:
+        return base, set()
+    up = _next_depth_up(float(hand.get("effective_bb") or 0))
+    if up is None:
+        return base, set()
+    h2 = {**hand, "effective_bb": up}
+    try:
+        esc = grade_hand(h2)
+    except Exception:
+        return base, set()
+    rescued: set = set()
+    for k in offrange:
+        d2 = esc.get(k)
+        if d2 is not None and not d2.get("ungraded"):
+            base[k] = d2
+            rescued.add(k)
+    return base, rescued
+
+
 def _boards_str(hand: dict) -> str:
     parts = []
     for st in hand.get("streets") or []:
@@ -1121,7 +1158,8 @@ def _sizing_snap(taken_code: str, requested) -> bool:
 
 
 def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
-                    raw_text: str, devmap: dict) -> tuple[dict, list[dict]]:
+                    raw_text: str, devmap: dict,
+                    escalated_keys=frozenset()) -> tuple[dict, list[dict]]:
     """Assemble the ledger_hands row + ledger_decisions rows (graded + honest)."""
     from spot_categorizer import compute_pot_type_from_preflop
     from spot_taxonomy import walk_spots_from_parsed
@@ -1142,6 +1180,8 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
         flags = ["chipev_grading", "live_phase_unknown"]
+        if key in escalated_keys:
+            flags.append(f"depth_escalated:{int(_next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
         excluded = False
         ev_loss = taken = best = taken_freq = None
         if abs(depth - nearest_depth(depth)) > 3.0:
@@ -1408,13 +1448,14 @@ def process_batch(text: str, date_str: str | None = None,
         progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
         try:
-            devmap = grade_hand(hand)
+            devmap, escalated_keys = grade_hand_with_escalation(hand)
         except Exception as e:
             entry["error"] = f"grading_failed: {e}"
             continue
         if repairs:
             hand["_repairs"] = repairs   # audit trail into ledger parsed_json
-        hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap)
+        hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap,
+                                             escalated_keys)
         entry["ok"] = True
         entry["hand_row"] = hand_row
         for d in dec_rows:
@@ -1431,7 +1472,10 @@ def process_batch(text: str, date_str: str | None = None,
                     "best_label": dev.get("gto_action_label") if graded else None,
                     "gto_freq": dev.get("gto_freq") if graded else None,
                     "ungraded_reason": reason,
-                    "discarded": d["discarded"], "limp_origin": d["limp_origin"]}
+                    "discarded": d["discarded"], "limp_origin": d["limp_origin"],
+                    "depth_escalated": next(
+                        (int(f.split(":", 1)[1]) for f in d["approx_flags"]
+                         if f.startswith("depth_escalated:")), None)}
             entry["decisions"].append(disp)
             result["totals"]["decisions"] += 1
             if not d["excluded"]:

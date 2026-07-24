@@ -21,6 +21,21 @@ from regression_tests.harness import (
 
 from urllib.parse import parse_qs, urlparse
 
+from live_flow import _next_depth_up
+
+
+@test
+def next_depth_up_15():
+    """next depth bracket up: 15bb -> 17"""
+    assert_eq(_next_depth_up(15.0), 17.0)
+
+
+@test
+def next_depth_up_top():
+    """next depth bracket up: at top returns None"""
+    assert_true(_next_depth_up(100.0) is None, "no bracket above 100")
+
+
 # ── 線下流 (live flow) ──
 
 _LIVE_HAND1 = {   # Qd7d BB defends vs UTG+1 open 50bb; flop x-x; turn b3 c; river x b7 f
