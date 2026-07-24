@@ -2570,7 +2570,7 @@ def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
 
 
 # ── Task 4: paginated per-hand renderer ─────────────────────────────────────
-from live_flow import render_session_page, PER_PAGE
+from live_flow import render_session_page, session_page_buttons, PER_PAGE
 
 
 def _mk_hand(idx, sev="✅", repaired=False, failed=False):
@@ -2646,3 +2646,22 @@ def live_render_terminology():
     html, _p, _n = render_session_page(result, 0)
     assert_in("建議", html)
     assert_true("主線" not in html, "must not contain 主線")
+
+
+@test
+def per_hand_buttons():
+    result = _mk_result(12)                       # 2 pages
+    result["hands"][1]["ok"] = False
+    result["hands"][1]["error"] = "validation_failed"
+    rows = session_page_buttons(result, session_id=7, page=0)
+    flat = [b for row in rows for b in row]
+    texts = [b["text"] for b in flat]
+    assert_true(any("復盤" in x for x in texts), "復盤 present")
+    assert_true(any("加練" in x for x in texts), "加練 present")
+    assert_true(any(b.get("callback_data", "").startswith("lvr:7:")
+                    for b in flat), "resend callback present")
+    assert_true(any(b.get("callback_data", "").startswith("lvpg:7:1")
+                    for b in flat), "next-page nav present")
+    # failed hand (idx 2) exposes only a resend button, no 復盤/教練/加練
+    assert_true(any(b.get("callback_data") == "lvr:7:1" for b in flat),
+                "failed hand resend by index")

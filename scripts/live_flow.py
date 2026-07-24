@@ -1486,6 +1486,12 @@ def process_batch(text: str, date_str: str | None = None,
         d_rows = [dict(d) for d in dec_rows]
         entry["dec_rows"] = d_rows
         all_dec_rows.extend(d_rows)
+        try:
+            from gtow_solution_url import build_last_hero_hand_url
+            entry["review_url"] = build_last_hero_hand_url(
+                hand, [d for d in d_rows if not d.get("excluded")])
+        except Exception:
+            entry["review_url"] = None
         time.sleep(0.3)
 
     result["queue"] = select_queue_items(all_dec_rows)
@@ -1686,6 +1692,36 @@ def render_tg_html(result: dict) -> str:
     return render_session_page(result, 0)[0]
 
 
+def session_page_buttons(result: dict, session_id: int, page: int,
+                         per_page: int = PER_PAGE) -> list[list[dict]]:
+    """Per-hand button rows for one page + prev/next nav."""
+    hands = result["hands"]
+    pages = max(1, (len(hands) + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    rows: list[list[dict]] = []
+    for h in hands[page * per_page: page * per_page + per_page]:
+        idx0 = h["idx"] - 1
+        if not h.get("ok"):
+            rows.append([{"text": "🔁 重傳",
+                          "callback_data": f"lvr:{session_id}:{idx0}"}])
+            continue
+        row: list[dict] = []
+        if h.get("review_url"):
+            row.append({"text": f"復盤 H{h['idx']}", "url": h["review_url"]})
+        row.append({"text": "💬 教練", "callback_data": f"lvd:{h['hand_id']}"})
+        row.append({"text": "➕ 加練", "callback_data": f"lvadd:{session_id}:{idx0}"})
+        row.append({"text": "🔁 重傳", "callback_data": f"lvr:{session_id}:{idx0}"})
+        rows.append(row)
+    nav: list[dict] = []
+    if page > 0:
+        nav.append({"text": "◀ 上一頁", "callback_data": f"lvpg:{session_id}:{page-1}"})
+    if page < pages - 1:
+        nav.append({"text": "下一頁 ▶", "callback_data": f"lvpg:{session_id}:{page+1}"})
+    if nav:
+        rows.append(nav)
+    return rows
+
+
 def report_buttons(result: dict) -> list[list[dict]]:
     """Inline-keyboard payload: [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
     rows: list[list[dict]] = []
@@ -1735,7 +1771,6 @@ def main():
         slim = json.loads(json.dumps(result, default=str))
         for h in slim["hands"]:
             h.pop("dec_rows", None)
-            h.pop("hand_row", None)
         Path(a.json_out).write_text(json.dumps(slim, ensure_ascii=False, default=str))
 
     # human summary
