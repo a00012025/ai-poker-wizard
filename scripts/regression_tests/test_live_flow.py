@@ -2909,3 +2909,247 @@ def session_page_buttons_rejects_non_positive_per_page():
             assert_in("per_page must be positive", str(exc))
         else:
             raise AssertionError(f"per_page={bad} should raise ValueError")
+
+# ── Task 8: single-hand resend / in-place overwrite ──────────────────────────
+
+@test
+def splice_recompute():
+    from live_flow import splice_hand
+
+    result = _mk_result(3)
+    new_entry = _mk_hand(2, sev="❌")
+    new_entry["dec_rows"] = []          # display path only in this unit
+    out = splice_hand(result, 1, new_entry)
+    assert_eq(out["hands"][1]["idx"], 2)                 # display idx preserved
+    assert_eq(out["hands"][1]["decisions"][0]["severity"], "❌")
+    assert_eq(out["totals"]["mistakes"], 1)              # the new ❌ counted
+
+
+@test
+def remove_source_hand_recomputes_or_clears_open_rows():
+    import asyncio
+    import json
+    from queue_feed import remove_source_hand
+
+    class FakeConn:
+        def __init__(self):
+            self.execs = []
+
+        async def fetch(self, sql, *args):
+            assert_in("source_hands::text LIKE", sql)
+            assert_eq(args, ("old-hand",))
+            return [
+                {"id": 1, "kind": "drill", "added_by": "auto",
+                 "source_hands": json.dumps([
+                     {"hand_id": "old-hand", "ev_loss_bb": 0.25},
+                     {"hand_id": "keep-hand", "ev_loss_bb": 0.35},
+                 ])},
+                {"id": 2, "kind": "drill", "added_by": "live",
+                 "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.4}]},
+                {"id": 3, "kind": "drill", "added_by": "manual",
+                 "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.7}]},
+            ]
+
+        async def execute(self, sql, *args):
+            self.execs.append((sql, args))
+
+    conn = FakeConn()
+    asyncio.run(remove_source_hand(conn, "old-hand"))
+
+    assert_eq(len(conn.execs), 3)
+    assert_in("source_hands=$2::jsonb", conn.execs[0][0])
+    assert_eq(conn.execs[0][1][0], 1)
+    assert_eq(json.loads(conn.execs[0][1][1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}])
+    assert_eq(conn.execs[0][1][2:], (0.35, 1))
+    assert_in("clear_reason='resend'", conn.execs[1][0])
+    assert_in("source_hands='[]'::jsonb", conn.execs[1][0])
+    assert_in("n_sources=0", conn.execs[1][0])
+    assert_eq(conn.execs[1][1], (2,))
+    assert_in("source_hands=$2::jsonb", conn.execs[2][0])
+    assert_eq(json.loads(conn.execs[2][1][1]), [])
+    assert_eq(conn.execs[2][1][2:], (0, 0))
+
+
+@test
+def lvr_callback_prompts_for_single_hand_and_records_pending_state():
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    class Acquire:
+        async def __aenter__(self):
+            return SimpleNamespace()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    class Query:
+        data = "lvr:42:1"
+        def __init__(self):
+            self.answers = []
+        async def answer(self, *args, **kwargs):
+            self.answers.append((args, kwargs))
+
+    class ChatBot:
+        def __init__(self):
+            self.sent = []
+        async def send_message(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    import live_flow
+    orig_load = live_flow.load_session
+    async def fake_load(_conn, sid):
+        assert_eq(sid, 42)
+        return {"result": {"hands": [
+            {"idx": 1, "ok": True, "echo": "H1", "repairs": []},
+            {"idx": 2, "ok": True, "echo": "CO A7s", "repairs": ["HU pot 動作歸屬修補"]},
+        ]}}
+    live_flow.load_session = fake_load
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.admin_chat_id = 556028753
+        bot.db = SimpleNamespace(pool=Pool())
+        bot._live_resend_pending = {}
+        update = SimpleNamespace(
+            callback_query=Query(),
+            effective_chat=SimpleNamespace(id=99),
+            effective_user=SimpleNamespace(id=556028753),
+        )
+        context = SimpleNamespace(bot=ChatBot())
+        asyncio.run(bot.handle_live_button(update, context))
+    finally:
+        live_flow.load_session = orig_load
+
+    assert_eq(bot._live_resend_pending[99], (42, 1))
+    assert_true(context.bot.sent, "resend prompt sent")
+    prompt = context.bot.sent[0][0][1]
+    assert_in("Hand 2", prompt)
+    assert_in("CO A7s", prompt)
+    assert_in("翻後 HU 動作歸屬校正", prompt)
+
+
+@test
+def resend_pending_message_intercepts_and_applies_once():
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    called = {}
+    async def fake_apply(update, context, sid, hand_idx, block):
+        called.update(sid=sid, hand_idx=hand_idx, block=block)
+
+    bot = object.__new__(PokerWizardBot)
+    bot.log = logging.getLogger("regression-resend-intercept")
+    bot._live_resend_pending = {99: (42, 1)}
+    bot._live_pending = set()
+    bot._user_locks = {}
+    bot._user_lock = PokerWizardBot._user_lock.__get__(bot, PokerWizardBot)
+    bot._apply_live_resend = fake_apply
+    bot.db = None
+    bot._user_label = lambda _update: "owner"
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=556028753),
+        message=SimpleNamespace(text="Eff 30bb hero co A7s open"),
+    )
+    asyncio.run(bot._handle_message_inner(update, SimpleNamespace()))
+
+    assert_eq(called, {"sid": 42, "hand_idx": 1,
+                       "block": "Eff 30bb hero co A7s open"})
+    assert_true(99 not in bot._live_resend_pending, "pending state consumed")
+
+
+@test
+def apply_live_resend_overwrites_session_and_edits_original_message():
+    import asyncio
+    import logging
+    import sys
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+    result = _mk_result(2)
+    result["date"] = "2026-07-24"
+    session = {"id": 42, "chat_id": 99, "message_id": 777,
+               "result": result}
+
+    class Acquire:
+        async def __aenter__(self):
+            return SimpleNamespace(name="conn")
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    class StatusMsg:
+        async def edit_text(self, text):
+            captured["status_edit"] = text
+        async def delete(self):
+            captured["status_deleted"] = True
+
+    class Message:
+        def __init__(self):
+            self.replies = []
+        async def reply_text(self, *args, **kwargs):
+            self.replies.append((args, kwargs))
+            return StatusMsg()
+
+    class ChatBot:
+        async def edit_message_text(self, *args, **kwargs):
+            captured["edit"] = (args, kwargs)
+
+    async def fake_load(_conn, sid):
+        assert_eq(sid, 42)
+        return session
+
+    import live_flow as real_live
+
+    async def fake_overwrite(_conn, loaded, hand_idx, block):
+        assert_true(loaded is session)
+        captured.update(hand_idx=hand_idx, block=block)
+        new = _mk_hand(2, sev="❌")
+        new["dec_rows"] = []
+        return real_live.splice_hand(loaded["result"], hand_idx, new)
+
+    async def fake_update(_conn, sid, updated, page):
+        captured.update(update_sid=sid, update_page=page,
+                        updated_mistakes=updated["totals"]["mistakes"])
+
+    fake_live = SimpleNamespace(
+        PER_PAGE=10,
+        load_session=fake_load,
+        overwrite_hand=fake_overwrite,
+        update_session_result=fake_update,
+        render_session_page=lambda res, page: (f"rendered page {page} mistakes {res['totals']['mistakes']}", False, False),
+        session_page_buttons=lambda res, sid, page: [[{"text": "ok", "callback_data": "noop:1"}]],
+    )
+    orig_live = sys.modules.get("live_flow")
+    sys.modules["live_flow"] = fake_live
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.db = SimpleNamespace(pool=Pool())
+        bot.log = logging.getLogger("regression-apply-resend")
+        update = SimpleNamespace(message=Message())
+        context = SimpleNamespace(bot=ChatBot())
+        asyncio.run(bot._apply_live_resend(update, context, 42, 1, "corrected block"))
+    finally:
+        if orig_live is None:
+            sys.modules.pop("live_flow", None)
+        else:
+            sys.modules["live_flow"] = orig_live
+
+    assert_eq(captured["hand_idx"], 1)
+    assert_eq(captured["block"], "corrected block")
+    assert_eq(captured["update_sid"], 42)
+    assert_eq(captured["update_page"], 0)
+    assert_eq(captured["updated_mistakes"], 1)
+    assert_true(captured.get("status_deleted"), "status message removed")
+    assert_eq(captured["edit"][1]["chat_id"], 99)
+    assert_eq(captured["edit"][1]["message_id"], 777)
+    assert_in("Hand 2 已更新", update.message.replies[-1][0][0])

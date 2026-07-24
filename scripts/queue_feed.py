@@ -678,6 +678,36 @@ async def enqueue(conn, items: list[dict]) -> dict:
     return tally
 
 
+async def remove_source_hand(conn, hand_id: str) -> None:
+    """Strip a hand's contributions from every open drill queue row.
+
+    For pending/prescribed rows whose ``source_hands`` includes ``hand_id``,
+    drop those source entries, recompute EV/n, and clear empty auto/live drill
+    rows as resend fallout.
+    """
+    rows = await conn.fetch(
+        "SELECT id, source_hands, added_by, kind FROM drill_queue "
+        "WHERE status IN ('pending','prescribed') "
+        "AND source_hands::text LIKE '%' || $1 || '%'", hand_id)
+    for r in rows:
+        srcs = _as_list(r["source_hands"])
+        kept = [s for s in srcs if s.get("hand_id") != hand_id]
+        if len(kept) == len(srcs):
+            continue
+        if (not kept and r["kind"] == "drill"
+                and r["added_by"] in ("auto", "live")):
+            await conn.execute(
+                "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
+                "clear_reason='resend', source_hands='[]'::jsonb, "
+                "total_ev_loss_bb=0, n_sources=0 WHERE id=$1", r["id"])
+            continue
+        total = round(sum(float(s.get("ev_loss_bb") or 0) for s in kept), 4)
+        await conn.execute(
+            "UPDATE drill_queue SET source_hands=$2::jsonb, "
+            "total_ev_loss_bb=$3, n_sources=$4 WHERE id=$1",
+            r["id"], json.dumps(kept), total, len(kept))
+
+
 # ── online scan ──────────────────────────────────────────────────────────────
 def _drill_scan_sql(win_col: str = "$1") -> str:
     return f"""

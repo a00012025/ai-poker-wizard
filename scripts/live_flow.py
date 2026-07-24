@@ -1322,7 +1322,7 @@ def spot_label_zh(dec: dict) -> str:
 # implementation (§5.2, PR #92 dedup spirit). live_flow re-exports it for its
 # own persist path; a re-offending leaf merges into its OPEN row (pending OR
 # prescribed) with per-entry key dedupe so re-imports never inflate totals.
-from queue_feed import enqueue  # noqa: E402,F401  (shared upsert; used by persist)
+from queue_feed import enqueue, remove_source_hand  # noqa: E402,F401  (shared upsert; used by persist/overwrite)
 
 
 # ── DB upserts ───────────────────────────────────────────────────────────────
@@ -1503,6 +1503,43 @@ def process_batch(text: str, date_str: str | None = None,
     return result
 
 
+def _recompute_totals(hands: list[dict]) -> dict:
+    """Recompute live-session totals from current display decisions."""
+    decisions = graded = mistakes = parse_failed = 0
+    for h in hands:
+        if not h.get("ok"):
+            parse_failed += 1
+            continue
+        for d in h.get("decisions") or []:
+            decisions += 1
+            if d.get("ev_loss") is not None:
+                graded += 1
+            if (d.get("ev_loss") is not None and d.get("ev_loss") >= QUEUE_EV_MIN
+                    and not d.get("discarded")):
+                mistakes += 1
+    return {"hands": len(hands), "decisions": decisions, "graded": graded,
+            "mistakes": mistakes, "parse_failed": parse_failed}
+
+
+def splice_hand(result: dict, hand_idx: int, new_entry: dict) -> dict:
+    """Replace ``hands[hand_idx]`` while preserving display idx.
+
+    Resend edits one hand in-place, so the surrounding session must keep its
+    original hand numbering while totals and practice queue are derived from
+    the current hand payloads only.
+    """
+    new_entry = dict(new_entry)
+    new_entry["idx"] = result["hands"][hand_idx]["idx"]
+    result["hands"][hand_idx] = new_entry
+    result["totals"] = _recompute_totals(result["hands"])
+    all_dec_rows: list[dict] = []
+    for h in result["hands"]:
+        if h.get("ok"):
+            all_dec_rows.extend(h.get("dec_rows") or [])
+    result["queue"] = select_queue_items(all_dec_rows)
+    return result
+
+
 async def persist(result: dict) -> None:
     import asyncpg
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
@@ -1522,6 +1559,48 @@ async def persist(result: dict) -> None:
                 item["spot_leaf"])
     finally:
         await conn.close()
+
+
+async def overwrite_hand(conn, session: dict, hand_idx: int, block: str) -> dict:
+    """Reparse+grade one corrected hand and replace its ledger/queue footprint."""
+    result = session["result"]
+    old = result["hands"][hand_idx]
+    old_hand_id = old.get("hand_id")
+    date_str = result.get("date")
+
+    single = process_batch(block, date_str)
+    if single.get("hands"):
+        new_entry = single["hands"][0]
+    else:
+        new_entry = {
+            "idx": old.get("idx", hand_idx + 1), "ok": False,
+            "hand_id": None, "error": "parse_failed",
+            "refusal": ["空白或無法辨識"], "decisions": [],
+            "repairs": [], "raw": block,
+        }
+
+    async with conn.transaction():
+        if old_hand_id:
+            await conn.execute(
+                "DELETE FROM ledger_decisions WHERE gtow_hand_id=$1",
+                old_hand_id)
+            await conn.execute(
+                "DELETE FROM ledger_hands WHERE gtow_hand_id=$1",
+                old_hand_id)
+            await remove_source_hand(conn, old_hand_id)
+
+        if new_entry.get("ok"):
+            await write_hand(conn, new_entry["hand_row"], new_entry["dec_rows"])
+
+        result = splice_hand(result, hand_idx, new_entry)
+        await enqueue(conn, result["queue"])
+        for item in result["queue"]:
+            item["queue_id"] = await conn.fetchval(
+                "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
+                "AND status IN ('pending','prescribed') "
+                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+                item["spot_leaf"])
+    return result
 
 
 async def save_session(conn, session_key: str, chat_id: int,
