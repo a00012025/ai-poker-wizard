@@ -1721,6 +1721,40 @@ def test_lvadd_callback_loads_owner_session_and_opens_live_add_menu():
 
 
 @test
+def test_qad2_callback_preserves_colonated_live_hand_id():
+    """qad2 parses qid from the left and street/decision_idx from the right
+    so live:{date}:{hash} hand IDs survive intact."""
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+
+    class FakeQuery:
+        data = "qad2:0:live:2026-07-24:abc:flop:0"
+
+        async def answer(self, text=None, **kwargs):
+            captured["answer"] = (text, kwargs)
+
+    async def fake_queue_add_manual(update, context, queue_id, decision_ref):
+        captured["manual"] = (queue_id, decision_ref)
+
+    bot = object.__new__(PokerWizardBot)
+    bot._is_owner = lambda _update: True
+    bot._queue_add_manual = fake_queue_add_manual
+    update = SimpleNamespace(
+        callback_query=FakeQuery(),
+        effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=556028753),
+    )
+
+    asyncio.run(bot.handle_live_button(update, SimpleNamespace(bot=object())))
+
+    assert_eq(captured["manual"],
+              (0, ("live:2026-07-24:abc", "flop", 0)))
+
+
+@test
 def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
     """Dry-run/unit callers without hand identity can still use the old numeric
     callback; production DB rows should provide gtow_hand_id and use qad2."""

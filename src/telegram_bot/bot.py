@@ -2396,7 +2396,8 @@ class PokerWizardBot:
             return
 
         if data.startswith("qad2:"):
-            _, qid, hid, street, didx = data.split(":", 4)
+            _, qid, decision_key = data.split(":", 2)
+            hid, street, didx = decision_key.rsplit(":", 2)
             await self._queue_add_manual(
                 update, context, int(qid), (hid, street, int(didx)))
             return
