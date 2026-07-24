@@ -1715,7 +1715,7 @@ class PokerWizardBot:
         """Run scripts/live_flow.py on the batch, reply with the deviation
         report + [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
         import json as _json
-        from live_flow import split_batch, render_tg_html, report_buttons
+        from live_flow import split_batch
         label = self._user_label(update)
         n = len(split_batch(text))
         if n == 0:
@@ -1748,15 +1748,26 @@ class PokerWizardBot:
                 await msg.edit_text(f"⚠️ 匯入失敗：\n{tail}")
                 return
             result = _json.loads(Path(tmp_out).read_text())
-            html = render_tg_html(result)
-            markup = self._rows_to_markup(report_buttons(result))
+            from live_flow import (hand_id_for, render_session_page,
+                                   save_session, session_page_buttons,
+                                   set_session_message)
+            date_str = result.get("date")
+            session_key = hand_id_for(text, date_str)
+            async with self.db.pool.acquire() as conn:
+                session_id = await save_session(
+                    conn, session_key, update.effective_chat.id, result)
+            html, _prev, _next = render_session_page(result, 0)
+            markup = self._rows_to_markup(
+                session_page_buttons(result, session_id, 0))
             try:
                 await msg.delete()
             except Exception:
                 pass
-            await update.message.reply_text(
+            sent = await update.message.reply_text(
                 html, parse_mode="HTML", disable_web_page_preview=True,
                 reply_markup=markup)
+            async with self.db.pool.acquire() as conn:
+                await set_session_message(conn, session_id, sent.message_id)
             self.log.info(f"[{label}] /live done: {result['totals']}")
         except Exception as e:
             self.log.error(f"[{label}] /live failed: {e}", exc_info=True)
@@ -1770,6 +1781,25 @@ class PokerWizardBot:
                     os.unlink(p)
                 except OSError:
                     pass
+
+    async def _send_or_edit_session_page(self, query, session: dict, page: int):
+        """Re-render one live session page and edit the report message in place."""
+        from live_flow import (render_session_page, session_page_buttons,
+                               update_session_result)
+
+        result = session["result"]
+        html, _prev, _next = render_session_page(result, page)
+        markup = self._rows_to_markup(
+            session_page_buttons(result, session["id"], page))
+        async with self.db.pool.acquire() as conn:
+            await update_session_result(conn, session["id"], result, page)
+        try:
+            await query.edit_message_text(
+                html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=markup)
+        except telegram.error.BadRequest as exc:
+            if "Message is not modified" not in str(exc):
+                raise
 
     async def _fetch_queue_page(self, page: int = 0):
         total = await self.db.pool.fetchval(
@@ -2210,6 +2240,23 @@ class PokerWizardBot:
             await query.answer()
             return
 
+        if data.startswith("lvpg:"):
+            from live_flow import load_session
+
+            _, sid, page = data.split(":")
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session:
+                await query.answer("這個線下 session 已過期，請重跑 /live。")
+                return
+            await query.answer()
+            await self._send_or_edit_session_page(query, session, int(page))
+            return
+
+        if data.startswith("lvadd:") or data.startswith("lvr:"):
+            await query.answer("這個動作尚未啟用，請先用復盤／教練按鈕。", show_alert=True)
+            return
+
         if data.startswith("qsrc:"):
             parts = data.split(":")
             queue_id = int(parts[1])
@@ -2551,7 +2598,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
+                pattern=r"^(lvd|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))
