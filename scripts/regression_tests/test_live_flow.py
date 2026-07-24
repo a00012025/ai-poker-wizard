@@ -876,6 +876,51 @@ def test_live_repair_street_actions_restores_dropped_leading_check():
 
 
 @test
+def flop_b4_is_bet():
+    """Observed Hand 2: raw flop 'b4 call' was parsed as a lone SB Call,
+    creating an orphan-call validator failure.  The raw HU action hints must
+    restore the dropped bet before HU alternation assigns SB bet / BTN call."""
+    from live_flow import parse_block, repair_hu_pot
+    from hand_validator import validate_hand
+
+    block = ("Eff 35bb Co raise hero btn call 7s8s sb raise 7bb co fold hero call\n"
+             "Ac5c6d b4 call\n"
+             "4s x b8 fold")
+
+    class _Resp:
+        text = json.dumps({"hand": {
+            "gametype": "MTTGeneral", "players_at_table": 8, "effective_bb": 35,
+            "hero_position": "BTN", "hero_hand": "7s8s",
+            "preflop_actions": "F-F-F-F-R2-C-R7-F-C",
+            "streets": [
+                {"street": "flop", "board": "Ac5c6d", "actions": [
+                    {"position": "SB", "action": "C"}]},
+                {"street": "turn", "card": "4s", "actions": [
+                    {"position": "SB", "action": "X"},
+                    {"position": "BTN", "action": "R8"},
+                    {"position": "SB", "action": "F"}]},
+            ],
+        }})
+
+    class _Models:
+        def generate_content(self, **_kwargs):
+            return _Resp()
+
+    class _Client:
+        models = _Models()
+
+    h = parse_block(block, client=_Client())
+    assert_true(h is not None and not h.get("_refused"), "parses")
+    h = repair_hu_pot(h)
+    rep = validate_hand(h)
+    assert_true(rep.ok, f"must be legal: {[i.message for i in rep.hard]}")
+    flop = next(s for s in h["streets"] if (s.get("board") or "").startswith("Ac5c6"))
+    actions = [(a.get("position"), a.get("action")) for a in flop["actions"]]
+    assert_true(actions and str(actions[0][1]).upper().startswith(("R", "B")),
+                f"flop opens with a bet, got {actions}")
+
+
+@test
 def test_live_hero_folded_but_acts_contradiction():
     """Real batch-1 Hand 18: raw 'hero hj raise … to 5bb' mis-seated by Gemini
     leaves hero folded preflop while acting postflop. That contradiction must

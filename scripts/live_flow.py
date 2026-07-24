@@ -427,7 +427,7 @@ def _is_aggr_code(code: str | None) -> bool:
 
 
 def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list[str]]:
-    """Conservatively repair dropped leading HU checks from raw live shorthand.
+    """Conservatively repair exact HU street-action drops from raw shorthand.
 
     Observed failure: raw turn ``9 x b10 f`` (OOP checks, hero bets, OOP folds)
     was parsed as ``SB b10, hero fold``.  Poker rules allow that corrupted
@@ -435,6 +435,12 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
     action hints are exactly one action longer and the missing action is a
     leading check before an aggression, insert the check; ``repair_hu_pot`` will
     then reassign positions by strict HU alternation.
+
+    Observed Hand 2 failure: raw flop ``Ac5c6d b4 call`` was parsed as a lone
+    ``SB Call``.  That is not a legal poker action, but the fix is still gated
+    to exact HU evidence: raw hints must be ``[R, C]`` and the parsed street
+    must be only the caller (or a leading check + caller) before we restore the
+    OOP bet owner.
     """
     from hh_parser import POSITION_ORDERS
 
@@ -450,13 +456,50 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
     postflop_order = order[-2:] + order[:-2]  # SB, BB, UTG, ...
     notes: list[str] = []
 
+    def hu_actors() -> list[str]:
+        lines = [ln.strip() for ln in (block or "").splitlines()
+                 if ln.strip() and not _is_noise(ln)]
+        if lines:
+            toks = re.split(r"\s+", lines[0])
+            hero_pos = repaired.get("hero_position")
+            if hero_pos:
+                hero_idx = next((i for i, tok in enumerate(toks)
+                                 if _clean_word(tok) == "hero"), None)
+                eff = (_effective_bb_from_preflop_tokens(toks, hero_idx)
+                       or str(repaired.get("effective_bb") or ""))
+                last: dict[str, str] = {}
+                for pos, code in _live_preflop_events(toks, hero_pos, eff):
+                    last[pos] = code
+                live = [p for p, c in last.items() if c != "F" and p in postflop_order]
+                if len(live) == 2:
+                    return sorted(live, key=postflop_order.index)
+        all_actors = {a.get("position") for st in streets for a in (st.get("actions") or [])
+                      if a.get("position") in postflop_order}
+        return sorted(all_actors, key=postflop_order.index) if len(all_actors) == 2 else []
+
+    heads_up = hu_actors()
+
     for idx, (st, hints) in enumerate(zip(streets, hints_by_street)):
         actions = st.get("actions") or []
         actors = {a.get("position") for a in actions if a.get("position")}
-        if len(actors) != 2 or not hints or len(actions) + 1 != len(hints):
+        if not hints:
             continue
         parsed_classes = [_action_class(a.get("action")) for a in actions]
         hint_classes = [_action_class(h) for h in hints]
+        if heads_up and hint_classes == ["R", "C"] and parsed_classes in (["C"], ["X", "C"]):
+            bet = {"position": heads_up[0], "action": hints[0]}
+            m = re.match(r"^[RAI]+(\d+(?:\.\d+)?)$", hints[0], re.I)
+            if m:
+                bet["size"] = float(m.group(1))
+            call_src = actions[-1] if actions else {}
+            call = dict(call_src)
+            call["position"] = heads_up[1]
+            call["action"] = hints[1]
+            st["actions"] = [bet, call]
+            notes.append(f"{_street_name(idx)} 補回原文開頭 bet")
+            continue
+        if len(actors) != 2 or len(actions) + 1 != len(hints):
+            continue
         if (hint_classes[0] != "X" or not actions or not _is_aggr_code(actions[0].get("action"))
                 or parsed_classes != hint_classes[1:]):
             continue
