@@ -45,59 +45,22 @@ Expected: all pass (establishes a clean baseline before changes).
 
 ---
 
-### Task 1: Terminology 主線 → 建議
+### Task 1: Terminology 主線 → 建議 (coach copy)
 
 **Files:**
-- Modify: `scripts/live_flow.py` (render strings, ~lines 1544-1554)
 - Modify: `scripts/coach_facts.py:496`
 - Modify: `scripts/coach_prompts.py:408`
-- Test: `scripts/regression_tests/test_live_flow.py` (create if absent)
+
+Note: the `scripts/live_flow.py` render terminology is NOT touched here — Task 4
+rewrites that renderer wholesale and writes 建議 from the start (with an explicit
+terminology assertion). This task only covers the two coach-copy constants Task 4
+does not touch. Verification is a grep (a prompt/string constant has no
+meaningful unit test).
 
 **Interfaces:**
 - Produces: no signature change; only user-facing copy.
 
-- [ ] **Step 1: Write the failing test**
-
-Add to `scripts/regression_tests/test_live_flow.py` (create the file with the harness imports if it does not exist):
-
-```python
-from regression_tests.harness import test, assert_in, assert_true
-from live_flow import render_session_page  # may not exist yet — see Task 4
-
-
-@test("live report says 建議 not 主線")
-def live_terminology():
-    result = {
-        "totals": {"hands": 1, "decisions": 1, "graded": 1, "mistakes": 1,
-                   "parse_failed": 0},
-        "queue": [],
-        "hands": [{
-            "idx": 1, "ok": True, "hand_id": "live:x:y",
-            "echo": "BB K8o 22bb · ...", "repairs": [], "review_url": None,
-            "decisions": [{
-                "street": "preflop", "idx": 0, "leaf": "l", "ev_loss": 0.4,
-                "severity": "❌", "taken": "C", "best": "F",
-                "taken_label": "Call", "best_label": "Fold", "gto_freq": 1.0,
-                "ungraded_reason": None, "discarded": False,
-                "limp_origin": False, "depth_escalated": None,
-            }],
-            "hand_row": {"hero_hand": "K8o", "position": "BB",
-                         "preflop_depth_bb": 22.0, "pot_type": "3bet"},
-        }],
-    }
-    html, _prev, _next = render_session_page(result, page=0)
-    assert_in("建議", html)
-    assert_true("主線" not in html, "must not contain 主線")
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python scripts/regression_test.py 2>&1 | grep -i "live"`
-Expected: FAIL (ImportError `render_session_page`, or assertion). This test also depends on Task 4; it is written here to lock the terminology and re-run after Task 4.
-
-- [ ] **Step 3: Apply the terminology edits**
-
-In `scripts/live_flow.py`, in the (to-be-replaced) renderer strings, and going forward in `render_session_page` (Task 4): use `→ 建議 {best}` and `偏離 GTO 建議` (never 主線).
+- [ ] **Step 1: Apply the terminology edits**
 
 In `scripts/coach_facts.py:496`:
 ```python
@@ -109,16 +72,21 @@ In `scripts/coach_prompts.py:408`:
   • ⚪ = 此手牌 0% 到達此節點（off-tree），代表通常前面某街已偏離 GTO 建議、這條街沒有 solver 對照。
 ```
 
-- [ ] **Step 4: Verify no 主線 remains in user-facing code**
+- [ ] **Step 2: Verify no 主線 remains in these two files**
 
-Run: `grep -rn "主線" scripts/live_flow.py scripts/coach_facts.py scripts/coach_prompts.py`
+Run: `grep -rn "主線" scripts/coach_facts.py scripts/coach_prompts.py`
 Expected: no output.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Verify imports still clean**
+
+Run: `cd scripts && python -c "import coach_facts, coach_prompts" && cd ..`
+Expected: no error.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/live_flow.py scripts/coach_facts.py scripts/coach_prompts.py
-git commit -m "refactor: rename 主線 to 建議 in live + coach copy"
+git add scripts/coach_facts.py scripts/coach_prompts.py
+git commit -m "refactor: rename 主線 to 建議 in coach copy"
 ```
 
 ---
@@ -436,11 +404,21 @@ def clean_hand_line():
     html, _p, _n = render_session_page(_mk_result(1), 0)
     assert_in("Hand 1", html)
     assert_in("✅", html)
+
+
+@test("live deviation sub-line says 建議 not 主線")
+def live_render_terminology():
+    result = _mk_result(1)
+    result["hands"][0] = _mk_hand(1, sev="❌")
+    result["totals"]["mistakes"] = 1
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("建議", html)
+    assert_true("主線" not in html, "must not contain 主線")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python scripts/regression_test.py 2>&1 | grep -i "page\|rollup\|clean hand"`
+Run: `python scripts/regression_test.py 2>&1 | grep -i "page\|rollup\|clean hand\|terminology"`
 Expected: FAIL (`render_session_page` not defined).
 
 - [ ] **Step 3: Implement the renderer**
