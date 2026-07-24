@@ -2570,7 +2570,8 @@ def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
 
 
 # ── Task 4: paginated per-hand renderer ─────────────────────────────────────
-from live_flow import render_session_page, session_page_buttons, PER_PAGE
+from live_flow import (PER_PAGE, render_session_page, result_for_json_out,
+                       session_page_buttons)
 
 
 def _mk_hand(idx, sev="✅", repaired=False, failed=False):
@@ -2664,6 +2665,33 @@ def per_hand_buttons():
                     for b in flat), "next-page nav present")
     # failed hand (idx 2) exposes only a resend button, no 復盤/教練/加練
     assert_eq(rows[1], [{"text": "🔁 重傳", "callback_data": "lvr:7:1"}])
+
+
+@test
+def live_json_out_retains_dec_rows_and_still_renders():
+    from datetime import datetime, timezone
+
+    result = _mk_result(1)
+    result["date"] = "2026-07-24"
+    result["hands"][0]["hand_row"]["played_at"] = datetime(2026, 7, 24, tzinfo=timezone.utc)
+    result["hands"][0]["dec_rows"] = [{
+        "gtow_hand_id": "live:2026-07-24:abc",
+        "street": "flop",
+        "decision_idx": 0,
+        "spot_leaf": "SRP::BB::x-facing-bet",
+        "ev_loss_bb": 0.25,
+        "created_at": datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    }]
+
+    payload = result_for_json_out(result)
+
+    assert_true(payload["hands"][0].get("hand_row"), "hand_row retained")
+    assert_true(payload["hands"][0].get("dec_rows"), "dec_rows retained")
+    assert_eq(payload["hands"][0]["dec_rows"][0]["ev_loss_bb"], 0.25)
+    assert_true(isinstance(payload["hands"][0]["dec_rows"][0]["created_at"], str),
+                "datetime normalized for JSON/session storage")
+    html, _prev, _next = render_session_page(payload, 0)
+    assert_in("Hand 1", html)
 
 
 @test

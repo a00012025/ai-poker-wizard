@@ -9,10 +9,15 @@ Status: DONE_WITH_CONCERNS
   - Added `lvpg:<session_id>:<page>` callback handling using `load_session`.
   - Extended the existing live/queue callback pattern to include `lvpg|lvadd|lvr`.
   - Added a small guard for `lvadd:`/`lvr:` so those newly-routed callbacks do not accidentally fall through into the old `lvd:` deep-dive path before their dedicated behavior exists.
+- `scripts/live_flow.py`
+  - `--json-out` now writes the full JSON/session payload instead of stripping `dec_rows`.
+  - Added `result_for_json_out(...)` to normalize the full result through JSON with `default=str`, preserving `hand_row` and `dec_rows` while serializing datetimes safely.
+- `scripts/regression_tests/test_live_flow.py`
+  - Added regression coverage proving JSON/session payloads retain `dec_rows`, retain `hand_row`, serialize datetimes to strings, and still render with `render_session_page`.
 
 ## Validation
-- `python -m py_compile src/telegram_bot/bot.py scripts/live_flow.py` → PASS
-- Static assertions for callback pattern, session persistence calls, and helper presence → PASS
+- `python -m py_compile scripts/live_flow.py scripts/regression_tests/test_live_flow.py src/telegram_bot/bot.py` → PASS
+- `python scripts/regression_test.py -k live_json_out_retains_dec_rows_and_still_renders` → PASS (`1 passed, 0 failed`)
 
 ## Concerns / Follow-ups
 - Manual Telegram integration was not run in this environment.

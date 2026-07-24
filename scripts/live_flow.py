@@ -1729,6 +1729,17 @@ def session_page_buttons(result: dict, session_id: int, page: int,
     return rows
 
 
+def result_for_json_out(result: dict) -> dict:
+    """Return the full bot/session payload as JSON-compatible data.
+
+    The Telegram bot persists this payload into ``live_sessions`` and later
+    features (add/resend) need the original ``hand_row`` + ``dec_rows``.  Keep
+    the full result intact while normalizing datetime/Decimal-like values via
+    ``default=str``.
+    """
+    return json.loads(json.dumps(result, ensure_ascii=False, default=str))
+
+
 def report_buttons(result: dict) -> list[list[dict]]:
     """Inline-keyboard payload: [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
     rows: list[list[dict]] = []
@@ -1775,10 +1786,8 @@ def main():
     if not a.dry_run:
         asyncio.run(persist(result))
     if a.json_out:
-        slim = json.loads(json.dumps(result, default=str))
-        for h in slim["hands"]:
-            h.pop("dec_rows", None)
-        Path(a.json_out).write_text(json.dumps(slim, ensure_ascii=False, default=str))
+        full = result_for_json_out(result)
+        Path(a.json_out).write_text(json.dumps(full, ensure_ascii=False))
 
     # human summary
     t = result["totals"]
