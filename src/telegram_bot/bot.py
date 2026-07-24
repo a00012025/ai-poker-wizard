@@ -2174,6 +2174,37 @@ class PokerWizardBot:
             parse_mode="HTML",
             reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
 
+    async def _live_add_menu(self, context, chat_id, session, hand_idx: int):
+        """Expand a live hand's graded decisions as ➕ manual-add buttons."""
+        from queue_feed import qex_submenu
+
+        hands = session["result"]["hands"]
+        if hand_idx < 0 or hand_idx >= len(hands) or not hands[hand_idx].get("ok"):
+            await context.bot.send_message(chat_id, "這手沒有可加練的決策。")
+            return
+
+        hand_id = hands[hand_idx]["hand_id"]
+        rows = await self.db.pool.fetch(
+            "SELECT id, gtow_hand_id, street, decision_idx, spot_category, "
+            "spot_leaf, hero_cat, villain_cat, ip_oop, position, ev_loss_bb "
+            "FROM ledger_decisions "
+            "WHERE gtow_hand_id=$1 AND source='live' AND NOT excluded "
+            "AND NOT discarded "
+            "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
+            "WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx",
+            hand_id)
+        if not rows:
+            await context.bot.send_message(
+                chat_id, "這手沒有可加練的已評分決策。")
+            return
+
+        btn_rows = qex_submenu([dict(r) for r in rows], queue_id=0)
+        await context.bot.send_message(
+            chat_id,
+            f"➕ <b>選一條 action line 加入練習</b>\nHand {hand_idx + 1}",
+            parse_mode="HTML",
+            reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
+
     async def _queue_add_manual(self, update: Update,
                                 context: ContextTypes.DEFAULT_TYPE,
                                 queue_id: int, decision_ref):
@@ -2253,7 +2284,20 @@ class PokerWizardBot:
             await self._send_or_edit_session_page(query, session, int(page))
             return
 
-        if data.startswith("lvadd:") or data.startswith("lvr:"):
+        if data.startswith("lvadd:"):
+            from live_flow import load_session
+
+            _, sid, hand_idx = data.split(":")
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session:
+                await query.answer("這個線下 session 已過期，請重跑 /live。")
+                return
+            await query.answer()
+            await self._live_add_menu(context, chat_id, session, int(hand_idx))
+            return
+
+        if data.startswith("lvr:"):
             await query.answer("這個動作尚未啟用，請先用復盤／教練按鈕。", show_alert=True)
             return
 

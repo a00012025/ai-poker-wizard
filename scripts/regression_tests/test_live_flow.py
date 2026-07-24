@@ -1607,6 +1607,120 @@ def test_queue_feed_qex_submenu_callback_data():
 
 
 @test
+def test_live_add_menu_filters_live_decisions_and_emits_qad2_buttons():
+    """lvadd's menu must list only graded live ledger decisions for that hand
+    and reuse qex_submenu's stable qad2 callback path with sentinel queue_id=0."""
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {}
+
+    class FakePool:
+        async def fetch(self, sql, *args):
+            captured["sql"] = sql
+            captured["args"] = args
+            assert_in("source='live'", sql)
+            assert_in("NOT excluded", sql)
+            assert_in("NOT discarded", sql)
+            return [{
+                "id": 70,
+                "gtow_hand_id": "live:2026-07-24:abc",
+                "street": "flop",
+                "decision_idx": 0,
+                "spot_category": "flop",
+                "spot_leaf": "flop:SRP:BBvBTN:OOP:[x-b-c]:vs_bet",
+                "hero_cat": "BB",
+                "villain_cat": "BTN",
+                "ip_oop": "OOP",
+                "position": "BB",
+                "ev_loss_bb": 0.4,
+            }]
+
+    class FakeTgBot:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    bot = object.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=FakePool())
+    tg = FakeTgBot()
+    session = {"result": {"hands": [{
+        "ok": True,
+        "hand_id": "live:2026-07-24:abc",
+    }]}}
+
+    asyncio.run(bot._live_add_menu(SimpleNamespace(bot=tg), 99, session, 0))
+
+    assert_eq(captured["args"], ("live:2026-07-24:abc",))
+    assert_eq(tg.sent[0][0][0], 99)
+    assert_in("Hand 1", tg.sent[0][0][1])
+    markup = tg.sent[0][1]["reply_markup"].to_dict()
+    flat = [button for row in markup["inline_keyboard"] for button in row]
+    assert_eq(flat[0]["callback_data"],
+              "qad2:0:live:2026-07-24:abc:flop:0")
+
+
+@test
+def test_lvadd_callback_loads_owner_session_and_opens_live_add_menu():
+    """The lvadd callback replaces the temporary guard: it loads the persisted
+    live session and routes the requested hand index into _live_add_menu."""
+    import asyncio
+    import live_flow
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    captured = {"answers": [], "loads": []}
+
+    class FakeAcquire:
+        async def __aenter__(self):
+            return "conn"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakePool:
+        def acquire(self):
+            return FakeAcquire()
+
+    class FakeQuery:
+        data = "lvadd:77:2"
+
+        async def answer(self, text=None, **kwargs):
+            captured["answers"].append((text, kwargs))
+
+    async def fake_load_session(conn, sid):
+        captured["loads"].append((conn, sid))
+        return {"result": {"hands": [{"ok": True}] * 3}}
+
+    async def fake_live_add_menu(context, chat_id, session, hand_idx):
+        captured["menu"] = (chat_id, session, hand_idx)
+
+    bot = object.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=FakePool())
+    bot._is_owner = lambda _update: True
+    bot._live_add_menu = fake_live_add_menu
+    update = SimpleNamespace(
+        callback_query=FakeQuery(),
+        effective_chat=SimpleNamespace(id=99),
+        effective_user=SimpleNamespace(id=556028753),
+    )
+    original = live_flow.load_session
+    live_flow.load_session = fake_load_session
+    try:
+        asyncio.run(bot.handle_live_button(update, SimpleNamespace(bot=object())))
+    finally:
+        live_flow.load_session = original
+
+    assert_eq(captured["loads"], [("conn", 77)])
+    assert_eq(captured["answers"], [(None, {})])
+    assert_eq(captured["menu"][0], 99)
+    assert_eq(captured["menu"][2], 2)
+
+
+@test
 def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
     """Dry-run/unit callers without hand identity can still use the old numeric
     callback; production DB rows should provide gtow_hand_id and use qad2."""
