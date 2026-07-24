@@ -1186,7 +1186,8 @@ def test_queue_url_changes_invalidate_bound_drill_settings_hash():
     import queue_feed as qf
 
     assert_in("gtow_settings_hash = CASE", qf._MERGE_SQL)
-    assert_in("drill_url IS DISTINCT FROM $5", qf._MERGE_SQL)
+    assert_in("drill_url IS DISTINCT FROM $5::text", qf._MERGE_SQL)
+    assert_in("drill_url = COALESCE($5::text, drill_url)", qf._MERGE_SQL)
     refresh_src = inspect.getsource(qf.refresh_trainer_links)
     assert_in("gtow_settings_hash=NULL", refresh_src)
     assert_in("gtow_drill_synced_at=NULL", refresh_src)
