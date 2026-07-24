@@ -326,6 +326,9 @@ class PokerWizardBot:
         self._user_locks: dict[int, asyncio.Lock] = {}
         # chats whose NEXT text message is a /live hand batch
         self._live_pending: set[int] = set()
+        # chats whose NEXT text message replaces one hand in a live session:
+        # chat_id -> (owner_user_id, session_id, hand_idx)
+        self._live_resend_pending: dict[int, tuple[int, int, int]] = {}
 
     def _user_lock(self, chat_id: int) -> asyncio.Lock:
         """Get or create a per-user lock to serialize message handling."""
@@ -694,6 +697,15 @@ class PokerWizardBot:
         label = self._user_label(update)
 
         self.log.info(f"[{label}] Message: {user_text[:300]}")
+
+        # /live resend mode: only the owner who tapped 🔁 may satisfy the
+        # pending correction. In shared chats, other users must not consume it.
+        resend_pending = self._live_resend_pending.get(chat_id)
+        if resend_pending and resend_pending[0] == user_id:
+            _owner_id, sid, hand_idx = self._live_resend_pending.pop(chat_id)
+            await self._apply_live_resend(
+                update, context, sid, hand_idx, user_text or "")
+            return
 
         # /live capture mode: this message is the live-hand batch
         if chat_id in self._live_pending:
@@ -1715,7 +1727,7 @@ class PokerWizardBot:
         """Run scripts/live_flow.py on the batch, reply with the deviation
         report + [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
         import json as _json
-        from live_flow import split_batch, render_tg_html, report_buttons
+        from live_flow import split_batch
         label = self._user_label(update)
         n = len(split_batch(text))
         if n == 0:
@@ -1748,15 +1760,26 @@ class PokerWizardBot:
                 await msg.edit_text(f"⚠️ 匯入失敗：\n{tail}")
                 return
             result = _json.loads(Path(tmp_out).read_text())
-            html = render_tg_html(result)
-            markup = self._rows_to_markup(report_buttons(result))
+            from live_flow import (hand_id_for, render_session_page,
+                                   save_session, session_page_buttons,
+                                   set_session_message)
+            date_str = result.get("date")
+            session_key = hand_id_for(text, date_str)
+            async with self.db.pool.acquire() as conn:
+                session_id = await save_session(
+                    conn, session_key, update.effective_chat.id, result)
+            html, _prev, _next = render_session_page(result, 0)
+            markup = self._rows_to_markup(
+                session_page_buttons(result, session_id, 0))
             try:
                 await msg.delete()
             except Exception:
                 pass
-            await update.message.reply_text(
+            sent = await update.message.reply_text(
                 html, parse_mode="HTML", disable_web_page_preview=True,
                 reply_markup=markup)
+            async with self.db.pool.acquire() as conn:
+                await set_session_message(conn, session_id, sent.message_id)
             self.log.info(f"[{label}] /live done: {result['totals']}")
         except Exception as e:
             self.log.error(f"[{label}] /live failed: {e}", exc_info=True)
@@ -1770,6 +1793,101 @@ class PokerWizardBot:
                     os.unlink(p)
                 except OSError:
                     pass
+
+    async def _apply_live_resend(self, update, context, session_id: int,
+                                 hand_idx: int, block: str):
+        from live_flow import (load_session, overwrite_hand, process_resend_block,
+                               render_session_page, resend_entry_is_graded,
+                               resend_failure_message, session_page_buttons,
+                               set_session_message)
+
+        msg = await update.message.reply_text("🔁 重新解析並覆蓋中…")
+        async with self.db.pool.acquire() as conn:
+            session_hint = await load_session(conn, session_id)
+        if not session_hint:
+            await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
+            return
+
+        refresh_token = await self._get_user_refresh_token(update.effective_user.id)
+        if not refresh_token:
+            await msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
+            return
+
+        # Gemini + solver grading is synchronous; do it off the event loop and
+        # before acquiring the write transaction/connection.  The worker thread
+        # must receive the requesting user's GTO token and clear it afterward.
+        _user_id = update.effective_user.id
+        _refresh_token = refresh_token
+        _setup = self._setup_user_token
+        _clear = self._clear_user_token
+        _date = session_hint["result"].get("date")
+
+        def _process_with_token():
+            _setup(_user_id, _refresh_token)
+            try:
+                return process_resend_block(block, _date)
+            finally:
+                _clear()
+
+        new_entry = await asyncio.to_thread(_process_with_token)
+        if not resend_entry_is_graded(new_entry):
+            await msg.edit_text(resend_failure_message(hand_idx, new_entry))
+            return
+
+        async with self.db.pool.acquire() as conn:
+            applied = await overwrite_hand(conn, session_id, hand_idx, new_entry)
+        if not applied.get("ok"):
+            if applied.get("error") == "session_missing":
+                await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
+            else:
+                await msg.edit_text(resend_failure_message(
+                    hand_idx, applied.get("entry") or new_entry))
+            return
+
+        session = applied["session"]
+        result = applied["result"]
+        page = applied["page"]
+        html, _prev, _next = render_session_page(result, page)
+        markup = self._rows_to_markup(
+            session_page_buttons(result, session_id, page))
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        if session.get("message_id"):
+            try:
+                await context.bot.edit_message_text(
+                    html, chat_id=session["chat_id"],
+                    message_id=session["message_id"], parse_mode="HTML",
+                    disable_web_page_preview=True, reply_markup=markup)
+                await update.message.reply_text(f"✅ Hand {hand_idx + 1} 已更新。")
+                return
+            except Exception:
+                self.log.warning("live resend edit_message_text failed", exc_info=True)
+        sent = await update.message.reply_text(
+            html, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=markup)
+        async with self.db.pool.acquire() as conn:
+            await set_session_message(conn, session_id, sent.message_id)
+
+    async def _send_or_edit_session_page(self, query, session: dict, page: int):
+        """Re-render one live session page and edit the report message in place."""
+        from live_flow import (render_session_page, session_page_buttons,
+                               update_session_result)
+
+        result = session["result"]
+        html, _prev, _next = render_session_page(result, page)
+        markup = self._rows_to_markup(
+            session_page_buttons(result, session["id"], page))
+        async with self.db.pool.acquire() as conn:
+            await update_session_result(conn, session["id"], result, page)
+        try:
+            await query.edit_message_text(
+                html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=markup)
+        except telegram.error.BadRequest as exc:
+            if "Message is not modified" not in str(exc):
+                raise
 
     async def _fetch_queue_page(self, page: int = 0):
         total = await self.db.pool.fetchval(
@@ -2144,6 +2262,37 @@ class PokerWizardBot:
             parse_mode="HTML",
             reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
 
+    async def _live_add_menu(self, context, chat_id, session, hand_idx: int):
+        """Expand a live hand's graded decisions as ➕ manual-add buttons."""
+        from queue_feed import qex_submenu
+
+        hands = session["result"]["hands"]
+        if hand_idx < 0 or hand_idx >= len(hands) or not hands[hand_idx].get("ok"):
+            await context.bot.send_message(chat_id, "這手沒有可加練的決策。")
+            return
+
+        hand_id = hands[hand_idx]["hand_id"]
+        rows = await self.db.pool.fetch(
+            "SELECT id, gtow_hand_id, street, decision_idx, spot_category, "
+            "spot_leaf, hero_cat, villain_cat, ip_oop, position, ev_loss_bb "
+            "FROM ledger_decisions "
+            "WHERE gtow_hand_id=$1 AND source='live' AND NOT excluded "
+            "AND NOT discarded "
+            "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
+            "WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx",
+            hand_id)
+        if not rows:
+            await context.bot.send_message(
+                chat_id, "這手沒有可加練的已評分決策。")
+            return
+
+        btn_rows = qex_submenu([dict(r) for r in rows], queue_id=0)
+        await context.bot.send_message(
+            chat_id,
+            f"➕ <b>選一條 action line 加入練習</b>\nHand {hand_idx + 1}",
+            parse_mode="HTML",
+            reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
+
     async def _queue_add_manual(self, update: Update,
                                 context: ContextTypes.DEFAULT_TYPE,
                                 queue_id: int, decision_ref):
@@ -2208,6 +2357,58 @@ class PokerWizardBot:
 
         if not self._is_owner(update):
             await query.answer()
+            return
+
+        if data.startswith("lvpg:"):
+            from live_flow import load_session
+
+            _, sid, page = data.split(":")
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session:
+                await query.answer("這個線下 session 已過期，請重跑 /live。")
+                return
+            await query.answer()
+            await self._send_or_edit_session_page(query, session, int(page))
+            return
+
+        if data.startswith("lvadd:"):
+            from live_flow import load_session
+
+            _, sid, hand_idx = data.split(":")
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session:
+                await query.answer("這個線下 session 已過期，請重跑 /live。")
+                return
+            await query.answer()
+            await self._live_add_menu(context, chat_id, session, int(hand_idx))
+            return
+
+        if data.startswith("lvr:"):
+            from html import escape as _esc
+            from live_flow import load_session, _repair_explanation
+
+            _, sid, hand_idx = data.split(":")
+            hand_idx_i = int(hand_idx)
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session:
+                await query.answer("這個線下 session 已過期，請重跑 /live。")
+                return
+            await query.answer()
+            h = session["result"]["hands"][hand_idx_i]
+            self._live_resend_pending[chat_id] = (user_id, int(sid), hand_idx_i)
+            reps = "；".join(
+                _repair_explanation(str(r)) for r in (h.get("repairs") or [])
+            ) or "無"
+            await context.bot.send_message(
+                chat_id,
+                f"請貼上 <b>Hand {hand_idx_i + 1}</b> 的單手更正版本"
+                f"（Header / Flop / Turn / River 各一行）。\n"
+                f"目前 echo：{_esc(h.get('echo') or '（無法評分）')}\n"
+                f"目前校正：{_esc(reps)}",
+                parse_mode="HTML")
             return
 
         if data.startswith("qsrc:"):
@@ -2305,7 +2506,8 @@ class PokerWizardBot:
             return
 
         if data.startswith("qad2:"):
-            _, qid, hid, street, didx = data.split(":", 4)
+            _, qid, decision_key = data.split(":", 2)
+            hid, street, didx = decision_key.rsplit(":", 2)
             await self._queue_add_manual(
                 update, context, int(qid), (hid, street, int(didx)))
             return
@@ -2551,7 +2753,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
+                pattern=r"^(lvd|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))

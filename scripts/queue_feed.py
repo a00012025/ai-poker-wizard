@@ -678,6 +678,62 @@ async def enqueue(conn, items: list[dict]) -> dict:
     return tally
 
 
+async def remove_source_hand(conn, hand_id: str) -> None:
+    """Strip a hand's contributions from every open drill queue row.
+
+    For pending/prescribed rows whose ``source_hands`` includes ``hand_id``,
+    drop those source entries, recompute EV/n, and clear empty auto/live drill
+    rows as resend fallout.
+    """
+    rows = await conn.fetch(
+        "SELECT id, source_hands, added_by, kind, drill_url FROM drill_queue "
+        "WHERE status IN ('pending','prescribed') "
+        "AND source_hands::text LIKE '%' || $1 || '%'", hand_id)
+    for r in rows:
+        srcs = _as_list(r["source_hands"])
+        kept = [s for s in srcs if s.get("hand_id") != hand_id]
+        if len(kept) == len(srcs):
+            continue
+        if (not kept and r["kind"] == "drill"
+                and r["added_by"] in ("auto", "live")):
+            await conn.execute(
+                "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
+                "clear_reason='resend', source_hands='[]'::jsonb, "
+                "total_ev_loss_bb=0, n_sources=0, drill_url=NULL, "
+                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
+                "WHERE id=$1", r["id"])
+            continue
+        total = round(sum(float(s.get("ev_loss_bb") or 0) for s in kept), 4)
+        old_url = r.get("drill_url") if hasattr(r, "get") else r["drill_url"]
+        try:
+            rebuilt_url = await queue_drill_url_from_sources(conn, kept)
+        except Exception as exc:
+            log.warning("queue source URL rebuild failed for row %s: %s",
+                        r["id"], exc, exc_info=True)
+            rebuilt_url = None
+        if rebuilt_url is None:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4 WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept))
+        elif rebuilt_url == old_url:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5 WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
+        else:
+            await conn.execute(
+                "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
+                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
+                "WHERE id=$1",
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
+
+
 # ── online scan ──────────────────────────────────────────────────────────────
 def _drill_scan_sql(win_col: str = "$1") -> str:
     return f"""

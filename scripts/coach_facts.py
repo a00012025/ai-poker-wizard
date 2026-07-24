@@ -493,7 +493,7 @@ def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
             head += f"、percentile {_pct(hf['percentile'])}%"
     elif hf.get("low_weight"):
         head += "在 GTO 中此線極少出現（頻率近 0），數據參考性低"
-        facts.note = "你的實際打法偏離 solver 主線，此節點數據僅供參考"
+        facts.note = "你的實際打法偏離 solver 建議，此節點數據僅供參考"
     facts.lines.append(head)
     if hf.get("actions"):
         facts.lines.append(f"      solver 動作：{_fmt_actions(hf['actions'])}")
