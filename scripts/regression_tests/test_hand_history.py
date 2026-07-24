@@ -478,6 +478,51 @@ def test_hh_check_hand_correct_play():
 
 
 @test
+def test_hh_check_hand_second_decision_queries_after_intervening_fold():
+    """BTN's squeeze response must be queried after CO folds, not at CO's node."""
+    import hh_deviation_check as hdc
+
+    calls = []
+    originals = {
+        "get_spot_solution": hdc.get_spot_solution,
+        "_normalize_preflop_action": hdc._normalize_preflop_action,
+        "_get_preflop_hand_freqs": hdc._get_preflop_hand_freqs,
+        "_get_hand_ev": hdc._get_hand_ev,
+        "_get_action_evs_preflop": hdc._get_action_evs_preflop,
+    }
+
+    def fake_solution(**kwargs):
+        prefix = kwargs["preflop_actions"]
+        calls.append(prefix)
+        return {"node": prefix, "action_solutions": []}
+
+    hdc.get_spot_solution = fake_solution
+    hdc._normalize_preflop_action = lambda code, *_args, **_kwargs: code
+    hdc._get_preflop_hand_freqs = lambda sol, *_args: (
+        {"C": 1.0} if sol["node"] == "F-F-F-F-R2-C-R7-F-F" else None)
+    hdc._get_hand_ev = lambda *_args, **_kwargs: 0.0
+    hdc._get_action_evs_preflop = lambda *_args, **_kwargs: {"F": 0.0, "C": -1.0}
+    try:
+        devs = hdc.check_hand({
+            "hand_id": "LIVE-HAND-2",
+            "hero_position": "BTN",
+            "hero_hand": "7s8s",
+            "effective_bb": 35,
+            "num_players": 8,
+            "table_size": 8,
+            "preflop_actions": "F-F-F-F-R2-C-R7-F-F-C",
+        }, emit_ungraded=True)
+    finally:
+        for name, value in originals.items():
+            setattr(hdc, name, value)
+
+    assert_in("F-F-F-F-R2-C-R7-F-F", calls)
+    assert_eq(devs[1]["spot"], "facing 3bet/4bet")
+    assert_eq(devs[1]["hero_action"], "C")
+    assert_eq(devs[1]["ev_loss"], 1.0)
+
+
+@test
 def test_deviation_report_low_ev_shown():
     """Report: low EV deviations are still shown (no EV filter)."""
     from hh_deviation_report import format_deviation_report

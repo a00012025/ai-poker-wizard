@@ -2884,6 +2884,63 @@ def _mk_result(n):
 
 
 @test
+def live_report_uses_compact_pot_labels_and_hides_unopened():
+    import live_flow
+
+    expected = {
+        "single_raised": "SRP",
+        "squeezed": "Squeeze Pot",
+        "3bet": "3B Pot",
+        "4bet": "4B Pot",
+    }
+    for pot_type, label in expected.items():
+        result = _mk_result(1)
+        result["hands"][0]["hand_row"]["pot_type"] = pot_type
+        html, _prev, _next = live_flow.render_session_page(result, 0)
+        assert_in(label, html)
+
+    result = _mk_result(1)
+    result["hands"][0]["hand_row"]["pot_type"] = "unopened"
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_not_in("unopened", html)
+    assert_not_in("未開池", html)
+
+
+@test
+def raw_preflop_line_overrides_extra_llm_continuation_fold():
+    import live_flow
+
+    raw = (
+        "Eff 40bb Lj raise hj call hero co raise 7bb jj Lj fold hj call\n"
+        "752r x b10 fold"
+    )
+    hand = {
+        "players_at_table": 8,
+        "effective_bb": 40,
+        "hero_position": "CO",
+        "hero_hand": "JJ",
+        # Bad LLM parse: an extra continuation fold moves HJ's call to CO.
+        "preflop_actions": "F-F-R2-C-R7-F-F-F-F-F-C",
+        "streets": [{
+            "board": "7s5h2d",
+            "actions": [
+                {"position": "HJ", "action": "X"},
+                {"position": "CO", "action": "R10", "size": 10},
+                {"position": "HJ", "action": "F"},
+            ],
+        }],
+    }
+
+    changed = live_flow.apply_raw_preflop_actions(raw, hand)
+    assert_true(changed, "deterministic raw parser should correct the LLM line")
+    assert_eq(hand["preflop_actions"], "F-F-R2-C-R7-F-F-F-F-C")
+    assert_eq(hand["preflop_actions_for_pot"], hand["preflop_actions"])
+    repaired = live_flow.repair_hu_pot(hand)
+    assert_true(live_flow.find_ghost(repaired) is None,
+                "LJ folded and HJ called, so no live-player ghost remains")
+
+
+@test
 def page_split():
     result = _mk_result(23)
     html0, prev0, next0 = render_session_page(result, 0)
@@ -3175,7 +3232,7 @@ def depth_escalation_failure_is_honest_in_state_and_rendering():
 
 
 @test
-def depth_escalation_successful_offrange_keeps_existing_rendering():
+def depth_escalation_successful_offrange_hides_internal_retry_detail():
     import live_flow
 
     result = _mk_result(1)
@@ -3187,7 +3244,7 @@ def depth_escalation_successful_offrange_keeps_existing_rendering():
         "depth_escalation_failed": False, "depth_escalation_offrange": 17,
     }]
     html, _prev, _next = live_flow.render_session_page(result, 0)
-    assert_in("已嘗試升一格近似，仍無範圍", html)
+    assert_not_in("已嘗試升一格近似，仍無範圍", html)
     assert_not_in("升格評分失敗", html)
 
 

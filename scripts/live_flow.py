@@ -867,6 +867,24 @@ def preflop_actions_for_pot_from_raw(raw_text: str, hand: dict) -> str | None:
     return _events_to_preflop_actions(events, players) if events else None
 
 
+def apply_raw_preflop_actions(raw_text: str, hand: dict) -> bool:
+    """Use deterministic shorthand events as the canonical preflop line.
+
+    The LLM occasionally inserts an extra continuation fold, shifting the
+    remaining call onto the wrong player.  The raw first line is structured
+    enough to recover seat ownership deterministically, so keep both solver
+    and real-pot representations aligned to that source before HU repair.
+    Returns whether the solver line changed.
+    """
+    pot_line = preflop_actions_for_pot_from_raw(raw_text, hand)
+    if not pot_line:
+        return False
+    changed = hand.get("preflop_actions") != pot_line
+    hand["preflop_actions"] = pot_line
+    hand["preflop_actions_for_pot"] = pot_line
+    return changed
+
+
 def parse_simple_preflop_block(block: str) -> dict | None:
     """Deterministic fallback for terse one-line preflop-only live notes.
 
@@ -1469,9 +1487,8 @@ def process_batch(text: str, date_str: str | None = None,
             if hand2 and not hand2.get("_refused") and not hero_folded_but_acts(hand2):
                 repairs = list(hand2.pop("_repairs", [])) + ["矛盾重解析（hero preflop 動作歸屬）"]
                 hand = hand2
-        pot_line = preflop_actions_for_pot_from_raw(block, hand)
-        if pot_line:
-            hand["preflop_actions_for_pot"] = pot_line
+        if apply_raw_preflop_actions(block, hand):
+            repairs.append("preflop 動作依原文校正")
         pre_repair = json.dumps(hand, sort_keys=True)
         hand = repair_hu_pot(hand)
         if json.dumps(hand, sort_keys=True) != pre_repair:
@@ -1489,9 +1506,8 @@ def process_batch(text: str, date_str: str | None = None,
             hand2 = parse_block(block, extra_hint=hint)
             if hand2 and not hand2.get("_refused"):
                 repairs2 = list(hand2.pop("_repairs", []))
-                pot_line = preflop_actions_for_pot_from_raw(block, hand2)
-                if pot_line:
-                    hand2["preflop_actions_for_pot"] = pot_line
+                if apply_raw_preflop_actions(block, hand2):
+                    repairs2.append("preflop 動作依原文校正")
                 hand2 = repair_hu_pot(hand2)
                 if find_ghost(hand2) is None:
                     hand = hand2
@@ -1798,9 +1814,10 @@ def _failure_help(h: dict) -> tuple[str, str]:
 PER_PAGE = 10
 
 _POT_TYPE_ZH = {
-    "single_raised": "單加注池", "srp": "單加注池", "limped": "跛入池",
-    "3bet": "3bet 池", "4bet": "4bet 池", "5bet": "5bet 池",
-    "squeezed": "擠壓池", "cold4bet": "cold 4bet 池",
+    "single_raised": "SRP", "srp": "SRP", "limped": "跛入池",
+    "3bet": "3B Pot", "4bet": "4B Pot", "5bet": "5B Pot",
+    "squeezed": "Squeeze Pot", "cold4bet": "4B Pot",
+    "unopened": "",
 }
 
 
@@ -1877,8 +1894,6 @@ def render_session_page(result: dict, page: int = 0,
                      f"你的牌已在該線範圍外")
             if any(d.get("depth_escalation_failed") for d in offrange):
                 L.append("　（升格評分失敗，保留原深度未評分）")
-            elif any(d.get("depth_escalation_offrange") for d in offrange):
-                L.append("　（已嘗試升一格近似，仍無範圍）")
         L.append("")
 
     if result.get("queue"):
