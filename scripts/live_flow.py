@@ -1469,6 +1469,42 @@ async def persist(result: dict) -> None:
         await conn.close()
 
 
+async def save_session(conn, session_key: str, chat_id: int,
+                       result: dict) -> int:
+    """Insert/replace a live session; returns its id. Idempotent on key."""
+    return await conn.fetchval(
+        "INSERT INTO live_sessions (session_key, chat_id, result_json) "
+        "VALUES ($1, $2, $3) "
+        "ON CONFLICT (session_key) DO UPDATE SET "
+        "result_json = EXCLUDED.result_json, chat_id = EXCLUDED.chat_id "
+        "RETURNING id",
+        session_key, chat_id, json.dumps(result, ensure_ascii=False, default=str))
+
+
+async def set_session_message(conn, session_id: int, message_id: int) -> None:
+    await conn.execute(
+        "UPDATE live_sessions SET message_id=$2 WHERE id=$1",
+        session_id, message_id)
+
+
+async def load_session(conn, session_id: int) -> dict | None:
+    row = await conn.fetchrow(
+        "SELECT id, session_key, chat_id, message_id, page, result_json "
+        "FROM live_sessions WHERE id=$1", session_id)
+    if not row:
+        return None
+    return {"id": row["id"], "session_key": row["session_key"],
+            "chat_id": row["chat_id"], "message_id": row["message_id"],
+            "page": row["page"], "result": json.loads(row["result_json"])}
+
+
+async def update_session_result(conn, session_id: int, result: dict,
+                                page: int) -> None:
+    await conn.execute(
+        "UPDATE live_sessions SET result_json=$2, page=$3 WHERE id=$1",
+        session_id, json.dumps(result, ensure_ascii=False, default=str), page)
+
+
 # ── TG rendering (HTML + inline-button payload) ──────────────────────────────
 def _repair_explanation(note: str) -> str:
     if note == "HU pot 動作歸屬修補":
