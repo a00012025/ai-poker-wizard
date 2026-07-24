@@ -576,12 +576,12 @@ UPDATE drill_queue SET
   n_sources = $3,
   total_ev_loss_bb = COALESCE(total_ev_loss_bb, 0) + $4,
   gtow_settings_hash = CASE
-    WHEN $5 IS NOT NULL AND drill_url IS DISTINCT FROM $5
+    WHEN $5::text IS NOT NULL AND drill_url IS DISTINCT FROM $5::text
       THEN NULL ELSE gtow_settings_hash END,
   gtow_drill_synced_at = CASE
-    WHEN $5 IS NOT NULL AND drill_url IS DISTINCT FROM $5
+    WHEN $5::text IS NOT NULL AND drill_url IS DISTINCT FROM $5::text
       THEN NULL ELSE gtow_drill_synced_at END,
-  drill_url = COALESCE($5, drill_url),
+  drill_url = COALESCE($5::text, drill_url),
   label = COALESCE($6, label),
   bias_key = CASE WHEN $7 THEN $8 ELSE bias_key END,
   bias_direction = CASE WHEN $7 THEN $9 ELSE bias_direction END,
