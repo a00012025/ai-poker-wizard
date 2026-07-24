@@ -456,7 +456,14 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
     postflop_order = order[-2:] + order[:-2]  # SB, BB, UTG, ...
     notes: list[str] = []
 
-    def hu_actors() -> list[str]:
+    def raw_preflop_hu_actors() -> list[str]:
+        """Return OOP/IP HU actors only when the raw preflop line proves them.
+
+        The [R,C] orphan-call repair inserts a missing bettor.  Unlike the
+        older dropped-leading-check repair, it must not infer that bettor from
+        parsed postflop actors, because those actors may be exactly the corrupt
+        LLM output being repaired.
+        """
         lines = [ln.strip() for ln in (block or "").splitlines()
                  if ln.strip() and not _is_noise(ln)]
         if lines:
@@ -473,11 +480,9 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
                 live = [p for p, c in last.items() if c != "F" and p in postflop_order]
                 if len(live) == 2:
                     return sorted(live, key=postflop_order.index)
-        all_actors = {a.get("position") for st in streets for a in (st.get("actions") or [])
-                      if a.get("position") in postflop_order}
-        return sorted(all_actors, key=postflop_order.index) if len(all_actors) == 2 else []
+        return []
 
-    heads_up = hu_actors()
+    raw_heads_up = raw_preflop_hu_actors()
 
     for idx, (st, hints) in enumerate(zip(streets, hints_by_street)):
         actions = st.get("actions") or []
@@ -486,14 +491,14 @@ def repair_street_actions_from_block(block: str, hand: dict) -> tuple[dict, list
             continue
         parsed_classes = [_action_class(a.get("action")) for a in actions]
         hint_classes = [_action_class(h) for h in hints]
-        if heads_up and hint_classes == ["R", "C"] and parsed_classes in (["C"], ["X", "C"]):
-            bet = {"position": heads_up[0], "action": hints[0]}
+        if raw_heads_up and hint_classes == ["R", "C"] and parsed_classes in (["C"], ["X", "C"]):
+            bet = {"position": raw_heads_up[0], "action": hints[0]}
             m = re.match(r"^[RAI]+(\d+(?:\.\d+)?)$", hints[0], re.I)
             if m:
                 bet["size"] = float(m.group(1))
             call_src = actions[-1] if actions else {}
             call = dict(call_src)
-            call["position"] = heads_up[1]
+            call["position"] = raw_heads_up[1]
             call["action"] = hints[1]
             st["actions"] = [bet, call]
             notes.append(f"{_street_name(idx)} 補回原文開頭 bet")

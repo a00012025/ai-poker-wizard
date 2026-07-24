@@ -911,13 +911,48 @@ def flop_b4_is_bet():
 
     h = parse_block(block, client=_Client())
     assert_true(h is not None and not h.get("_refused"), "parses")
+    assert_true(any("flop 補回原文開頭 bet" in n for n in h.get("_repairs", [])),
+                f"repair note missing: {h.get('_repairs')}")
     h = repair_hu_pot(h)
+    assert_eq(h["preflop_actions"], "F-F-F-F-R2-C-R7-F-F-C")
+    assert_eq(h["preflop_actions_for_pot"], "F-F-F-F-R2-C-R7-F-C")
     rep = validate_hand(h)
     assert_true(rep.ok, f"must be legal: {[i.message for i in rep.hard]}")
     flop = next(s for s in h["streets"] if (s.get("board") or "").startswith("Ac5c6"))
-    actions = [(a.get("position"), a.get("action")) for a in flop["actions"]]
-    assert_true(actions and str(actions[0][1]).upper().startswith(("R", "B")),
-                f"flop opens with a bet, got {actions}")
+    assert_eq([(a.get("position"), a.get("action"), a.get("size")) for a in flop["actions"]],
+              [("SB", "R4", 4.0), ("BTN", "C", None)])
+    turn = next(s for s in h["streets"] if s.get("card") == "4s")
+    assert_eq([(a.get("position"), a.get("action")) for a in turn["actions"]],
+              [("SB", "X"), ("BTN", "R8"), ("SB", "F")])
+
+
+@test
+def test_live_repair_street_actions_does_not_restore_bet_without_raw_hu_proof():
+    """The orphan-call [R,C] repair inserts a bettor, so it must be gated by
+    exactly two live actors from raw preflop events. Parsed street actors alone
+    are not proof; leave the hand for validator/refusal instead of guessing."""
+    from live_flow import repair_street_actions_from_block
+
+    block = ("Eff 35bb hero btn 7s8s\n"
+             "Ac5c6d b4 call\n"
+             "4s x b8 fold")
+    bad = {
+        "gametype": "MTTGeneral", "players_at_table": 8, "effective_bb": 35,
+        "hero_position": "BTN", "hero_hand": "7s8s",
+        "preflop_actions": "F-F-F-F-R2-C-R7-F-C",
+        "streets": [
+            {"street": "flop", "board": "Ac5c6d", "actions": [
+                {"position": "SB", "action": "C"}]},
+            {"street": "turn", "card": "4s", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BTN", "action": "R8"},
+                {"position": "SB", "action": "F"}]},
+        ],
+    }
+
+    repaired, notes = repair_street_actions_from_block(block, bad)
+    assert_true(not any("補回原文開頭 bet" in n for n in notes), str(notes))
+    assert_eq(repaired["streets"][0]["actions"], [{"position": "SB", "action": "C"}])
 
 
 @test
