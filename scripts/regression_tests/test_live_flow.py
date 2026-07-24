@@ -2663,5 +2663,16 @@ def per_hand_buttons():
     assert_true(any(b.get("callback_data", "").startswith("lvpg:7:1")
                     for b in flat), "next-page nav present")
     # failed hand (idx 2) exposes only a resend button, no 復盤/教練/加練
-    assert_true(any(b.get("callback_data") == "lvr:7:1" for b in flat),
-                "failed hand resend by index")
+    assert_eq(rows[1], [{"text": "🔁 重傳", "callback_data": "lvr:7:1"}])
+
+
+@test
+def session_page_buttons_rejects_non_positive_per_page():
+    result = _mk_result(1)
+    for bad in (0, -3):
+        try:
+            session_page_buttons(result, session_id=7, page=0, per_page=bad)
+        except ValueError as exc:
+            assert_in("per_page must be positive", str(exc))
+        else:
+            raise AssertionError(f"per_page={bad} should raise ValueError")

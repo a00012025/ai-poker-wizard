@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -36,6 +37,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from card_display import cards_to_emoji
+
+log = logging.getLogger(__name__)
 
 QUEUE_EV_MIN = 0.10          # bb: a decision enters the drill queue at/above this loss
 SEV_MAJOR = 0.30             # bb: ❌ vs ⚠️ display split
@@ -1491,6 +1494,8 @@ def process_batch(text: str, date_str: str | None = None,
             entry["review_url"] = build_last_hero_hand_url(
                 hand, [d for d in d_rows if not d.get("excluded")])
         except Exception:
+            log.debug("live review_url generation failed for %s", hand_id,
+                      exc_info=True)
             entry["review_url"] = None
         time.sleep(0.3)
 
@@ -1695,6 +1700,8 @@ def render_tg_html(result: dict) -> str:
 def session_page_buttons(result: dict, session_id: int, page: int,
                          per_page: int = PER_PAGE) -> list[list[dict]]:
     """Per-hand button rows for one page + prev/next nav."""
+    if per_page <= 0:
+        raise ValueError("per_page must be positive")
     hands = result["hands"]
     pages = max(1, (len(hands) + per_page - 1) // per_page)
     page = max(0, min(page, pages - 1))
