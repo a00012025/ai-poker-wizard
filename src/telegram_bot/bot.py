@@ -1808,10 +1808,28 @@ class PokerWizardBot:
             await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
             return
 
+        refresh_token = await self._get_user_refresh_token(update.effective_user.id)
+        if not refresh_token:
+            await msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
+            return
+
         # Gemini + solver grading is synchronous; do it off the event loop and
-        # before acquiring the write transaction/connection.
-        new_entry = await asyncio.to_thread(
-            process_resend_block, block, session_hint["result"].get("date"))
+        # before acquiring the write transaction/connection.  The worker thread
+        # must receive the requesting user's GTO token and clear it afterward.
+        _user_id = update.effective_user.id
+        _refresh_token = refresh_token
+        _setup = self._setup_user_token
+        _clear = self._clear_user_token
+        _date = session_hint["result"].get("date")
+
+        def _process_with_token():
+            _setup(_user_id, _refresh_token)
+            try:
+                return process_resend_block(block, _date)
+            finally:
+                _clear()
+
+        new_entry = await asyncio.to_thread(_process_with_token)
         if not resend_entry_is_graded(new_entry):
             await msg.edit_text(resend_failure_message(hand_idx, new_entry))
             return

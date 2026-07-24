@@ -3187,9 +3187,12 @@ def overwrite_hand_failed_replacement_is_non_destructive():
 def apply_live_resend_overwrites_session_and_edits_original_message():
     import asyncio
     import logging
+    import os
     import sys
     from types import SimpleNamespace
     from telegram_bot.bot import PokerWizardBot
+
+    import gto_api
 
     captured = {"acquires": 0}
     result = _mk_result(2)
@@ -3230,8 +3233,11 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         return session
 
     def fake_process(block, date):
-        captured.update(process_block=block, process_date=date,
-                        acquires_during_process=captured["acquires"])
+        captured.update(
+            process_block=block, process_date=date,
+            acquires_during_process=captured["acquires"],
+            token_during_process=getattr(gto_api._thread_local, "access_token", None),
+        )
         new = _mk_hand(2, sev="❌")
         new["dec_rows"] = [_resend_dec_row("new-hand", ev=0.5)]
         return new
@@ -3243,6 +3249,19 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         result["totals"]["mistakes"] = 1
         return {"ok": True, "session": session, "result": result, "page": 0}
 
+    async def fake_refresh(user_id):
+        captured["refresh_user_id"] = user_id
+        return "refresh-token"
+
+    def fake_setup(user_id, refresh_token):
+        captured.update(setup_user_id=user_id, setup_refresh=refresh_token)
+        gto_api.set_user_token(f"access:{user_id}:{refresh_token}")
+
+    def fake_clear():
+        gto_api.clear_user_token()
+        captured["token_after_clear"] = getattr(
+            gto_api._thread_local, "access_token", None)
+
     fake_live = SimpleNamespace(
         load_session=fake_load, process_resend_block=fake_process,
         overwrite_hand=fake_overwrite,
@@ -3253,15 +3272,27 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
         session_page_buttons=lambda res, sid, page: [[{"text": "ok", "callback_data": "noop:1"}]],
     )
     orig_live = sys.modules.get("live_flow")
+    orig_bot_flag = os.environ.get("POKER_BOT_PROCESS")
     sys.modules["live_flow"] = fake_live
+    os.environ["POKER_BOT_PROCESS"] = "1"
     try:
         bot = object.__new__(PokerWizardBot)
         bot.db = SimpleNamespace(pool=Pool())
         bot.log = logging.getLogger("regression-apply-resend")
-        update = SimpleNamespace(message=Message())
+        bot._get_user_refresh_token = fake_refresh
+        bot._setup_user_token = fake_setup
+        bot._clear_user_token = fake_clear
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=556028753),
+            message=Message(),
+        )
         context = SimpleNamespace(bot=ChatBot())
         asyncio.run(bot._apply_live_resend(update, context, 42, 1, "corrected block"))
     finally:
+        if orig_bot_flag is None:
+            os.environ.pop("POKER_BOT_PROCESS", None)
+        else:
+            os.environ["POKER_BOT_PROCESS"] = orig_bot_flag
         if orig_live is None:
             sys.modules.pop("live_flow", None)
         else:
@@ -3269,6 +3300,12 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
 
     assert_eq(captured["process_block"], "corrected block")
     assert_eq(captured["process_date"], "2026-07-24")
+    assert_eq(captured["refresh_user_id"], 556028753)
+    assert_eq(captured["setup_user_id"], 556028753)
+    assert_eq(captured["setup_refresh"], "refresh-token")
+    assert_eq(captured["token_during_process"],
+              "access:556028753:refresh-token")
+    assert_eq(captured["token_after_clear"], None)
     assert_eq(captured["acquires_during_process"], 1)  # initial read released before write acquire
     assert_eq(captured["hand_idx"], 1)
     assert_eq(captured["sid"], 42)
@@ -3410,7 +3447,13 @@ def apply_live_resend_failed_replacement_is_non_destructive():
         bot = object.__new__(PokerWizardBot)
         bot.db = SimpleNamespace(pool=Pool())
         bot.log = logging.getLogger("regression-resend-failed")
-        update = SimpleNamespace(message=Message())
+        bot._get_user_refresh_token = lambda _uid: asyncio.sleep(0, result="refresh-token")
+        bot._setup_user_token = lambda _uid, _refresh: None
+        bot._clear_user_token = lambda: None
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=556028753),
+            message=Message(),
+        )
         asyncio.run(bot._apply_live_resend(update, SimpleNamespace(), 42, 0, "bad"))
     finally:
         if orig_live is None:
@@ -3496,7 +3539,13 @@ def apply_live_resend_fallback_persists_new_message_id():
         bot.db = SimpleNamespace(pool=Pool())
         bot.log = logging.getLogger("regression-resend-fallback")
         bot.log.disabled = True
-        update = SimpleNamespace(message=Message())
+        bot._get_user_refresh_token = lambda _uid: asyncio.sleep(0, result="refresh-token")
+        bot._setup_user_token = lambda _uid, _refresh: None
+        bot._clear_user_token = lambda: None
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=556028753),
+            message=Message(),
+        )
         context = SimpleNamespace(bot=ChatBot())
         asyncio.run(bot._apply_live_resend(update, context, 42, 0, "corrected"))
     finally:
