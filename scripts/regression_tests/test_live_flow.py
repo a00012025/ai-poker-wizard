@@ -755,6 +755,7 @@ def test_live_token_replay_preserves_limp_and_calculates_pot_fraction():
     flop = hand2["streets"][0]["actions"]
     assert_eq(flop[0]["size"], 5.75)
     assert_eq(flop[0]["action"], "R5.75")
+    assert_eq(flop[0]["pot_fraction"], 0.25)
 
 
 @test
@@ -799,8 +800,56 @@ def test_live_token_replay_normalizes_fraction_and_percent_literals():
     turn = hand["streets"][1]["actions"]
     assert_eq(flop[0]["action"], "R5.75")
     assert_eq(flop[0]["size"], 5.75)
+    assert_eq(flop[0]["pot_fraction"], 0.25)
     assert_eq(turn[0]["action"], "R17.25")
     assert_eq(turn[0]["size"], 17.25)
+    assert_eq(turn[0]["pot_fraction"], 0.5)
+
+
+@test
+def test_live_token_replay_preserves_fraction_when_bb_size_is_unresolved():
+    """Pot-relative sizing remains first-class JSON even when an earlier
+    unsized action makes the real BB pot unknowable."""
+    from live_flow import replay_live_action_tokens
+
+    block = (
+        "Eff 100bb co raise btn call hero sb 3b Ah6h co fold btn call\n"
+        "Kc2cJs hero bet 1/4 btn call\n"
+        "7d hero x btn bet 50% hero fold"
+    )
+    tokens = {
+        "effective_bb": 100, "hero_position": "SB", "hero_hand": "Ah6h",
+        "preflop_actions": [
+            {"actor": "CO", "action": "raise", "source": "co raise"},
+            {"actor": "BTN", "action": "call", "source": "btn call"},
+            {"actor": "HERO", "action": "raise", "source": "hero sb 3b"},
+            {"actor": "CO", "action": "fold", "source": "co fold"},
+            {"actor": "BTN", "action": "call", "source": "btn call"},
+        ],
+        "streets": [
+            {"board_text": "Kc2cJs", "actions": [
+                {"actor": "HERO", "action": "bet",
+                 "source": "hero bet 1/4"},
+                {"actor": "BTN", "action": "call", "source": "btn call"},
+            ]},
+            {"board_text": "7d", "actions": [
+                {"actor": "HERO", "action": "check", "source": "hero x"},
+                {"actor": "BTN", "action": "bet",
+                 "source": "btn bet 50%"},
+                {"actor": "HERO", "action": "fold", "source": "hero fold"},
+            ]},
+        ],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    flop_bet = hand["streets"][0]["actions"][0]
+    turn_bet = hand["streets"][1]["actions"][1]
+    assert_eq(flop_bet, {
+        "position": "SB", "action": "R", "pot_fraction": 0.25})
+    assert_eq(turn_bet, {
+        "position": "BTN", "action": "R", "pot_fraction": 0.5})
+    assert_in("preflop:SB:size_missing", hand["_parse_flags"])
+    assert_true(not any(flag.startswith("street")
+                        for flag in hand["_parse_flags"]))
 
 
 @test
@@ -913,6 +962,7 @@ def test_live_parser_diff_compares_exact_sizes_and_emits_review_template():
     }
     new = json.loads(json.dumps(old))
     new["streets"][0]["actions"][0]["size"] = 4.0
+    new["streets"][0]["actions"][0]["pot_fraction"] = 0.25
     new["_parse_trace"] = [{"source": "b4", "actor": "SB"}]
     assert_eq(field_summary(old, new), ["streets"])
     report = render_report([{
@@ -922,6 +972,7 @@ def test_live_parser_diff_compares_exact_sizes_and_emits_review_template():
     assert_in("VERDICT: [ ] OLD correct", report)
     assert_in("GOLD_JSON:", report)
     assert_in("TOKEN_TRACE:", report)
+    assert_in('"pot_fraction": 0.25', report)
 
 
 @test

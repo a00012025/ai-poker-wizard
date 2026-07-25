@@ -32,7 +32,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_spot_solution, get_next_actions,
-    find_closest_action, find_closest_action_postflop, nearest_depth,
+    find_closest_action, find_closest_action_by_pot_fraction,
+    find_closest_action_postflop, nearest_depth,
     nearest_cash_depth,
 )
 from gto_formatter import (
@@ -2183,6 +2184,7 @@ def _run_analysis(hand: dict) -> dict:
             pos = act["position"]
             action_type = act["action"]
             target_size = act.get("size", 0)
+            pot_fraction = act.get("pot_fraction")
             # Parse size from action string if not provided separately
             if not target_size and action_type.startswith("R"):
                 try:
@@ -2263,6 +2265,9 @@ def _run_analysis(hand: dict) -> dict:
                         # Explicit all-in is an absolute bb amount, never an
                         # LLM percentage token; bypass percentage auto-detect.
                         taken_code = find_closest_action(avail, target_size)
+                    elif pot_fraction is not None:
+                        taken_code = find_closest_action_by_pot_fraction(
+                            avail, pot_fraction)
                     elif actual_pot > 0:
                         # GTOW sizes both bets and raises by pot fraction. For
                         # raises the fraction is increment / pot after calling,
@@ -2288,7 +2293,11 @@ def _run_analysis(hand: dict) -> dict:
                                 match_avail = raise_only
                         taken_code = find_closest_action_postflop(match_avail, target_size)
 
-                size_str = f" {target_size}bb" if target_size else ""
+                size_str = (
+                    f" {target_size}bb" if target_size
+                    else (f" {float(pot_fraction):.0%} pot"
+                          if pot_fraction is not None else "")
+                )
                 # Hero's own size snapping off-tree is an approximation the
                 # verdict inherits — surface the magnitude when it exceeds the
                 # honesty threshold (same 25% as ledger sizing_snap; §14.2).
@@ -2302,9 +2311,13 @@ def _run_analysis(hand: dict) -> dict:
                                          f"（差 {_rel:.0%}）")
                     except ValueError:
                         pass
-                actual_pot_pct = None
+                actual_pot_pct = (
+                    float(pot_fraction)
+                    if pot_fraction is not None else None
+                )
                 if (
-                    target_size
+                    actual_pot_pct is None
+                    and target_size
                     and display_pot > 0
                     and outstanding_bet == 0
                     and action_type not in ("X", "C", "F")
@@ -2345,6 +2358,9 @@ def _run_analysis(hand: dict) -> dict:
                     avail = next_resp["next_actions"]["available_actions"]
                     if bool(act.get("allin")) or action_type.startswith("AI"):
                         taken_code = find_closest_action(avail, target_size)
+                    elif pot_fraction is not None:
+                        taken_code = find_closest_action_by_pot_fraction(
+                            avail, pot_fraction)
                     elif actual_pot > 0:
                         actor_prev = street_investments.get(pos, 0)
                         call_needed = max(0.0, outstanding_bet - actor_prev)
@@ -2376,6 +2392,13 @@ def _run_analysis(hand: dict) -> dict:
                     actual_pot += outstanding_bet - prev
                     display_pot += outstanding_bet - prev
                     street_investments[pos] = outstanding_bet
+                elif pot_fraction is not None and not target_size:
+                    # The solver line is exact in percentage space, but the
+                    # real BB pot remains unknown. Do not fabricate later
+                    # absolute-pot accounting from a zero placeholder.
+                    actual_pot = 0
+                    display_pot = 0
+                    outstanding_bet = 0
                 else:  # bet/raise
                     prev = street_investments.get(pos, 0)
                     actual_pot += target_size - prev

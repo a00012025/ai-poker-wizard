@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hh_parser import parse_directory, parse_file, POSITION_ORDERS
 from gto_api import (
     get_spot_solution, get_next_actions,
-    find_closest_action, find_closest_action_postflop, nearest_depth,
+    find_closest_action, find_closest_action_by_pot_fraction,
+    find_closest_action_postflop, nearest_depth,
 )
 from gto_formatter import (
     normalize_hand_name, _COMBO_INDEX, _COMBO_RANKS, _COMBO_SUITS, _RANK_ORDER,
@@ -682,6 +683,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             pos = act["position"]
             action_type = act["action"]
             target_size = act.get("size", 0)
+            pot_fraction = act.get("pot_fraction")
 
             if pos == hero_pos:
                 # Query solver at this point
@@ -707,7 +709,12 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                     try:
                         next_resp = get_next_actions(**params)
                         avail = next_resp["next_actions"]["available_actions"]
-                        taken_code = find_closest_action_postflop(avail, target_size)
+                        if pot_fraction is not None:
+                            taken_code = find_closest_action_by_pot_fraction(
+                                avail, pot_fraction)
+                        else:
+                            taken_code = find_closest_action_postflop(
+                                avail, target_size)
                     except Exception:
                         taken_code = action_type
 
@@ -802,7 +809,12 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                     )
                     next_resp = get_next_actions(**params_adv)
                     avail = next_resp["next_actions"]["available_actions"]
-                    taken = find_closest_action_postflop(avail, target_size)
+                    if pot_fraction is not None:
+                        taken = find_closest_action_by_pot_fraction(
+                            avail, pot_fraction)
+                    else:
+                        taken = find_closest_action_postflop(
+                            avail, target_size)
                 except Exception:
                     taken = action_type
 
