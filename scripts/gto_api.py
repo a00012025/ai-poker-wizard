@@ -162,7 +162,12 @@ def get_spot_solution(
         f"{API_BASE}/v4/solutions/spot-solution/",
         params=params,
     )
-    if r.status_code in (204, 403, 404):
+    if r.status_code == 403:
+        # Access/auth state is not an immutable property of a solver node.
+        # Returning None keeps the established soft-skip contract, but never
+        # persist it as evidence that the node does not exist.
+        return None
+    if r.status_code in (204, 404):
         cache_put("spot_solution", params, None)
         return None
     r.raise_for_status()

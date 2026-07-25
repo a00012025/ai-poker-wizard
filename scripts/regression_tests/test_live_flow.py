@@ -5,6 +5,7 @@ import inspect
 import logging
 import os
 import sys
+import copy
 from pathlib import Path
 
 from regression_tests.harness import (
@@ -1416,6 +1417,142 @@ def test_live_threeway_raw_line_preserves_real_pot_contributors():
 
     assert_eq(fixed["preflop_actions"], "F-F-R2-F-F-F-F-C")
     assert_eq(fixed["preflop_actions_for_pot"], "F-F-R2-C-F-F-F-C")
+
+
+@test
+def test_live_multiway_postflop_projects_to_deterministic_hu_pair():
+    """Observed 7/25 session: keep exact multiway preflop grading, but project
+    postflop onto the two players who reach the meaningful HU continuation."""
+    from live_flow import project_multiway_postflop
+
+    cases = [
+        ({
+            "players_at_table": 8, "effective_bb": 70,
+            "hero_position": "BB", "hero_hand": "Kh7h",
+            "preflop_actions": "F-R2-F-F-F-F-C-C",
+            "streets": [
+                {"board": "Jh5h7d", "actions": [
+                    {"position": "SB", "action": "X"},
+                    {"position": "BB", "action": "X"},
+                    {"position": "UTG+1", "action": "R1.5", "size": 1.5},
+                    {"position": "SB", "action": "C"},
+                    {"position": "BB", "action": "R7", "size": 7},
+                    {"position": "UTG+1", "action": "C"},
+                    {"position": "SB", "action": "F"},
+                ]},
+            ],
+        }, "F-R2-F-F-F-F-F-C", ["UTG+1", "BB"]),
+        ({
+            "players_at_table": 8, "effective_bb": 70,
+            "hero_position": "UTG+1", "hero_hand": "Ah9h",
+            "preflop_actions": "R2-C-F-F-F-C-F-F",
+            "streets": [{"board": "KdQd3c", "actions": [
+                {"position": "UTG", "action": "R3", "size": 3},
+                {"position": "UTG+1", "action": "F"},
+            ]}],
+        }, "R2-C-F-F-F-F-F-F", ["UTG", "UTG+1"]),
+        ({
+            "players_at_table": 8, "effective_bb": 60,
+            "hero_position": "UTG", "hero_hand": "Tc9c",
+            "preflop_actions": "R2-F-F-F-C-C-F-C",
+            "streets": [
+                {"board": "JcJd6h", "actions": [
+                    {"position": "BB", "action": "X"},
+                    {"position": "UTG", "action": "X"},
+                    {"position": "CO", "action": "X"},
+                    {"position": "BTN", "action": "X"},
+                ]},
+                {"card": "7s", "actions": [
+                    {"position": "BB", "action": "X"},
+                    {"position": "UTG", "action": "R3", "size": 3},
+                    {"position": "CO", "action": "F"},
+                    {"position": "BTN", "action": "F"},
+                    {"position": "BB", "action": "C"},
+                ]},
+            ],
+        }, "R2-F-F-F-F-F-F-C", ["UTG", "BB"]),
+    ]
+
+    for hand, expected_preflop, expected_positions in cases:
+        projected, meta, reason = project_multiway_postflop(copy.deepcopy(hand))
+        assert_true(projected is not None)
+        assert_true(reason is None)
+        assert_eq(projected["preflop_actions"], expected_preflop)
+        assert_eq(meta["positions"], expected_positions)
+        assert_eq(meta["label"], " vs ".join(expected_positions))
+        actors = {
+            action["position"]
+            for street in projected["streets"]
+            for action in street["actions"]
+        }
+        assert_true(actors <= set(expected_positions))
+        if expected_positions == ["UTG+1", "BB"]:
+            bb_raise = projected["streets"][0]["actions"][2]
+            assert_eq(bb_raise["position"], "BB")
+            assert_true(
+                abs(bb_raise["pot_fraction"] - (5.5 / 11.5)) < 1e-9,
+                "raise-to 7bb is a 5.5bb increment over the 11.5bb call pot")
+
+    unresolved = {
+        "players_at_table": 8, "effective_bb": 60,
+        "hero_position": "UTG", "hero_hand": "Tc9c",
+        "preflop_actions": "R2-F-F-F-C-C-F-C",
+        "streets": [{"board": "JcJd6h", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "UTG", "action": "X"},
+            {"position": "CO", "action": "X"},
+            {"position": "BTN", "action": "X"},
+        ]}],
+    }
+    projected, meta, reason = project_multiway_postflop(unresolved)
+    assert_true(projected is None and meta is None)
+    assert_eq(reason, "multiway_unresolved")
+
+
+@test
+def test_live_multiway_grading_keeps_exact_preflop_and_uses_hu_postflop():
+    """The projection must not replace BB's exact squeeze-facing preflop node."""
+    import hh_deviation_check
+    from live_flow import grade_hand
+
+    hand = {
+        "players_at_table": 8, "effective_bb": 70,
+        "hero_position": "BB", "hero_hand": "Kh7h",
+        "preflop_actions": "F-R2-F-F-F-F-C-C",
+        "streets": [{"board": "Jh5h7d", "actions": [
+            {"position": "SB", "action": "X"},
+            {"position": "BB", "action": "X"},
+            {"position": "UTG+1", "action": "R1.5", "size": 1.5},
+            {"position": "SB", "action": "C"},
+            {"position": "BB", "action": "R7", "size": 7},
+            {"position": "UTG+1", "action": "C"},
+            {"position": "SB", "action": "F"},
+        ]}],
+    }
+    calls = []
+    original = hh_deviation_check.check_hand
+
+    def fake_check(candidate, emit_ungraded=False):
+        calls.append(copy.deepcopy(candidate))
+        if not candidate.get("streets"):
+            return [{"street": "preflop", "source": "exact_multiway"}]
+        return [
+            {"street": "preflop", "source": "projected_preflop"},
+            {"street": "flop", "source": "projected_postflop"},
+        ]
+
+    hh_deviation_check.check_hand = fake_check
+    try:
+        devmap = grade_hand(hand)
+    finally:
+        hh_deviation_check.check_hand = original
+
+    assert_eq(devmap[("preflop", 0)]["source"], "exact_multiway")
+    assert_eq(devmap[("flop", 0)]["source"], "projected_postflop")
+    assert_eq(calls[0]["preflop_actions"], "F-R2-F-F-F-F-C-C")
+    assert_eq(calls[0]["streets"], [])
+    assert_eq(calls[1]["preflop_actions"], "F-R2-F-F-F-F-F-C")
+    assert_eq(hand["_multiway_projection"]["label"], "UTG+1 vs BB")
 
 
 @test
@@ -3656,6 +3793,23 @@ def live_report_explains_non_offrange_unsolved_start_street():
     }]
     html, _p, _n = render_session_page(result, 0)
     assert_in("❓ flop 起未評分：solver 沒有此行動線的可用節點", html)
+
+
+@test
+def live_report_shows_hu_projection_and_specific_multiway_failure():
+    result = _mk_result(2)
+    result["hands"][0]["multiway_projection"] = {
+        "positions": ["UTG+1", "BB"], "label": "UTG+1 vs BB"}
+    result["hands"][1]["decisions"] = [{
+        "street": "flop", "idx": 0, "leaf": "flop",
+        "ev_loss": None, "severity": "❓", "taken": "X", "best": None,
+        "taken_label": None, "best_label": None, "gto_freq": None,
+        "ungraded_reason": "multiway_unresolved", "discarded": False,
+        "limp_origin": False, "depth_escalated": None,
+    }]
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("ℹ️ 翻後簡化：UTG+1 vs BB", html)
+    assert_in("❓ flop 起未評分：多人池翻後無法可靠簡化", html)
 
 
 @test

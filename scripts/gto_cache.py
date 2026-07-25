@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -32,6 +33,8 @@ SENTINEL = object()  # distinguishes "not in cache" from "cached None"
 
 # L1: hot entries for this Python process.
 _mem: dict[str, dict | None] = {}
+_mem_negative_expires: dict[str, float] = {}
+_NEGATIVE_TTL_SECONDS = float(os.getenv("GTO_NEGATIVE_CACHE_TTL_SECONDS", "3600"))
 
 # L2: durable host storage.  An override is useful for tests and maintenance
 # tools; production uses the bind-mounted repository directory.
@@ -58,7 +61,7 @@ def _write_local(key: str, response: dict | None) -> bool:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file = _CACHE_DIR / f"{key}.json"
-        data = ({"is_null": True} if response is None else
+        data = ({"is_null": True, "cached_at": time.time()} if response is None else
                 {"is_null": False, "response": response})
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=_CACHE_DIR,
@@ -87,7 +90,14 @@ def _read_local(key: str):
         if not cache_file.exists():
             return SENTINEL
         data = json.loads(cache_file.read_text())
-        return None if data["is_null"] else data["response"]
+        if data["is_null"]:
+            cached_at = data.get("cached_at")
+            # Legacy null entries were permanent and could poison a node long
+            # after GTOW added it (or after a transient forbidden response).
+            if cached_at is None or time.time() - float(cached_at) >= _NEGATIVE_TTL_SECONDS:
+                return SENTINEL
+            return None
+        return data["response"]
     except Exception as e:
         # The caller will fetch the solver response again and atomically repair
         # the file.  Keep the failure visible rather than silently trusting it.
@@ -99,11 +109,18 @@ def get(function: str, params: dict):
     """Look up a response. Returns ``SENTINEL`` on miss, including corruption."""
     key = _cache_key(function, params)
     if key in _mem:
-        return _mem[key]
+        if (_mem[key] is None
+                and time.time() >= _mem_negative_expires.get(key, 0)):
+            _mem.pop(key, None)
+            _mem_negative_expires.pop(key, None)
+        else:
+            return _mem[key]
 
     local = _read_local(key)
     if local is not SENTINEL:
         _mem[key] = local
+        if local is None:
+            _mem_negative_expires[key] = time.time() + _NEGATIVE_TTL_SECONDS
     return local
 
 
@@ -112,6 +129,10 @@ def put(function: str, params: dict, response: dict | None):
     key = _cache_key(function, params)
     sanitized = _sanitize_json(response) if response is not None else None
     _mem[key] = sanitized
+    if sanitized is None:
+        _mem_negative_expires[key] = time.time() + _NEGATIVE_TTL_SECONDS
+    else:
+        _mem_negative_expires.pop(key, None)
     _write_local(key, sanitized)
 
 

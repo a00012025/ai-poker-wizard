@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -1767,16 +1768,175 @@ def hero_folded_postflop(hand: dict) -> bool:
 
 
 # ── grading (reuse the HH deviation engine; grader=own_pipeline) ─────────────
+def _annotate_real_pot_fractions(hand: dict) -> None:
+    """Attach real multiway pot fractions before actors are projected away."""
+    from analyze_hand import _compute_preflop_pot
+
+    players = int(hand.get("players_at_table") or 8)
+    real_preflop = (
+        hand.get("preflop_actions_for_pot")
+        or hand.get("preflop_actions")
+        or "")
+    ante = 0.0 if str(hand.get("gametype") or "").startswith("Cash") else 0.125
+    pot = _compute_preflop_pot(
+        real_preflop, float(hand.get("effective_bb") or 0),
+        num_players=players, ante_per_player=ante)
+
+    for street in hand.get("streets") or []:
+        outstanding = 0.0
+        invested: dict[str, float] = {}
+        for action in street.get("actions") or []:
+            code = str(action.get("action") or "")
+            pos = action.get("position") or ""
+            previous = invested.get(pos, 0.0)
+            if code in ("", "X", "F"):
+                continue
+            if code == "C":
+                paid = max(0.0, outstanding - previous)
+                pot += paid
+                invested[pos] = outstanding
+                continue
+            try:
+                target = float(
+                    action.get("size")
+                    or (code[2:] if code.startswith("AI") else code[1:]))
+            except (TypeError, ValueError):
+                continue
+            call_needed = max(0.0, outstanding - previous)
+            if action.get("pot_fraction") is None:
+                if outstanding > 0:
+                    raise_increment = max(0.0, target - outstanding)
+                    denominator = pot + call_needed
+                    if denominator > 0:
+                        action["pot_fraction"] = raise_increment / denominator
+                elif pot > 0:
+                    action["pot_fraction"] = target / pot
+            pot += max(0.0, target - previous)
+            invested[pos] = target
+            outstanding = max(outstanding, target)
+
+
+def project_multiway_postflop(
+        hand: dict) -> tuple[dict | None, dict | None, str | None]:
+    """Project a real multiway postflop hand onto one attributable HU tree.
+
+    The exact multiway preflop node is graded separately.  This projection is
+    only for postflop, where GTOW's MTT tree is heads-up.  The shared analyzer
+    simplifier selects the opponent from the real fold/continuation sequence;
+    all other actors are removed while their chips remain preserved in
+    ``preflop_actions_for_pot`` for audit and pot-ratio sizing.
+
+    Returns ``(projected_hand, metadata, failure_reason)``.  Non-multiway hands
+    return three ``None`` values.  A genuinely multiway hand with no defensible
+    hero-villain reduction returns ``multiway_unresolved`` rather than the
+    misleading generic ``no_solution``.
+    """
+    streets = hand.get("streets") or []
+    if not streets:
+        return None, None, None
+
+    from analyze_hand import _reaches_flop, _simplify_multiway
+    from gto_api import nearest_depth
+    from hh_parser import POSITION_ORDERS
+
+    preflop = hand.get("preflop_actions") or ""
+    if len(_reaches_flop(preflop)) <= 2:
+        return None, None, None
+
+    hero = hand.get("hero_position")
+    try:
+        simplified, solver_depth, note, active = _simplify_multiway(
+            hand, hero, hand.get("gametype") or "MTTGeneral",
+            nearest_depth(float(hand.get("effective_bb") or 0)),
+        )
+    except Exception:
+        log.warning("live multiway projection failed", exc_info=True)
+        return None, None, "multiway_unresolved"
+
+    if not active or hero not in active or len(active) != 2:
+        return None, None, "multiway_unresolved"
+
+    projected = copy.deepcopy(hand)
+    projected["preflop_actions_for_pot"] = (
+        hand.get("preflop_actions_for_pot") or preflop)
+    projected["preflop_actions"] = simplified
+    # MTT depths are encoded as bb + .125. check_hand accepts real bb and
+    # applies nearest_depth itself, so decode before handing the projection in.
+    projected["effective_bb"] = (
+        float(solver_depth) - 0.125
+        if abs(float(solver_depth) % 1 - 0.125) < 1e-9
+        else float(solver_depth)
+    )
+    _annotate_real_pot_fractions(projected)
+    for street in projected["streets"]:
+        street["actions"] = [
+            action for action in (street.get("actions") or [])
+            if action.get("position") in active
+        ]
+
+    original_hero_actions = sum(
+        action.get("position") == hero
+        for street in streets for action in (street.get("actions") or []))
+    projected_hero_actions = sum(
+        action.get("position") == hero
+        for street in projected["streets"]
+        for action in (street.get("actions") or []))
+    if projected_hero_actions != original_hero_actions:
+        return None, None, "multiway_unresolved"
+
+    order = POSITION_ORDERS.get(
+        int(hand.get("players_at_table") or 8), POSITION_ORDERS[8])
+    positions = sorted(active, key=lambda pos: order.index(pos))
+    meta = {
+        "positions": positions,
+        "label": " vs ".join(positions),
+        "solver_depth_bb": projected["effective_bb"],
+        "note": note,
+    }
+    return projected, meta, None
+
+
 def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     """Run check_hand and index graded nodes by (street, per-street idx)."""
     from hh_deviation_check import check_hand
-    h = dict(hand)
+    h = copy.deepcopy(hand)
     h.setdefault("num_players", h.get("players_at_table", 8))
     # chipEV only: live phase unknown (flagged below). emit_ungraded keeps
     # per-street node ordering aligned when the solver refuses a node
     # (off-range arrival / no solution) — without stubs a refused node would
     # shift every later node on that street onto the wrong taxonomy row.
-    devs = check_hand(h, emit_ungraded=True)
+    projected, projection_meta, projection_failure = (
+        project_multiway_postflop(h))
+    if projected is not None:
+        # Preserve the real squeeze/cold-call decision.  Replacing the whole
+        # hand with the HU projection would silently grade a different preflop
+        # range (7/25 Hand 1: exact BB vs raise+SB call exists and is pure call).
+        exact_preflop = copy.deepcopy(h)
+        exact_preflop["streets"] = []
+        devs = [
+            d for d in check_hand(exact_preflop, emit_ungraded=True)
+            if d.get("street") == "preflop"
+        ]
+        devs.extend(
+            d for d in check_hand(projected, emit_ungraded=True)
+            if d.get("street") != "preflop"
+        )
+        hand["_multiway_projection"] = projection_meta
+        hand.pop("_multiway_unresolved", None)
+    else:
+        devs = check_hand(h, emit_ungraded=True)
+        if projection_failure:
+            hand["_multiway_unresolved"] = True
+            hand.pop("_multiway_projection", None)
+            for d in devs:
+                if d.get("street") != "preflop":
+                    street = d.get("street", "flop")
+                    d.clear()
+                    d.update({
+                        "street": street,
+                        "ungraded": True,
+                        "reason": "multiway_unresolved",
+                    })
     out: dict[tuple[str, int], dict] = {}
     counters: dict[str, int] = {}
     for d in devs:
@@ -1902,8 +2062,12 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             flags.append("limp_origin")
         # 3+ 人非 limp 翻後底池被以 HU 方式評分 — 這正是線下 solver 覆蓋最弱
         # 的區域（§0），必須掛旗（§5.2 誠實層）
-        if spot["street"] != "preflop" and spot.get("villain_cat") == "multi":
+        if (spot["street"] != "preflop"
+                and (spot.get("villain_cat") == "multi"
+                     or hand.get("_multiway_projection"))):
             flags.append("multiway_recast")
+        if spot["street"] != "preflop" and hand.get("_multiway_unresolved"):
+            flags.append("multiway_unresolved")
         if parse_flags:
             flags.append("parse_uncertain")
             taken = spot.get("hero_action_raw")
@@ -2186,6 +2350,8 @@ def process_batch(text: str, date_str: str | None = None,
                 continue
         if repairs:
             hand["_repairs"] = repairs   # audit trail into ledger parsed_json
+        if hand.get("_multiway_projection"):
+            entry["multiway_projection"] = hand["_multiway_projection"]
         hand_row, dec_rows = build_hand_rows(hand, hand_id, played_at, block, devmap,
                                              escalated_keys, escalation_state)
         entry["ok"] = True
@@ -2552,6 +2718,10 @@ def render_session_page(result: dict, page: int = 0,
             continue
         for repair in h.get("repairs") or []:
             L.append(f"　校正：{escape(_repair_explanation(repair))}")
+        if h.get("multiway_projection"):
+            L.append(
+                "　ℹ️ 翻後簡化："
+                f"{escape(h['multiway_projection'].get('label') or '?')}")
         has_offrange = any(
             d.get("ungraded_reason") == "offrange"
             for d in h.get("decisions") or [])
@@ -2608,6 +2778,7 @@ def render_session_page(result: dict, page: int = 0,
                 detail = {
                     "no_solution": "solver 沒有此行動線的可用節點",
                     "not_graded": "此節點沒有可用評分",
+                    "multiway_unresolved": "多人池翻後無法可靠簡化",
                 }.get(reason, f"solver 未回傳可用結果（{reason}）")
                 L.append(f"　❓ {first['street']} 起未評分：{detail}")
         L.append("")
