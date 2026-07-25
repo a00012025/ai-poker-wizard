@@ -949,6 +949,61 @@ def test_find_closest_action_by_explicit_pot_fraction():
 
 
 @test
+def test_unsized_preflop_raise_uses_only_unambiguous_solver_branch():
+    """A bare preflop ``R`` can advance only when GTOW offers exactly one
+    non-all-in raise; multiple raise sizes remain unresolved."""
+    import analyze_hand as ah
+    import hh_deviation_check as hdc
+
+    one_raise = [
+        {"action": {"code": "C", "betsize": "2", "allin": False}},
+        {"action": {"code": "R10", "betsize": "10", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "100", "allin": True}},
+    ]
+    two_raises = one_raise + [
+        {"action": {"code": "R12", "betsize": "12", "allin": False}}]
+    old_ah = ah.get_next_actions
+    old_hdc = hdc.get_next_actions
+    try:
+        def one_by_node(**kwargs):
+            available = (
+                [{"action": {"code": "R2", "betsize": "2",
+                             "allin": False}}]
+                if kwargs.get("preflop_actions") == "F-F-F-F"
+                else one_raise
+            )
+            return {"next_actions": {"available_actions": available}}
+
+        ah.get_next_actions = one_by_node
+        hdc.get_next_actions = ah.get_next_actions
+        assert_eq(ah._normalize_preflop_actions(
+            "F-F-F-F-R2-C-R", "MTTGeneral", 100.125),
+            "F-F-F-F-R2-C-R10")
+        assert_eq(hdc._normalize_preflop_action(
+            "R", "MTTGeneral", 100.125, "F-F-F-F-R2-C"), "R10")
+
+        def two_by_node(**kwargs):
+            available = (
+                [{"action": {"code": "R2", "betsize": "2",
+                             "allin": False}}]
+                if kwargs.get("preflop_actions") == "F-F-F-F"
+                else two_raises
+            )
+            return {"next_actions": {"available_actions": available}}
+
+        ah.get_next_actions = two_by_node
+        hdc.get_next_actions = ah.get_next_actions
+        assert_eq(ah._normalize_preflop_actions(
+            "F-F-F-F-R2-C-R", "MTTGeneral", 100.125),
+            "F-F-F-F-R2-C-R")
+        assert_eq(hdc._normalize_preflop_action(
+            "R", "MTTGeneral", 100.125, "F-F-F-F-R2-C"), "R")
+    finally:
+        ah.get_next_actions = old_ah
+        hdc.get_next_actions = old_hdc
+
+
+@test
 def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
     """Live grading must advance a villain's 25%-pot action through the
     nearest GTOW branch even when the action JSON has no absolute BB size."""

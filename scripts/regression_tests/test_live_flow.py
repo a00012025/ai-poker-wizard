@@ -1055,6 +1055,46 @@ def test_live_process_batch_skips_solver_for_parse_uncertain_hand():
 
 
 @test
+def test_live_process_batch_attempts_solver_for_unsized_preflop_raise():
+    """A preflop-only missing size may resolve to GTOW's unique raise branch.
+    Attempt grading, but keep every resulting row excluded from statistics."""
+    import live_flow
+
+    replayed = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 100.0, "hero_position": "SB", "hero_hand": "Ah6h",
+        "preflop_actions": "F-F-F-F-R2-C-R-F-F-C",
+        "streets": [{"street": "flop", "board": "Kc2cJs", "actions": [
+            {"position": "SB", "action": "R", "pot_fraction": 0.25},
+            {"position": "BTN", "action": "C"}]}],
+        "_parse_trace": [{"source": "hero bet 1/4", "actor": "SB"}],
+        "_parse_flags": ["preflop:SB:size_missing"],
+    }
+    originals = (
+        live_flow.parse_block, live_flow.grade_hand_with_escalation,
+        live_flow.time.sleep,
+    )
+    calls = []
+    live_flow.parse_block = lambda _block: json.loads(json.dumps(replayed))
+    live_flow.grade_hand_with_escalation = lambda hand: (
+        calls.append(hand) or ({}, set(), {"attempted": False}))
+    live_flow.time.sleep = lambda _seconds: None
+    try:
+        result = live_flow.process_batch(
+            "Eff 100bb co raise btn call hero sb 3b Ah6h co fold btn call\n"
+            "Kc2cJs hero bet 1/4 btn call",
+            date_str="2026-07-25", progress=lambda _x: None)
+    finally:
+        (live_flow.parse_block, live_flow.grade_hand_with_escalation,
+         live_flow.time.sleep) = originals
+
+    assert_eq(len(calls), 1)
+    assert_true(result["hands"][0]["ok"])
+    assert_true(all(row["excluded"]
+                    for row in result["hands"][0]["dec_rows"]))
+
+
+@test
 def test_live_simple_preflop_fallback_parses_terse_fold_row():
     """Single-line live rows like 'Co 15.5bb fold a5o' do not need LLM
     inference; parse them deterministically if Gemini abstains/fails."""

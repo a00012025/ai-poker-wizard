@@ -21,7 +21,7 @@ from hh_parser import parse_directory, parse_file, POSITION_ORDERS
 from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, find_closest_action_by_pot_fraction,
-    find_closest_action_postflop, nearest_depth,
+    find_closest_action_postflop, find_unique_nonallin_raise, nearest_depth,
 )
 from gto_formatter import (
     normalize_hand_name, _COMBO_INDEX, _COMBO_RANKS, _COMBO_SUITS, _RANK_ORDER,
@@ -428,6 +428,8 @@ def _normalize_preflop_action(code: str, gametype: str, depth: float,
             target = float(code[2:])
             return find_closest_action(avail, target)
         if code.startswith("R"):
+            if code == "R":
+                return find_unique_nonallin_raise(avail) or code
             target = float(code[1:])
             return find_closest_action(avail, target)
     except Exception:
