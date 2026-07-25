@@ -2480,19 +2480,33 @@ def _hand_severity(h: dict) -> str:
         return "⚠️"
     if any(d.get("ungraded_reason") for d in h.get("decisions") or []):
         return "❓"
-    if any(_zero_frequency_low_loss(d) for d in h.get("decisions") or []):
+    if any(_zero_frequency_low_loss(d, h) for d in h.get("decisions") or []):
         return "☑️"
     return "✅"
 
 
-def _zero_frequency_low_loss(d: dict) -> bool:
+def _taken_frequency(d: dict, h: dict | None = None) -> float | None:
+    """Read taken frequency, including sessions saved before it was displayed."""
+    value = d.get("taken_freq")
+    if value is not None or not h:
+        return float(value) if value is not None else None
+    for row in h.get("dec_rows") or []:
+        if (row.get("street") == d.get("street")
+                and row.get("decision_idx") == d.get("idx")):
+            stored = row.get("taken_freq")
+            return float(stored) if stored is not None else None
+    return None
+
+
+def _zero_frequency_low_loss(d: dict, h: dict | None = None) -> bool:
     ev_loss = d.get("ev_loss")
+    taken_freq = _taken_frequency(d, h)
     return (
         ev_loss is not None
         and ev_loss < QUEUE_EV_MIN
         and d.get("taken") != d.get("best")
-        and d.get("taken_freq") is not None
-        and float(d["taken_freq"]) <= 0.005
+        and taken_freq is not None
+        and taken_freq <= 0.0005
         and not d.get("discarded")
     )
 
@@ -2543,17 +2557,20 @@ def render_session_page(result: dict, page: int = 0,
             d.get("ungraded_reason") == "offrange"
             for d in h.get("decisions") or [])
         for d in h["decisions"]:
-            zero_frequency = _zero_frequency_low_loss(d)
-            offrange_preflop_branch = (
+            taken_freq = _taken_frequency(d, h)
+            zero_frequency = _zero_frequency_low_loss(d, h)
+            offrange_low_frequency_branch = (
                 has_offrange
-                and d.get("street") == "preflop"
                 and d.get("ev_loss") is not None
                 and d.get("taken") != d.get("best")
+                and taken_freq is not None
+                and taken_freq <= 0.01
                 and not d.get("discarded")
             )
             if (d["ev_loss"] is None
                     or (d["ev_loss"] < QUEUE_EV_MIN
-                        and not zero_frequency and not offrange_preflop_branch)
+                        and not zero_frequency
+                        and not offrange_low_frequency_branch)
                     or d["discarded"]):
                 continue
             best = d["best_label"] or d["best"] or "?"
@@ -2562,11 +2579,14 @@ def render_session_page(result: dict, page: int = 0,
             taken = escape(d["taken_label"] or d["taken"] or "?")
             if zero_frequency:
                 L.append(
-                    f"　☑️ {d['street']} {taken}（GTO {d['taken_freq']*100:.0f}%）"
+                    f"　☑️ {d['street']} {taken}（GTO {taken_freq*100:.0f}%）"
                     f"→ 建議 {escape(str(best))}{freq} · EV 差 {d['ev_loss']:.2f}bb{approx}")
-            elif offrange_preflop_branch and d["ev_loss"] < QUEUE_EV_MIN:
+            elif (offrange_low_frequency_branch
+                  and d["ev_loss"] < QUEUE_EV_MIN):
                 L.append(
-                    f"　ℹ️ preflop {taken}；GTO 首選 {escape(str(best))}{freq}"
+                    f"　ℹ️ {d['street']} {taken}"
+                    f"（GTO {taken_freq*100:.1f}%）"
+                    f" → 建議 {escape(str(best))}{freq}"
                     f" · EV 差 {d['ev_loss']:.2f}bb{approx}")
             else:
                 L.append(f"　{d['severity']} {d['street']} {taken} → "
