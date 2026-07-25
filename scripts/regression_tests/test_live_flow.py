@@ -3286,6 +3286,63 @@ def test_live_raw_study_url_falls_back_to_last_queryable_hero_hand_spot():
 
 
 @test
+def test_live_review_url_multiway_postflop_uses_hu_projection():
+    """A 3-way live hand's review link must resolve its POSTFLOP node against
+    the HU projection the grader solved (UTG+1 vs BB), not the raw multiway
+    line — GTOW's postflop tree is heads-up, so the raw 3-way line reaches no
+    solvable node and the button lands nowhere. Preflop stays on the exact
+    multiway node. (H1: Eff 70bb, +1 raise / SB call / BB(hero) Kh7h call.)"""
+    from gtow_solution_url import build_last_hero_hand_url
+
+    hand = {
+        "gametype": "MTTGeneral", "effective_bb": 70,
+        "players_at_table": 8, "hero_position": "BB", "hero_hand": "Kh7h",
+        "preflop_actions": "F-R2-F-F-F-F-C-C",
+        "streets": [
+            {"board": "Jh5h3s", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "R1.5", "size": 1.5},
+                {"position": "SB", "action": "C"},
+                {"position": "BB", "action": "R7", "size": 7},
+                {"position": "UTG+1", "action": "C"},
+                {"position": "SB", "action": "F"},
+            ]},
+            {"card": "6h", "actions": [
+                {"position": "BB", "action": "R8", "size": 8},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+            {"card": "Tc", "actions": [
+                {"position": "BB", "action": "AI", "size": 55},
+                {"position": "UTG+1", "action": "C"},
+            ]},
+        ],
+    }
+    seen = {}
+
+    def resolver(node_hand, street, decision_idx):
+        seen[street] = node_hand.get("preflop_actions")
+        return {
+            "preflop_actions": node_hand.get("preflop_actions"),
+            "flop_actions": "X-R1.5-C-R7-C", "turn_actions": "R8-C",
+            "river_actions": "", "history_spot": 5,
+            "depth": 70.125, "gametype": "MTTGeneral",
+        }
+
+    build_last_hero_hand_url(
+        hand, [{"street": "turn", "decision_idx": 0}], _resolver=resolver)
+    # The postflop node is resolved against the simplified HU line
+    # (SB folded → UTG+1 vs BB), never the raw 3-way "F-R2-F-F-F-F-C-C".
+    assert_eq(seen["turn"], "F-R2-F-F-F-F-F-C")
+
+    # Preflop still resolves against the exact multiway node.
+    seen.clear()
+    build_last_hero_hand_url(
+        hand, [{"street": "preflop", "decision_idx": 0}], _resolver=resolver)
+    assert_eq(seen["preflop"], "F-R2-F-F-F-F-C-C")
+
+
+@test
 def test_qraw_callback_preserves_navigation_and_colonated_live_hand_id():
     """qraw carries source/queue pages without truncating live:{date}:{hash}."""
     import asyncio

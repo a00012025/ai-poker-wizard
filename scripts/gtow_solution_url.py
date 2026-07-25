@@ -505,6 +505,21 @@ def build_last_hero_hand_url(hand: dict, decisions: list[dict], *,
         from gtow_action_resolver import resolve_actions_for_deviation
         resolver = resolve_actions_for_deviation
 
+    # Postflop nodes of a multiway hand were graded against a heads-up
+    # projection (the live grader collapses 3+ ways to one HU tree because
+    # GTOW's postflop tree is heads-up). Resolving the button URL from the raw
+    # multiway line reaches no solvable node, so the link lands nowhere. Reuse
+    # the SAME projection the grader solved for postflop; preflop keeps the
+    # exact multiway node (which is graded as-is).
+    postflop_hand = hand
+    try:
+        from live_flow import project_multiway_postflop
+        projected, _meta, _reason = project_multiway_postflop(hand)
+        if projected is not None:
+            postflop_hand = projected
+    except Exception as exc:  # noqa: BLE001 — fall back to the raw hand
+        _log.debug("live review-URL multiway projection failed: %s", exc)
+
     order = {street: i for i, street in enumerate(
         ("preflop", "flop", "turn", "river"))}
     candidates = sorted(
@@ -518,14 +533,15 @@ def build_last_hero_hand_url(hand: dict, decisions: list[dict], *,
         if street not in order:
             continue
         action_index = int(decision.get("decision_idx") or 0)
+        node_hand = hand if street == "preflop" else postflop_hand
         try:
-            resolved = resolver(hand, street, action_index)
+            resolved = resolver(node_hand, street, action_index)
             if not resolved.get("preflop_actions"):
                 if street != "preflop":
                     continue
                 return _root_solution_url(
                     resolved["depth"], resolved.get("gametype") or "MTTGeneral")
-            board = canonical_board_through_street(hand, street)
+            board = canonical_board_through_street(node_hand, street)
             return build_solution_url(resolved, board)
         except Exception as exc:  # noqa: BLE001 — convenience link, keep falling back
             _log.debug("live hero-hand URL build failed at %s[%d]: %s",
