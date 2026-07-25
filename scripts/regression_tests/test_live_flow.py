@@ -932,6 +932,84 @@ def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
 
 
 @test
+def live_token_replay_drops_only_uniquely_embedded_extra_flop():
+    from live_flow import replay_live_action_tokens
+
+    raw = (
+        "Eff 70bb +1 raise sb call hero bb call Kh7h\n\n"
+        "Jh5h7d x x b1.5 call r7 call foldJh6h3s "
+        "x x b2 call r7 call fold\n\n"
+        "6h pot 23bb, b8 call\n\n"
+        "Tc pot 39bb, All in call\n\nWins JJ"
+    )
+    tokenized = {
+        "effective_bb": 70, "hero_position": "BB", "hero_hand": "Kh7h",
+        "preflop_actions": [
+            {"actor": "UTG+1", "action": "raise", "source": "+1 raise"},
+            {"actor": "SB", "action": "call", "source": "sb call"},
+            {"actor": "HERO", "action": "call", "source": "hero bb call"},
+        ],
+        "streets": [
+            {"board_text": "Jh5h7d", "actions": [
+                {"action": "check"}, {"action": "check"},
+                {"action": "bet", "size_bb": 1.5}, {"action": "call"},
+                {"action": "raise", "size_bb": 7}, {"action": "call"},
+                {"action": "fold"},
+            ]},
+            {"board_text": "Jh6h3s", "actions": [
+                {"action": "check"}, {"action": "check"},
+                {"action": "bet", "size_bb": 2}, {"action": "call"},
+                {"action": "raise", "size_bb": 7}, {"action": "call"},
+                {"action": "fold"},
+            ]},
+            {"board_text": "6h", "actions": [
+                {"action": "bet", "size_bb": 8}, {"action": "call"},
+            ]},
+            {"board_text": "Tc", "actions": [
+                {"action": "all_in"}, {"action": "call"},
+            ]},
+        ],
+    }
+
+    hand = replay_live_action_tokens(raw, tokenized)
+    assert_eq([street.get("board") or street.get("card")
+               for street in hand["streets"]], ["Jh5h7d", "6h", "Tc"])
+    assert_in("移除黏入的額外街牌：Jh6h3s", hand["_repairs"])
+
+
+@test
+def live_partial_multiway_street_is_valid_once_hero_folds():
+    from live_flow import (find_ghost, hero_folded_postflop,
+                           replay_live_action_tokens)
+
+    raw = (
+        "Eff 70bb UTG raise hero +1 call Ah9h btn call\n\n"
+        "KdQd3c b3 fold"
+    )
+    tokenized = {
+        "effective_bb": 70, "hero_position": "UTG+1", "hero_hand": "Ah9h",
+        "preflop_actions": [
+            {"actor": "UTG", "action": "raise"},
+            {"actor": "HERO", "action": "call"},
+            {"actor": "BTN", "action": "call"},
+        ],
+        "streets": [{"board_text": "KdQd3c", "actions": [
+            {"action": "bet", "size_bb": 3},
+            {"action": "fold"},
+        ]}],
+    }
+
+    hand = replay_live_action_tokens(raw, tokenized)
+    assert_eq(hand["streets"][0]["actions"], [
+        {"position": "UTG", "action": "R3", "size": 3.0},
+        {"position": "UTG+1", "action": "F"},
+    ])
+    assert_eq(find_ghost(hand), "BTN")
+    assert_true(hero_folded_postflop(hand),
+                "opponents' omitted action after Hero folds is irrelevant")
+
+
+@test
 def test_live_token_replay_missing_postflop_size_is_flagged_not_invented():
     from live_flow import replay_live_action_tokens
 
@@ -1471,13 +1549,7 @@ def test_live_hero_folded_but_acts_contradiction():
 
 @test
 def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
-    """Repair visibility contract (Task 4 paginated per-hand card): a hand the
-    pipeline auto-repaired carries an explicit marker on that hand's one-line
-    description, while clean hands do not. Full repair-diff detail moves to the
-    🔁 resend flow (Task 8), not the report itself, per the auditability
-    invariant (marker stays, bulk section goes). A refused/failed hand surfaces
-    its refusal reason inline so the owner knows what to fix and can resend
-    that one hand."""
+    """Repairs are auditable as exact diffs, never a vague header marker."""
     from live_flow import render_tg_html
     dec = {"street": "flop", "idx": 0, "leaf": "flop:SRP:BBvEP:OOP:first_to_act",
            "ev_loss": 0.2, "severity": "⚠️", "taken": "X", "best": "R3",
@@ -1504,8 +1576,10 @@ def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     lines = html.splitlines()
     hand1_line = next((line for line in lines if "Hand 1" in line), "")
     hand2_line = next((line for line in lines if "Hand 2" in line), "")
-    assert_in("已自動校正", hand1_line)
-    assert_not_in("已自動校正", hand2_line)             # clean hand untouched
+    assert_not_in("已自動校正", hand1_line)
+    assert_not_in("已自動校正", hand2_line)
+    assert_in("校正：手牌字面校正（以你原文為準）：hero_hand Jd7d→Qd7d", html)
+    assert_in("校正：牌面字面校正（以你原文為準）：flop Jc9d3h→Qc9d3h", html)
     assert_in("river 出現重複牌", html)                  # refusal reason surfaced
     assert_in("重傳", html)
 
@@ -3496,7 +3570,55 @@ def no_rollup_no_bulk():
     html, _p, _n = render_session_page(result, 0)
     assert_true("無明顯偏差：" not in html, "roll-up list removed")
     assert_true("已自動校正後送 solver" not in html, "bulk repair section removed")
-    assert_in("已自動校正", html)  # per-hand marker present instead
+    assert_not_in("已自動校正", html)
+    assert_in("校正：翻後 HU 動作歸屬校正", html)
+
+
+@test
+def live_report_explains_low_loss_preflop_branch_before_offrange():
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [
+        {
+            "street": "preflop", "idx": 0, "leaf": "CO_vsOpen_MP",
+            "ev_loss": 0.0, "severity": "✅", "taken": "C", "best": "R8",
+            "taken_label": "Call", "best_label": "Raise 8bb",
+            "gto_freq": 0.665, "taken_freq": 0.335,
+            "ungraded_reason": None, "discarded": False,
+            "limp_origin": False, "depth_escalated": None,
+        },
+        {
+            "street": "river", "idx": 0, "leaf": "river",
+            "ev_loss": None, "severity": "❓", "taken": "R15", "best": None,
+            "taken_label": None, "best_label": None,
+            "gto_freq": None, "taken_freq": None,
+            "ungraded_reason": "offrange", "discarded": False,
+            "limp_origin": False, "depth_escalated": None,
+        },
+    ]
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("ℹ️ preflop Call；GTO 首選 Raise 8bb（66%） · EV 差 0.00bb",
+              html)
+    assert_in("❓ river 起未評分", html)
+
+
+@test
+def live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
+    result = _mk_result(1)
+    result["hands"][0]["hand_row"].update({
+        "hero_hand": "T9s", "position": "SB", "preflop_depth_bb": 17.0,
+    })
+    result["hands"][0]["decisions"] = [{
+        "street": "preflop", "idx": 0, "leaf": "SB_vsRaiseCall_OOP",
+        "ev_loss": 0.052, "severity": "✅", "taken": "F", "best": "RAI",
+        "taken_label": "Fold", "best_label": "All-in 17bb",
+        "gto_freq": 0.95, "taken_freq": 0.0,
+        "ungraded_reason": None, "discarded": False,
+        "limp_origin": False, "depth_escalated": None,
+    }]
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("<b>Hand 1</b> · SB T9s · 17bb · SRP · ☑️", html)
+    assert_in("☑️ preflop Fold（GTO 0%）→ 建議 All-in 17bb（95%）"
+              " · EV 差 0.05bb", html)
 
 
 @test
