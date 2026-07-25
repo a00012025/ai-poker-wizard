@@ -3575,7 +3575,7 @@ def no_rollup_no_bulk():
 
 
 @test
-def live_report_explains_low_loss_preflop_branch_before_offrange():
+def live_report_shows_first_low_frequency_branch_before_offrange():
     result = _mk_result(1)
     result["hands"][0]["decisions"] = [
         {
@@ -3583,6 +3583,15 @@ def live_report_explains_low_loss_preflop_branch_before_offrange():
             "ev_loss": 0.0, "severity": "✅", "taken": "C", "best": "R8",
             "taken_label": "Call", "best_label": "Raise 8bb",
             "gto_freq": 0.665, "taken_freq": 0.335,
+            "ungraded_reason": None, "discarded": False,
+            "limp_origin": False, "depth_escalated": None,
+        },
+        {
+            "street": "turn", "idx": 0, "leaf": "turn",
+            "ev_loss": 0.0521, "severity": "✅",
+            "taken": "R3.9", "best": "R14.75",
+            "taken_label": "BET 3.9bb", "best_label": "BET 14.75bb",
+            "gto_freq": 0.537,
             "ungraded_reason": None, "discarded": False,
             "limp_origin": False, "depth_escalated": None,
         },
@@ -3595,9 +3604,14 @@ def live_report_explains_low_loss_preflop_branch_before_offrange():
             "limp_origin": False, "depth_escalated": None,
         },
     ]
+    result["hands"][0]["dec_rows"] = [
+        {"street": "turn", "decision_idx": 0,
+         "taken_freq": 0.0050000003539},
+    ]
     html, _p, _n = render_session_page(result, 0)
-    assert_in("ℹ️ preflop Call；GTO 首選 Raise 8bb（66%） · EV 差 0.00bb",
-              html)
+    assert_not_in("ℹ️ preflop", html)
+    assert_in("ℹ️ turn BET 3.9bb（GTO 0.5%） → 建議 BET 14.75bb（54%）"
+              " · EV 差 0.05bb", html)
     assert_in("❓ river 起未評分", html)
 
 
@@ -3611,10 +3625,13 @@ def live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
         "street": "preflop", "idx": 0, "leaf": "SB_vsRaiseCall_OOP",
         "ev_loss": 0.052, "severity": "✅", "taken": "F", "best": "RAI",
         "taken_label": "Fold", "best_label": "All-in 17bb",
-        "gto_freq": 0.95, "taken_freq": 0.0,
+        "gto_freq": 0.95,
         "ungraded_reason": None, "discarded": False,
         "limp_origin": False, "depth_escalated": None,
     }]
+    result["hands"][0]["dec_rows"] = [
+        {"street": "preflop", "decision_idx": 0, "taken_freq": 0.0},
+    ]
     html, _p, _n = render_session_page(result, 0)
     assert_in("<b>Hand 1</b> · SB T9s · 17bb · SRP · ☑️", html)
     assert_in("☑️ preflop Fold（GTO 0%）→ 建議 All-in 17bb（95%）"
