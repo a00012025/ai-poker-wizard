@@ -680,6 +680,43 @@ def test_multiway_projection_matches_every_raise_by_real_pot_percentage():
 
 
 @test
+def test_custom_spot_resolver_uses_explicit_pot_fraction_without_bb_pot():
+    """A persisted ``pot_fraction`` is enough to resolve a custom solver line
+    even when no absolute size/pot can be reconstructed."""
+    import gtow_action_resolver as resolver
+
+    seen = []
+    old = resolver._resolve_one_raise
+
+    def fake_resolve(**kwargs):
+        seen.append(dict(kwargs))
+        return "R3.2"
+
+    resolver._resolve_one_raise = fake_resolve
+    try:
+        line, final_pot = resolver._resolve_street_codes(
+            gametype="MTTGeneral", depth=30.125,
+            preflop_actions="F-F-F-F-F-R2-F-C",
+            board_so_far="Kc7d2h", street_key="flop",
+            raw_actions=[
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "R",
+                 "pot_fraction": 0.25},
+                {"position": "BB", "action": "F"},
+            ],
+            stop_after_n=3, prior_streets={}, actual_pot=0.0,
+        )
+    finally:
+        resolver._resolve_one_raise = old
+
+    assert_eq(line, "X-R3.2-F")
+    assert_eq(seen[0]["target_size"], 0.0)
+    assert_eq(seen[0]["target_pct"], 0.25)
+    assert_true(seen[0]["target_pct_explicit"])
+    assert_eq(final_pot, 0.0)
+
+
+@test
 def test_build_custom_spot_url_raises_on_multiway_postflop():
     """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError

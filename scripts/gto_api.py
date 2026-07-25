@@ -267,6 +267,36 @@ def find_closest_action_by_pot_pct(available_actions: list[dict], target_size: f
     return best_code or find_closest_action(available_actions, target_size)
 
 
+def find_closest_action_by_pot_fraction(
+        available_actions: list[dict], target_fraction: float) -> str:
+    """Match an explicit pot fraction directly to GTOW's closest branch.
+
+    Unlike :func:`find_closest_action_by_pot_pct`, this does not reconstruct a
+    BB pot.  It is for source data that explicitly says ``1/4`` or ``50%`` and
+    therefore already lives in the same dimension as ``betsize_by_pot``.
+    Exact midpoint ties snap upward, matching GTOW's action-tree behavior.
+    """
+    target = float(target_fraction)
+    candidates = [
+        entry for entry in available_actions
+        if entry.get("action", {}).get("code") not in ("X", "C", "F")
+        and entry.get("action", {}).get("betsize_by_pot") not in (None, "")
+    ]
+    if candidates:
+        return min(
+            candidates,
+            key=lambda entry: (
+                round(abs(
+                    float(entry["action"]["betsize_by_pot"]) - target), 12),
+                -float(entry["action"]["betsize_by_pot"]),
+            ),
+        )["action"]["code"]
+
+    # Old/partial API responses may omit betsize_by_pot.  Preserve the prior
+    # percentage-input fallback rather than pretending the fraction is BB.
+    return find_closest_action_postflop(available_actions, target * 100.0)
+
+
 def find_closest_action_postflop(available_actions: list[dict], target_size: float) -> str:
     """Find closest postflop action, auto-detecting percentage-based sizes.
 

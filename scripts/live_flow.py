@@ -1327,8 +1327,12 @@ def _replay_streets(
                     f"street {street_index + 1}: orphan call by {actor}")
             if action in {"bet", "raise", "all_in"}:
                 if target is None:
-                    flags.append(
-                        f"street{street_index + 1}:{actor}:size_missing")
+                    # An explicit pot fraction is complete solver-line sizing
+                    # even when an earlier unknown BB amount prevents us from
+                    # reconstructing its absolute size.
+                    if token.get("pot_fraction") is None:
+                        flags.append(
+                            f"street{street_index + 1}:{actor}:size_missing")
                     pot = None
                     current_bet_unknown = True
                 else:
@@ -1356,12 +1360,16 @@ def _replay_streets(
             row = {"position": actor, "action": code}
             if target is not None:
                 row["size"] = target
+            if token.get("pot_fraction") is not None:
+                row["pot_fraction"] = float(token["pot_fraction"])
             actions.append(row)
             pending.pop(0)
             trace.append({
                 "street": ("flop", "turn", "river")[street_index],
                 "token_index": token_index, "source": token.get("source"),
-                "actor": actor, "action": code, "resolution": resolution,
+                "actor": actor, "action": code,
+                "pot_fraction": token.get("pot_fraction"),
+                "resolution": resolution,
             })
             if action == "fold":
                 active.discard(actor)
