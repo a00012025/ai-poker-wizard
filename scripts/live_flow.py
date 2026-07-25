@@ -651,7 +651,7 @@ def _literal_change_note(label: str, old: str, fixed: str,
     """
     if old == fixed:
         return None
-    old_specs = _card_specs_from_street_token(old)
+    old_specs = _street_specs_from_tokens(re.split(r"\s+", old.strip()))
     fixed_cards = _split_cards(fixed)
     if len(old_specs) != len(fixed_cards) or len(specs) != len(fixed_cards):
         return f"{label} {old or '?'}→{fixed}"
@@ -2597,6 +2597,19 @@ def render_session_page(result: dict, page: int = 0,
                      f"你的牌已在該線範圍外")
             if any(d.get("depth_escalation_failed") for d in offrange):
                 L.append("　（升格評分失敗，保留原深度未評分）")
+        else:
+            unsolved = [
+                d for d in h["decisions"]
+                if d.get("ungraded_reason") and not d.get("discarded")
+            ]
+            if unsolved:
+                first = unsolved[0]
+                reason = first.get("ungraded_reason")
+                detail = {
+                    "no_solution": "solver 沒有此行動線的可用節點",
+                    "not_graded": "此節點沒有可用評分",
+                }.get(reason, f"solver 未回傳可用結果（{reason}）")
+                L.append(f"　❓ {first['street']} 起未評分：{detail}")
         L.append("")
 
     if result.get("queue"):
