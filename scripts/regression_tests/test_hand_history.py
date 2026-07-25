@@ -927,6 +927,85 @@ def test_find_action_by_pot_pct_maps_real_50pct_to_solver_61pct():
 
 
 @test
+def test_find_closest_action_by_explicit_pot_fraction():
+    """An explicit live ``25%``/``50%`` matches GTOW's nearest
+    ``betsize_by_pot`` branch without requiring a reconstructed BB pot."""
+    from gto_api import find_closest_action_by_pot_fraction
+
+    available = [
+        {"action": {"code": "X", "betsize": "0",
+                    "betsize_by_pot": None, "allin": False}},
+        {"action": {"code": "R1.2", "betsize": "1.2",
+                    "betsize_by_pot": "0.125", "allin": False}},
+        {"action": {"code": "R3.2", "betsize": "3.2",
+                    "betsize_by_pot": "0.33", "allin": False}},
+        {"action": {"code": "R4.8", "betsize": "4.8",
+                    "betsize_by_pot": "0.50", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "30",
+                    "betsize_by_pot": "3.1", "allin": True}},
+    ]
+    assert_eq(find_closest_action_by_pot_fraction(available, 0.25), "R3.2")
+    assert_eq(find_closest_action_by_pot_fraction(available, 0.50), "R4.8")
+
+
+@test
+def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
+    """Live grading must advance a villain's 25%-pot action through the
+    nearest GTOW branch even when the action JSON has no absolute BB size."""
+    import hh_deviation_check as hdc
+
+    solution_calls = []
+    originals = {
+        "get_spot_solution": hdc.get_spot_solution,
+        "get_next_actions": hdc.get_next_actions,
+        "_normalize_preflop_action": hdc._normalize_preflop_action,
+    }
+    available = [
+        {"action": {"code": "X", "betsize": "0",
+                    "betsize_by_pot": None, "allin": False}},
+        {"action": {"code": "R1.2", "betsize": "1.2",
+                    "betsize_by_pot": "0.125", "allin": False}},
+        {"action": {"code": "R3.2", "betsize": "3.2",
+                    "betsize_by_pot": "0.33", "allin": False}},
+        {"action": {"code": "R4.8", "betsize": "4.8",
+                    "betsize_by_pot": "0.50", "allin": False}},
+    ]
+
+    def fake_solution(**kwargs):
+        solution_calls.append(dict(kwargs))
+        return None
+
+    hdc.get_spot_solution = fake_solution
+    hdc.get_next_actions = lambda **_kwargs: {
+        "next_actions": {"available_actions": available}}
+    hdc._normalize_preflop_action = lambda code, *_args, **_kwargs: code
+    try:
+        hdc.check_hand({
+            "hand_id": "LIVE-PCT",
+            "hero_position": "BB",
+            "hero_hand": "AJo",
+            "effective_bb": 30,
+            "num_players": 8,
+            "table_size": 8,
+            "preflop_actions": "F-F-F-F-F-R2-F-C",
+            "streets": [{"street": "flop", "board": "Kc7d2h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "R",
+                 "pot_fraction": 0.25},
+                {"position": "BB", "action": "F"},
+            ]}],
+        }, emit_ungraded=True)
+    finally:
+        for name, value in originals.items():
+            setattr(hdc, name, value)
+
+    assert_true(any(
+        call.get("flop_actions") == "X-R3.2"
+        for call in solution_calls
+    ), solution_calls)
+
+
+@test
 def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
     """When hero's bb amount equals an available betsize exactly, return it
     even if pot-pct conversion would tie at a midpoint.

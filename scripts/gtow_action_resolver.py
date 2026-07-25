@@ -25,6 +25,7 @@ from gto_api import (
     nearest_depth,
     nearest_cash_depth,
     find_closest_action,
+    find_closest_action_by_pot_fraction,
 )
 
 POSITION_ORDERS: dict[int, list[str]] = {
@@ -171,6 +172,7 @@ def _resolve_one_raise(
     target_size: float,
     actual_pot: float = 0.0,
     target_pct: float | None = None,
+    target_pct_explicit: bool = False,
 ) -> str:
     """Call next_actions at the current node and snap target_size to R* code.
 
@@ -199,7 +201,9 @@ def _resolve_one_raise(
         raise ValueError(
             f"no raise options at this node (target={target_size}) — off-tree"
         )
-    if actual_pot > 0:
+    if target_pct_explicit and target_pct is not None:
+        code = find_closest_action_by_pot_fraction(raises, target_pct)
+    elif actual_pot > 0:
         # Pot-ratio snapping with shared all-in protection: _find_action_by_pot_pct
         # keeps a near-shove on the all-in node and otherwise drives the bucket by
         # pot ratio (the guard used to live here; now shared so the two pipelines
@@ -312,8 +316,9 @@ def _resolve_street_codes(
             target = float(act.get("size") or action[1:] or 0)
             actor_prev = street_investments.get(pos, 0.0)
             call_needed = max(0.0, outstanding_bet - actor_prev)
-            target_pct = None
-            if actual_pot > 0:
+            target_pct = act.get("pot_fraction")
+            target_pct_explicit = target_pct is not None
+            if target_pct is None and actual_pot > 0:
                 target_pct = (
                     max(0.0, target - outstanding_bet)
                     / max(actual_pot + call_needed, 1e-9)
@@ -330,6 +335,7 @@ def _resolve_street_codes(
                 target_size=target,
                 actual_pot=actual_pot,
                 target_pct=target_pct,
+                target_pct_explicit=target_pct_explicit,
             )
             out_tokens.append(code)
         else:
@@ -343,6 +349,11 @@ def _resolve_street_codes(
                 prev = street_investments.get(pos, 0.0)
                 actual_pot += outstanding_bet - prev
                 street_investments[pos] = outstanding_bet
+            elif act.get("pot_fraction") is not None and not target:
+                # Percentage space is sufficient for solver replay, but not
+                # for reconstructing the real BB pot.
+                actual_pot = 0
+                outstanding_bet = 0
             else:  # bet / raise / all-in
                 prev = street_investments.get(pos, 0.0)
                 actual_pot += target - prev

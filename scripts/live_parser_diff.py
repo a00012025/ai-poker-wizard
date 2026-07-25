@@ -45,6 +45,9 @@ def normalized_hand(hand: dict | None) -> dict | None:
             }
             if action.get("size") is not None:
                 row["size"] = round(float(action["size"]), 3)
+            if action.get("pot_fraction") is not None:
+                row["pot_fraction"] = round(
+                    float(action["pot_fraction"]), 6)
             actions.append(row)
         streets.append({
             "street": street.get("street"),
