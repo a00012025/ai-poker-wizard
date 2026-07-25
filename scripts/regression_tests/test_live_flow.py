@@ -758,6 +758,97 @@ def test_live_token_replay_preserves_limp_and_calculates_pot_fraction():
 
 
 @test
+def test_live_token_replay_normalizes_fraction_and_percent_literals():
+    """Raw fraction literals win over a model's numeric-field guess.
+
+    ``1/4`` is a quarter-pot bet, not 0.25bb, and ``50%`` is half pot, not
+    50bb.  The deterministic replay must normalize both from the copied
+    source span before calculating the actual BB size.
+    """
+    from live_flow import replay_live_action_tokens
+
+    block = ("Eff 100bb co raise btn call hero sb 3b Ah6h co fold btn call\n"
+             "Kc2cJs hero b 1/4 btn call\n"
+             "7d hero b 50% btn fold")
+    tokens = {
+        "effective_bb": 100, "hero_position": "SB", "hero_hand": "Ah6h",
+        "preflop_actions": [
+            {"actor": "CO", "action": "raise"},
+            {"actor": "BTN", "action": "call"},
+            {"actor": "HERO", "action": "raise", "size_bb": 10},
+            {"actor": "CO", "action": "fold"},
+            {"actor": "BTN", "action": "call"},
+        ],
+        "streets": [
+            {"board_text": "Kc2cJs", "actions": [
+                # These are realistic structured-output mistakes: the copied
+                # source is authoritative, not either numeric field.
+                {"actor": "HERO", "action": "bet", "size_bb": 0.25,
+                 "source": "hero b 1/4"},
+                {"actor": "BTN", "action": "call", "source": "btn call"},
+            ]},
+            {"board_text": "7d", "actions": [
+                {"actor": "HERO", "action": "bet", "pot_fraction": 50,
+                 "source": "hero b 50%"},
+                {"actor": "BTN", "action": "fold", "source": "btn fold"},
+            ]},
+        ],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    flop = hand["streets"][0]["actions"]
+    turn = hand["streets"][1]["actions"]
+    assert_eq(flop[0]["action"], "R5.75")
+    assert_eq(flop[0]["size"], 5.75)
+    assert_eq(turn[0]["action"], "R17.25")
+    assert_eq(turn[0]["size"], 17.25)
+
+
+@test
+def test_live_parse_block_recovers_percent_size_from_action_source():
+    """All requested shorthand forms survive the structured-token boundary:
+    ``B1/4``, ``B25%`` and ``bet 50%``."""
+    from live_flow import parse_block
+
+    class _Resp:
+        def __init__(self, source):
+            self.text = json.dumps({
+                "effective_bb": 30, "hero_position": "BB", "hero_hand": "AJo",
+                "preflop_actions": [
+                    {"actor": "BTN", "action": "raise", "source": "btn raise"},
+                    {"actor": "HERO", "action": "call", "source": "hero bb call"},
+                ],
+                "streets": [{"board_text": "K72r", "actions": [
+                    {"actor": "HERO", "action": "check", "source": "hero x"},
+                    {"actor": "BTN", "action": "bet", "source": source},
+                    {"actor": "HERO", "action": "fold", "source": "hero fold"},
+                ]}],
+            })
+
+    class _Models:
+        source = ""
+
+        def generate_content(self, **_kwargs):
+            return _Resp(self.source)
+
+    class _Client:
+        models = _Models()
+
+    for shorthand, expected in (
+            ("B1/4", 1.125), ("B25%", 1.125), ("bet 50%", 2.25)):
+        client = _Client()
+        client.models.source = f"btn {shorthand}"
+        hand = parse_block(
+            "Eff 30bb btn raise hero bb call AJo\n"
+            f"K72r hero x btn {shorthand} hero fold",
+            client=client)
+        assert_true(hand is not None and not hand.get("_refused"), shorthand)
+        bet = hand["streets"][0]["actions"][1]
+        assert_eq(bet["action"], "R" + f"{expected:g}", shorthand)
+        assert_eq(bet["size"], expected, shorthand)
+        assert_eq(hand["_parse_flags"], [], shorthand)
+
+
+@test
 def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
     from live_flow import LiveReplayError, replay_live_action_tokens
 

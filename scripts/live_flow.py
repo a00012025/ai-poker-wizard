@@ -1085,6 +1085,51 @@ def _fmt_bb(value: float) -> str:
     return f"{round(float(value), 3):g}"
 
 
+def _pot_fraction_from_source(source: str | None) -> float | None:
+    """Parse an explicit pot-relative size from an action's copied source.
+
+    The source span is authoritative because structured-output models can put
+    ``1/4`` into ``size_bb=0.25`` or ``50%`` into ``pot_fraction=50``.  This
+    helper only recognizes explicit fraction/percent syntax; it never infers a
+    size from a bare number.
+    """
+    text = (source or "").lower().replace("％", "%")
+    fraction = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", text)
+    if fraction:
+        numerator = float(fraction.group(1))
+        denominator = float(fraction.group(2))
+        if denominator > 0:
+            return numerator / denominator
+    percent = re.search(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%", text)
+    if percent:
+        return float(percent.group(1)) / 100.0
+    if re.search(r"\b(?:half[\s-]*pot|halfpot)\b", text):
+        return 0.5
+    if re.search(r"\b(?:quarter[\s-]*pot|quarterpot)\b", text):
+        return 0.25
+    return None
+
+
+def _normalize_pot_fraction_token(token: dict) -> None:
+    """Canonicalize a lexical token's pot fraction in-place."""
+    from_source = _pot_fraction_from_source(token.get("source"))
+    if from_source is not None:
+        # An explicit raw ``1/4``/``50%`` is pot-relative even if the model
+        # copied its numeric value into the absolute-BB field.
+        token["pot_fraction"] = from_source
+        token["size_bb"] = None
+        return
+    value = token.get("pot_fraction")
+    if value is None:
+        return
+    value = float(value)
+    # Tolerate the common structured-output representation 25/50/75 for a
+    # percent while keeping canonical fractions in the 0..1 interval.
+    if 1 < value <= 100:
+        value /= 100.0
+    token["pot_fraction"] = value
+
+
 def _token_action_code(
         token: dict, effective_bb: float, *, preflop: bool,
         first_aggression: bool, pot: float | None = None) -> tuple[str, float | None]:
@@ -1389,6 +1434,11 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
                 data[key] = fallback[key]
     if hero_hint:
         data["hero_hand"] = hero_hint
+    for token in data.get("preflop_actions") or []:
+        _normalize_pot_fraction_token(token)
+    for street in data.get("streets") or []:
+        for token in street.get("actions") or []:
+            _normalize_pot_fraction_token(token)
     for token in data.get("preflop_actions") or []:
         source_tokens = re.split(r"\s+", token.get("source") or "")
         # Structured-output models occasionally copy a bare pocket pair after
