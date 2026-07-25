@@ -439,6 +439,11 @@ def test_live_card_literal_gate_rank_only_suit_fill_is_rainbow():
     assert_eq(len({b2[1], b2[3], b2[5]}), 3)
     assert_true(fixed2["streets"][1]["card"][1] not in {b2[1], b2[3], b2[5]})
     assert_eq(notes2, [], "rank-only suit filler changes should not be shown as scary repairs")
+    block3 = "Eff 20bb hero co open AhTs bb call\nQJ2 rainbow x b2 c"
+    parsed3 = dict(base, streets=[{"board": "QJ2 rainbow", "actions": []}])
+    fixed3, notes3 = repair_card_literals_from_block(block3, parsed3)
+    assert_true(fixed3 is not None)
+    assert_eq(notes3, [], "spaced rainbow marker is completion, not correction")
 
 
 @test
@@ -3637,6 +3642,20 @@ def live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
     assert_in("<b>Hand 1</b> · SB T9s · 17bb · SRP · ☑️", html)
     assert_in("☑️ preflop Fold（GTO 0%）→ 建議 All-in 17bb（95%）"
               " · EV 差 0.05bb", html)
+
+
+@test
+def live_report_explains_non_offrange_unsolved_start_street():
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [{
+        "street": "flop", "idx": 0, "leaf": "flop",
+        "ev_loss": None, "severity": "❓", "taken": "F", "best": None,
+        "taken_label": None, "best_label": None, "gto_freq": None,
+        "ungraded_reason": "no_solution", "discarded": False,
+        "limp_origin": False, "depth_escalated": None,
+    }]
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("❓ flop 起未評分：solver 沒有此行動線的可用節點", html)
 
 
 @test
