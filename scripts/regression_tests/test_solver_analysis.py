@@ -74,6 +74,32 @@ def test_gto_cache_corrupt_local_file_is_visible_miss():
 
 
 @test
+def test_gto_cache_legacy_null_entry_expires_instead_of_poisoning_node():
+    """A historical 204/403/404 must not suppress a now-available GTOW node."""
+    import tempfile
+    import gto_cache
+
+    key = "n" * 64
+    original_dir = gto_cache._CACHE_DIR
+    original_key = gto_cache._cache_key
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            gto_cache._CACHE_DIR = Path(td)
+            gto_cache._cache_key = lambda *_args, **_kwargs: key
+            gto_cache._mem.clear()
+            (Path(td) / f"{key}.json").write_text(
+                json.dumps({"is_null": True}))
+
+            assert_true(
+                gto_cache.get("spot_solution", {}) is gto_cache.SENTINEL,
+                "legacy permanent negative cache must be refreshed")
+    finally:
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._cache_key = original_key
+        gto_cache._mem.clear()
+
+
+@test
 def test_gto_cache_put_is_atomic_and_json_safe():
     """Local writes are atomic and memory matches the persisted sanitized JSON."""
     import tempfile
