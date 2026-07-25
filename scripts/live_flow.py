@@ -1421,6 +1421,57 @@ def _replay_streets(
     return out, trace, flags
 
 
+def _street_specs_match(left: list[tuple[str, str | None]],
+                        right: list[tuple[str, str | None]]) -> bool:
+    """Whether two raw/tokenized street literals describe the same cards."""
+    if len(left) != len(right):
+        return False
+    return all(
+        l_rank == r_rank
+        and (l_suit is None or r_suit is None or l_suit == r_suit)
+        for (l_rank, l_suit), (r_rank, r_suit) in zip(left, right)
+    )
+
+
+def _drop_uniquely_embedded_street(
+        block: str, streets: list[dict]) -> tuple[list[dict], list[str]]:
+    """Discard a tokenizer-only street only when raw alignment is unique.
+
+    A missing separator can produce ``... foldJh6h3s ...`` inside one raw
+    street line. Gemini may tokenize the embedded card run as another flop,
+    while the deterministic raw literal extractor correctly sees only the
+    line-leading board. Select the sole ordered subset that matches every raw
+    street literal; ambiguity still refuses rather than guessing.
+    """
+    _hero_hint, raw_hints = _extract_literal_hints(block)
+    if not raw_hints or len(streets) <= len(raw_hints):
+        return streets, []
+
+    import itertools
+
+    token_hints = [
+        _card_specs_from_street_token(street.get("board_text") or "")
+        for street in streets
+    ]
+    matches: list[tuple[int, ...]] = []
+    for indexes in itertools.combinations(range(len(streets)), len(raw_hints)):
+        if all(_street_specs_match(token_hints[index], raw_hints[offset])
+               for offset, index in enumerate(indexes)):
+            matches.append(indexes)
+    if len(matches) != 1:
+        return streets, []
+
+    keep = set(matches[0])
+    dropped = [
+        streets[index].get("board_text") or "?"
+        for index in range(len(streets)) if index not in keep
+    ]
+    return (
+        [street for index, street in enumerate(streets) if index in keep],
+        [f"移除黏入的額外街牌：{', '.join(dropped)}"],
+    )
+
+
 def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
     """Build a complete hand from lexical tokens using poker rules only."""
     from hh_parser import POSITION_ORDERS
@@ -1447,6 +1498,8 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
     for street in data.get("streets") or []:
         for token in street.get("actions") or []:
             _normalize_pot_fraction_token(token)
+    data["streets"], token_repairs = _drop_uniquely_embedded_street(
+        block, data.get("streets") or [])
     for token in data.get("preflop_actions") or []:
         source_tokens = re.split(r"\s+", token.get("source") or "")
         # Structured-output models occasionally copy a bare pocket pair after
@@ -1489,6 +1542,8 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
         "_parse_trace": state["trace"] + street_trace,
         "_parse_flags": state["flags"] + street_flags,
     }
+    if token_repairs:
+        hand["_repairs"] = token_repairs
     return hand
 
 
@@ -1547,8 +1602,9 @@ def parse_block(block: str, client=None, model: str | None = None,
             gated, notes = repair_card_literals_from_block(block, hand)
             if gated is None:
                 return {"_refused": notes or ["牌面字面值衝突"]}
-            if notes:
-                gated["_repairs"] = notes
+            repairs = list(hand.get("_repairs") or []) + notes
+            if repairs:
+                gated["_repairs"] = repairs
             return gated
         except LiveReplayError as exc:
             return {"_refused": [str(exc)]}
@@ -1693,6 +1749,22 @@ def find_ghost(hand: dict) -> str | None:
     live_final = {p for p, c in last.items() if c != "F"}
     ghosts = live_final - actors
     return next(iter(sorted(ghosts)), None)
+
+
+def hero_folded_postflop(hand: dict) -> bool:
+    """Whether the recorded hand intentionally ends at Hero's postflop fold.
+
+    Live notes are Hero-decision centric. Once Hero folds, opponents' remaining
+    calls/folds are irrelevant to grading and are commonly omitted.
+    """
+    hero = hand.get("hero_position")
+    hero_actions = [
+        action.get("action") or ""
+        for street in hand.get("streets") or []
+        for action in street.get("actions") or []
+        if action.get("position") == hero
+    ]
+    return bool(hero_actions and hero_actions[-1] == "F")
 
 
 # ── grading (reuse the HH deviation engine; grader=own_pipeline) ─────────────
@@ -2068,7 +2140,7 @@ def process_batch(text: str, date_str: str | None = None,
                     hand = hand2
                     repairs = repairs2 + ["矛盾重解析（動作歸屬重判）"]
                     ghost = None
-        if ghost:
+        if ghost and not (token_replayed and hero_folded_postflop(hand)):
             entry["error"] = "parse_inconsistent"
             entry["validation_hard"] = [
                 f"{ghost} preflop 未棄牌但翻牌後從未行動 — 動作歸屬解析不一致，請人工確認"]
@@ -2132,6 +2204,7 @@ def process_batch(text: str, date_str: str | None = None,
                     "taken_label": dev.get("hero_action_label") if graded else None,
                     "best_label": dev.get("gto_action_label") if graded else None,
                     "gto_freq": dev.get("gto_freq") if graded else None,
+                    "taken_freq": d.get("taken_freq") if graded else None,
                     "ungraded_reason": reason,
                     "discarded": d["discarded"], "limp_origin": d["limp_origin"],
                     "depth_escalated": next(
@@ -2350,6 +2423,8 @@ def _repair_explanation(note: str) -> str:
         return f"手牌字面校正（以你原文為準）：{note}"
     if any(note.startswith(prefix) for prefix in ("flop ", "turn ", "river ")):
         return f"牌面字面校正（以你原文為準）：{note}"
+    if note.startswith("移除黏入的額外街牌："):
+        return note
     return note
 
 
@@ -2405,7 +2480,21 @@ def _hand_severity(h: dict) -> str:
         return "⚠️"
     if any(d.get("ungraded_reason") for d in h.get("decisions") or []):
         return "❓"
+    if any(_zero_frequency_low_loss(d) for d in h.get("decisions") or []):
+        return "☑️"
     return "✅"
+
+
+def _zero_frequency_low_loss(d: dict) -> bool:
+    ev_loss = d.get("ev_loss")
+    return (
+        ev_loss is not None
+        and ev_loss < QUEUE_EV_MIN
+        and d.get("taken") != d.get("best")
+        and d.get("taken_freq") is not None
+        and float(d["taken_freq"]) <= 0.005
+        and not d.get("discarded")
+    )
 
 
 def _hand_desc_line(h: dict) -> str:
@@ -2419,9 +2508,8 @@ def _hand_desc_line(h: dict) -> str:
     depth_s = f"{depth:g}bb" if depth else ""
     pot = _pot_type_zh(row.get("pot_type"))
     sev = _hand_severity(h)
-    correction = " · 已自動校正" if h.get("repairs") else ""
     bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev]
-    return " · ".join(b for b in bits if b) + correction
+    return " · ".join(b for b in bits if b)
 
 
 def render_session_page(result: dict, page: int = 0,
@@ -2449,15 +2537,40 @@ def render_session_page(result: dict, page: int = 0,
             L.append(f"　{escape(help_text)}")
             L.append("")
             continue
+        for repair in h.get("repairs") or []:
+            L.append(f"　校正：{escape(_repair_explanation(repair))}")
+        has_offrange = any(
+            d.get("ungraded_reason") == "offrange"
+            for d in h.get("decisions") or [])
         for d in h["decisions"]:
-            if d["ev_loss"] is None or d["ev_loss"] < QUEUE_EV_MIN or d["discarded"]:
+            zero_frequency = _zero_frequency_low_loss(d)
+            offrange_preflop_branch = (
+                has_offrange
+                and d.get("street") == "preflop"
+                and d.get("ev_loss") is not None
+                and d.get("taken") != d.get("best")
+                and not d.get("discarded")
+            )
+            if (d["ev_loss"] is None
+                    or (d["ev_loss"] < QUEUE_EV_MIN
+                        and not zero_frequency and not offrange_preflop_branch)
+                    or d["discarded"]):
                 continue
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
             approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
-            L.append(f"　{d['severity']} {d['street']} "
-                     f"{escape(d['taken_label'] or d['taken'] or '?')} → "
-                     f"建議 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb{approx}")
+            taken = escape(d["taken_label"] or d["taken"] or "?")
+            if zero_frequency:
+                L.append(
+                    f"　☑️ {d['street']} {taken}（GTO {d['taken_freq']*100:.0f}%）"
+                    f"→ 建議 {escape(str(best))}{freq} · EV 差 {d['ev_loss']:.2f}bb{approx}")
+            elif offrange_preflop_branch and d["ev_loss"] < QUEUE_EV_MIN:
+                L.append(
+                    f"　ℹ️ preflop {taken}；GTO 首選 {escape(str(best))}{freq}"
+                    f" · EV 差 {d['ev_loss']:.2f}bb{approx}")
+            else:
+                L.append(f"　{d['severity']} {d['street']} {taken} → "
+                         f"建議 {escape(str(best))}{freq} · 損失 {d['ev_loss']:.2f}bb{approx}")
         offrange = [d for d in h["decisions"] if d.get("ungraded_reason") == "offrange"]
         if offrange:
             first = offrange[0]
