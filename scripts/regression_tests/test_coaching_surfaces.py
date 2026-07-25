@@ -717,6 +717,33 @@ def test_custom_spot_resolver_uses_explicit_pot_fraction_without_bb_pot():
 
 
 @test
+def test_custom_spot_resolver_advances_unique_unsized_preflop_raise():
+    """A stored bare ``R`` reaches postflop only through a unique solver
+    preflop raise branch; it never selects arbitrarily among two sizes."""
+    import gtow_action_resolver as resolver
+
+    old = resolver.get_next_actions
+    one_raise = [
+        {"action": {"code": "C", "betsize": "2", "allin": False}},
+        {"action": {"code": "R10", "betsize": "10", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "100", "allin": True}},
+    ]
+    try:
+        resolver.get_next_actions = lambda **kwargs: {
+            "next_actions": {"available_actions": (
+                [{"action": {"code": "R2", "betsize": "2",
+                             "allin": False}}]
+                if kwargs.get("preflop_actions") == "F-F-F-F"
+                else one_raise
+            )}}
+        assert_eq(resolver._resolve_preflop_codes(
+            "MTTGeneral", 100.125, "F-F-F-F-R2-C-R", 0),
+            "F-F-F-F-R2-C-R10")
+    finally:
+        resolver.get_next_actions = old
+
+
+@test
 def test_build_custom_spot_url_raises_on_multiway_postflop():
     """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError

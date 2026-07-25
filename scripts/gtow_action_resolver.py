@@ -26,6 +26,7 @@ from gto_api import (
     nearest_cash_depth,
     find_closest_action,
     find_closest_action_by_pot_fraction,
+    find_unique_nonallin_raise,
 )
 
 POSITION_ORDERS: dict[int, list[str]] = {
@@ -234,6 +235,17 @@ def _resolve_preflop_codes(
         if not tok:
             continue
         if tok.startswith("R"):
+            if tok == "R":
+                resp = get_next_actions(
+                    gametype=gametype, depth=depth, stacks="",
+                    preflop_actions=prefix_history,
+                )
+                available = resp.get(
+                    "next_actions", {}).get("available_actions", []) or []
+                out_tokens.append(
+                    find_unique_nonallin_raise(available) or tok)
+                prefix_history = "-".join(out_tokens)
+                continue
             try:
                 target = float(tok[1:])
             except ValueError:
