@@ -651,13 +651,12 @@ def _literal_change_note(label: str, old: str, fixed: str,
     """
     if old == fixed:
         return None
-    old_cards = _split_cards(old) if old and len(old) % 2 == 0 else []
+    old_specs = _card_specs_from_street_token(old)
     fixed_cards = _split_cards(fixed)
-    if len(old_cards) != len(fixed_cards) or len(specs) != len(fixed_cards):
+    if len(old_specs) != len(fixed_cards) or len(specs) != len(fixed_cards):
         return f"{label} {old or '?'}→{fixed}"
-    for old_card, fixed_card, (raw_rank, raw_suit) in zip(old_cards, fixed_cards, specs):
-        old_rank = _canon_rank(old_card[0])
-        old_suit = old_card[1].lower() if len(old_card) > 1 else None
+    for (old_rank, old_suit), fixed_card, (raw_rank, raw_suit) in zip(
+            old_specs, fixed_cards, specs):
         if old_rank != raw_rank:
             return f"{label} {old or '?'}→{fixed}"
         if raw_suit is not None and old_suit != raw_suit:

@@ -423,11 +423,12 @@ def test_live_card_literal_gate_rank_only_suit_fill_is_rainbow():
             "preflop_actions": "F-F-F-F-R2-F-F-C"}
     block = "Eff 20bb hero co open AhTs bb call\nAK8r x b2 f"
     parsed = dict(base, streets=[{"board": "AK8r", "actions": []}])
-    fixed, _ = repair_card_literals_from_block(block, parsed)
+    fixed, notes = repair_card_literals_from_block(block, parsed)
     b = fixed["streets"][0]["board"]
     assert_eq(b[0::2], "AK8")
     assert_eq(len({b[1], b[3], b[5]}), 3)      # rainbow, not monotone
     assert_true("Ah" not in (b[0:2], b[2:4], b[4:6]))  # hero's Ah never duplicated
+    assert_eq(notes, [], "rank-only board literals are completion, not correction")
     # bare rank-only flop + Gemini-invented monotone suits: raw gives no suits,
     # so the fill is rainbow-preserving and the turn takes a fresh suit
     block2 = "Eff 20bb hero co open AhTs bb call\nAQ3 x b2 c\n9 x x"
