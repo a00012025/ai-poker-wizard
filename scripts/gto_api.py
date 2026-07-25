@@ -228,6 +228,17 @@ def find_closest_action(available_actions: list[dict], target_size: float) -> st
     return best_code or "X"
 
 
+def find_unique_nonallin_raise(available_actions: list[dict]) -> str | None:
+    """Return the sole non-all-in raise code, otherwise abstain."""
+    raises = [
+        entry["action"]["code"]
+        for entry in available_actions
+        if str(entry.get("action", {}).get("code", "")).startswith("R")
+        and not entry.get("action", {}).get("allin")
+    ]
+    return raises[0] if len(raises) == 1 else None
+
+
 def find_closest_action_by_pot_pct(available_actions: list[dict], target_size: float) -> str:
     """Find closest action using pot-percentage matching.
 

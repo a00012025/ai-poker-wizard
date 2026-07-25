@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, find_closest_action_by_pot_fraction,
-    find_closest_action_postflop, nearest_depth,
+    find_closest_action_postflop, find_unique_nonallin_raise, nearest_depth,
     nearest_cash_depth,
 )
 from gto_formatter import (
@@ -315,6 +315,9 @@ def _normalize_preflop_actions(preflop_actions: str, gametype: str, depth: float
                 avail = resp["next_actions"]["available_actions"]
                 if not avail:
                     corrected.append(code)
+                elif code == "R":
+                    corrected.append(
+                        find_unique_nonallin_raise(avail) or code)
                 else:
                     target = float(code[1:])  # R2 → 2.0, R2.1 → 2.1
                     # When user raises, only match against raise actions.

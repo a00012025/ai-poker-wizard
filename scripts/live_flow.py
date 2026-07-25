@@ -2092,7 +2092,15 @@ def process_batch(text: str, date_str: str | None = None,
 
         progress(f"[{i}/{len(blocks)}] grading {cards_to_emoji(hand.get('hero_hand'))} "
                  f"{hand.get('hero_position')}...")
-        if hand.get("_parse_flags"):
+        parse_flags = list(hand.get("_parse_flags") or [])
+        solver_blocking_flags = [
+            flag for flag in parse_flags
+            if not (
+                flag.startswith("preflop:")
+                and flag.endswith(":size_missing")
+            )
+        ]
+        if solver_blocking_flags:
             # The action line is attributable but not solver-safe (typically
             # an omitted bet size). Preserve it for review, never spend an API
             # call or let it enter EV statistics.
