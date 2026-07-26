@@ -3669,6 +3669,49 @@ def _mk_result(n):
 
 
 @test
+def test_live_report_summary_line_breaks_out_severity_buckets():
+    """The session summary must name each emoji and split the old lumped
+    count into 錯誤/偏差/低頻, plus a legend documenting every marker
+    (user request 2026-07-26: distinguish big vs small vs low-freq mistakes)."""
+    import live_flow
+
+    def _dec(sev, ev, taken_freq=1.0, taken="C", best="F", ungraded=None):
+        return {"street": "flop", "idx": 0, "leaf": "l", "ev_loss": ev,
+                "severity": sev, "taken": taken, "best": best,
+                "taken_label": "Call", "best_label": "Fold", "gto_freq": 1.0,
+                "taken_freq": taken_freq, "ungraded_reason": ungraded,
+                "discarded": False, "limp_origin": False, "depth_escalated": None}
+
+    def _hand(idx, decs):
+        return {"idx": idx, "ok": True, "hand_id": f"live:x:{idx}", "echo": "x",
+                "repairs": [], "review_url": None, "decisions": decs,
+                "hand_row": {"hero_hand": "A7s", "position": "CO",
+                             "preflop_depth_bb": 30.0, "pot_type": "single_raised"}}
+
+    hands = [
+        _hand(1, [_dec("❌", 0.5)]),                                # 大失誤
+        _hand(2, [_dec("⚠️", 0.15)]),                              # 小失誤
+        _hand(3, [_dec("✅", 0.03, taken_freq=0.0)]),               # 冷門 (0-freq, low loss)
+        _hand(4, [_dec("❓", None, ungraded="offrange")]),          # 無法評分
+        _hand(5, [_dec("✅", 0.0, taken="C", best="C")]),           # 標準
+    ]
+    result = {"totals": {"hands": 5, "decisions": 5, "graded": 4,
+                         "mistakes": 2, "parse_failed": 0},
+              "queue": [], "hands": hands}
+    html, _p, _n = live_flow.render_session_page(result, 0)
+    counts = html.splitlines()[1]
+    assert_in("❌ 錯誤 1", counts)
+    assert_in("⚠️ 偏差 1", counts)
+    assert_in("☑️ 低頻 1", counts)
+    assert_in("❓ 無法評分 1", counts)
+    assert_in("✅", counts)
+    assert_not_in("⚠️❌", counts)      # old lumped "⚠️❌ N 偏差" prefix gone
+    assert_not_in("待深挖", counts)
+    assert_in("圖例", html)            # legend present
+    assert_in("近乎無損", html)         # ☑️ meaning spelled out
+
+
+@test
 def live_report_uses_compact_pot_labels_and_hides_unopened():
     import live_flow
 
