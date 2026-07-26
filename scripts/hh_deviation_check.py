@@ -387,6 +387,31 @@ def _get_postflop_hand_freqs(solution: dict, hero_hand: str, hero_pos: str,
     return {k: v for k, v in action_freqs.items() if v > 0.005} or None
 
 
+IN_MIX_FREQ_FLOOR = 0.01
+
+
+def _best_in_mix(freqs: dict, action_evs: dict,
+                 floor: float = IN_MIX_FREQ_FLOOR):
+    """Highest-EV action among those the solver actually plays (freq >= floor).
+
+    Per-combo action EVs are noisy for sizes the solver plays ~never; measuring
+    EV loss against a 0%-frequency "higher EV" size fabricates a mistake for an
+    action that is genuinely in the GTO mix (H2 turn: hero's 15% bet was flagged
+    a ❌ 大失誤 against a 0%-frequency size). Restrict the recommendation and the
+    EV-loss basis to in-mix actions so both stay consistent and noise-free.
+
+    Falls back to any action present in both dicts if nothing clears the floor.
+    Returns (code, ev), or (None, None) when no EVs are available.
+    """
+    in_mix = [c for c, f in freqs.items() if f >= floor and c in action_evs]
+    if not in_mix:
+        in_mix = [c for c in freqs if c in action_evs]
+    if not in_mix:
+        return None, None
+    best = max(in_mix, key=lambda c: action_evs[c])
+    return best, action_evs[best]
+
+
 def _fmt_betsize(v) -> str:
     """Format betsize, stripping unnecessary trailing zeros."""
     return f"{float(v):.3f}".rstrip("0").rstrip(".")
@@ -421,17 +446,24 @@ def _normalize_preflop_action(code: str, gametype: str, depth: float,
         avail = resp["next_actions"]["available_actions"]
         if not avail:
             return code
+        # A raise/all-in must resolve to a raise (or all-in) candidate, never
+        # to Complete/limp (C) — even when C's size (1bb) is numerically closer
+        # than the only raise. Restricting candidates mirrors the deep-link
+        # resolver's invariant (H3490); without it a small open snaps to a limp
+        # and the whole hand grades against the wrong (limped-pot) tree (H4).
+        raises = [a for a in avail
+                  if str(a.get("action", {}).get("code", "")).startswith("R")]
         if code == "AI" or (code.startswith("AI") and code == "AI"):
             allin = next((a["action"]["code"] for a in avail if a["action"].get("allin")), code)
             return allin
         if code.startswith("AI"):
             target = float(code[2:])
-            return find_closest_action(avail, target)
+            return find_closest_action(raises or avail, target)
         if code.startswith("R"):
             if code == "R":
                 return find_unique_nonallin_raise(avail) or code
             target = float(code[1:])
-            return find_closest_action(avail, target)
+            return find_closest_action(raises or avail, target)
     except Exception:
         pass
     return code
@@ -533,15 +565,18 @@ def check_hand(hand: dict, icm_params: dict | None = None,
         freqs = _get_preflop_hand_freqs(sol, hero_hand, hero_pos)
         if freqs:
             hero_freq = freqs.get(hero_pf_action, 0)
-            best_action = max(freqs, key=freqs.get)
-            best_freq = freqs[best_action]
-
             hand_ev = _get_hand_ev(sol, hero_hand, hero_pos, is_preflop=True)
             action_evs = _get_action_evs_preflop(sol, hero_hand, hero_pos)
+            # Recommendation + EV loss come from the highest-EV IN-MIX action
+            # (freq >= floor), so a 0%-frequency noisy size can't fabricate a
+            # loss for an action already in the GTO mix (H2). Consistent basis.
+            best_action, best_act_ev = _best_in_mix(freqs, action_evs or {})
+            if best_action is None:
+                best_action = max(freqs, key=freqs.get)
+            best_freq = freqs.get(best_action, 0)
             ev_entry = {}
             if action_evs:
                 hero_act_ev = action_evs.get(hero_pf_action)
-                best_act_ev = max(action_evs.values()) if action_evs else None
                 if hero_act_ev is not None and best_act_ev is not None:
                     ev_entry = {
                         "hero_action_ev": hero_act_ev,
@@ -746,17 +781,21 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                                                           combo_idx=hero_combo_idx)
                     if freqs_post:
                         hero_freq_post = freqs_post.get(taken_code, 0)
-                        best_post = max(freqs_post, key=freqs_post.get)
-                        best_freq_post = freqs_post[best_post]
-
                         hand_ev_post = _get_hand_ev(sol_post, hero_hand, hero_pos,
                                                     is_preflop=False, combo_idx=hero_combo_idx)
                         action_evs_post = _get_action_evs_postflop(
                             sol_post, hero_hand, hero_pos, combo_idx=hero_combo_idx)
+                        # Recommendation + EV loss come from the highest-EV
+                        # IN-MIX action, so a 0%-frequency noisy size can't
+                        # fabricate a loss for an action already in the mix (H2).
+                        best_post, best_act_ev_p = _best_in_mix(
+                            freqs_post, action_evs_post or {})
+                        if best_post is None:
+                            best_post = max(freqs_post, key=freqs_post.get)
+                        best_freq_post = freqs_post.get(best_post, 0)
                         ev_entry_post = {}
                         if action_evs_post:
                             hero_act_ev_p = action_evs_post.get(taken_code)
-                            best_act_ev_p = max(action_evs_post.values())
                             if hero_act_ev_p is not None and best_act_ev_p is not None:
                                 ev_entry_post = {
                                     "hero_action_ev": hero_act_ev_p,

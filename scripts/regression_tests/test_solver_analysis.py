@@ -1129,6 +1129,44 @@ def test_api_find_closest_action():
 
 
 @test
+def test_normalize_preflop_raise_never_snaps_to_complete():
+    """A hero raise must resolve to a raise size, never the Complete/limp (C)
+    action — even when Complete's size (1bb) is numerically closer than the
+    only raise (3.5bb). H4: SB opened 96o to 2bb, R2 snapped to C, so the open
+    was mis-scored as a GTO limp (✅ 93.5%) and the flop went no_solution."""
+    import hh_deviation_check as hd
+    avail = [
+        {"action": {"code": "F", "betsize": "0"}},
+        {"action": {"code": "C", "betsize": "1.0"}},
+        {"action": {"code": "R3.5", "betsize": "3.5"}},
+        {"action": {"code": "RAI", "betsize": "40.0", "allin": True}},
+    ]
+    orig = hd.get_next_actions
+    hd.get_next_actions = lambda **kw: {"next_actions": {"available_actions": avail}}
+    try:
+        code = hd._normalize_preflop_action(
+            "R2", "MTTGeneral", 40.125, "F-F-F-F-F-F", "")
+    finally:
+        hd.get_next_actions = orig
+    assert_eq(code, "R3.5")
+
+
+@test
+def test_best_in_mix_excludes_zero_frequency_noise():
+    """Recommendation + EV loss must be measured against actions the solver
+    actually plays (freq >= 1%), not a 0%-frequency high-EV noise size.
+    H2 turn: hero's R1.9 is in the mix (15%), so best-in-mix is R1.9 itself
+    (ev_loss 0), not the 0%-frequency R4.75 that made it a phantom ❌."""
+    from hh_deviation_check import _best_in_mix
+    freqs = {"X": 0.31, "R1.15": 0.52, "R1.9": 0.15, "R3.15": 0.008, "R11.4": 0.007}
+    evs = {"X": 2.84, "R1.15": 3.06, "R1.9": 3.31, "R3.15": 3.59,
+           "R4.75": 3.83, "R7.1": 2.91, "R11.4": 3.29, "RAI": 2.59}
+    best, best_ev = _best_in_mix(freqs, evs, floor=0.01)
+    assert_eq(best, "R1.9")
+    assert_true(abs(best_ev - 3.31) < 1e-9, f"best_ev={best_ev}")
+
+
+@test
 def test_api_stacks_param():
     """API: stacks parameter is accepted (ICM mode)."""
     from gto_api import get_next_actions
