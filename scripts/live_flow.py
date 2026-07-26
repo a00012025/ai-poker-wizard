@@ -2700,13 +2700,38 @@ def render_session_page(result: dict, page: int = 0,
     pages = max(1, (len(hands) + per_page - 1) // per_page)
     page = max(0, min(page, pages - 1))
     lo, hi = page * per_page, page * per_page + per_page
+    # Split the old lumped "偏差" into the three failure kinds the player cares
+    # about — big EV loss / small EV loss / near-free but off-strategy — and
+    # name every marker so the summary self-documents (2026-07-26 request).
+    # ❌/⚠️/☑️ are per-decision (each surfaced deviation counts); ❓ is per-hand,
+    # matching the single "起未評分" line each unscored hand prints below.
+    def _count_dec(pred):
+        return sum(1 for h in hands if h.get("ok")
+                   for d in h["decisions"]
+                   if not d.get("discarded") and pred(d, h))
+    n_major = _count_dec(lambda d, h: d.get("severity") == "❌")
+    n_minor = _count_dec(lambda d, h: d.get("severity") == "⚠️")
+    n_cold = _count_dec(_zero_frequency_low_loss)
     n_offrange = sum(
         1 for h in hands if h.get("ok")
         and any(d.get("ungraded_reason") for d in h["decisions"])
         and not any(d["ev_loss"] is not None and d["ev_loss"] >= QUEUE_EV_MIN
                     and not d["discarded"] for d in h["decisions"]))
     L = [f"🃏 <b>線下入帳：{t['hands']} 手 / {t['decisions']} 決策</b>　(第 {page+1}/{pages} 頁)"]
-    L.append(f"⚠️❌ {t['mistakes']} 偏差 · ❓ {n_offrange} 待深挖 · ✅ 其餘無明顯偏差")
+    buckets = []
+    if n_major:
+        buckets.append(f"❌ 錯誤 {n_major}")
+    if n_minor:
+        buckets.append(f"⚠️ 偏差 {n_minor}")
+    if n_cold:
+        buckets.append(f"☑️ 低頻 {n_cold}")
+    if n_offrange:
+        buckets.append(f"❓ 無法評分 {n_offrange}")
+    buckets.append("✅ 其餘標準")
+    L.append(" · ".join(buckets))
+    L.append("🔎 圖例：❌ 錯誤 損失≥0.3bb · ⚠️ 偏差 0.1–0.3bb · "
+             "☑️ 低頻 近乎無損但 GTO 極少這樣打 · ❓ 無法評分 牌在解出範圍外 · "
+             "✅ 標準 無明顯偏差")
     L.append("")
 
     for h in hands[lo:hi]:
