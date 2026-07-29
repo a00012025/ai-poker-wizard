@@ -1140,7 +1140,7 @@ def test_training_plan_focus_and_readback():
     assert_true("北極星" not in msg and "迴圈" not in msg)   # no jargon
     assert_in("chipEV", msg)                                 # honesty caveat
     assert_in("limp", msg)
-    assert_in("練習佇列", msg)                                # live queue section
+    assert_in("本週練習", msg)                                # practice slate section
     assert_in("平均 EV 損失", msg)
     assert_in("統計口徑", msg)
     assert_true("保守估計" not in msg)

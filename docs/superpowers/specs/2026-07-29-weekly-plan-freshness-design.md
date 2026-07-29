@@ -51,10 +51,13 @@ ALTER TABLE drill_queue
   ADD COLUMN IF NOT EXISTS last_surfaced_at   TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_surfaced_week TEXT;
 
+-- 時間戳回填自 prescribed_week（那週日曆上的週日，計畫送出的時間），不是 last_added：
+-- 週掃描每次 merge 新來源手牌都會更新 last_added，會讓一筆久未理會的 row 看起來剛被看過，
+-- 於是被排到輪替隊伍的最後面。
 UPDATE drill_queue
    SET surfaced_count = 1,
        last_surfaced_week = prescribed_week,
-       last_surfaced_at = COALESCE(cleared_at, last_added)
+       last_surfaced_at = to_date(prescribed_week, 'IYYY"-W"IW') + interval '6 days'
  WHERE prescribed_week IS NOT NULL AND surfaced_count = 0;
 
 ALTER TABLE drill_queue DROP CONSTRAINT IF EXISTS drill_queue_clear_reason_check;
@@ -96,10 +99,14 @@ ALTER TABLE drill_queue ADD CONSTRAINT drill_queue_clear_reason_check
 
 ### 5.3 填位規則
 
-1. 每個 track 內先填新鮮＋復發（EV desc），至多 `slots - backlog_cap`。
-2. 舊帳依輪替順序補，但每 track 至多 `BACKLOG_SLOTS_PER_TRACK`(=1)。
-3. 某 track 候選不足 → 剩餘名額讓給另一 track（含其舊帳上限，仍各自受 cap 約束）。
-4. 仍填不滿 → **不補滿**。訊息改印一行「本週沒有新的漏洞，佇列還有 N 項舊帳（/queue）」。少即是誠實。
+1. 每個 track 內先填新鮮＋復發（EV desc），至多 `slots - reserved`，其中
+   `reserved = min(BACKLOG_SLOTS_PER_TRACK(=1), 實際舊帳數, slots)`。
+   **輪替席是「保留」不是「剩餘」**：若寫成剩餘，只要新鮮項目填得滿就永遠輪不到舊帳，
+   一筆 22bb 沒練的處方會無限期消失在小額新項目後面 —— 那正是 §14.2 要防的事。
+   沒有舊帳可輪時該席位還給新鮮項目，不留空。
+2. 舊帳依 `last_surfaced_at` asc 補，每 track 至多 1 席。
+3. 某 track 候選不足 → 剩餘名額讓給另一 track 的**新鮮／復發**項目；舊帳上限絕不因讓位而放寬。
+4. 仍填不滿 → **不補滿**。訊息改印一行「本週沒有更多新的漏洞，佇列還有 N 項舊帳（/queue）」。少即是誠實。
 
 ### 5.4 公開 API
 
@@ -119,7 +126,9 @@ async def mark_surfaced(conn, ids, week) -> None
 
 ## 6. 焦點冷卻（`scorecard.py` + `spot_leaderboard.py`）
 
-`hierarchical_leaderboard` 新增 `exclude_keys: set[str]` 參數，於 `rank_hierarchical_rows` 之後、`[:top]` 之前套用，並提高取樣量以維持 `top` 填滿。排序邏輯本身不動（§7.3）。
+排除發生在 `compute_training_plan` 挑選焦點時，**不是**在 `hierarchical_leaderboard` 裡。
+理由：排行榜同時餵「焦點」與「其他 EV 損失節點」，在排名層排除會讓被冷卻的 spot 從
+排行榜整個消失，等於謊報 EV 流向。排名邏輯完全不動（§7.3）。
 
 排除規則（讀 `coach_focus` 歷史，對每個曾被處方過的 `diagnosis_key`）：
 
