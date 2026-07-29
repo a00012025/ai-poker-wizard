@@ -18,6 +18,7 @@ TEST_MODULES = (
     "test_ingest_progress",
     "test_live_flow",
     "test_gtow_drills",
+    "test_plan_scheduler",
     "test_session_review",
     "test_deployment",
 )

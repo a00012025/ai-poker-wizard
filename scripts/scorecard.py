@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 import spot_leaderboard as lb
+from plan_scheduler import QUEUE_SLOTS
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
@@ -142,7 +143,14 @@ async def ensure_training_ready(conn) -> None:
 
 # ── pure assembly ──────────────────────────────────────────────────────────
 def compute_training_plan(window_label, weekly_series, spots, top_hands,
-                          readback, honesty, focus_k=2) -> dict:
+                          readback, honesty, focus_k=2, focus_exclude=None) -> dict:
+    """Assemble the weekly plan.
+
+    ``focus_exclude`` holds diagnosis keys under focus cooldown (see
+    ``plan_scheduler.focus_exclusions``). They are skipped when choosing this
+    week's focus but stay on the leak board: hiding a spot from the ranking
+    just because it was recently treated would misreport where EV is going.
+    """
     per100 = weekly_series[-1]["per100"] if weekly_series else 0.0
     n = int(weekly_series[-1].get("n") or 0) if weekly_series else 0
     previous_n = int(weekly_series[-2].get("n") or 0) if len(weekly_series) >= 2 else 0
@@ -150,8 +158,12 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
              if len(weekly_series) >= 2 else 0.0)
     change = (f"本週觀察值較上週少 {abs(delta):.2f}" if delta < 0 else
               (f"本週觀察值較上週多 {delta:.2f}" if delta > 0 else "與上週相同"))
+    blocked = set(focus_exclude or ())
+    focus_pool = [it for it in spots
+                  if (it["row"].get("diagnosis_key")
+                      or it["row"].get("spot_leaf")) not in blocked]
     focus = []
-    for it in spots[:focus_k]:
+    for it in focus_pool[:focus_k]:
         r = it["row"]
         focus.append({
             "spot_leaf": r["spot_leaf"], "spot_category": r["spot_category"],
@@ -285,6 +297,41 @@ def render_html(d: dict) -> str:
 </body></html>"""
 
 
+TRACK_ZH = {"online": "🖥 線上", "live": "🎲 線下"}
+_TRACK_ORDER = {"online": 0, "live": 1}
+
+
+def ordered_queue(d: dict) -> list[dict]:
+    """The slate in display order: online seats first, then the live seats.
+
+    The message text and the button rows MUST walk the same list — the button
+    labels carry the item's position number.
+    """
+    dq = d.get("drill_queue") or []
+    return sorted(dq, key=lambda q: _TRACK_ORDER.get(q.get("track", "online"), 0))
+
+
+def repeat_note(q: dict) -> str:
+    """Say out loud that an item is coming round again, and why.
+
+    §14.2 keeps unpracticed prescriptions alive; being honest that this is
+    repeat number N is what stops that from reading as a broken plan.
+    """
+    times = int(q.get("surfaced_count") or 0)
+    if times <= 0:
+        return ""
+    if q.get("bucket") == "relapse":
+        return f"（🔁 又漏了，第 {times + 1} 次排入）"
+    return f"（📼 舊帳輪替，第 {times + 1} 次排入）"
+
+
+def backlog_remaining(d: dict) -> int:
+    """Open backlog items NOT shown in this week's slate."""
+    shown = sum(1 for q in (d.get("drill_queue") or [])
+                if q.get("bucket") == "backlog")
+    return max(0, int(d.get("queue_backlog_total") or 0) - shown)
+
+
 def weekly_tg_html(week: str, d: dict) -> str:
     """End-user weekly coaching message for Telegram (HTML parse_mode).
 
@@ -327,27 +374,38 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 L.append(f"   明顯傾向：{escape(bias['label'])}（{bias['n']} 手，"
                          f"EV 損失合計 {bias['ev_loss_bb']:.2f} bb）")
 
-    dq = d.get("drill_queue") or []
+    dq = ordered_queue(d)
     if dq:
         L.append("")
-        L.append("<b>📥 練習佇列（現場 + 線上）：</b>")
+        L.append("<b>📥 本週練習：</b>")
+        shown_track = None
         for qi, q in enumerate(dq, 1):
+            track = q.get("track", "online")
+            if track != shown_track:
+                shown_track = track
+                L.append(f"<i>{TRACK_ZH.get(track, track)}</i>")
             if q.get("kind") == "review":
                 lbl = q.get("label") or q.get("spot_leaf") or "?"
             else:
                 from spot_naming import compact_spot_name
                 lbl = compact_spot_name(q)
+            note = repeat_note(q)
             if q.get("kind") == "review":
                 # label already reads「復盤 M/D … −Xbb」
-                L.append(f"{qi}. 🔍 {escape(lbl)}")
+                L.append(f"{qi}. 🔍 {escape(lbl)}{note}")
             else:
                 ev = q.get("total_ev_loss_bb") or 0
                 L.append(f"{qi}. 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
-                         f"EV 損失合計 {ev:.1f} bb")
+                         f"EV 損失合計 {ev:.1f} bb{note}")
                 from spot_naming import telegram_bias_summary
                 bias = telegram_bias_summary(q)
                 if bias:
                     L.append(f"  ↳ {escape(bias)}")
+    remaining = backlog_remaining(d)
+    if remaining and len(dq) < QUEUE_SLOTS:
+        L.append("")
+        L.append(f"本週沒有更多新的漏洞 — 這是好消息。佇列裡還有 {remaining} 項"
+                 "沒完成的舊處方，想加練用 /queue。")
 
     focus_leafs = {f["spot_leaf"] for f in focus}
     others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
@@ -396,7 +454,7 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
         if f.get("queue_id") is not None:
             buttons.append([{"text": f"🎯 焦點 {i}",
                              "callback_data": f"qdet:{f['queue_id']}:0:plan"}])
-    for qi, q in enumerate((d.get("drill_queue") or []), 1):
+    for qi, q in enumerate(ordered_queue(d), 1):
         qid = q.get("id")
         if q.get("kind") == "review":
             lbl = q.get("label") or q.get("spot_leaf") or "?"
@@ -501,21 +559,20 @@ WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
 """
 READBACK_WINDOW_SQL_PARENT = READBACK_WINDOW_SQL.replace("spot_leaf=$1", "spot_parent=$1")
 
-# prescribed-but-uncleared items KEEP re-surfacing in the plan (§14.2:
-# silently dropping an unpracticed prescription degrades the coaching
-# signal) — pending first, then open prescriptions by EV. The plan drains a
-# per-kind quota (§7): QUEUE_DRILL_SLOTS drills + QUEUE_REVIEW_SLOTS reviews,
-# one topping up the other to QUEUE_SLOTS. Fetch a wider window, mix in Python.
-QUEUE_DRILL_SLOTS = 3
-QUEUE_REVIEW_SLOTS = 2
-QUEUE_SLOTS = QUEUE_DRILL_SLOTS + QUEUE_REVIEW_SLOTS
+# Prescribed-but-uncleared items are never DELETED (§14.2: silently dropping an
+# unpracticed prescription degrades the coaching signal) — they stay in /queue
+# forever. They just stop monopolising the weekly plan: plan_scheduler sorts
+# open rows into fresh / relapsed / backlog and fills reserved online+live
+# seats, rotating at most one backlog item per track. Fetch every open row so
+# the backlog tally the message reports is the real one.
 QUEUE_SQL = """
 SELECT id, spot_leaf, spot_category, label, drill_url, review_anchor_url,
        review_anchor_street, n_sources, total_ev_loss_bb, source, status,
        prescribed_week, kind, ref_hand_id, bias_direction, bias_n,
-       bias_ev_loss_bb, bias_share
+       bias_ev_loss_bb, bias_share, source_hands, surfaced_count,
+       last_surfaced_at, last_surfaced_week
 FROM drill_queue WHERE status IN ('pending', 'prescribed')
-ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 40
+ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 200
 """
 
 
@@ -544,10 +601,14 @@ async def _honesty(conn) -> dict:
             "sizing_snap_n": snap, "depth_snap_n": dgap, "low_confidence_n": low}
 
 
-async def fetch_drill_queue(conn, exclude_ids=None) -> list[dict]:
-    """Top practice-queue items for the weekly plan (drill + review), mixed to
-    the per-kind quota (§7). Pending-first / EV-desc order is preserved."""
-    from queue_feed import mix_queue_quota
+async def fetch_drill_queue(conn, exclude_ids=None) -> dict:
+    """This week's practice slate: ``{"picked": [...], "backlog_total": int}``.
+
+    Freshness and the reserved online/live seats are decided by
+    ``plan_scheduler.select_weekly_slate``; this only loads the open rows and
+    normalizes their display labels.
+    """
+    from plan_scheduler import annotate_rows, select_weekly_slate
     rows = [dict(r) for r in await conn.fetch(QUEUE_SQL)]
     excluded = {int(i) for i in (exclude_ids or [])}
     rows = [row for row in rows if int(row["id"]) not in excluded]
@@ -555,7 +616,7 @@ async def fetch_drill_queue(conn, exclude_ids=None) -> list[dict]:
     for row in rows:
         if row.get("kind") == "drill":
             row["label"] = compact_spot_name(row)
-    return mix_queue_quota(rows, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS, QUEUE_SLOTS)
+    return select_weekly_slate(await annotate_rows(conn, rows))
 
 
 def focus_queue_item(focus: dict) -> dict | None:
@@ -618,8 +679,33 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
     return out
 
 
+async def focus_history(conn) -> list[dict]:
+    """All past focus prescriptions, newest first, for the cooldown.
+
+    The diagnosis window is 90 days, so a fixed 12-week limit leaves a gap in
+    which an 85–90-day-old prescription can be selected again without fresh
+    evidence. The table grows by one small row per week; reading it all keeps
+    the "time alone never resurrects a treated spot" contract exact.
+    """
+    out = []
+    for row in await conn.fetch(
+            "SELECT week, families, created_at FROM coach_focus "
+            "ORDER BY created_at DESC"):
+        fam = row["families"]
+        fam = json.loads(fam) if isinstance(fam, str) else fam
+        for entry in fam or []:
+            key = entry.get("diagnosis_key") or entry.get("spot_leaf")
+            if key:
+                out.append({"diagnosis_key": key,
+                            "diagnosis_level": entry.get("diagnosis_level"),
+                            "prescribed_at": row["created_at"],
+                            "week": row["week"]})
+    return out
+
+
 async def build(conn, window_label, prev_focus, min_n=50, top=8,
-                since=None, prev_at=None, provision_focus=False):
+                since=None, prev_at=None, provision_focus=False,
+                focus_exclude=None):
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
     spots = await lb.hierarchical_leaderboard(
         conn, min_n=max(25, min_n // 2), top=top, since=since)
@@ -629,12 +715,46 @@ async def build(conn, window_label, prev_focus, min_n=50, top=8,
     readback = None
     if prev_focus and prev_at:
         readback = prev_focus_readback(prev_focus, await fetch_readback(conn, prev_focus, prev_at))
-    data = compute_training_plan(window_label, weekly, spots, top_hands, readback, honesty)
+    data = compute_training_plan(window_label, weekly, spots, top_hands,
+                                 readback, honesty, focus_exclude=focus_exclude)
+    data["focus_excluded"] = sorted(focus_exclude or ())
     focus_queue_ids = (await bind_focus_queue_items(conn, data["focus"])
                        if provision_focus else [])
     data["focus_queue_ids"] = focus_queue_ids
-    data["drill_queue"] = await fetch_drill_queue(conn, focus_queue_ids)
+    slate = await fetch_drill_queue(conn, focus_queue_ids)
+    data["drill_queue"] = slate["picked"]
+    data["queue_backlog_total"] = slate["backlog_total"]
     return data
+
+
+async def _autoclose(conn) -> dict:
+    """Close drills whose bound GTOW attempt met its targets (fail-soft).
+
+    Needs the owner's GTOW session; without a token there is simply nothing to
+    read, and the weekly plan must still go out.
+    """
+    from plan_scheduler import autoclose_passed_drills
+    try:
+        from gto_owner_token import resolve_owner_db_token
+        from gtow_drill_service import GTOWDrillClient
+        owner = resolve_owner_db_token()
+        if not owner:
+            return {"skipped": "no owner GTOW refresh token"}
+        client = GTOWDrillClient(owner[0], owner[1])
+    except Exception as exc:  # noqa: BLE001 - never block the weekly plan
+        return {"skipped": f"no GTOW session ({exc})"}
+    return await autoclose_passed_drills(conn, client)
+
+
+async def _focus_exclusions(conn, since) -> set[str]:
+    """Diagnosis keys held back from the focus slot by the cooldown."""
+    from plan_scheduler import focus_exclusions
+    extra = [since] if since else []
+    global_avg = await conn.fetchval(lb.global_avg_sql(since), *extra)
+    return await focus_exclusions(
+        conn, await focus_history(conn),
+        now=datetime.now(timezone.utc),
+        global_per100=float(global_avg or 0.0) * 100)
 
 
 async def _run(mode: str, min_n: int):
@@ -644,7 +764,8 @@ async def _run(mode: str, min_n: int):
     try:
         await ensure_training_ready(conn)
         if mode == "preview":
-            data = await build(conn, "歷史全部資料（預覽）", None, min_n=min_n)
+            data = await build(conn, "歷史全部資料（預覽）", None, min_n=min_n,
+                               focus_exclude=await _focus_exclusions(conn, None))
             (outdir / "preview.html").write_text(render_html(data))
             (outdir / "preview_summary.md").write_text(preview_summary_md(data))
             (outdir / "preview_data.json").write_text(json.dumps(data, default=str, ensure_ascii=False, indent=1))
@@ -661,6 +782,11 @@ async def _run(mode: str, min_n: int):
             fam = prev["families"]
             prev_focus = json.loads(fam) if isinstance(fam, str) else fam
             prev_at = prev["created_at"]
+        # Retire drills whose bound GTOW attempt already met both targets, so a
+        # passed drill cannot take a seat from work that still needs doing.
+        # Runs before the scan: a re-scan would otherwise merge fresh evidence
+        # into a row that is about to be closed.
+        print(f"gtow auto-close: {await _autoclose(conn)}")
         # §5.4: scan the online window into the queue BEFORE building the plan,
         # so this week's fresh drill/review items are eligible to be prescribed
         # and drained. The scan uses its own 60d window (queue_feed constant),
@@ -670,8 +796,12 @@ async def _run(mode: str, min_n: int):
         print(f"queue scan: {len(scan['drill'])} drill + {len(scan['review'])} "
               f"review candidates, tally={scan['tally']}")
         since = datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS)
+        excluded = await _focus_exclusions(conn, since)
+        if excluded:
+            print(f"focus cooldown holds back: {sorted(excluded)}")
         data = await build(conn, week, prev_focus, min_n=min_n, since=since,
-                           prev_at=prev_at, provision_focus=True)
+                           prev_at=prev_at, provision_focus=True,
+                           focus_exclude=excluded)
         html = render_html(data)
         (outdir / f"{week}.html").write_text(html)
         fam_payload = [{"spot_leaf": f["spot_leaf"],
@@ -700,10 +830,14 @@ async def _run(mode: str, min_n: int):
             + [q["id"] for q in (data.get("drill_queue") or [])]))
         if dq_ids:
             # surfaced in this week's plan -> prescribed (still visible in /queue
-            # until the player marks them cleared)
+            # until the player marks them cleared). prescribed_week keeps the
+            # FIRST prescription week; surfaced_count/last_surfaced_at track the
+            # repeats that the next slate rotates on.
             await conn.execute(
                 "UPDATE drill_queue SET status='prescribed', prescribed_week=$1 "
                 "WHERE id = ANY($2) AND status='pending'", week, dq_ids)
+            from plan_scheduler import mark_surfaced
+            await mark_surfaced(conn, dq_ids, week)
         print(f"WEEKLY week={week} per100={data['per100']:.2f} "
               f"queue={len(dq_ids)}")
         return 0

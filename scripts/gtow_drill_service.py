@@ -229,10 +229,8 @@ class GTOWDrillClient:
             "GET", f"/practice-hands/totals/?drill={drill_id}")
         return stats_from_payload(payload)
 
-    def attempt_stats(self, drill_id: str,
-                      started_at: datetime | None) -> AttemptStats:
-        if started_at is None:
-            return AttemptStats()
+    def _session_rows(self, since: datetime | None) -> list[dict]:
+        """Practice sessions, newest first, paged back to ``since``."""
         rows = []
         limit = 100
         for offset in range(0, 1000, limit):
@@ -244,43 +242,74 @@ class GTOWDrillClient:
             if len(page) < limit:
                 break
             try:
-                oldest = datetime.fromisoformat(
-                    str(page[-1]["created_at"]).replace("Z", "+00:00"))
-                baseline = started_at
-                if baseline.tzinfo is None:
-                    baseline = baseline.replace(tzinfo=oldest.tzinfo)
-                if oldest < baseline:
+                oldest = _parse_created_at(page[-1]["created_at"])
+                if oldest < _align_tz(since, oldest):
                     break
             except (IndexError, KeyError, TypeError, ValueError):
                 pass
-        selected = []
-        for row in rows:
-            if str(row.get("drill") or "") != str(drill_id):
-                continue
-            try:
-                created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
-            except (KeyError, TypeError, ValueError):
-                continue
-            baseline = started_at
-            if baseline.tzinfo is None:
-                baseline = baseline.replace(tzinfo=created.tzinfo)
-            if created >= baseline:
-                selected.append(row)
-        hands = sum(int(row.get("total_hands") or 0) for row in selected)
-        moves = sum(int(row.get("played_moves_sum") or 0) for row in selected)
-        ev_loss = sum(float(row.get("total_ev_loss_sum") or 0.0) for row in selected)
-        weighted_score = sum(
-            float(row.get("gto_score_avg") or 0.0)
-            * int(row.get("total_hands") or 0)
-            for row in selected
-        )
-        return AttemptStats(
-            sessions=len(selected),
-            total_hands=hands,
-            played_moves=moves,
-            gto_score=(weighted_score / hands if hands else 0.0),
-            total_ev_loss_bb=ev_loss,
-        )
+        return rows
+
+    def attempt_stats(self, drill_id: str,
+                      started_at: datetime | None) -> AttemptStats:
+        if started_at is None:
+            return AttemptStats()
+        return _aggregate_attempt(
+            self._session_rows(started_at), drill_id, started_at)
+
+    def attempts_by_drill(self, started_ats: dict[str, datetime | None]
+                          ) -> dict[str, AttemptStats]:
+        """Attempt stats for many bound drills off ONE session read.
+
+        The weekly auto-close checks every bound queue row; asking per drill
+        would re-page the same session list once per row.
+        """
+        wanted = {str(drill): started for drill, started in (started_ats or {}).items()
+                  if started is not None}
+        if not wanted:
+            return {}
+        rows = self._session_rows(min(wanted.values()))
+        return {drill: _aggregate_attempt(rows, drill, started)
+                for drill, started in wanted.items()}
+
+
+def _parse_created_at(value) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _align_tz(value: datetime, reference: datetime) -> datetime:
+    """Make a naive timestamp comparable with an API timestamp."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=reference.tzinfo)
+    return value
+
+
+def _aggregate_attempt(rows: list[dict], drill_id: str,
+                       started_at: datetime) -> AttemptStats:
+    """Sessions of one drill created at/after the attempt baseline."""
+    selected = []
+    for row in rows:
+        if str(row.get("drill") or "") != str(drill_id):
+            continue
+        try:
+            created = _parse_created_at(row["created_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if created >= _align_tz(started_at, created):
+            selected.append(row)
+    hands = sum(int(row.get("total_hands") or 0) for row in selected)
+    moves = sum(int(row.get("played_moves_sum") or 0) for row in selected)
+    ev_loss = sum(float(row.get("total_ev_loss_sum") or 0.0) for row in selected)
+    weighted_score = sum(
+        float(row.get("gto_score_avg") or 0.0) * int(row.get("total_hands") or 0)
+        for row in selected
+    )
+    return AttemptStats(
+        sessions=len(selected),
+        total_hands=hands,
+        played_moves=moves,
+        gto_score=(weighted_score / hands if hands else 0.0),
+        total_ev_loss_bb=ev_loss,
+    )
 
 
 def stats_json(stats: DrillStats) -> dict:

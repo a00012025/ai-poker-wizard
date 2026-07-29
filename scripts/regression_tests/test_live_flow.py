@@ -2822,22 +2822,35 @@ def test_queue_review_study_url_falls_back_to_played_depth_when_solver_missing()
 
 @test
 def test_scorecard_queue_quota_and_weekly_scan():
-    """Scorecard §7: QUEUE_SQL exposes kind/ref_hand_id + pending-first order;
-    fetch_drill_queue mixes the quota; the weekly run scans the online window
-    BEFORE building/draining the plan (§5.4)."""
+    """Scorecard §7: QUEUE_SQL exposes kind/ref_hand_id + the freshness columns;
+    fetch_drill_queue delegates the slate to plan_scheduler; the weekly run
+    scans the online window BEFORE building/draining the plan (§5.4).
+
+    The per-kind mix_queue_quota split was replaced by the two-track slate
+    (online 3 / live 2 with backlog rotation): a per-kind quota alone let
+    W28/W29 rows re-take every seat and left live rows structurally unpickable.
+    """
     import inspect
-    from scorecard import QUEUE_SQL, QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS
+    from scorecard import QUEUE_SQL, QUEUE_SLOTS
+    from plan_scheduler import TRACK_SLOTS
     import scorecard as sc
     assert_in("kind, ref_hand_id", QUEUE_SQL)
     assert_in("(status = 'pending') DESC", QUEUE_SQL)
-    assert_eq((QUEUE_DRILL_SLOTS, QUEUE_REVIEW_SLOTS), (3, 2))
+    for column in ("surfaced_count", "last_surfaced_at", "source_hands"):
+        assert_in(column, QUEUE_SQL)
+    assert_eq((TRACK_SLOTS["online"], TRACK_SLOTS["live"]), (3, 2))
+    assert_eq(QUEUE_SLOTS, 5)
     src = inspect.getsource(sc._run)
     assert_in("scan_online(conn)", src)
     # scan is ordered before the prescribe/drain UPDATE
     assert_true(src.index("scan_online(conn)") < src.index("status='prescribed'"),
                 "must scan into the queue before draining it")
+    # auto-close runs before the scan so a passed drill is not re-merged
+    assert_true(src.index("_autoclose(conn)") < src.index("scan_online(conn)"),
+                "GTOW auto-close must run before the queue re-scan")
     fdq = inspect.getsource(sc.fetch_drill_queue)
-    assert_in("mix_queue_quota", fdq)
+    assert_in("select_weekly_slate", fdq)
+    assert_in("mark_surfaced", src)
     import queue_feed as qf
     qsrc = inspect.getsource(qf.scan_online)
     assert_in("refresh_review_links(conn)", qsrc)
@@ -2873,8 +2886,10 @@ def test_weekly_payload_review_buttons():
     assert_true(all(len(b["text"]) <= 14 for b in flat))
     assert_true(any("損失" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
     assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("flop=1") for b in flat))
-    # review section header + both kinds rendered in the text
-    assert_in("練習佇列", payload["html"])
+    # practice section header + both kinds rendered in the text, under the
+    # track heading the two-track slate groups them by
+    assert_in("本週練習", payload["html"])
+    assert_in("🖥 線上", payload["html"])
     assert_in("🔍", payload["html"])
     assert_in("🎯", payload["html"])
 
