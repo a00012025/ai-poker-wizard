@@ -3536,6 +3536,39 @@ def test_live_sessions_is_closed_to_the_public_data_api():
 
 
 @test
+def test_future_public_tables_auto_enable_rls():
+    """Future-proof the Supabase advisor fix at the database boundary:
+    every CREATE TABLE variant in public must trigger ENABLE RLS automatically,
+    even when a migration author forgets to include it."""
+    migration = (REPO_ROOT / "supabase/migrations/"
+                 "20260729190000_auto_enable_public_rls.sql")
+    assert_true(migration.exists(), "automatic RLS guardrail migration must exist")
+    sql = " ".join(migration.read_text().upper().split())
+    assert_in("RETURNS EVENT_TRIGGER", sql)
+    assert_in("SECURITY DEFINER SET SEARCH_PATH = PG_CATALOG", sql)
+    assert_in("CMD.SCHEMA_NAME = 'PUBLIC'", sql)
+    assert_in("OBJECT_TYPE IN ('TABLE', 'PARTITIONED TABLE')", sql)
+    assert_in(
+        "COMMAND_TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')",
+        sql,
+    )
+    assert_in(
+        "ALTER TABLE IF EXISTS %S ENABLE ROW LEVEL SECURITY",
+        sql,
+    )
+    assert_in(
+        "REVOKE ALL ON TABLE %S FROM ANON, AUTHENTICATED",
+        sql,
+    )
+    assert_in("CREATE EVENT TRIGGER ENSURE_PUBLIC_TABLE_RLS", sql)
+    assert_in("ON DDL_COMMAND_END", sql)
+    assert_in(
+        "WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')",
+        sql,
+    )
+
+
+@test
 def test_migration_path_aware_review_links():
     from pathlib import Path
     root = REPO_ROOT
