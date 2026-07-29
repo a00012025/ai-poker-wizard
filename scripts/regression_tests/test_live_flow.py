@@ -3518,6 +3518,24 @@ def test_migration_unified_drill_queue():
 
 
 @test
+def test_live_sessions_is_closed_to_the_public_data_api():
+    """Supabase advisor regression: live_sessions was the only public table
+    without RLS and anon/authenticated had full CRUD grants, exposing chat_id,
+    message_id, and result_json through PostgREST."""
+    migration = (REPO_ROOT / "supabase/migrations/"
+                 "20260729160000_harden_live_sessions_rls.sql")
+    assert_true(migration.exists(), "security hardening migration must exist")
+    sql = " ".join(migration.read_text().upper().split())
+    assert_in("ALTER TABLE PUBLIC.LIVE_SESSIONS ENABLE ROW LEVEL SECURITY", sql)
+    assert_in("REVOKE ALL ON TABLE PUBLIC.LIVE_SESSIONS FROM ANON, AUTHENTICATED", sql)
+    assert_in(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE POSTGRES IN SCHEMA PUBLIC "
+        "REVOKE ALL ON TABLES FROM ANON, AUTHENTICATED",
+        sql,
+    )
+
+
+@test
 def test_migration_path_aware_review_links():
     from pathlib import Path
     root = REPO_ROOT
