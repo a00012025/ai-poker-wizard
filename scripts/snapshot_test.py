@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import asyncpg
 
+SNAPSHOT_CACHE_DIR = Path(__file__).resolve().parent.parent / "tests" / "snapshots" / ".gto_cache"
+
 
 # ── DB helpers (sync wrappers) ──
 
@@ -81,6 +83,27 @@ async def _update_snapshot(hand_id: str, **fields):
 
 
 # ── Test logic ──
+
+def _analyze_snapshot_hand(hand_json: dict) -> dict:
+    """Analyze through the same hermetic cache used by regression snapshots.
+
+    Golden creation/update and verification must share one cache. Otherwise a
+    golden produced from the owner's mutable root ``.gto_cache`` can disagree
+    with the committed snapshot cache even when the code has not changed.
+    """
+    import gto_cache
+    from analyze_hand import analyze_hand_full
+
+    SNAPSHOT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    original_dir = gto_cache._CACHE_DIR
+    gto_cache._CACHE_DIR = SNAPSHOT_CACHE_DIR
+    gto_cache._mem.clear()
+    try:
+        return analyze_hand_full(hand_json)
+    finally:
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._mem.clear()
+
 
 def _compare_parse_fields(parsed: dict, expected: dict) -> list[str]:
     """Compare key fields between parsed and expected hand JSON. Returns list of errors."""
@@ -233,8 +256,7 @@ def run_layer2_gto(snapshot: dict) -> tuple[bool, str]:
     expected_compact = snapshot.get("gto_compact")
 
     try:
-        from analyze_hand import analyze_hand_full
-        result = analyze_hand_full(hand_json)
+        result = _analyze_snapshot_hand(hand_json)
     except Exception as e:
         return False, f"Analysis error: {e}"
 
@@ -295,8 +317,7 @@ def cmd_add(hand_id: str):
 
     # Re-run analysis to get fresh GTO output
     print(f"Re-running analyze_hand_full() for {hand_id}...")
-    from analyze_hand import analyze_hand_full
-    result = analyze_hand_full(hand_json)
+    result = _analyze_snapshot_hand(hand_json)
 
     _run(_update_snapshot(hand_id,
         gto_text=result["text"],
@@ -317,8 +338,7 @@ def cmd_update(hand_id: str):
     hand_json = json.loads(s["expected_json"]) if s.get("expected_json") else json.loads(s["parsed_json"])
 
     print(f"Re-running analyze_hand_full() for {hand_id}...")
-    from analyze_hand import analyze_hand_full
-    result = analyze_hand_full(hand_json)
+    result = _analyze_snapshot_hand(hand_json)
 
     _run(_update_snapshot(hand_id,
         gto_text=result["text"],

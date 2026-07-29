@@ -17,5 +17,5 @@ GTO: Bet 8.8（83% pot） 59% / Bet 5.85（55% pot） 41%
 
 ─── River: 5♥️ ───
 🎯 Ace high
-GTO: Bet 6（57% pot） 57% / Bet 8.5（80% pot） 43%
+GTO: Bet 6（57% pot） 68% / Bet 8.5（80% pot） 32%
 → Hero bet 50% pot ✅
