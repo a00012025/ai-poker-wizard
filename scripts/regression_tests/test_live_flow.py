@@ -1219,6 +1219,30 @@ def test_live_simple_preflop_fallback_parses_multiaction_allin_row():
 
 
 @test
+def test_live_simple_preflop_fallback_parses_compact_squeeze_raise():
+    """Regression: ``bb r6`` is a compact raise-to-6 token, not an unknown
+    action.  Preserve the squeeze and hero's continuation fold so Hand 11
+    reaches the real CO-vs-squeeze solver node instead of being labelled SRP.
+    """
+    from live_flow import parse_simple_preflop_block
+    from hand_validator import validate_hand
+    from spot_categorizer import compute_pot_type_from_preflop
+
+    hand = parse_simple_preflop_block(
+        "Eff 22bb hero co open 55 btn call bb r6 hero fold")
+
+    assert_true(hand is not None)
+    assert_eq(hand["hero_position"], "CO")
+    assert_eq(hand["hero_hand"], "55")
+    assert_eq(hand["preflop_actions"], "F-F-F-F-R2-C-F-R6-F")
+    assert_eq(
+        compute_pot_type_from_preflop(hand["preflop_actions"], 8),
+        "squeezed",
+    )
+    assert_true(validate_hand(hand).ok)
+
+
+@test
 def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
     """Class-only live notes stay class-only (no false exact combo), but exact
     raw duplicates are refused instead of silently reaching the solver."""
@@ -1507,6 +1531,59 @@ def test_live_multiway_postflop_projects_to_deterministic_hu_pair():
     projected, meta, reason = project_multiway_postflop(unresolved)
     assert_true(projected is None and meta is None)
     assert_eq(reason, "multiway_unresolved")
+
+
+@test
+def test_live_multiway_hero_fold_facing_bet_projects_to_aggressor():
+    """Hand 18: after a three-way flop checks around, SB checks the turn,
+    BB bets and hero BTN folds.  The exact node is multiway, but hero's
+    decision is attributable to BB's bet and can be honestly recast as
+    BB-vs-BTN while preserving the real three-way pot for sizing.
+    """
+    from live_flow import project_multiway_postflop
+
+    hand = {
+        "players_at_table": 8,
+        "effective_bb": 40,
+        "hero_position": "BTN",
+        "hero_hand": "Ah2c",
+        "preflop_actions": "F-F-F-F-F-R2-C-C",
+        "streets": [
+            {"board": "9s6s7h", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "X"},
+            ]},
+            {"card": "3h", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R4", "size": 4},
+                {"position": "BTN", "action": "F"},
+            ]},
+        ],
+    }
+
+    projected, meta, reason = project_multiway_postflop(hand)
+
+    assert_true(projected is not None)
+    assert_true(reason is None)
+    assert_eq(projected["preflop_actions"], "F-F-F-F-F-R2-F-C")
+    assert_eq(projected["preflop_actions_for_pot"], "F-F-F-F-F-R2-C-C")
+    assert_eq(meta["positions"], ["BTN", "BB"])
+    assert_in("多人底池", meta["note"])
+    assert_eq(
+        projected["streets"],
+        [
+            {"board": "9s6s7h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "BTN", "action": "X"},
+            ]},
+            {"card": "3h", "actions": [
+                {"position": "BB", "action": "R4", "size": 4,
+                 "pot_fraction": 4 / 7},
+                {"position": "BTN", "action": "F"},
+            ]},
+        ],
+    )
 
 
 @test
