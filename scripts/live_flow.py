@@ -746,6 +746,9 @@ def _allin_size_from_tokens(toks: list[str], start: int,
 def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
     for k in range(start, min(len(toks), start + 8)):
         t = _clean_word(toks[k])
+        compact_raise = re.fullmatch(r"r(\d+(?:\.\d+)?)(?:bb)?", t)
+        if compact_raise:
+            return "R" + compact_raise.group(1)
         if t in {"fold", "f"}:
             return "F"
         if t in {"call", "c"}:
@@ -1816,6 +1819,29 @@ def _annotate_real_pot_fractions(hand: dict) -> None:
             outstanding = max(outstanding, target)
 
 
+def _multiway_hero_fold_aggressor(streets: list[dict], hero: str) -> str | None:
+    """Return the bettor whose same-street aggression hero folded to.
+
+    This is narrower than choosing any opponent who happened to remain in a
+    multiway pot: the final hero decision must be directly attributable to a
+    visible bet/raise.  That supports an honest HU recast when another player
+    checked and remained live, while ambiguous check/fold endings still
+    abstain.
+    """
+    for street in streets:
+        aggressor: str | None = None
+        for action in street.get("actions") or []:
+            position = action.get("position")
+            code = action.get("action")
+            if code == "AI" or str(code or "").startswith("R"):
+                aggressor = position
+            if position == hero and code == "F":
+                if aggressor and aggressor != hero:
+                    return aggressor
+                break
+    return None
+
+
 def project_multiway_postflop(
         hand: dict) -> tuple[dict | None, dict | None, str | None]:
     """Project a real multiway postflop hand onto one attributable HU tree.
@@ -1835,7 +1861,11 @@ def project_multiway_postflop(
     if not streets:
         return None, None, None
 
-    from analyze_hand import _reaches_flop, _simplify_multiway
+    from analyze_hand import (
+        _collapse_multiway_to_hu,
+        _reaches_flop,
+        _simplify_multiway,
+    )
     from gto_api import nearest_depth
     from hh_parser import POSITION_ORDERS
 
@@ -1854,7 +1884,21 @@ def project_multiway_postflop(
         return None, None, "multiway_unresolved"
 
     if not active or hero not in active or len(active) != 2:
-        return None, None, "multiway_unresolved"
+        villain = _multiway_hero_fold_aggressor(streets, hero)
+        fallback = (
+            _collapse_multiway_to_hu(preflop, hero, villain)
+            if villain else None
+        )
+        if not fallback or _reaches_flop(fallback) != {hero, villain}:
+            return None, None, "multiway_unresolved"
+        simplified = fallback
+        solver_depth = nearest_depth(float(hand.get("effective_bb") or 0))
+        active = {hero, villain}
+        note = (
+            f"⚠ 多人底池：{hero} 面對 {villain} 的下注棄牌，"
+            f"以 {villain} vs {hero} HU 節點近似；"
+            "其他仍存活玩家只保留已投入籌碼，不視為精確三人解"
+        )
 
     projected = copy.deepcopy(hand)
     projected["preflop_actions_for_pot"] = (
