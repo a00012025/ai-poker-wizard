@@ -1630,6 +1630,37 @@ def test_gto_text_compare_rejects_line_count_change():
 
 
 @test
+def test_snapshot_cli_uses_the_same_hermetic_cache_as_regressions():
+    """H2494 regression: snapshot golden updates used the root ``.gto_cache``
+    while the regression harness read ``tests/snapshots/.gto_cache``. The two
+    caches held different solver responses (57% vs 68%), so a freshly updated
+    golden failed deterministically in the full suite."""
+    import inspect
+    import analyze_hand
+    import gto_cache
+    import snapshot_test
+
+    original = analyze_hand.analyze_hand_full
+    original_dir = gto_cache._CACHE_DIR
+    try:
+        analyze_hand.analyze_hand_full = lambda _hand: {
+            "cache_dir": str(gto_cache._CACHE_DIR)
+        }
+        result = snapshot_test._analyze_snapshot_hand({})
+        expected = REPO_ROOT / "tests" / "snapshots" / ".gto_cache"
+        assert_eq(result["cache_dir"], str(expected))
+        assert_eq(gto_cache._CACHE_DIR, original_dir,
+                  "snapshot cache override must be restored")
+        for fn in (snapshot_test.run_layer2_gto, snapshot_test.cmd_add,
+                   snapshot_test.cmd_update):
+            assert_in("_analyze_snapshot_hand", inspect.getsource(fn))
+    finally:
+        analyze_hand.analyze_hand_full = original
+        gto_cache._CACHE_DIR = original_dir
+        gto_cache._mem.clear()
+
+
+@test
 def test_ev_comparison_suppresses_gto_mixed_taken_action():
     """Formatter: do not show EV loss for a solver-approved mixed action.
 
