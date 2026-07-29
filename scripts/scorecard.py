@@ -679,12 +679,18 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
     return out
 
 
-async def focus_history(conn, limit: int = 12) -> list[dict]:
-    """Past focus prescriptions, newest first, flattened for the cooldown."""
+async def focus_history(conn) -> list[dict]:
+    """All past focus prescriptions, newest first, for the cooldown.
+
+    The diagnosis window is 90 days, so a fixed 12-week limit leaves a gap in
+    which an 85–90-day-old prescription can be selected again without fresh
+    evidence. The table grows by one small row per week; reading it all keeps
+    the "time alone never resurrects a treated spot" contract exact.
+    """
     out = []
     for row in await conn.fetch(
             "SELECT week, families, created_at FROM coach_focus "
-            "ORDER BY created_at DESC LIMIT $1", limit):
+            "ORDER BY created_at DESC"):
         fam = row["families"]
         fam = json.loads(fam) if isinstance(fam, str) else fam
         for entry in fam or []:

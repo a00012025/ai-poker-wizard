@@ -285,6 +285,19 @@ def test_focus_never_prescribed_key_is_never_blocked():
         post_n=0, post_per100=None, global_per100=1.88))
 
 
+@test
+def test_focus_history_is_not_truncated_before_the_90_day_window():
+    """Twelve weeks is only 84 days. A fixed LIMIT 12 would forget a focus
+    prescribed on day 85 while its old losses can still rank in the 90-day
+    diagnosis window, letting time alone resurrect a treated spot."""
+    import inspect
+    from scorecard import focus_history
+
+    source = inspect.getsource(focus_history)
+    assert_true("LIMIT" not in source,
+                "focus cooldown must consider every prior prescription")
+
+
 # ── GTOW pass predicate ──────────────────────────────────────────────────────
 class _Attempt:
     def __init__(self, total_hands, gto_score):

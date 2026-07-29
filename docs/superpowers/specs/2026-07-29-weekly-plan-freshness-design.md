@@ -130,7 +130,8 @@ async def mark_surfaced(conn, ids, week) -> None
 理由：排行榜同時餵「焦點」與「其他 EV 損失節點」，在排名層排除會讓被冷卻的 spot 從
 排行榜整個消失，等於謊報 EV 流向。排名邏輯完全不動（§7.3）。
 
-排除規則（讀 `coach_focus` 歷史，對每個曾被處方過的 `diagnosis_key`）：
+排除規則（讀完整 `coach_focus` 歷史，對每個曾被處方過的 `diagnosis_key`；
+不可只取最近 12 週，因為 12 週只有 84 天，會在 90 天診斷窗留下 6 天空隙）：
 
 1. 距上次處方 < `FOCUS_COOLDOWN_WEEKS`(=2) 週 → **硬性排除**。
 2. 已過冷卻期 → 仍需通過新證據門檻才能重回焦點：處方後該 key 累積 `n ≥ FOCUS_RELAPSE_MIN_N`(=10) 個誠實決策，**且**處方後 per100 ≥ 全域平均 per100（`spot_leaderboard` 排序既有的收縮目標）。否則繼續排除。
