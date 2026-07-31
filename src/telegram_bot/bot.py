@@ -275,7 +275,11 @@ async def _present_queue_detail(query, context, chat_id: int, html: str,
     if new_message:
         await context.bot.send_message(chat_id, html, **kwargs)
     else:
-        await query.edit_message_text(html, **kwargs)
+        try:
+            await query.edit_message_text(html, **kwargs)
+        except telegram.error.BadRequest as exc:
+            if "Message is not modified" not in str(exc):
+                raise
 
 
 def _setup_logger() -> logging.Logger:
