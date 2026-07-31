@@ -36,6 +36,7 @@ ANALYSIS_TIMEOUT = 1800
 MAX_MESSAGE_LENGTH = 4096
 QUEUE_PAGE_SIZE = 10
 QUEUE_SOURCE_PAGE_SIZE = 8
+LIVE_SESSION_LIST_LIMIT = 8
 
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 
@@ -125,6 +126,46 @@ def _queue_payload(rows, *, page: int = 0,
         if nav:
             buttons.append(nav)
     return "\n".join(L), buttons
+
+
+def _recent_live_sessions_payload(sessions: list[dict]
+                                  ) -> tuple[str, list[list[dict]]]:
+    """Render the persisted /live report index and resend callbacks."""
+    if not sessions:
+        return "🃏 還沒有線下 session — 先用 /live 匯入現場手牌。", []
+
+    from html import escape as _esc
+    lines = ["🃏 <b>最近線下 Sessions</b>", "點按鈕可重新傳送該場復盤列表。", ""]
+    buttons: list[list[dict]] = []
+    for i, session in enumerate(sessions, 1):
+        result = session.get("result") or {}
+        totals = result.get("totals") or {}
+        hands = int(totals.get("hands") or len(result.get("hands") or []))
+        mistakes = int(totals.get("mistakes") or 0)
+        created_at = session.get("created_at")
+        created_label = ""
+        if created_at:
+            from zoneinfo import ZoneInfo
+            local_created = created_at.astimezone(ZoneInfo("Asia/Taipei"))
+            created_label = local_created.strftime("%H:%M")
+        raw_date = str(result.get("date") or "")
+        date_match = re.fullmatch(r"\d{4}-(\d{1,2})-(\d{1,2})", raw_date)
+        if date_match:
+            date_label = f"{int(date_match.group(1))}/{int(date_match.group(2))}"
+        elif raw_date:
+            date_label = raw_date
+        elif created_at:
+            date_label = local_created.strftime("%-m/%-d")
+        else:
+            date_label = "日期未知"
+        stamp = f"{date_label} {created_label}".strip()
+        lines.append(
+            f"{i}. <b>{_esc(stamp)}</b> · {hands} 手 · {mistakes} 個偏差")
+        buttons.append([{
+            "text": f"↩ {i}　{stamp}（{hands} 手）",
+            "callback_data": f"lvs:{session['id']}",
+        }])
+    return "\n".join(lines), buttons
 
 
 def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
@@ -1698,7 +1739,7 @@ class PokerWizardBot:
         register_status_message(user_id, query.message.chat_id,
                                 query.message.message_id)
 
-    # ── 線下流 (live flow): /live /queue /plan + inline buttons ────────────────
+    # ── 線下流: /live /lives /queue /plan + inline buttons ───────────────────
 
     @staticmethod
     def _rows_to_markup(rows: list[list[dict]]) -> InlineKeyboardMarkup | None:
@@ -1740,6 +1781,23 @@ class PokerWizardBot:
                 "一則訊息可貼多手；街與街換行，例如：\n\n"
                 "Eff 25bb co raise hero bb call As2s\n"
                 "AhQhJh x b1.2 c\n2h x b1.5 f")
+
+    async def live_sessions_command(self, update: Update,
+                                    context: ContextTypes.DEFAULT_TYPE):
+        """/lives — owner-only: list recent persisted live-session reports."""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("Database not connected.")
+            return
+        self.log.info(f"[{self._user_label(update)}] /lives")
+        from live_flow import list_recent_sessions
+        sessions = await list_recent_sessions(
+            self.db.pool, update.effective_chat.id, LIVE_SESSION_LIST_LIMIT)
+        html, buttons = _recent_live_sessions_payload(sessions)
+        await update.message.reply_text(
+            html, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons))
 
     async def _process_live_batch(self, update: Update, text: str):
         """Run scripts/live_flow.py on the batch, reply with the deviation
@@ -2381,6 +2439,27 @@ class PokerWizardBot:
             await query.answer()
             return
 
+        if data.startswith("lvs:"):
+            from live_flow import (load_session, render_session_page,
+                                   session_page_buttons, set_session_message)
+
+            _, sid = data.split(":")
+            async with self.db.pool.acquire() as conn:
+                session = await load_session(conn, int(sid))
+            if not session or session["chat_id"] != chat_id:
+                await query.answer("找不到這個線下 session。")
+                return
+            await query.answer()
+            html, _prev, _next = render_session_page(session["result"], 0)
+            markup = self._rows_to_markup(
+                session_page_buttons(session["result"], session["id"], 0))
+            sent = await context.bot.send_message(
+                chat_id, html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=markup)
+            async with self.db.pool.acquire() as conn:
+                await set_session_message(conn, session["id"], sent.message_id)
+            return
+
         if data.startswith("lvpg:"):
             from live_flow import load_session
 
@@ -2765,6 +2844,8 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("ingest", self.ingest_command))
         self.application.add_handler(CommandHandler("fullingest", self.fullingest_command))
         self.application.add_handler(CommandHandler("live", self.live_command))
+        self.application.add_handler(CommandHandler(
+            ["lives", "live_sessions"], self.live_sessions_command))
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("review", self.review_command))
@@ -2775,7 +2856,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
+                pattern=r"^(lvd|lvs|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))

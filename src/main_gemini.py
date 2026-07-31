@@ -165,6 +165,7 @@ async def post_init(application):
             await application.bot.set_my_commands(
                 base + [
                     BotCommand("live", "導入現場手牌（批次評分入帳）"),
+                    BotCommand("lives", "最近線下 sessions／重傳復盤"),
                     BotCommand("queue", "練習佇列"),
                     BotCommand("plan", "本週訓練計畫"),
                     BotCommand("review", "這場復盤（最近一個 session）"),
