@@ -443,7 +443,7 @@ def test_run_pipeline_full_mode_backfills_directly():
         orig = ir._run_script
         ir._run_script = fake_run
         try:
-            return await ir.run_pipeline("tok-r", progress, mode="full")
+            return await ir.run_pipeline(42, progress, mode="full")
         finally:
             ir._run_script = orig
 
@@ -475,7 +475,7 @@ def test_run_pipeline_full_mode_no_new_hands_message():
         orig = ir._run_script
         ir._run_script = fake_run
         try:
-            return await ir.run_pipeline("tok-r", progress, mode="full")
+            return await ir.run_pipeline(42, progress, mode="full")
         finally:
             ir._run_script = orig
 

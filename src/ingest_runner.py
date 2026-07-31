@@ -4,7 +4,7 @@
 The Chrome extension enqueues `gtow_ingest_requests` rows through the
 gtow-sync Edge Function (device-authenticated); this module polls the queue
 every 5s, runs the ingest pipeline with the requesting user's own GTOW
-refresh token (subprocess env GTOW_REFRESH_TOKEN), streams subprocess progress
+session identity (subprocess env GTOW_USER_ID), streams subprocess progress
 back onto the row (which also
 serves as the liveness heartbeat), and sends the final result over Telegram.
 
@@ -315,7 +315,7 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     return summary, rc_v, _tail(out_v)
 
 
-async def run_pipeline(refresh_token: str, progress, *, mode: str = "incremental",
+async def run_pipeline(user_id: int, progress, *, mode: str = "incremental",
                        allow_full_sweep: bool = True) -> str:
     """incremental ingest → verify; on mismatch escalate to a full sweep.
 
@@ -334,7 +334,8 @@ async def run_pipeline(refresh_token: str, progress, *, mode: str = "incremental
     logger.info(
         f"[ingest-perf] pipeline start mode={mode} allow_full_sweep={allow_full_sweep}"
     )
-    env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
+    env = {**os.environ, "GTOW_USER_ID": str(int(user_id))}
+    env.pop("GTOW_REFRESH_TOKEN", None)
     escalated = False
     guard_skipped = False
     full_import = mode == "full"
@@ -528,7 +529,7 @@ async def process_next(pool, bot, db, application=None) -> bool:
     allow_full_sweep = (mode == "full"
                         or not await _recent_permanent_mismatch(pool, user_id))
     try:
-        result = await run_pipeline(token, progress, mode=mode,
+        result = await run_pipeline(user_id, progress, mode=mode,
                                     allow_full_sweep=allow_full_sweep)
         notified = await _finish(pool, bot, req_id, user_id, ok=True, text=result)
         if live is not None:

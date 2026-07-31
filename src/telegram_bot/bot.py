@@ -555,6 +555,7 @@ class PokerWizardBot:
             return
 
         # Validate: try refreshing the token
+        from gto_signing import generate_keypair_jwk
         from gto_token import _refresh_access, _jwt_exp
         try:
             exp = _jwt_exp(token)
@@ -569,7 +570,8 @@ class PokerWizardBot:
             await update.message.reply_text("Token 格式無效。")
             return
 
-        access = _refresh_access(token)
+        signing_keypair = generate_keypair_jwk()
+        access = _refresh_access(token, signing_keypair)
         if not access:
             # Fetch error detail for user-facing message
             reason = ""
@@ -610,7 +612,12 @@ class PokerWizardBot:
         # Store in DB (manual /settoken force-overrides any stored token —
         # it was just validated against GTOW above)
         if self.db:
-            await self.db.save_user_gto_token(user_id, token)
+            await self.db.save_user_gto_token(
+                user_id,
+                token,
+                access_token=access,
+                signing_keypair=signing_keypair,
+            )
 
         self.log.info(f"[{label}] GTO token bound successfully")
         await update.message.reply_text("GTO Wizard 帳號綁定成功！之後的查詢會使用你的帳號。")
@@ -624,8 +631,10 @@ class PokerWizardBot:
         if self.db:
             await self.db.logout_gtow_user(user_id)
 
+        from gto_credentials import invalidate_synced_credentials
         from gto_token import invalidate_user_token
         invalidate_user_token(user_id)
+        invalidate_synced_credentials(user_id)
 
         await update.message.reply_text("已解除 GTO Wizard token，並撤銷所有 Extension 同步裝置。")
 
@@ -638,10 +647,15 @@ class PokerWizardBot:
     @staticmethod
     def _setup_user_token(user_id: int, refresh_token: str):
         """Set thread-local GTO token for the current thread."""
-        from gto_token import get_user_access_token
+        from gto_credentials import get_user_credentials
         from gto_api import set_user_token
-        access = get_user_access_token(user_id, refresh_token)
-        set_user_token(access)
+        credentials = get_user_credentials(
+            user_id, fallback_refresh=refresh_token)
+        set_user_token(
+            credentials.access_token,
+            credentials.client_id,
+            user_id,
+        )
 
     @staticmethod
     def _clear_user_token():
@@ -1747,7 +1761,11 @@ class PokerWizardBot:
             tmp_in = f.name
         tmp_out = tmp_in + ".json"
         try:
-            child_env = {**os.environ, "GTOW_REFRESH_TOKEN": refresh_token}
+            child_env = {
+                **os.environ,
+                "GTOW_USER_ID": str(update.effective_user.id),
+            }
+            child_env.pop("GTOW_REFRESH_TOKEN", None)
             child_env.pop("POKER_BOT_PROCESS", None)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "scripts/live_flow.py", "--file", tmp_in,

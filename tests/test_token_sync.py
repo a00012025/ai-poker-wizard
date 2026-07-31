@@ -126,7 +126,45 @@ def test_security_contracts_are_present_in_sources():
         in open("chrome-extension/popup.js", encoding="utf-8").read()
     )
     assert 'if (error) throw new ServiceError("DEVICE_LOOKUP_FAILED")' in edge
-    assert "validateWithGtow(parsed.token)" in edge
+    assert "validateWithGtow" not in edge
+    assert '"GTOW_SESSION_BUNDLE_REQUIRED"' in edge
     assert migration.index("FROM public.users") < migration.index(
         "FROM public.gtow_sync_devices", migration.index("FROM public.users")
     )
+
+
+def test_session_bundle_sync_contracts_are_present_in_sources():
+    edge = open("supabase/functions/gtow-sync/index.ts", encoding="utf-8").read()
+    migration = open(
+        "supabase/migrations/20260731000000_gtow_session_bundle.sql",
+        encoding="utf-8",
+    ).read()
+
+    access_branch = edge[
+        edge.index("const hasAccessBundle") : edge.index(
+            'return json(req, { error: "GTOW_SESSION_BUNDLE_REQUIRED"'
+        )
+    ]
+    assert 'body.access_token !== undefined' in access_branch
+    assert 'parseAccessToken(body.access_token, body.access_exp)' in access_branch
+    assert 'parseClientId(body.gwclientid)' in access_branch
+    assert '"sync_gtow_session_bundle"' in access_branch
+    assert "validateWithGtow" not in access_branch
+
+    assert "gto_access_token text" in migration
+    assert "gto_access_token_fingerprint text" in migration
+    assert "gto_access_token_iat timestamptz" in migration
+    assert "gto_access_token_exp timestamptz" in migration
+    assert "gto_client_id text" in migration
+    assert "gto_session_observed_at timestamptz" in migration
+    assert "gto_access_token_source text" in migration
+    assert "gto_backend_signing_keypair jsonb" in migration
+    assert "pg_advisory_xact_lock(hashtextextended('gtow-session:'" in migration
+    assert "RAISE EXCEPTION 'STALE_ACCESS_TOKEN'" in migration
+    assert "RAISE EXCEPTION 'CONFLICTING_ACCESS_TOKEN'" in migration
+    assert "REVOKE ALL ON FUNCTION public.sync_gtow_session_bundle" in migration
+    assert "FROM PUBLIC, anon, authenticated" in migration
+    assert "TO service_role, postgres" in migration
+    assert "p_access_token," not in migration[
+        migration.index("INSERT INTO public.gtow_token_sync_events") :
+    ]

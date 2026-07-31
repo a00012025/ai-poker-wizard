@@ -7,6 +7,7 @@ const STORAGE_KEYS = [
   "telegramLabel",
   "deviceName",
   "lastFingerprint",
+  "lastSessionFingerprint",
   "lastSyncAt",
   "lastStatus",
   "lastError",
@@ -45,58 +46,111 @@ async function sha256(value) {
   return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function syncToken(refreshToken, suppliedFingerprint, force = false) {
-  if (!refreshToken?.startsWith("eyJ")) throw new Error("GTOW_TOKEN_NOT_FOUND");
-  const state = await storageGet();
-  if (!state.deviceSecret) {
-    await setStatus({ tokenDetected: true, lastStatus: "waiting_pair" });
-    return { status: "waiting_pair" };
-  }
-  const fingerprint = suppliedFingerprint || await sha256(refreshToken);
-  if (!force && fingerprint === state.lastFingerprint) {
-    const remote = await remoteStatus();
-    if (!remote.paired) {
-      await setStatus({ lastStatus: "waiting_pair", lastError: "DEVICE_UNAUTHORIZED" });
+const sessionSyncsInFlight = new Map();
+
+async function syncSession(session, force = false) {
+  if (!session?.refreshToken?.startsWith("eyJ")) throw new Error("GTOW_TOKEN_NOT_FOUND");
+  if (!session.accessToken?.startsWith("eyJ")) throw new Error("GTOW_ACCESS_TOKEN_INVALID");
+  if (!Number.isFinite(session.accessExp)) throw new Error("GTOW_ACCESS_EXP_INVALID");
+  const inFlightKey = [
+    session.refreshToken,
+    session.accessToken,
+    session.accessExp,
+    session.clientId || "",
+  ].join("\u0000");
+  const existing = sessionSyncsInFlight.get(inFlightKey);
+  if (existing) return existing;
+  const work = (async () => {
+    const refreshFingerprint = await sha256(session.refreshToken);
+    const sessionFingerprint = await sha256([
+      refreshFingerprint,
+      session.accessToken,
+      session.accessExp,
+      session.clientId || "",
+    ].join(":"));
+    const state = await storageGet();
+    if (!state.deviceSecret) {
+      await setStatus({ tokenDetected: true, lastStatus: "waiting_pair" });
       return { status: "waiting_pair" };
     }
-    await setStatus({ tokenDetected: true, lastStatus: "up_to_date", lastError: null });
-    return { status: "unchanged_local" };
-  }
-  await setStatus({ tokenDetected: true, lastStatus: "syncing", lastError: null });
-  try {
-    const result = await api("/token", {
-      method: "POST",
-      headers: { Authorization: `Device ${state.deviceSecret}` },
-      body: JSON.stringify({
-        refresh_token: refreshToken,
-        observed_at: new Date().toISOString(),
-        // Manual triggers (sync button, ingest button, fresh pairing) override
-        // the server's stale-iat guard: this session is logged in right now,
-        // while the stored "newer" token may be FORCED_LOGOUT-dead.
-        force,
-      }),
-    });
-    await setStatus({
-      lastFingerprint: fingerprint,
-      lastSyncAt: result.synced_at || new Date().toISOString(),
-      lastStatus: result.status === "updated" ? "synced" : "up_to_date",
-      lastError: null,
-    });
-    return result;
-  } catch (error) {
-    if (error.status === 401) {
-      await chrome.storage.local.remove(["deviceId", "deviceSecret", "telegramLabel"]);
+    if (!force && sessionFingerprint === state.lastSessionFingerprint) {
+      const remote = await remoteStatus();
+      if (!remote.paired) {
+        await setStatus({ lastStatus: "waiting_pair", lastError: "DEVICE_UNAUTHORIZED" });
+        return { status: "waiting_pair" };
+      }
+      await setStatus({ tokenDetected: true, lastStatus: "up_to_date", lastError: null });
+      return { status: "unchanged_local" };
     }
-    await setStatus({ lastStatus: "error", lastError: error.message });
-    throw error;
+    await setStatus({ tokenDetected: true, lastStatus: "syncing", lastError: null });
+    try {
+      const result = await api("/token", {
+        method: "POST",
+        headers: { Authorization: `Device ${state.deviceSecret}` },
+        body: JSON.stringify({
+          refresh_token: session.refreshToken,
+          access_token: session.accessToken,
+          access_exp: session.accessExp,
+          gwclientid: session.clientId || "",
+          observed_at: session.observedAt || new Date().toISOString(),
+          force,
+        }),
+      });
+      await setStatus({
+        lastFingerprint: refreshFingerprint,
+        lastSessionFingerprint: sessionFingerprint,
+        lastSyncAt: result.synced_at || new Date().toISOString(),
+        lastStatus: result.status === "updated" ? "synced" : "up_to_date",
+        lastError: null,
+      });
+      return result;
+    } catch (error) {
+      if (error.status === 401) {
+        await chrome.storage.local.remove(["deviceId", "deviceSecret", "telegramLabel"]);
+      }
+      await setStatus({ lastStatus: "error", lastError: error.message });
+      throw error;
+    }
+  })();
+  sessionSyncsInFlight.set(inFlightKey, work);
+  try {
+    return await work;
+  } finally {
+    if (sessionSyncsInFlight.get(inFlightKey) === work) {
+      sessionSyncsInFlight.delete(inFlightKey);
+    }
   }
 }
 
-async function tokenFromActiveTab() {
+async function activeGtowTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !tab.url?.startsWith("https://app.gtowizard.com/")) {
     throw new Error("OPEN_GTOW_FIRST");
   }
+  return tab;
+}
+
+function validSessionBundle(session) {
+  return Boolean(
+    session?.refreshToken?.startsWith("eyJ")
+    && session.accessToken?.startsWith("eyJ")
+    && Number.isFinite(session.accessExp),
+  );
+}
+
+async function sessionFromActiveTab() {
+  const tab = await activeGtowTab();
+  if (!chrome.tabs.sendMessage) return null;
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "GET_SESSION_BUNDLE" });
+    return validSessionBundle(response?.session) ? response.session : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tokenFromActiveTab() {
+  const tab = await activeGtowTab();
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => localStorage.getItem("user_refresh") || "",
@@ -124,10 +178,12 @@ async function pairDevice(code, deviceName) {
     lastError: null,
   });
   try {
-    const token = await tokenFromActiveTab();
-    await syncToken(token, null, true);
+    const session = await sessionFromActiveTab();
+    if (session) {
+      await syncSession(session, true);
+    }
   } catch (error) {
-    if (!['OPEN_GTOW_FIRST', 'GTOW_TOKEN_NOT_FOUND'].includes(error.message)) throw error;
+    if (error.message !== "OPEN_GTOW_FIRST") throw error;
   }
   return result;
 }
@@ -154,18 +210,11 @@ async function deviceHeaders() {
   return { Authorization: `Device ${state.deviceSecret}` };
 }
 
-async function triggerIngest(refreshToken) {
+async function triggerIngest() {
   const headers = await deviceHeaders();
-  // Best-effort: push the freshest token before the runner picks the job up.
-  // The DB may already hold a valid token, so sync failures are non-fatal.
-  let token = refreshToken;
-  if (!token) {
-    try { token = await tokenFromActiveTab(); } catch { token = null; }
-  }
-  if (token?.startsWith("eyJ")) {
-    try { await syncToken(token, null, true); }
-    catch (error) { if (error.message === "DEVICE_UNAUTHORIZED") throw error; }
-  }
+  const session = await sessionFromActiveTab();
+  if (!session) throw new Error("GTOW_SESSION_BUNDLE_NOT_READY");
+  await syncSession(session, true);
   return api("/ingest", { method: "POST", headers, body: "{}" });
 }
 
@@ -197,19 +246,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     switch (message.type) {
       case "TOKEN_DETECTED":
-        return syncToken(message.refreshToken, message.fingerprint);
+        throw new Error("GTOW_SESSION_BUNDLE_NOT_READY");
+      case "SESSION_DETECTED":
+        return syncSession(message);
       case "PAIR_DEVICE":
         return pairDevice(message.code, message.deviceName);
       case "SYNC_ACTIVE_TAB": {
-        const token = await tokenFromActiveTab();
-        return syncToken(token, null, true);
+        const session = await sessionFromActiveTab();
+        if (!session) throw new Error("GTOW_SESSION_BUNDLE_NOT_READY");
+        return syncSession(session, true);
       }
       case "GET_SETTOKEN_COMMAND":
         return { command: await settokenCommandFromActiveTab() };
       case "UNPAIR_DEVICE":
         return unpairDevice();
       case "INGEST_TRIGGER":
-        return triggerIngest(message.refreshToken);
+        return triggerIngest();
       case "INGEST_STATUS":
         return ingestStatus(message.requestId);
       case "GET_STATE":

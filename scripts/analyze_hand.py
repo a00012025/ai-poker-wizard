@@ -107,7 +107,14 @@ def _hero_hand_for_solver_detail(
     return hero_hand
 
 
-def _run_with_gto_token(parent_token: str | None, fn, *args, **kwargs):
+def _run_with_gto_token(
+    parent_token: str | None,
+    fn,
+    *args,
+    parent_client_id: str | None = None,
+    parent_user_id: int | None = None,
+    **kwargs,
+):
     """Run a GTO API call with the caller's per-user token, then restore it.
 
     ``_run_analysis`` fetches some spots in executor threads and some inline on
@@ -117,13 +124,19 @@ def _run_with_gto_token(parent_token: str | None, fn, *args, **kwargs):
     from gto_api import _thread_local as _gto_tl, set_user_token, clear_user_token
 
     previous_token = getattr(_gto_tl, "access_token", None)
+    previous_client_id = getattr(_gto_tl, "client_id", None)
+    previous_user_id = getattr(_gto_tl, "user_id", None)
     if parent_token:
-        set_user_token(parent_token)
+        set_user_token(parent_token, parent_client_id, parent_user_id)
     try:
         return fn(*args, **kwargs)
     finally:
         if previous_token:
-            set_user_token(previous_token)
+            set_user_token(
+                previous_token,
+                previous_client_id,
+                previous_user_id,
+            )
         else:
             clear_user_token()
 
@@ -2522,11 +2535,15 @@ def _run_analysis(hand: dict) -> dict:
     # Propagate thread-local user token into executor threads
     from gto_api import _thread_local as _gto_tl
     _parent_token = getattr(_gto_tl, "access_token", None)
+    _parent_client_id = getattr(_gto_tl, "client_id", None)
+    _parent_user_id = getattr(_gto_tl, "user_id", None)
 
     def _fetch_with_token(params, bypass_cache: bool = False):
         return _run_with_gto_token(
             _parent_token,
             get_spot_solution,
+            parent_client_id=_parent_client_id,
+            parent_user_id=_parent_user_id,
             **params,
             bypass_cache=bypass_cache,
         )

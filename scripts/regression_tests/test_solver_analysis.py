@@ -247,6 +247,7 @@ def test_run_with_gto_token_clears_executor_thread_token():
 def test_gto_api_env_token_mints_from_shared_refresh():
     """GTOW_REFRESH_TOKEN mints access from the shared DB/browser session."""
     import gto_api
+    import gto_credentials
     import gto_token
 
     minted = []
@@ -257,9 +258,11 @@ def test_gto_api_env_token_mints_from_shared_refresh():
 
     orig_user = gto_token.get_user_access_token
     orig_inval = gto_token.invalidate_user_token
+    orig_exp = gto_credentials._jwt_exp
     orig_env = os.environ.get("GTOW_REFRESH_TOKEN")  # preserve suite-wide token
     gto_token.get_user_access_token = fake_user_mint
     gto_token.invalidate_user_token = lambda uid: None
+    gto_credentials._jwt_exp = lambda _token: 4102444800
     os.environ["GTOW_REFRESH_TOKEN"] = "owner-db-refresh"
     try:
         assert_eq(gto_api._get_token(), "env-access")
@@ -271,22 +274,26 @@ def test_gto_api_env_token_mints_from_shared_refresh():
             os.environ["GTOW_REFRESH_TOKEN"] = orig_env
         gto_token.get_user_access_token = orig_user
         gto_token.invalidate_user_token = orig_inval
+        gto_credentials._jwt_exp = orig_exp
 
 
 @test
 def test_gto_api_bootstraps_owner_db_token_when_env_unset():
     """Owner-run tooling resolves the shared DB refresh token lazily."""
     import gto_api
+    import gto_credentials
     import gto_owner_token
     import gto_token
 
     orig_bootstrap = gto_owner_token.bootstrap_owner_db_token
     orig_user = gto_token.get_user_access_token
+    orig_exp = gto_credentials._jwt_exp
     orig_env = os.environ.get("GTOW_REFRESH_TOKEN")
     orig_bot = os.environ.get("POKER_BOT_PROCESS")
     gto_owner_token.bootstrap_owner_db_token = lambda verbose=False: (
         os.environ.__setitem__("GTOW_REFRESH_TOKEN", "owner-db-refresh") or True)
     gto_token.get_user_access_token = lambda user_id, refresh: "owner-db-access"
+    gto_credentials._jwt_exp = lambda _token: 4102444800
     os.environ.pop("GTOW_REFRESH_TOKEN", None)
     os.environ.pop("POKER_BOT_PROCESS", None)
     try:
@@ -294,6 +301,7 @@ def test_gto_api_bootstraps_owner_db_token_when_env_unset():
     finally:
         gto_owner_token.bootstrap_owner_db_token = orig_bootstrap
         gto_token.get_user_access_token = orig_user
+        gto_credentials._jwt_exp = orig_exp
         if orig_env is not None:
             os.environ["GTOW_REFRESH_TOKEN"] = orig_env
         else:

@@ -155,7 +155,14 @@ class Database:
                 user_id,
             )
 
-    async def save_user_gto_token(self, user_id: int, refresh_token: str) -> bool:
+    async def save_user_gto_token(
+        self,
+        user_id: int,
+        refresh_token: str,
+        *,
+        access_token: str | None = None,
+        signing_keypair: dict | None = None,
+    ) -> bool:
         """Store user's GTO Wizard refresh token (creates user row if needed).
 
         /settoken is a manual trigger, so it force-overrides regardless of
@@ -171,23 +178,58 @@ class Database:
             tz=timezone.utc,
         )
         fingerprint = hashlib.sha256(refresh_token.encode()).hexdigest()
+        access_fingerprint = (
+            hashlib.sha256(access_token.encode()).hexdigest()
+            if access_token else None
+        )
+        access_iat = access_exp = None
+        if access_token:
+            access_payload = access_token.split(".")[1]
+            access_payload += "=" * (-len(access_payload) % 4)
+            access_claims = json.loads(base64.urlsafe_b64decode(access_payload))
+            if access_claims.get("iat") is not None:
+                access_iat = datetime.fromtimestamp(
+                    int(access_claims["iat"]), tz=timezone.utc)
+            access_exp = datetime.fromtimestamp(
+                int(access_claims["exp"]), tz=timezone.utc)
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 """
                 INSERT INTO users
                   (user_id, gto_refresh_token, gto_refresh_token_fingerprint,
-                   gto_refresh_token_iat, gto_token_synced_at, is_active)
-                VALUES ($1, $2, $3, $4, NOW(), TRUE)
+                   gto_refresh_token_iat, gto_access_token,
+                   gto_access_token_fingerprint, gto_access_token_iat,
+                   gto_access_token_exp, gto_access_token_source,
+                   gto_backend_signing_keypair, gto_session_observed_at,
+                   gto_token_synced_at, is_active)
+                VALUES (
+                  $1, $2, $3, $4, $5, $6, $7, $8,
+                  CASE WHEN $5::text IS NULL THEN NULL ELSE 'backend_refresh' END,
+                  $9::jsonb, NOW(), NOW(), TRUE
+                )
                 ON CONFLICT (user_id) DO UPDATE
                 SET gto_refresh_token = $2,
                     gto_refresh_token_fingerprint = $3,
                     gto_refresh_token_iat = $4,
+                    gto_access_token = $5,
+                    gto_access_token_fingerprint = $6,
+                    gto_access_token_iat = $7,
+                    gto_access_token_exp = $8,
+                    gto_access_token_source =
+                      CASE WHEN $5::text IS NULL THEN NULL ELSE 'backend_refresh' END,
+                    gto_backend_signing_keypair = $9::jsonb,
+                    gto_session_observed_at = NOW(),
                     gto_token_synced_at = NOW()
                 """,
                 user_id,
                 refresh_token,
                 fingerprint,
                 token_iat,
+                access_token,
+                access_fingerprint,
+                access_iat,
+                access_exp,
+                json.dumps(signing_keypair) if signing_keypair else None,
             )
         logger.info(f"Saved GTO token for user {user_id}")
         return result != "INSERT 0 0"
@@ -201,6 +243,14 @@ class Database:
                 SET gto_refresh_token = NULL,
                     gto_refresh_token_fingerprint = NULL,
                     gto_refresh_token_iat = NULL,
+                    gto_access_token = NULL,
+                    gto_access_token_fingerprint = NULL,
+                    gto_access_token_iat = NULL,
+                    gto_access_token_exp = NULL,
+                    gto_access_token_source = NULL,
+                    gto_client_id = NULL,
+                    gto_session_observed_at = NULL,
+                    gto_backend_signing_keypair = NULL,
                     gto_token_synced_at = NULL
                 WHERE user_id = $1
                 """,
@@ -318,6 +368,14 @@ class Database:
                     SET gto_refresh_token = NULL,
                         gto_refresh_token_fingerprint = NULL,
                         gto_refresh_token_iat = NULL,
+                        gto_access_token = NULL,
+                        gto_access_token_fingerprint = NULL,
+                        gto_access_token_iat = NULL,
+                        gto_access_token_exp = NULL,
+                        gto_access_token_source = NULL,
+                        gto_client_id = NULL,
+                        gto_session_observed_at = NULL,
+                        gto_backend_signing_keypair = NULL,
                         gto_token_synced_at = NULL
                     WHERE user_id = $1
                     """,

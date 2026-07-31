@@ -13,13 +13,14 @@ This file is the shared repo-local agent guidance for both Codex and Claude Code
 src/
   gemini_session.py    — Gemini LLM session manager (parse hand → analyze → coach)
   main_gemini.py       — Telegram bot entry point
-  ingest_runner.py     — Extension 觸發的攝取佇列 runner（gtow_ingest_requests 5s poll；per-user token via env GTOW_REFRESH_TOKEN；incremental→spots→sessions→verify，對不上自動全量 sweep）
+  ingest_runner.py     — Extension 觸發的攝取佇列 runner（gtow_ingest_requests 5s poll；child env 只傳 GTOW_USER_ID，由 DB session provider 取憑證；incremental→spots→sessions→verify，對不上自動全量 sweep）
   telegram_bot/bot.py  — Telegram message handler (.txt/.zip uploads, follow-up by hand_id)
 scripts/
   analyze_hand.py      — Multi-street GTO analysis orchestration
   gto_api.py           — GTO Wizard API client (next-actions, spot-solution)
   gto_formatter.py     — Solver JSON → natural language + combo-level breakdown
-  gto_token.py         — Per-user JWT access minting + in-memory cache
+  gto_token.py         — Legacy JWT access minting + in-memory cache（只供 rollout/CLI fallback）
+  gto_credentials.py   — Browser-first per-user session provider（access 到實際 exp；過期後用固定 keypair + PostgreSQL advisory lock refresh）
   gto_owner_token.py   — Owner-run CLI/regression 從 users.gto_refresh_token bootstrap
   icm_modes.py         — ICM game mode discovery and stack matching
   hand_eval.py         — Deterministic hand type evaluation
@@ -54,7 +55,7 @@ scripts/
 - **ICM modes** are `preflop_only` — postflop falls back to chip EV (`chipev_gametype = "MTTGeneral"`)
 - **Position orders** vary by table size (2-9 players), defined in `POSITION_ORDERS` dict
 - **Training-loop LLM tools** (all ledger-backed, EV-weighted, always with n): `query_ledger_summary`（弱點/統計）, `query_ledger_hands`（最貴的手）, `get_training_plan`（週記分卡）, `get_progress`（週 EV loss 趨勢）. Deviations are still extracted after each live analysis (fire-and-forget) into `deviations` as a capture snapshot, but no stats surface reads that table anymore.
-- **Extension-triggered ingest**: Chrome extension (`chrome-extension/`, v2.1) 的「♠ 同步手牌到 DB」→ Edge Function `gtow-sync` `/ingest`（Device auth）→ `gtow_ingest_requests` row → `src/ingest_runner.py` 5s poller 用該 user 的 `users.gto_refresh_token`（env `GTOW_REFRESH_TOKEN`）跑 incremental ingest；`--verify` 對不上自動升級全量 sweep。**手動觸發（sync/ingest 按鈕、/settoken）一律 force override 伺服器 token 的 stale-iat guard** — 當下登入中的 token 必定有效，DB 裡 iat 較新的可能已被 FORCED_LOGOUT 殺掉。每日 05:00 排程與 `/ingest` 都走同一條 per-user-token pipeline。
+- **Extension-triggered ingest**: Chrome extension (`chrome-extension/`, v2.3) 捕捉頁面正在使用的 access/refresh/GWCLIENTID/exp session bundle → Edge Function `gtow-sync` `/token`（Device auth）原子同步 → `/ingest` 建立 `gtow_ingest_requests` row → `src/ingest_runner.py` 5s poller child env 只傳 `GTOW_USER_ID`，由 `gto_credentials.py` 取該 user session 跑 incremental ingest；`--verify` 對不上自動升級全量 sweep。瀏覽器 access 在實際 JWT exp 前是唯一來源；只有到期後後端才用持久化 keypair，在 per-user PostgreSQL advisory lock 下 refresh。未過期 access 收到 401 不得 refresh。每日 05:00 排程與 `/ingest` 都走同一條 pipeline。
 - **Live flow (線下流 v1)**: `/live` (owner-only) imports live-hand shorthand batches → per-decision solver grading → `ledger_hands/decisions` with `source='live'` + `drill_queue` (deviated action lines ≥0.1bb). `/queue` lists pending/prescribed lines with 🎯 drill URL buttons + ✔ cleared; `/plan` resends the weekly plan. Weekly scorecard drains the queue (pending→prescribed) and sends drill links as URL buttons.
 - **Source isolation (§5.2)**: ALL stats/aggregation queries on ledger tables must filter `source='online'` — live hands are selectively recorded (biased sample) and only ever surface via the queue/線下 sections. `ledger_hands.source` exists since migration 20260711.
 
@@ -93,13 +94,13 @@ scripts/
 
 ## Docker & Deployment
 
-- GTOW refresh tokens live only in `users.gto_refresh_token`; owner CLI tools resolve `OWNER_CHAT_ID` through `scripts/gto_owner_token.py`
+- GTOW session bundle lives only in `users.gto_*` columns；原始 access/refresh/keypair 不寫入 Chrome storage。Owner CLI tools resolve `OWNER_CHAT_ID` through `scripts/gto_owner_token.py`.
 - Deploy: `bash scripts/deploy.sh` (git pull → supabase db push → docker compose build+up)
 
 ## Database (Supabase)
 
-- **users**: `user_id` (bigint PK), `username`, `name`, `is_active`, `created_at`, `gto_refresh_token` (text)
-  - Token column is `gto_refresh_token`, NOT `refresh_token`
+- **users**: GTOW credentials use `gto_refresh_token`, `gto_access_token`, `gto_access_token_iat/exp`, `gto_client_id`, `gto_session_observed_at`, `gto_access_token_source`, `gto_backend_signing_keypair`
+  - Refresh token column is `gto_refresh_token`, NOT `refresh_token`
 - **analysis_snapshots**: `hand_id` (unique), `chat_id`, `source_type`, `user_input`, `image_data` (bytea), `parsed_json`, `expected_json`, `gto_text`, `gto_compact`, `coaching_text`, `is_regression` (bool)
   - Auto-captured on every analysis; used for E2E regression testing
 - Migrations: `supabase/migrations/` — always use `supabase db push`, never raw psql

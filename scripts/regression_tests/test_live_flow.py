@@ -178,9 +178,11 @@ def test_live_batch_subprocess_receives_owner_db_token():
         else:
             sys.modules["live_flow"] = orig_live
 
-    assert_eq(captured["env"]["GTOW_REFRESH_TOKEN"], "owner-db-refresh")
+    assert_eq(captured["env"]["GTOW_USER_ID"], "556028753")
+    assert_true("GTOW_REFRESH_TOKEN" not in captured["env"],
+                "child CLI must resolve the synchronized session by user id")
     assert_true("POKER_BOT_PROCESS" not in captured["env"],
-                "child CLI must use its explicit refresh token")
+                "child CLI must use its explicit user session")
     assert_true(captured["save_session"], "session persisted on success")
     assert_eq(captured["session_key"], "live:2026-07-24:fakehash")
     assert_eq(captured["chat_id"], 556028753)

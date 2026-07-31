@@ -447,10 +447,15 @@ class GeminiSessionManager:
     def _setup_user_token(self, user_id: int | None, refresh_token: str | None):
         """Set thread-local GTO token if user has one."""
         if user_id and refresh_token:
-            from gto_token import get_user_access_token
+            from gto_credentials import get_user_credentials
             from gto_api import set_user_token
-            access = get_user_access_token(user_id, refresh_token)
-            set_user_token(access)
+            credentials = get_user_credentials(
+                user_id, fallback_refresh=refresh_token)
+            set_user_token(
+                credentials.access_token,
+                credentials.client_id,
+                user_id,
+            )
 
     @staticmethod
     def _clear_user_token():

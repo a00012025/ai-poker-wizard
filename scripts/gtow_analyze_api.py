@@ -2,8 +2,9 @@
 """GTO Wizard Analyze API client (hand-history list + detail).
 
 Auth = Bearer access token (gto_token) + GWCLIENTID header. Global
-throttle ~2.5 rps with jitter; exponential backoff on 429/5xx; one token
-re-mint retry on 401. All probing that discovered this contract lives in
+throttle ~2.5 rps with jitter; exponential backoff on 429/5xx. A 401 only
+permits backend refresh when the access JWT has actually expired. All probing
+that discovered this contract lives in
 docs/superpowers/specs/2026-07-07-phase1-ledger-design.md §3.
 """
 from __future__ import annotations
@@ -21,6 +22,12 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_token import TokenExpiredError
+from gto_credentials import (
+    access_is_expired,
+    invalidate_synced_credentials,
+    reload_synced_credentials_if_changed,
+    request_credentials,
+)
 
 API_BASE = "https://api.gtowizard.com"
 ORIGIN = "https://app.gtowizard.com"
@@ -52,8 +59,8 @@ def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
     return cid
 
 
-# Per-request token mode: extension-sync passes the requesting user's token.
-# Owner-run CLI tools resolve the owner token from DB; bot requests fail closed
+# Per-request token mode: production subprocesses provide GTOW_USER_ID and load
+# the synchronized browser session bundle from DB. Bot requests fail closed
 # rather than silently borrowing owner credentials.
 _ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
 
@@ -64,24 +71,25 @@ def _get_token(force_remint: bool = False) -> str:
             "Bot Analyze request 缺少 per-user GTO token；拒絕改用 owner token。"
         )
     refresh = os.environ.get("GTOW_REFRESH_TOKEN")
-    if not refresh:
+    if not refresh and not os.environ.get("GTOW_USER_ID"):
         from gto_owner_token import bootstrap_owner_db_token
         if not bootstrap_owner_db_token(verbose=False):
             raise TokenExpiredError(
                 "找不到 owner DB GTO token；請先綁定 owner token，或設定 "
                 "GTOW_REFRESH_TOKEN。"
             )
-        refresh = os.environ["GTOW_REFRESH_TOKEN"]
-    from gto_token import get_user_access_token, invalidate_user_token
-    if force_remint:
-        invalidate_user_token(_ENV_TOKEN_USER)
-    return get_user_access_token(_ENV_TOKEN_USER, refresh)
+        refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    return request_credentials(fallback_refresh=refresh).access_token
 
 
 def _headers(force_remint: bool = False) -> dict:
+    credentials = request_credentials(
+        fallback_refresh=os.environ.get("GTOW_REFRESH_TOKEN"),
+        fallback_client_id=get_client_id(),
+    )
     return {
-        "authorization": f"Bearer {_get_token(force_remint)}",
-        "gwclientid": get_client_id(),
+        "authorization": f"Bearer {credentials.access_token}",
+        "gwclientid": credentials.client_id or get_client_id(),
         "origin": ORIGIN,
         "content-type": "application/json",
     }
@@ -115,20 +123,27 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
     above ~10 req/s, so keep aggregate rate modest.
     """
     fn = request_fn or requests.request
-    reminted = False
-    remint_next = False
+    auth_retried = False
     for attempt in range(_MAX_RETRIES + 1):
         if request_fn is None:
             if throttle:
                 _throttle(_sleep)
-            kw["headers"] = _headers(force_remint=remint_next)
-            remint_next = False      # consume the remint exactly once
+            kw["headers"] = _headers()
             kw["timeout"] = _TIMEOUT
         r = fn(method, url, **kw)
-        if r.status_code == 401 and not reminted:
-            reminted = True          # token may have just expired; re-mint once
-            remint_next = True
-            continue
+        if r.status_code == 401 and not auth_retried and request_fn is None:
+            token = kw["headers"]["authorization"].removeprefix("Bearer ")
+            env_user = os.environ.get("GTOW_USER_ID")
+            if access_is_expired(token):
+                auth_retried = True
+                if env_user:
+                    invalidate_synced_credentials(int(env_user))
+                continue
+            if env_user and reload_synced_credentials_if_changed(
+                int(env_user), token
+            ):
+                auth_retried = True
+                continue
         if r.status_code in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES:
             _sleep(_backoff_delay(attempt))
             continue

@@ -14,6 +14,12 @@ import requests
 # Allow importing gto_token from same directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_token import TokenExpiredError
+from gto_credentials import (
+    access_is_expired,
+    invalidate_synced_credentials,
+    reload_synced_credentials_if_changed,
+    request_credentials,
+)
 from gto_cache import get as cache_get, put as cache_put, SENTINEL
 
 API_BASE = "https://api.gtowizard.com"
@@ -32,19 +38,28 @@ _session.headers.update({"origin": ORIGIN})
 _thread_local = threading.local()
 
 
-def set_user_token(token: str):
+def set_user_token(
+    token: str,
+    client_id: str | None = None,
+    user_id: int | None = None,
+):
     """Set a per-user access token for the current thread."""
     _thread_local.access_token = token
+    _thread_local.client_id = client_id
+    _thread_local.user_id = user_id
 
 
 def clear_user_token():
     """Clear the per-user access token for the current thread."""
     _thread_local.access_token = None
+    _thread_local.client_id = None
+    _thread_local.user_id = None
 
 
-# Per-request token mode: subprocesses may provide GTOW_REFRESH_TOKEN. Owner-run
-# CLI tools lazily resolve the same token from DB. The Telegram bot must instead
-# have a thread-local per-user token and fails closed if a request forgot it.
+# Per-request token mode: production subprocesses provide GTOW_USER_ID and load
+# the synchronized browser session from DB. GTOW_REFRESH_TOKEN remains only as
+# an explicit legacy CLI/test fallback. Bot requests use thread-local per-user
+# credentials and fail closed if a request forgot them.
 _ENV_TOKEN_USER = -1     # sentinel user id for the env-provided token
 
 
@@ -54,22 +69,25 @@ def _get_token(force_remint: bool = False) -> str:
             "Bot solver request 缺少 per-user GTO token；拒絕改用 owner token。"
         )
     refresh = os.environ.get("GTOW_REFRESH_TOKEN")
-    if not refresh:
+    if not refresh and not os.environ.get("GTOW_USER_ID"):
         from gto_owner_token import bootstrap_owner_db_token
         if not bootstrap_owner_db_token(verbose=False):
             raise TokenExpiredError(
                 "找不到 owner DB GTO token；請先綁定 owner token，或設定 "
                 "GTOW_REFRESH_TOKEN。"
             )
-        refresh = os.environ["GTOW_REFRESH_TOKEN"]
-    from gto_token import get_user_access_token, invalidate_user_token
-    if force_remint:
-        invalidate_user_token(_ENV_TOKEN_USER)
-    return get_user_access_token(_ENV_TOKEN_USER, refresh)
+        refresh = os.environ.get("GTOW_REFRESH_TOKEN")
+    return request_credentials(fallback_refresh=refresh).access_token
 
 
 def _ensure_auth():
-    _session.headers["authorization"] = f"Bearer {_get_token()}"
+    credentials = request_credentials(
+        fallback_refresh=os.environ.get("GTOW_REFRESH_TOKEN"))
+    _session.headers["authorization"] = f"Bearer {credentials.access_token}"
+    if credentials.client_id:
+        _session.headers["gwclientid"] = credentials.client_id
+    else:
+        _session.headers.pop("gwclientid", None)
 
 
 def _get_with_retry(url: str, params: dict, timeout: int = _TIMEOUT) -> requests.Response:
@@ -81,13 +99,86 @@ def _get_with_retry(url: str, params: dict, timeout: int = _TIMEOUT) -> requests
     user_token = getattr(_thread_local, "access_token", None)
     if user_token:
         headers = {"authorization": f"Bearer {user_token}"}
+        client_id = getattr(_thread_local, "client_id", None)
+        if client_id:
+            headers["gwclientid"] = client_id
     else:
         _ensure_auth()
         headers = None  # use session defaults
 
+    auth_retried = False
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return _session.get(url, params=params, timeout=timeout, headers=headers)
+            response = _session.get(
+                url, params=params, timeout=timeout, headers=headers)
+            if response.status_code == 401 and not auth_retried:
+                token = (
+                    user_token
+                    or _session.headers.get(
+                        "authorization", "").removeprefix("Bearer ")
+                )
+                credential_user = (
+                    getattr(_thread_local, "user_id", None)
+                    if user_token
+                    else os.environ.get("GTOW_USER_ID")
+                )
+                if access_is_expired(token):
+                    auth_retried = True
+                    if credential_user is not None:
+                        invalidate_synced_credentials(int(credential_user))
+                    if user_token:
+                        if credential_user is None:
+                            return response
+                        replacement = request_credentials(
+                            user_id=int(credential_user)
+                        )
+                        user_token = replacement.access_token
+                        set_user_token(
+                            replacement.access_token,
+                            replacement.client_id,
+                            int(credential_user),
+                        )
+                        headers = {
+                            "authorization":
+                                f"Bearer {replacement.access_token}"
+                        }
+                        if replacement.client_id:
+                            headers["gwclientid"] = replacement.client_id
+                        continue
+                    _ensure_auth()
+                    continue
+                if credential_user is not None:
+                    replacement = reload_synced_credentials_if_changed(
+                        int(credential_user),
+                        token,
+                    )
+                    if replacement:
+                        auth_retried = True
+                        if user_token:
+                            user_token = replacement.access_token
+                            set_user_token(
+                                replacement.access_token,
+                                replacement.client_id,
+                                int(credential_user),
+                            )
+                            headers = {
+                                "authorization":
+                                    f"Bearer {replacement.access_token}"
+                            }
+                            if replacement.client_id:
+                                headers["gwclientid"] = replacement.client_id
+                        else:
+                            _session.headers["authorization"] = (
+                                f"Bearer {replacement.access_token}"
+                            )
+                            if replacement.client_id:
+                                _session.headers["gwclientid"] = (
+                                    replacement.client_id
+                                )
+                            else:
+                                _session.headers.pop("gwclientid", None)
+                        continue
+            return response
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt == _MAX_RETRIES:
                 raise

@@ -2,11 +2,6 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const encoder = new TextEncoder();
 const MAX_BODY_BYTES = 8192;
-const GTOW_API = "https://api.gtowizard.com";
-const GTOW_ORIGIN = "https://app.gtowizard.com";
-const GTOW_USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36";
-const GTOW_BUILD_VERSION = "2026-03-23.2e78d975";
 
 class ServiceError extends Error {
   constructor(message: string, readonly status = 500) {
@@ -38,12 +33,6 @@ function base64Url(bytes: Uint8Array): string {
     /=+$/,
     "",
   );
-}
-
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 async function hmacHex(secret: string, value: string): Promise<string> {
@@ -109,76 +98,77 @@ function parseRefreshToken(
   }
 }
 
-async function validateWithGtow(refreshToken: string): Promise<boolean> {
-  const body = JSON.stringify({ refresh: refreshToken });
-  const keyPair = await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  );
-  let timestamp = Date.now();
+function parseJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[0].startsWith("eyJ")) return null;
   try {
-    const clock = await fetch(`${GTOW_API}/v4/core/server-time/`);
-    const serverDate = Date.parse(clock.headers.get("date") || "");
-    if (Number.isFinite(serverDate)) timestamp = serverDate;
+    const padded = parts[1].replaceAll("-", "+").replaceAll("_", "/")
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, "=");
+    const claims = JSON.parse(atob(padded));
+    return claims && typeof claims === "object" && !Array.isArray(claims)
+      ? claims as Record<string, unknown>
+      : null;
   } catch {
-    // Local time is an acceptable fallback; the signed request remains bounded.
+    return null;
   }
-  const appUid = "00000000-0000-0000-0000-000000000000";
-  const signaturePayload = [
-    "POST",
-    "/v1/token/refresh/",
-    String(timestamp),
-    body,
-    GTOW_ORIGIN,
-    GTOW_USER_AGENT,
-    appUid,
-    GTOW_BUILD_VERSION,
-  ].join("|");
-  const signature = new Uint8Array(
-    await crypto.subtle.sign(
-      { name: "ECDSA", hash: "SHA-256" },
-      keyPair.privateKey,
-      encoder.encode(signaturePayload),
-    ),
-  );
-  const spki = new Uint8Array(
-    await crypto.subtle.exportKey("spki", keyPair.publicKey),
-  );
-  const headersObject = {
-    origin: GTOW_ORIGIN,
-    userAgent: GTOW_USER_AGENT,
-    appUid,
-    buildVersion: GTOW_BUILD_VERSION,
-  };
-  const signedHeader = [
-    base64(signature),
-    base64(spki),
-    String(timestamp),
-    "v1",
-    base64(encoder.encode(JSON.stringify(headersObject))),
-  ].join(".");
-  let response: Response;
-  try {
-    response = await fetch(`${GTOW_API}/v1/token/refresh/`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "google-anal-id": signedHeader,
-        "origin": GTOW_ORIGIN,
-        "user-agent": GTOW_USER_AGENT,
-      },
-      body,
-    });
-  } catch {
-    throw new ServiceError("GTOW_VALIDATION_UNAVAILABLE", 502);
+}
+
+function parseAccessExp(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d{10}$/.test(value)) return Number(value);
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
   }
-  if (response.status === 429 || response.status >= 500) {
-    throw new ServiceError("GTOW_VALIDATION_UNAVAILABLE", 502);
+  return null;
+}
+
+function parseObservedAt(value: unknown): string | null {
+  if (typeof value !== "string" || value.length < 20 || value.length > 40) {
+    return null;
   }
-  if (!response.ok) return false;
-  const result = await response.json().catch(() => null);
-  return typeof result?.access === "string" && result.access.startsWith("eyJ");
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const now = Date.now();
+  if (parsed > now + 5 * 60 * 1000 || parsed < now - 24 * 60 * 60 * 1000) {
+    return null;
+  }
+  return new Date(parsed).toISOString();
+}
+
+function parseClientId(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string") return null;
+  const clientId = value.trim();
+  if (clientId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(clientId)) {
+    return null;
+  }
+  return clientId;
+}
+
+function parseAccessToken(
+  token: unknown,
+  accessExpInput: unknown,
+): { token: string; iat: number; exp: number } | null {
+  if (typeof token !== "string" || token.length < 100 || token.length > 8192) {
+    return null;
+  }
+  const claims = parseJwtPayload(token);
+  if (!claims) return null;
+  const iat = Number(claims.iat);
+  const tokenExp = Number(claims.exp);
+  const suppliedExp = parseAccessExp(accessExpInput);
+  const exp = Number.isFinite(tokenExp) ? tokenExp : suppliedExp;
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    !Number.isFinite(iat) || exp === null || !Number.isFinite(exp) ||
+    iat > now + 300 ||
+    exp <= now + 5
+  ) {
+    return null;
+  }
+  if (suppliedExp !== null && Math.abs(suppliedExp - exp) > 5) return null;
+  return { token, iat, exp };
 }
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
@@ -269,38 +259,65 @@ async function syncToken(req: Request, pepper: string): Promise<Response> {
   const body = await readBody(req);
   const parsed = parseRefreshToken(body.refresh_token);
   if (!parsed) return json(req, { error: "REFRESH_TOKEN_INVALID" }, 400);
-  if (!(await validateWithGtow(parsed.token))) {
-    return json(req, { error: "REFRESH_TOKEN_REJECTED" }, 400);
-  }
-  const fingerprint = await sha256Hex(parsed.token);
-  // Manual triggers force-override the freshness guards: GTOW just validated
-  // this token, whereas the stored "newer" one may be FORCED_LOGOUT-dead.
-  const { data, error } = await adminClient().rpc("sync_gtow_refresh_token", {
-    p_credential_hash: authenticated.credentialHash,
-    p_refresh_token: parsed.token,
-    p_token_fingerprint: fingerprint,
-    p_token_iat: new Date(parsed.iat * 1000).toISOString(),
-    p_token_exp: new Date(parsed.exp * 1000).toISOString(),
-    p_force: body.force === true,
-  });
-  if (error || !data?.[0]) {
-    if (error?.message.includes("DEVICE_UNAUTHORIZED")) {
-      return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+  const hasAccessBundle = body.access_token !== undefined ||
+    body.access_exp !== undefined ||
+    body.gwclientid !== undefined;
+  if (hasAccessBundle) {
+    const access = parseAccessToken(body.access_token, body.access_exp);
+    const observedAt = parseObservedAt(body.observed_at);
+    const clientId = parseClientId(body.gwclientid);
+    if (!access) return json(req, { error: "ACCESS_TOKEN_INVALID" }, 400);
+    if (!observedAt) return json(req, { error: "OBSERVED_AT_INVALID" }, 400);
+    if (clientId === null) return json(req, { error: "GWCLIENTID_INVALID" }, 400);
+    const [refreshFingerprint, accessFingerprint] = await Promise.all([
+      sha256Hex(parsed.token),
+      sha256Hex(access.token),
+    ]);
+    const { data, error } = await adminClient().rpc(
+      "sync_gtow_session_bundle",
+      {
+        p_credential_hash: authenticated.credentialHash,
+        p_refresh_token: parsed.token,
+        p_refresh_token_fingerprint: refreshFingerprint,
+        p_refresh_token_iat: new Date(parsed.iat * 1000).toISOString(),
+        p_refresh_token_exp: new Date(parsed.exp * 1000).toISOString(),
+        p_access_token: access.token,
+        p_access_token_fingerprint: accessFingerprint,
+        p_access_token_iat: new Date(access.iat * 1000).toISOString(),
+        p_access_token_exp: new Date(access.exp * 1000).toISOString(),
+        p_client_id: clientId,
+        p_observed_at: observedAt,
+        p_force: body.force === true,
+      },
+    );
+    if (error || !data?.[0]) {
+      if (error?.message.includes("DEVICE_UNAUTHORIZED")) {
+        return json(req, { error: "DEVICE_UNAUTHORIZED" }, 401);
+      }
+      if (
+        error?.message.includes("STALE_REFRESH_TOKEN") ||
+        error?.message.includes("CONFLICTING_REFRESH_TOKEN")
+      ) {
+        return json(req, { error: "STALE_REFRESH_TOKEN" }, 409);
+      }
+      if (
+        error?.message.includes("STALE_ACCESS_TOKEN") ||
+        error?.message.includes("CONFLICTING_ACCESS_TOKEN")
+      ) {
+        return json(req, { error: "STALE_ACCESS_TOKEN" }, 409);
+      }
+      return json(req, { error: "TOKEN_SYNC_FAILED" }, 500);
     }
-    if (
-      error?.message.includes("STALE_REFRESH_TOKEN") ||
-      error?.message.includes("CONFLICTING_REFRESH_TOKEN")
-    ) {
-      return json(req, { error: "STALE_REFRESH_TOKEN" }, 409);
-    }
-    return json(req, { error: "TOKEN_SYNC_FAILED" }, 500);
+    return json(req, {
+      status: data[0].sync_result,
+      fingerprint: refreshFingerprint.slice(0, 12),
+      access_fingerprint: accessFingerprint.slice(0, 12),
+      access_expires_at: new Date(access.exp * 1000).toISOString(),
+      expires_at: new Date(parsed.exp * 1000).toISOString(),
+      synced_at: new Date().toISOString(),
+    });
   }
-  return json(req, {
-    status: data[0].sync_result,
-    fingerprint: fingerprint.slice(0, 12),
-    expires_at: new Date(parsed.exp * 1000).toISOString(),
-    synced_at: new Date().toISOString(),
-  });
+  return json(req, { error: "GTOW_SESSION_BUNDLE_REQUIRED" }, 400);
 }
 
 async function status(req: Request, pepper: string): Promise<Response> {

@@ -1667,16 +1667,21 @@ def test_spot_taxonomy_walk_fixture():
 def _patch_user_token_mint(minted, access="acc-1"):
     """Patch gto_token so get_user_access_token mints deterministically."""
     import time as _time
+    import gto_credentials
     import gto_token
     orig_refresh, orig_exp = gto_token._refresh_access, gto_token._jwt_exp
+    orig_credential_exp = gto_credentials._jwt_exp
     gto_token._refresh_access = lambda r, kp=None: minted.append(r) or access
     gto_token._jwt_exp = lambda t: _time.time() + 3600
-    return orig_refresh, orig_exp
+    gto_credentials._jwt_exp = lambda t: _time.time() + 3600
+    return orig_refresh, orig_exp, orig_credential_exp
 
 
 def _restore_user_token_mint(orig):
+    import gto_credentials
     import gto_token
-    gto_token._refresh_access, gto_token._jwt_exp = orig
+    gto_token._refresh_access, gto_token._jwt_exp = orig[:2]
+    gto_credentials._jwt_exp = orig[2]
     gto_token.invalidate_user_token(-1)
 
 
@@ -1695,7 +1700,7 @@ def test_analyze_api_env_token_override_mints_access():
         assert_eq(gapi._get_token(), "acc-1")          # cached, no second mint
         assert_eq(minted, ["refresh-abc"])
         assert_eq(gapi._get_token(force_remint=True), "acc-1")
-        assert_eq(len(minted), 2)                       # 401 path re-mints
+        assert_eq(len(minted), 1)       # unexpired access never force-refreshes
     finally:
         if orig_env is None:
             os.environ.pop("GTOW_REFRESH_TOKEN", None)
@@ -1762,7 +1767,8 @@ def _fake_ingest_env(script_map):
     calls = []
     async def fake_run(env, *args, on_line=None):
         calls.append(args)
-        assert_eq(env.get("GTOW_REFRESH_TOKEN"), "tok-r")
+        assert_eq(env.get("GTOW_USER_ID"), "42")
+        assert_true("GTOW_REFRESH_TOKEN" not in env)
         for match, result in script_map:
             if match(args, calls):
                 return result
@@ -1771,8 +1777,8 @@ def _fake_ingest_env(script_map):
 
 
 @test
-def test_ingest_subprocess_keeps_user_token_but_clears_bot_guard():
-    """A bot child is CLI tooling: explicit user auth stays, bot guard does not."""
+def test_ingest_subprocess_keeps_user_identity_but_clears_bot_guard():
+    """A bot child receives user identity, never the refresh secret."""
     import asyncio
     from src import ingest_runner
 
@@ -1796,14 +1802,15 @@ def test_ingest_subprocess_keeps_user_token_but_clears_bot_guard():
     asyncio.create_subprocess_exec = fake_subprocess
     try:
         rc, _ = asyncio.run(ingest_runner._run_script(
-            {"POKER_BOT_PROCESS": "1", "GTOW_REFRESH_TOKEN": "user-refresh"},
+            {"POKER_BOT_PROCESS": "1", "GTOW_USER_ID": "42"},
             "scripts/ledger_ingest.py",
         ))
     finally:
         asyncio.create_subprocess_exec = orig
 
     assert_eq(rc, 0)
-    assert_eq(captured["env"]["GTOW_REFRESH_TOKEN"], "user-refresh")
+    assert_eq(captured["env"]["GTOW_USER_ID"], "42")
+    assert_true("GTOW_REFRESH_TOKEN" not in captured["env"])
     assert_true("POKER_BOT_PROCESS" not in captured["env"])
 
 
@@ -1828,7 +1835,7 @@ def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
     orig = ingest_runner._run_script
     ingest_runner._run_script = fake_run
     try:
-        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+        result = asyncio.run(ingest_runner.run_pipeline(42, progress))
     finally:
         ingest_runner._run_script = orig
     assert_in("新增手牌：2", result)
@@ -1861,7 +1868,7 @@ def test_ingest_runner_pipeline_persistent_mismatch_warns_not_fails():
     orig = ingest_runner._run_script
     ingest_runner._run_script = fake_run
     try:
-        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+        result = asyncio.run(ingest_runner.run_pipeline(42, progress))
     finally:
         ingest_runner._run_script = orig
     assert_in("全量補齊", result)
@@ -1884,7 +1891,7 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
     orig = ingest_runner._run_script
     ingest_runner._run_script = fake_run
     try:
-        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+        result = asyncio.run(ingest_runner.run_pipeline(42, progress))
     finally:
         ingest_runner._run_script = orig
     assert_in("新增手牌：0", result)
@@ -1951,7 +1958,7 @@ def test_ingest_runner_pipeline_guard_skips_full_sweep_within_24h():
     ingest_runner._run_script = fake_run
     try:
         result = asyncio.run(
-            ingest_runner.run_pipeline("tok-r", progress, allow_full_sweep=False))
+            ingest_runner.run_pipeline(42, progress, allow_full_sweep=False))
     finally:
         ingest_runner._run_script = orig
     assert_in("對數仍不符", result)
@@ -2014,7 +2021,7 @@ def test_ingest_runner_surfaces_only_useful_summary_counts():
     orig = ingest_runner._run_script
     ingest_runner._run_script = fake_run
     try:
-        result = asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+        result = asyncio.run(ingest_runner.run_pipeline(42, progress))
     finally:
         ingest_runner._run_script = orig
     assert_in("新增手牌：12", result)
@@ -2056,7 +2063,7 @@ def test_ingest_runner_pipeline_crash_surfaces_tail_not_silent():
     ingest_runner._run_script = fake_run
     try:
         try:
-            asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+            asyncio.run(ingest_runner.run_pipeline(42, progress))
             assert_true(False, "expected RuntimeError")
         except RuntimeError as e:
             assert_in("TokenExpiredError", str(e))
@@ -2092,7 +2099,7 @@ def test_ingest_runner_pipeline_stage_failures_are_loud():
         ingest_runner._run_script = fake
         try:
             try:
-                asyncio.run(ingest_runner.run_pipeline("tok-r", progress))
+                asyncio.run(ingest_runner.run_pipeline(42, progress))
                 assert_true(False, f"expected RuntimeError ({needle})")
             except RuntimeError as e:
                 assert_in(needle, str(e))
