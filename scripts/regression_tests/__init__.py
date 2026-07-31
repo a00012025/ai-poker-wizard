@@ -6,6 +6,7 @@ from importlib import import_module
 TEST_MODULES = (
     "test_ocr_regressions",
     "test_solver_analysis",
+    "test_gtow_credentials",
     "test_hand_history",
     "test_eval_icm",
     "test_ocr_pipeline",

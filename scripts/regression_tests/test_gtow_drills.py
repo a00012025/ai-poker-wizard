@@ -1,6 +1,7 @@
 """GTOW Drill provisioning and practice-result regression tests."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from regression_tests.harness import (assert_eq, assert_in, assert_not_in,
@@ -77,13 +78,14 @@ def test_gtow_drill_ensure_reuses_exact_settings_without_post():
                        "gto_score_avg": 0.87, "total_ev_loss_sum": 1.05},
         }])
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
             _trainer_url(), "LP OOP vs LP 3bet")
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
     assert_true(not binding.created)
     assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_eq(binding.stats.total_hands, 10)
@@ -115,13 +117,14 @@ def test_gtow_drill_ensure_renames_matching_settings_with_full_patch():
         assert_true(url.endswith(f"/drills/{drill_id}/"))
         return _Response({"id": drill_id, **kwargs["json"]})
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
             _trainer_url(), "LP OOP vs LP 3bet")
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
 
     assert_true(not binding.created)
     assert_eq(binding.name, "LP OOP vs LP 3bet")
@@ -150,14 +153,15 @@ def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
         assert_true(url.endswith(f"/drills/{drill_id}/"))
         return _Response({"id": drill_id, **kwargs["json"]})
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
             _trainer_url(), "LP OOP vs LP 3bet", known_drill_id=drill_id,
             known_drill_name="old verbose name")
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
     assert_eq(binding.drill_id, drill_id)
     assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_true(not binding.created)
@@ -197,15 +201,16 @@ def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
         assert_true(endpoint.endswith(f"/drills/{drill_id}/"))
         return _Response({"id": drill_id, **kwargs["json"]})
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
             url, "LP OOP vs LP 3bet", known_drill_id=drill_id,
             known_drill_name="LP OOP vs LP 3bet",
             known_settings_hash="stale-spot-mode-hash")
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
 
     assert_eq(binding.drill_id, drill_id)
     assert_eq([call[0] for call in calls], ["PATCH"])
@@ -236,13 +241,14 @@ def test_gtow_drill_ensure_creates_preset_name_without_apw_prefix():
         return _Response({"id": "11111111-1111-1111-1111-111111111111",
                           "name": body["name"], "settings": body["settings"]}, 201)
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
             _trainer_url(), "APW - BB vs SB SRP Flop faced c-bet")
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
     assert_true(binding.created)
     post = calls[1][2]["json"]
     assert_eq(post["name"], "BB vs SB SRP Flop faced c-bet")
@@ -267,15 +273,16 @@ def test_gtow_attempt_stats_only_count_bound_drill_after_menu_open():
          "total_ev_loss_sum": 0.0},
     ]
 
-    old_get = svc.get_user_access_token
-    svc.get_user_access_token = lambda user_id, refresh: "access"
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
     try:
         client = svc.GTOWDrillClient(
             7, "refresh", lambda *args, **kwargs: _Response({"results": rows}))
         stats = client.attempt_stats(
             "drill-a", datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc))
     finally:
-        svc.get_user_access_token = old_get
+        svc.get_user_credentials = old_get
     assert_eq(stats.sessions, 1)
     assert_eq(stats.total_hands, 12)
     assert_eq(stats.played_moves, 20)

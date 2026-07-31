@@ -83,7 +83,9 @@ def get_user_access_token(user_id: int, refresh_token: str) -> str:
     """
     refresh_fingerprint = hashlib.sha256(refresh_token.encode()).hexdigest()
     cached = _user_token_cache.get(user_id)
-    if cached and cached[1] > time.time() + 60 and cached[2] == refresh_fingerprint:
+    # Use browser/session access until its real expiry. Refreshing early creates
+    # an avoidable GTOW session.
+    if cached and cached[1] > time.time() and cached[2] == refresh_fingerprint:
         return cached[0]
 
     keypair = _user_keypair_cache.get(user_id)

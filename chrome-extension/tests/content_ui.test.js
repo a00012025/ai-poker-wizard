@@ -13,11 +13,16 @@ test("content script does not inject a floating ingest control", () => {
   };
   const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
   const context = {
-    chrome: { runtime: { sendMessage: () => Promise.resolve() } },
+    chrome: { runtime: {
+      onMessage: { addListener() {} },
+      sendMessage: () => Promise.resolve(),
+    } },
     crypto: require("node:crypto").webcrypto,
     document,
     localStorage: { getItem: () => "" },
+    clearTimeout() {},
     setInterval() {},
+    setTimeout() {},
     TextEncoder,
     Uint8Array,
     window: { addEventListener() {} },

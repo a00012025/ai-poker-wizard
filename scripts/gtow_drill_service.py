@@ -16,7 +16,12 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
-from gto_token import get_user_access_token, invalidate_user_token
+from gto_credentials import (
+    access_is_expired,
+    get_user_credentials,
+    invalidate_synced_credentials,
+    reload_synced_credentials_if_changed,
+)
 from gtow_trainer_url import ALL_TRAINER_GROUPS
 
 
@@ -140,21 +145,31 @@ class GTOWDrillClient:
 
     def _request(self, method: str, path: str, **kwargs):
         for attempt in range(2):
-            access = get_user_access_token(self.user_id, self.refresh_token)
+            credentials = get_user_credentials(
+                self.user_id, fallback_refresh=self.refresh_token)
+            access = credentials.access_token
+            headers = {
+                "authorization": f"Bearer {access}",
+                "origin": ORIGIN,
+                "content-type": "application/json",
+            }
+            if credentials.client_id:
+                headers["gwclientid"] = credentials.client_id
             response = self.request_fn(
                 method,
                 f"{API_BASE}{path}",
-                headers={
-                    "authorization": f"Bearer {access}",
-                    "origin": ORIGIN,
-                    "content-type": "application/json",
-                },
+                headers=headers,
                 timeout=_TIMEOUT,
                 **kwargs,
             )
             if response.status_code == 401 and attempt == 0:
-                invalidate_user_token(self.user_id)
-                continue
+                if access_is_expired(access):
+                    invalidate_synced_credentials(self.user_id)
+                    continue
+                if reload_synced_credentials_if_changed(
+                    self.user_id, access
+                ):
+                    continue
             if response.status_code >= 400:
                 body = getattr(response, "text", "")[:300]
                 raise RuntimeError(
