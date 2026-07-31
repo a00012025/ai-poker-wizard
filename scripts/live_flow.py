@@ -2603,16 +2603,41 @@ async def set_session_message(conn, session_id: int, message_id: int) -> None:
         session_id, message_id)
 
 
+def _session_row(row) -> dict:
+    raw_result = row["result_json"]
+    result = (json.loads(raw_result)
+              if isinstance(raw_result, (str, bytes, bytearray))
+              else dict(raw_result))
+    return {
+        "id": row["id"],
+        "session_key": row["session_key"],
+        "chat_id": row["chat_id"],
+        "message_id": row["message_id"],
+        "page": row["page"],
+        "created_at": row.get("created_at") if hasattr(row, "get") else None,
+        "result": result,
+    }
+
+
+async def list_recent_sessions(conn, chat_id: int, limit: int = 8) -> list[dict]:
+    """Return the newest persisted live reports for one Telegram chat."""
+    limit = max(1, min(int(limit), 20))
+    rows = await conn.fetch(
+        "SELECT id, session_key, chat_id, message_id, page, result_json, created_at "
+        "FROM live_sessions WHERE chat_id=$1 "
+        "ORDER BY created_at DESC LIMIT $2",
+        chat_id, limit)
+    return [_session_row(row) for row in rows]
+
+
 async def load_session(conn, session_id: int, *, for_update: bool = False) -> dict | None:
-    sql = ("SELECT id, session_key, chat_id, message_id, page, result_json "
+    sql = ("SELECT id, session_key, chat_id, message_id, page, result_json, created_at "
            "FROM live_sessions WHERE id=$1"
            + (" FOR UPDATE" if for_update else ""))
     row = await conn.fetchrow(sql, session_id)
     if not row:
         return None
-    return {"id": row["id"], "session_key": row["session_key"],
-            "chat_id": row["chat_id"], "message_id": row["message_id"],
-            "page": row["page"], "result": json.loads(row["result_json"])}
+    return _session_row(row)
 
 
 async def update_session_result(conn, session_id: int, result: dict,

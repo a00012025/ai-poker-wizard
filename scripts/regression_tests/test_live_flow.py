@@ -3803,8 +3803,8 @@ def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
 
 
 # ── Task 4: paginated per-hand renderer ─────────────────────────────────────
-from live_flow import (PER_PAGE, render_session_page, result_for_json_out,
-                       session_page_buttons)
+from live_flow import (PER_PAGE, list_recent_sessions, render_session_page,
+                       result_for_json_out, session_page_buttons)
 
 
 def _mk_hand(idx, sev="✅", repaired=False, failed=False):
@@ -3829,6 +3829,152 @@ def _mk_result(n):
     hands = [_mk_hand(i + 1) for i in range(n)]
     return {"totals": {"hands": n, "decisions": n, "graded": n, "mistakes": 0,
                        "parse_failed": 0}, "queue": [], "hands": hands}
+
+
+@test
+def recent_live_sessions_are_scoped_to_chat_and_newest_first():
+    import asyncio
+    from datetime import datetime, timezone
+
+    result = _mk_result(2)
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            assert_in("WHERE chat_id=$1", sql)
+            assert_in("ORDER BY created_at DESC", sql)
+            assert_in("LIMIT $2", sql)
+            assert_eq(args, (99, 8))
+            return [{
+                "id": 42, "session_key": "live:2026-07-31:x", "chat_id": 99,
+                "message_id": 777, "page": 1,
+                "result_json": json.dumps(result),
+                "created_at": datetime(2026, 7, 31, 10, 0, tzinfo=timezone.utc),
+            }]
+
+    sessions = asyncio.run(list_recent_sessions(Conn(), 99))
+    assert_eq(len(sessions), 1)
+    assert_eq(sessions[0]["id"], 42)
+    assert_eq(sessions[0]["result"]["totals"]["hands"], 2)
+
+
+@test
+def recent_live_sessions_command_lists_resend_buttons():
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    class Pool:
+        async def fetch(self, sql, *args):
+            return [{
+                "id": 42, "session_key": "live:2026-07-31:x", "chat_id": 99,
+                "message_id": 777, "page": 0,
+                "result_json": json.dumps({**_mk_result(3), "date": "2026-07-31"}),
+                "created_at": datetime(2026, 7, 31, 10, 0, tzinfo=timezone.utc),
+            }]
+
+    class Message:
+        text = "/lives"
+        sent = []
+
+        async def reply_text(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    bot = object.__new__(PokerWizardBot)
+    bot.admin_chat_id = 556028753
+    bot.db = SimpleNamespace(pool=Pool())
+    bot.log = logging.getLogger("test-live-sessions-command")
+    bot._user_label = lambda _update: "owner"
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=556028753),
+        effective_chat=SimpleNamespace(id=99),
+        message=Message(),
+    )
+    asyncio.run(bot.live_sessions_command(update, SimpleNamespace()))
+
+    html = update.message.sent[0][0][0]
+    assert_in("最近線下 Sessions", html)
+    assert_in("7/31", html)
+    assert_in("3 手", html)
+    markup = update.message.sent[0][1]["reply_markup"].to_dict()
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert_true(any(b.get("callback_data") == "lvs:42" for b in buttons))
+
+
+@test
+def recent_live_sessions_command_and_callback_are_registered():
+    from src.telegram_bot.bot import PokerWizardBot
+
+    handlers = inspect.getsource(PokerWizardBot.setup_handlers)
+    assert_in('["lives", "live_sessions"]', handlers)
+    assert_in("|lvs|", handlers)
+    menu = (REPO_ROOT / "src/main_gemini.py").read_text()
+    assert_in('BotCommand("lives", "最近線下 sessions／重傳復盤")', menu)
+
+
+@test
+def recent_live_session_button_sends_fresh_first_page_and_tracks_message():
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+    import live_flow
+
+    result = _mk_result(PER_PAGE + 1)
+    session = {"id": 42, "session_key": "s", "chat_id": 99,
+               "message_id": 777, "page": 1, "result": result}
+    captured = {}
+
+    class Acquire:
+        async def __aenter__(self):
+            return object()
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    class Query:
+        data = "lvs:42"
+        answers = []
+        async def answer(self, text=None):
+            self.answers.append(text)
+
+    class TgBot:
+        async def send_message(self, *args, **kwargs):
+            captured["send"] = (args, kwargs)
+            return SimpleNamespace(message_id=888)
+
+    original_load = live_flow.load_session
+    original_set = live_flow.set_session_message
+    async def fake_load(_conn, sid):
+        assert_eq(sid, 42)
+        return session
+    async def fake_set(_conn, sid, message_id):
+        captured["set"] = (sid, message_id)
+    live_flow.load_session = fake_load
+    live_flow.set_session_message = fake_set
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.admin_chat_id = 556028753
+        bot.db = SimpleNamespace(pool=Pool())
+        update = SimpleNamespace(
+            callback_query=Query(),
+            effective_user=SimpleNamespace(id=556028753),
+            effective_chat=SimpleNamespace(id=99),
+        )
+        asyncio.run(bot.handle_live_button(update, SimpleNamespace(bot=TgBot())))
+    finally:
+        live_flow.load_session = original_load
+        live_flow.set_session_message = original_set
+
+    assert_eq(update.callback_query.answers, [None])
+    assert_eq(captured["send"][0][0], 99)
+    assert_in("第 1/2 頁", captured["send"][0][1])
+    markup = captured["send"][1]["reply_markup"].to_dict()
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert_true(any(b.get("callback_data") == "lvpg:42:1" for b in buttons))
+    assert_eq(captured["set"], (42, 888))
 
 
 @test
