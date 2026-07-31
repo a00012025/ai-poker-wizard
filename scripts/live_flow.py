@@ -2061,6 +2061,54 @@ def _sizing_snap(taken_code: str, requested) -> bool:
         return False
 
 
+def _display_taken_label(dev: dict, spot: dict) -> str | None:
+    """Echo the player's real postflop size while retaining solver semantics.
+
+    ``dev.hero_action_label`` names the solver bucket used for grading.  For
+    off-tree actions that bucket can differ from the actual parsed amount
+    (e.g. a real 10bb bet graded through GTOW's 12.5bb bucket).  The report is
+    an audit of what the player did, so replace only the displayed bb amount;
+    the stored ``taken_code`` and EV calculation remain solver-bucket based.
+    """
+    label = dev.get("hero_action_label")
+    requested = spot.get("hero_size")
+    if not label or spot.get("street") == "preflop" or requested is None:
+        return label
+    return _replace_display_bb(label, requested)
+
+
+def _replace_display_bb(label: str | None, requested) -> str | None:
+    if not label or requested is None:
+        return label
+    actual = f"{_fmt_bb(float(requested))}bb"
+    return re.sub(r"-?\d+(?:\.\d+)?\s*bb", actual, str(label), count=1,
+                  flags=re.IGNORECASE)
+
+
+def _persisted_actual_sizes(hand_entry: dict) -> dict[tuple[str, int], float]:
+    """Recover actual hero sizes from parsed_json for old live_sessions rows.
+
+    Sessions created before the display fix already persisted solver-bucket
+    labels in ``result_json``.  Reconstructing from the equally persisted hand
+    parse repairs those reports at render time without re-grading or rewriting
+    historical EV data.
+    """
+    try:
+        raw = (hand_entry.get("hand_row") or {}).get("parsed_json")
+        hand = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(hand, dict):
+            return {}
+        from spot_taxonomy import walk_spots_from_parsed
+        return {
+            (spot["street"], int(spot["decision_idx"])): float(spot["hero_size"])
+            for spot in walk_spots_from_parsed(hand)
+            if spot.get("street") != "preflop" and spot.get("hero_size") is not None
+        }
+    except Exception:
+        log.debug("failed to recover persisted live action sizes", exc_info=True)
+        return {}
+
+
 def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                     raw_text: str, devmap: dict,
                     escalated_keys=frozenset(),
@@ -2410,7 +2458,7 @@ def process_batch(text: str, date_str: str | None = None,
                     "leaf": d["spot_leaf"], "ev_loss": d["ev_loss_bb"],
                     "severity": severity(d["ev_loss_bb"] if not d["excluded"] else None),
                     "taken": d["taken_code"], "best": d["best_code"],
-                    "taken_label": dev.get("hero_action_label") if graded else None,
+                    "taken_label": _display_taken_label(dev, spot) if graded else None,
                     "best_label": dev.get("gto_action_label") if graded else None,
                     "gto_freq": dev.get("gto_freq") if graded else None,
                     "taken_freq": d.get("taken_freq") if graded else None,
@@ -2819,6 +2867,7 @@ def render_session_page(result: dict, page: int = 0,
         has_offrange = any(
             d.get("ungraded_reason") == "offrange"
             for d in h.get("decisions") or [])
+        actual_sizes = _persisted_actual_sizes(h)
         for d in h["decisions"]:
             taken_freq = _taken_frequency(d, h)
             zero_frequency = _zero_frequency_low_loss(d, h)
@@ -2839,7 +2888,10 @@ def render_session_page(result: dict, page: int = 0,
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
             approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
-            taken = escape(d["taken_label"] or d["taken"] or "?")
+            taken_label = _replace_display_bb(
+                d.get("taken_label"),
+                actual_sizes.get((d.get("street"), int(d.get("idx") or 0))))
+            taken = escape(taken_label or d["taken"] or "?")
             if zero_frequency:
                 L.append(
                     f"　☑️ {d['street']} {taken}（GTO {taken_freq*100:.0f}%）"

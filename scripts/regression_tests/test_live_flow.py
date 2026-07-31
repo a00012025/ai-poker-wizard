@@ -4058,6 +4058,50 @@ def live_report_displays_hand_classes_without_exact_suits():
 
 
 @test
+def live_report_uses_actual_river_bet_not_solver_bucket():
+    """The solver may grade an off-tree 10bb bet through its 12.5bb bucket,
+    but the report must echo the player's real action, never rewrite history."""
+    from live_flow import _display_taken_label, parse_block
+    from spot_taxonomy import walk_spots_from_parsed
+
+    raw = """Eff 35bb Hj raise hero bb call Kc8c
+
+9cQcTs x b1.5 call
+
+Jc x x
+
+As b10 call
+
+Wins"""
+    hand = parse_block(raw)
+    river = next(
+        spot for spot in walk_spots_from_parsed(hand)
+        if spot["street"] == "river" and spot["hero_pos"] == "BB"
+    )
+    assert_eq(river["hero_action_raw"], "R10")
+    assert_eq(river["hero_size"], 10.0)
+
+    label = _display_taken_label(
+        {"hero_action_label": "BET 12.5bb"}, river)
+    assert_eq(label, "BET 10bb")
+
+    result = _mk_result(1)
+    result["hands"][0]["hand_row"]["parsed_json"] = json.dumps(hand)
+    result["hands"][0]["decisions"] = [{
+        "street": "river", "idx": 0, "leaf": river["leaf"],
+        "ev_loss": 0.65, "severity": "❌", "taken": "R12.5", "best": "X",
+        # Simulate an already-persisted pre-fix live_sessions result. Render
+        # must repair it from hand_row.parsed_json without re-grading.
+        "taken_label": "BET 12.5bb", "best_label": "Check", "gto_freq": 0.65,
+        "ungraded_reason": None, "discarded": False, "limp_origin": False,
+        "depth_escalated": None,
+    }]
+    html, _prev, _next = render_session_page(result, 0)
+    assert_in("river BET 10bb", html)
+    assert_not_in("river BET 12.5bb", html)
+
+
+@test
 def raw_preflop_line_overrides_extra_llm_continuation_fold():
     import live_flow
 
