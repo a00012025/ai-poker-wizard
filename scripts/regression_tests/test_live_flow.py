@@ -3141,6 +3141,24 @@ def test_weekly_drill_detail_opens_new_message_without_replacing_plan():
 
 
 @test
+def test_queue_detail_ignores_telegram_not_modified():
+    """Refreshing an unchanged Drill card is a successful no-op."""
+    import asyncio
+    from types import SimpleNamespace
+    from telegram.error import BadRequest
+    from telegram_bot.bot import _present_queue_detail
+
+    class FakeQuery:
+        async def edit_message_text(self, *args, **kwargs):
+            raise BadRequest(
+                "Message is not modified: specified new message content and "
+                "reply markup are exactly the same")
+
+    asyncio.run(_present_queue_detail(
+        FakeQuery(), SimpleNamespace(bot=None), 777, "same", None))
+
+
+@test
 def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
     """Queue renders at most ten items per page with global numbering.
 
