@@ -1221,6 +1221,31 @@ def test_live_simple_preflop_fallback_parses_multiaction_allin_row():
 
 
 @test
+def test_live_simple_preflop_spaced_eff_bb_does_not_create_phantom_bb_action():
+    """Regression: the unit in ``Eff 5 bb`` is not a BB actor.
+
+    The phantom actor used to turn LJ shove / hero BB fold into
+    ``BB shove / LJ shove / BB fold``, which queried a nonexistent solver node.
+    """
+    from live_flow import parse_simple_preflop_block
+    from hand_validator import validate_hand
+
+    hand = parse_simple_preflop_block(
+        "Eff 5 bb Lj all in hero bb fold q7o")
+
+    assert_true(hand is not None)
+    assert_eq(hand["hero_position"], "BB")
+    assert_eq(hand["effective_bb"], 5.0)
+    assert_eq(hand["hero_hand"], "Q7o")
+    assert_eq(hand["preflop_actions"], "F-F-AI5-F-F-F-F-F")
+    assert_true(validate_hand(hand).ok)
+
+    actor = parse_simple_preflop_block(
+        "Eff 5bb Lj raise 2 hero BB fold q7o")
+    assert_eq(actor["preflop_actions"], "F-F-R2-F-F-F-F-F")
+
+
+@test
 def test_live_simple_preflop_fallback_parses_compact_squeeze_raise():
     """Regression: ``bb r6`` is a compact raise-to-6 token, not an unknown
     action.  Preserve the squeeze and hero's continuation fold so Hand 11
