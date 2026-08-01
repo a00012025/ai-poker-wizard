@@ -799,6 +799,15 @@ def _live_preflop_events(toks: list[str], hero_pos: str,
                     action_start = i + 1
         else:
             maybe_pos = _norm_pos(toks[i])
+            # In a spaced stack header (``Eff 5 bb``), ``bb`` is a unit, not
+            # the big-blind actor.  Treating it as a seat fabricated an opening
+            # BB shove before the real LJ shove.  Keep this header-specific so
+            # ``LJ raise 2 BB fold`` can still name the actual BB actor.
+            if (maybe_pos == "BB" and i >= 2
+                    and _bb_number(toks[i - 1]) is not None
+                    and _clean_word(toks[i - 2])
+                    in {"eff", "eff.", "effective", "有效"}):
+                maybe_pos = None
             if maybe_pos:
                 pos = maybe_pos
                 action_start = i + 1
