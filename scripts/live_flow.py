@@ -1949,6 +1949,28 @@ def project_multiway_postflop(
     return projected, meta, None
 
 
+def training_hand_for_postflop(hand: dict) -> dict:
+    """Return the exact HU hand used for a multiway postflop grade.
+
+    ``grade_hand`` keeps the original hand as the ledger audit record, but its
+    postflop EV comes from a deterministic HU projection.  Taxonomy and GTOW
+    Trainer reconstruction must use that same projection or they describe a
+    different action line (and the custom-spot resolver rejects the raw
+    multiway history).
+    """
+    projected = hand.get("_multiway_projected_hand")
+    if isinstance(projected, dict):
+        return projected
+    if not hand.get("_multiway_projection"):
+        return hand
+    projected, _meta, reason = project_multiway_postflop(hand)
+    if projected is None:
+        raise ValueError(
+            f"persisted multiway projection cannot be reconstructed: {reason}"
+        )
+    return projected
+
+
 def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     """Run check_hand and index graded nodes by (street, per-street idx)."""
     from hh_deviation_check import check_hand
@@ -1975,6 +1997,10 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
             if d.get("street") != "preflop"
         )
         hand["_multiway_projection"] = projection_meta
+        # Transient: downstream taxonomy/queue URL generation must describe
+        # the same HU line that produced the grade.  build_hand_rows removes
+        # this full duplicate before persisting parsed_json.
+        hand["_multiway_projected_hand"] = projected
         hand.pop("_multiway_unresolved", None)
     else:
         devs = check_hand(h, emit_ungraded=True)
@@ -2144,7 +2170,18 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     escalation_failed_keys = escalation_state.get("failed_keys") or set()
     escalation_offrange_keys = escalation_state.get("offrange_after_attempt_keys") or set()
 
-    for spot in walk_spots_from_parsed(hand):
+    training_hand = training_hand_for_postflop(hand)
+    original_spots = list(walk_spots_from_parsed(hand))
+    if training_hand is hand:
+        spots = original_spots
+    else:
+        spots = [s for s in original_spots if s["street"] == "preflop"]
+        spots.extend(
+            s for s in walk_spots_from_parsed(training_hand)
+            if s["street"] != "preflop"
+        )
+
+    for spot in spots:
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
         flags = ["chipev_grading", "live_phase_unknown"]
@@ -2208,9 +2245,12 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             "board_suit": spot["tags"]["board_suit"],
             "discarded": spot["discarded"], "limp_origin": spot["limp_origin"],
             # display-only extras (dropped before DB write)
-            "_dev": dev, "_spot": spot, "_hand": hand,
+            "_dev": dev, "_spot": spot,
+            "_hand": (training_hand if spot["street"] != "preflop" else hand),
         })
 
+    persisted_hand = copy.deepcopy(hand)
+    persisted_hand.pop("_multiway_projected_hand", None)
     hand_row = {
         "gtow_hand_id": hand_id, "played_at": played_at, "site": "live",
         "position": hand.get("hero_position"), "hero_hand": hand.get("hero_hand"),
@@ -2219,7 +2259,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
         "total_players": npl, "preflop_depth_bb": depth,
         "total_ev_loss_bb": round(total_loss, 4),
         "source": "live", "raw_text": raw_text,
-        "parsed_json": json.dumps(hand, ensure_ascii=False),
+        "parsed_json": json.dumps(persisted_hand, ensure_ascii=False),
         "intent_tag": "uncertain",   # 線下選擇性記錄的預設意圖（§5.1）
     }
     return hand_row, dec_rows
