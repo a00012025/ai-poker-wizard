@@ -1981,6 +1981,160 @@ def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
 
 
 @test
+def test_compact_drill_names_append_only_restricted_stack_band():
+    """Depth-restricted drills say so; the all-depth default stays terse."""
+    from gtow_trainer_url import build_drill_url, MTT_DEPTHS, DEPTH_BAND_DEPTHS
+    from spot_naming import compact_spot_name
+
+    base = {"spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP"}
+    cases = [
+        (DEPTH_BAND_DEPTHS["short"], "LJ vs EP Open (≤20bb)"),
+        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (20-50bb)"),
+        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (>50bb)"),
+        (list(MTT_DEPTHS), "LJ vs EP Open"),
+    ]
+    for depths, expected in cases:
+        url = build_drill_url(
+            "vsOpen", "preflop", 20, ["LJ"],
+            opponent_positions=["UTG", "UTG+1"], depths=depths)
+        assert_eq(compact_spot_name({**base, "drill_url": url}), expected)
+
+
+@test
+def test_compact_drill_name_can_use_live_depth_band_before_url_persistence():
+    from spot_naming import compact_spot_name
+
+    assert_eq(compact_spot_name({
+        "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+        "eff_stack": "short",
+    }), "LJ vs EP Open (≤20bb)")
+
+
+@test
+def test_enqueue_persists_depth_aware_drill_label():
+    """Future DB rows store the same depth-aware name shown in Telegram."""
+    import asyncio
+    from gtow_trainer_url import build_drill_url, DEPTH_BAND_DEPTHS
+    from queue_feed import enqueue_one
+
+    class FakeConn:
+        def __init__(self):
+            self.args = None
+
+        async def fetchrow(self, *_args):
+            return None
+
+        async def execute(self, _sql, *args):
+            self.args = args
+
+    conn = FakeConn()
+    url = build_drill_url(
+        "vsOpen", "preflop", 20, ["LJ"],
+        opponent_positions=["UTG", "UTG+1"],
+        depths=DEPTH_BAND_DEPTHS["short"])
+    result = asyncio.run(enqueue_one(conn, {
+        "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+        "label": "LJ vs EP Open", "drill_url": url,
+        "source_hands": [], "kind": "drill",
+    }))
+
+    assert_eq(result, "inserted")
+    assert_eq(conn.args[2], "LJ vs EP Open (≤20bb)")
+    assert_eq(conn.args[18], "short")
+
+
+@test
+def test_enqueue_looks_up_open_drills_by_leaf_and_depth_scope():
+    """The same action line at short and medium depth stays two drills."""
+    import asyncio
+    from gtow_trainer_url import build_drill_url, DEPTH_BAND_DEPTHS
+    from queue_feed import enqueue_one
+
+    class FakeConn:
+        def __init__(self):
+            self.lookups = []
+
+        async def fetchrow(self, _sql, *args):
+            self.lookups.append(args)
+            return None
+
+        async def execute(self, *_args):
+            pass
+
+    conn = FakeConn()
+    for band in ("short", "medium"):
+        url = build_drill_url(
+            "vsOpen", "preflop", 20, ["LJ"],
+            opponent_positions=["UTG", "UTG+1"],
+            depths=DEPTH_BAND_DEPTHS[band])
+        result = asyncio.run(enqueue_one(conn, {
+            "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+            "drill_url": url, "source_hands": [], "kind": "drill",
+        }))
+        assert_eq(result, "inserted")
+
+    assert_eq(conn.lookups, [
+        ("LJ_vsOpen_EP", "short"),
+        ("LJ_vsOpen_EP", "medium"),
+    ])
+
+
+@test
+def test_live_queue_groups_same_leaf_separately_by_stack_band():
+    import live_flow
+
+    old = live_flow.drill_url_for
+    live_flow.drill_url_for = lambda d: (
+        "https://app.gtowizard.com/practice/trainer?"
+        "fh_start_spot=preflop&depth_list="
+        + ("10.125%2C12.125%2C14.125%2C17.125%2C20.125"
+           if d["eff_stack"] == "short"
+           else "25.125%2C30.125%2C35.125%2C40.125"))
+    try:
+        rows = []
+        for idx, band in enumerate(("short", "medium")):
+            rows.append({
+                "ev_loss_bb": 0.5, "excluded": False, "discarded": False,
+                "limp_origin": False, "spot_leaf": "LJ_vsOpen_EP",
+                "spot_category": "vsOpen", "eff_stack": band,
+                "position": "LJ", "gtow_hand_id": f"live:{idx}",
+                "street": "preflop", "decision_idx": 0,
+            })
+        items = live_flow.select_queue_items(rows)
+    finally:
+        live_flow.drill_url_for = old
+
+    assert_eq([item["depth_scope"] for item in items], ["short", "medium"])
+
+
+@test
+def test_live_queue_id_lookup_includes_depth_scope():
+    """Immediate report buttons must open the matching stack-band Drill."""
+    import asyncio
+    from live_flow import open_drill_queue_id
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        async def fetchval(self, _sql, leaf, depth_scope):
+            self.calls.append((leaf, depth_scope))
+            return {"short": 11, "medium": 22}[depth_scope]
+
+    conn = FakeConn()
+    short_id = asyncio.run(open_drill_queue_id(conn, {
+        "spot_leaf": "LJ_vsOpen_EP", "depth_scope": "short"}))
+    medium_id = asyncio.run(open_drill_queue_id(conn, {
+        "spot_leaf": "LJ_vsOpen_EP", "depth_scope": "medium"}))
+
+    assert_eq((short_id, medium_id), (11, 22))
+    assert_eq(conn.calls, [
+        ("LJ_vsOpen_EP", "short"),
+        ("LJ_vsOpen_EP", "medium"),
+    ])
+
+
+@test
 def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     """Postflop queue buttons should use the exact custom-spot builder when
     the representative parsed hand is available; bucket URLs can be ignored by
@@ -2159,6 +2313,9 @@ def test_queue_url_changes_invalidate_bound_drill_settings_hash():
     refresh_src = inspect.getsource(qf.refresh_trainer_links)
     assert_in("gtow_settings_hash=NULL", refresh_src)
     assert_in("gtow_drill_synced_at=NULL", refresh_src)
+    assert_in("depth_scope=$4", refresh_src)
+    remove_src = inspect.getsource(qf.remove_source_hand)
+    assert_in("depth_scope=$6", remove_src)
 
 
 @test
@@ -4438,8 +4595,10 @@ def remove_source_hand_recomputes_or_clears_open_rows():
     assert_in("source_hands=$2::jsonb", conn.execs[0][0])
     assert_eq(conn.execs[0][1][0], 1)
     assert_eq(json.loads(conn.execs[0][1][1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}])
-    assert_eq(conn.execs[0][1][2:], (0.35, 1, "https://rebuilt.example/drill"))
+    assert_eq(conn.execs[0][1][2:],
+              (0.35, 1, "https://rebuilt.example/drill", "all"))
     assert_in("drill_url=$5", conn.execs[0][0])
+    assert_in("depth_scope=$6", conn.execs[0][0])
     assert_in("gtow_drill_id=NULL", conn.execs[0][0])
     assert_in("gtow_training_started_at=NULL", conn.execs[0][0])
     assert_in("gtow_baseline_totals=NULL", conn.execs[0][0])

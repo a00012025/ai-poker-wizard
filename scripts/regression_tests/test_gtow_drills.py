@@ -140,8 +140,8 @@ def test_gtow_drill_ensure_renames_matching_settings_with_full_patch():
 
 
 @test
-def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
-    """A paginated Drill list must not duplicate a queue row's bound UUID."""
+def test_gtow_drill_known_binding_is_verified_then_patched():
+    """A bound UUID is checked remotely and renamed without duplication."""
     import gtow_drill_service as svc
     settings = svc.settings_from_trainer_url(_trainer_url())
     drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
@@ -149,6 +149,11 @@ def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
 
     def request(method, url, **kwargs):
         calls.append((method, url, kwargs))
+        if method == "GET":
+            return _Response([{
+                "id": drill_id, "name": "old verbose name",
+                "settings": settings,
+            }])
         assert_eq(method, "PATCH")
         assert_true(url.endswith(f"/drills/{drill_id}/"))
         return _Response({"id": drill_id, **kwargs["json"]})
@@ -165,24 +170,71 @@ def test_gtow_drill_known_binding_is_patched_directly_before_list_lookup():
     assert_eq(binding.drill_id, drill_id)
     assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_true(not binding.created)
-    assert_eq([call[0] for call in calls], ["PATCH"])
-    assert_true(not any("with_totals" in call[1] for call in calls))
+    assert_eq([call[0] for call in calls], ["GET", "PATCH"])
 
 
 @test
-def test_gtow_drill_known_binding_with_current_name_needs_no_request():
+def test_gtow_drill_remote_name_overrides_stale_db_assumption():
+    """Opening a menu repairs GTOW even when DB already has the new name."""
+    import gtow_drill_service as svc
+    settings = svc.settings_from_trainer_url(_trainer_url())
+    fingerprint = svc.settings_hash(settings)
+    drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
+    wanted = "LP OOP vs LP 3bet (≤20bb)"
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "GET":
+            return _Response([{
+                "id": drill_id, "name": "LP OOP vs LP 3bet",
+                "settings": settings,
+            }])
+        return _Response({"id": drill_id, **kwargs["json"]})
+
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
+    try:
+        binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
+            _trainer_url(), wanted, known_drill_id=drill_id,
+            known_drill_name=wanted, known_settings_hash=fingerprint)
+    finally:
+        svc.get_user_credentials = old_get
+
+    assert_eq(binding.name, wanted)
+    assert_eq([call[0] for call in calls], ["GET", "PATCH"])
+    assert_eq(calls[1][2]["json"]["name"], wanted)
+
+
+@test
+def test_gtow_drill_known_binding_with_current_name_needs_only_remote_read():
     import gtow_drill_service as svc
     calls = []
     url = _trainer_url(fh_trainer_mode="stop_end_of_hand")
     fingerprint = svc.settings_hash(svc.settings_from_trainer_url(url))
-    client = svc.GTOWDrillClient(
-        7, "refresh", lambda *args, **kwargs: calls.append((args, kwargs)))
-    binding = client.ensure_drill(
-        url, "LP OOP vs LP 3bet",
-        known_drill_id="c8767ec9-bd78-434e-a0be-dfd0b01072dc",
-        known_drill_name="LP OOP vs LP 3bet",
-        known_settings_hash=fingerprint)
-    assert_eq(calls, [])
+    drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
+
+    def request(method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        return _Response([{
+            "id": drill_id, "name": "LP OOP vs LP 3bet",
+            "settings": svc.settings_from_trainer_url(url),
+        }])
+
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
+    try:
+        client = svc.GTOWDrillClient(7, "refresh", request)
+        binding = client.ensure_drill(
+            url, "LP OOP vs LP 3bet",
+            known_drill_id=drill_id,
+            known_drill_name="LP OOP vs LP 3bet",
+            known_settings_hash=fingerprint)
+    finally:
+        svc.get_user_credentials = old_get
+    assert_eq([call[0] for call in calls], ["GET"])
     assert_eq(binding.name, "LP OOP vs LP 3bet")
     assert_true(not binding.created)
 
@@ -193,10 +245,16 @@ def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
     import gtow_drill_service as svc
     drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
     url = _trainer_url(fh_trainer_mode="stop_end_of_hand")
+    old_remote_settings = svc.settings_from_trainer_url(_trainer_url())
     calls = []
 
     def request(method, endpoint, **kwargs):
         calls.append((method, endpoint, kwargs))
+        if method == "GET":
+            return _Response([{
+                "id": drill_id, "name": "LP OOP vs LP 3bet",
+                "settings": old_remote_settings,
+            }])
         assert_eq(method, "PATCH")
         assert_true(endpoint.endswith(f"/drills/{drill_id}/"))
         return _Response({"id": drill_id, **kwargs["json"]})
@@ -213,9 +271,39 @@ def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
         svc.get_user_credentials = old_get
 
     assert_eq(binding.drill_id, drill_id)
-    assert_eq([call[0] for call in calls], ["PATCH"])
-    assert_eq(calls[0][2]["json"]["settings"]["fh_trainer_mode"],
+    assert_eq([call[0] for call in calls], ["GET", "PATCH"])
+    assert_eq(calls[1][2]["json"]["settings"]["fh_trainer_mode"],
               "stop_end_of_hand")
+
+
+@test
+def test_gtow_drill_known_binding_list_miss_still_patches_bound_uuid():
+    """A list miss repairs the known UUID instead of creating a duplicate."""
+    import gtow_drill_service as svc
+    drill_id = "c8767ec9-bd78-434e-a0be-dfd0b01072dc"
+    url = _trainer_url()
+    fingerprint = svc.settings_hash(svc.settings_from_trainer_url(url))
+    calls = []
+
+    def request(method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        if method == "GET":
+            return _Response([])
+        return _Response({"id": drill_id, **kwargs["json"]})
+
+    old_get = svc.get_user_credentials
+    svc.get_user_credentials = lambda user_id, fallback_refresh=None: (
+        SimpleNamespace(access_token="access", client_id=None))
+    try:
+        binding = svc.GTOWDrillClient(7, "refresh", request).ensure_drill(
+            url, "LP OOP vs LP 3bet", known_drill_id=drill_id,
+            known_drill_name="LP OOP vs LP 3bet",
+            known_settings_hash=fingerprint)
+    finally:
+        svc.get_user_credentials = old_get
+
+    assert_eq(binding.drill_id, drill_id)
+    assert_eq([call[0] for call in calls], ["GET", "PATCH"])
 
 
 @test
@@ -226,6 +314,22 @@ def test_full_hand_drill_migration_backfills_urls_and_locks_invariant():
     assert_in("regexp_replace", sql)
     assert_in("gtow_settings_hash = NULL", sql)
     assert_in("drill_queue_full_hand_trainer_url", sql)
+
+
+@test
+def test_drill_depth_name_migration_updates_db_names():
+    sql = (REPO_ROOT / "supabase/migrations/20260805143000_drill_depth_names.sql"
+           ).read_text()
+    assert_in("(≤20bb)", sql)
+    assert_in("(20-50bb)", sql)
+    assert_in("(>50bb)", sql)
+    assert_in("gtow_drill_name", sql)
+    assert_in("regexp_replace", sql)
+    scope_sql = (REPO_ROOT /
+                 "supabase/migrations/20260805213000_drill_depth_scope.sql"
+                 ).read_text()
+    assert_in("ADD COLUMN IF NOT EXISTS depth_scope", scope_sql)
+    assert_in("ON drill_queue(spot_leaf, depth_scope)", scope_sql)
 
 
 @test

@@ -570,7 +570,7 @@ SELECT id, spot_leaf, spot_category, label, drill_url, review_anchor_url,
        review_anchor_street, n_sources, total_ev_loss_bb, source, status,
        prescribed_week, kind, ref_hand_id, bias_direction, bias_n,
        bias_ev_loss_bb, bias_share, source_hands, surfaced_count,
-       last_surfaced_at, last_surfaced_week
+       last_surfaced_at, last_surfaced_week, depth_scope
 FROM drill_queue WHERE status IN ('pending', 'prescribed')
 ORDER BY (status = 'pending') DESC, total_ev_loss_bb DESC NULLS LAST LIMIT 200
 """
@@ -646,6 +646,7 @@ def focus_queue_item(focus: dict) -> dict | None:
 async def bind_focus_queue_items(conn, focus: list[dict]) -> list[int]:
     """Ensure every actionable focus uses the existing Drill detail flow."""
     from queue_feed import enqueue_one
+    from spot_naming import drill_depth_scope
     ids = []
     for prescription in focus:
         item = focus_queue_item(prescription)
@@ -653,10 +654,11 @@ async def bind_focus_queue_items(conn, focus: list[dict]) -> list[int]:
             continue
         await enqueue_one(conn, item)
         row = await conn.fetchrow(
-            "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
+            "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND depth_scope=$2 "
+            "AND kind='drill' "
             "AND status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-            item["spot_leaf"])
+            item["spot_leaf"], drill_depth_scope(item))
         if row:
             queue_id = int(row["id"])
             prescription["queue_id"] = queue_id

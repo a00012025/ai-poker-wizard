@@ -2262,25 +2262,31 @@ def drill_url_for(dec: dict) -> str | None:
 
 def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
     """Deviated decisions (EV loss >= QUEUE_EV_MIN, scored, not limp/discarded)
-    grouped by spot_leaf → one queue item per action line."""
-    by_leaf: dict[str, dict] = {}
+    grouped by spot_leaf + depth scope → one queue item per training band."""
+    from spot_naming import drill_depth_scope
+
+    by_leaf: dict[tuple[str, str], dict] = {}
     for d in all_dec_rows:
         ev = d.get("ev_loss_bb")
         if (ev is None or ev < QUEUE_EV_MIN or d["excluded"]
                 or d["discarded"] or d["limp_origin"]):
             continue
-        it = by_leaf.get(d["spot_leaf"])
+        url = drill_url_for(d)
+        depth_scope = drill_depth_scope({**d, "drill_url": url})
+        key = (d["spot_leaf"], depth_scope)
+        it = by_leaf.get(key)
         if it is None:
-            it = by_leaf[d["spot_leaf"]] = {
+            it = by_leaf[key] = {
                 "spot_leaf": d["spot_leaf"], "spot_category": d["spot_category"],
-                "drill_url": drill_url_for(d), "label": spot_label_zh(d),
+                "drill_url": url, "label": spot_label_zh(d),
+                "depth_scope": depth_scope,
                 "source_hands": [], "total_ev_loss_bb": 0.0,
                 "kind": "drill", "added_by": "auto", "source": "live"}
         elif not it.get("drill_url"):
             # A leaf may have several source hands.  Keep looking after an
             # unresolvable first hand so a later faithful custom spot can own
             # the shared drill button.
-            it["drill_url"] = drill_url_for(d)
+            it["drill_url"] = url
         # §5.2 full dedupe key: {hand_id, street, decision_idx, ev_loss_bb, src}
         it["source_hands"].append({"hand_id": d["gtow_hand_id"],
                                    "street": d["street"],
@@ -2301,6 +2307,17 @@ def spot_label_zh(dec: dict) -> str:
 # own persist path; a re-offending leaf merges into its OPEN row (pending OR
 # prescribed) with per-entry key dedupe so re-imports never inflate totals.
 from queue_feed import enqueue, remove_source_hand  # noqa: E402,F401  (shared upsert; used by persist/overwrite)
+
+
+async def open_drill_queue_id(conn, item: dict) -> int | None:
+    """Resolve the open queue row for this exact action line + depth scope."""
+    from spot_naming import drill_depth_scope
+
+    return await conn.fetchval(
+        "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND depth_scope=$2 "
+        "AND kind='drill' AND status IN ('pending','prescribed') "
+        "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+        item["spot_leaf"], drill_depth_scope(item))
 
 
 # ── DB upserts ───────────────────────────────────────────────────────────────
@@ -2553,11 +2570,7 @@ async def persist(result: dict) -> None:
         # Attach the canonical open-row id so its immediate drill button uses
         # the same detail/provisioning menu as /queue instead of bypassing it.
         for item in result["queue"]:
-            item["queue_id"] = await conn.fetchval(
-                "SELECT id FROM drill_queue WHERE spot_leaf=$1 "
-                "AND kind='drill' AND status IN ('pending','prescribed') "
-                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-                item["spot_leaf"])
+            item["queue_id"] = await open_drill_queue_id(conn, item)
     finally:
         await conn.close()
 
@@ -2632,11 +2645,7 @@ async def overwrite_hand(conn, session_id: int, hand_idx: int,
         result = splice_hand(result, hand_idx, new_entry)
         await enqueue(conn, result["queue"])
         for item in result["queue"]:
-            item["queue_id"] = await conn.fetchval(
-                "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
-                "AND status IN ('pending','prescribed') "
-                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-                item["spot_leaf"])
+            item["queue_id"] = await open_drill_queue_id(conn, item)
         page = hand_idx // PER_PAGE if page is None else page
         await update_session_result(conn, session_id, result, page)
         return {"ok": True, "session": session, "result": result, "page": page}

@@ -588,7 +588,8 @@ async def queue_drill_url_from_sources(conn, entries: list[dict],
 _OPEN_DRILL_SQL = """
 SELECT id, source_hands, n_sources, total_ev_loss_bb
 FROM drill_queue
-WHERE spot_leaf = $1 AND kind = 'drill' AND status IN ('pending', 'prescribed')
+WHERE spot_leaf = $1 AND depth_scope = $2
+  AND kind = 'drill' AND status IN ('pending', 'prescribed')
 ORDER BY (status = 'pending') DESC, last_added DESC LIMIT 1
 """
 
@@ -619,9 +620,9 @@ INSERT INTO drill_queue (spot_leaf, spot_category, label, drill_url,
                          review_anchor_url, review_anchor_street, source_hands,
                          n_sources, total_ev_loss_bb, kind, added_by, source,
                          ref_hand_id, bias_direction, bias_n, bias_ev_loss_bb,
-                         bias_share, bias_key)
+                         bias_share, bias_key, depth_scope)
 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18)
+        $14, $15, $16, $17, $18, $19)
 """
 
 _REFRESH_BIAS_SQL = """
@@ -636,11 +637,16 @@ async def enqueue_one(conn, it: dict) -> str:
     'noop'. Drill items merge into an OPEN row of the same leaf (dedupe-aware);
     review items always insert (the scan guards ref_hand_id uniqueness)."""
     kind = it.get("kind", "drill")
+    if kind == "drill":
+        from spot_naming import compact_spot_name, drill_depth_scope
+        it = {**it, "label": compact_spot_name(it),
+              "depth_scope": drill_depth_scope(it)}
     incoming = dedupe_entries(list(it.get("source_hands") or []))
     refresh_bias = "action_bias" in it
     bias = it.get("action_bias") or {}
     if kind == "drill":
-        open_row = await conn.fetchrow(_OPEN_DRILL_SQL, it["spot_leaf"])
+        open_row = await conn.fetchrow(
+            _OPEN_DRILL_SQL, it["spot_leaf"], it["depth_scope"])
         if open_row:
             existing = _as_list(open_row["source_hands"])
             fresh, add_ev = diff_new_entries(existing, incoming)
@@ -666,7 +672,7 @@ async def enqueue_one(conn, it: dict) -> str:
         it.get("total_ev_loss_bb"), kind, it.get("added_by", "auto"),
         it.get("source", "online"), it.get("ref_hand_id"),
         bias.get("direction"), bias.get("n"), bias.get("ev_loss_bb"),
-        bias.get("share"), it.get("bias_key"))
+        bias.get("share"), it.get("bias_key"), it.get("depth_scope", "all"))
     return "inserted"
 
 
@@ -686,7 +692,8 @@ async def remove_source_hand(conn, hand_id: str) -> None:
     rows as resend fallout.
     """
     rows = await conn.fetch(
-        "SELECT id, source_hands, added_by, kind, drill_url FROM drill_queue "
+        "SELECT id, source_hands, added_by, kind, drill_url, depth_scope "
+        "FROM drill_queue "
         "WHERE status IN ('pending','prescribed') "
         "AND source_hands::text LIKE '%' || $1 || '%'", hand_id)
     for r in rows:
@@ -724,14 +731,18 @@ async def remove_source_hand(conn, hand_id: str) -> None:
                 "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5 WHERE id=$1",
                 r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
         else:
+            from spot_naming import drill_depth_scope
+            rebuilt_scope = drill_depth_scope({"drill_url": rebuilt_url})
             await conn.execute(
                 "UPDATE drill_queue SET source_hands=$2::jsonb, "
                 "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
+                "depth_scope=$6, "
                 "gtow_drill_id=NULL, gtow_drill_name=NULL, "
                 "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
                 "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
                 "WHERE id=$1",
-                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url,
+                rebuilt_scope)
 
 
 # ── online scan ──────────────────────────────────────────────────────────────
@@ -801,9 +812,11 @@ ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1
 """
 
 _CLEARED_SQL = ("SELECT max(cleared_at) c FROM drill_queue "
-                "WHERE spot_leaf = $1 AND kind = 'drill' AND status = 'cleared'")
+                "WHERE spot_leaf = $1 AND depth_scope = $2 "
+                "AND kind = 'drill' AND status = 'cleared'")
 _OPEN_EXISTS_SQL = ("SELECT count(*) FROM drill_queue WHERE spot_leaf = $1 "
-                    "AND kind = 'drill' AND status IN ('pending', 'prescribed')")
+                    "AND depth_scope = $2 AND kind = 'drill' "
+                    "AND status IN ('pending', 'prescribed')")
 _REVIEW_EXISTS_SQL = ("SELECT count(*) FROM drill_queue "
                       "WHERE ref_hand_id = $1 AND kind = 'review'")
 
@@ -814,11 +827,6 @@ async def _build_drill_items(conn, since) -> list[dict]:
     items: list[dict] = []
     for r in rows:
         leaf = r["spot_leaf"]
-        open_exists = bool(await conn.fetchval(_OPEN_EXISTS_SQL, leaf))
-        cleared_at = await conn.fetchval(_CLEARED_SQL, leaf)
-        route = reopen_decision(open_exists, cleared_at, list(r["played_ats"]))
-        if route == "skip":
-            continue
         row = dict(r)
         bands = [dict(b) for b in await conn.fetch(lb.band_sql(since), leaf, since)]
         _restrict, depths = lb.choose_depths(bands)
@@ -831,10 +839,19 @@ async def _build_drill_items(conn, since) -> list[dict]:
         else:
             action_bias = dominant_action_bias(entries)
         url = await queue_drill_url_from_sources(conn, entries, depths=depths)
+        from spot_naming import drill_depth_scope
+        depth_scope = drill_depth_scope({"drill_url": url})
+        open_exists = bool(await conn.fetchval(
+            _OPEN_EXISTS_SQL, leaf, depth_scope))
+        cleared_at = await conn.fetchval(_CLEARED_SQL, leaf, depth_scope)
+        route = reopen_decision(open_exists, cleared_at, list(r["played_ats"]))
+        if route == "skip":
+            continue
         items.append({
             "kind": "drill", "added_by": "auto", "source": "online",
             "spot_leaf": leaf, "spot_category": row["spot_category"],
             "label": drill_label(row, action_bias), "drill_url": url,
+            "depth_scope": depth_scope,
             "action_bias": action_bias, "bias_key": bias_key,
             "source_hands": entries,
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
@@ -962,20 +979,25 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
     """Semantically rebuild persisted links from their ledger source decisions."""
     status = "" if include_all else "AND status IN ('pending', 'prescribed')"
     rows = await conn.fetch(
-        f"SELECT id, drill_url, source_hands FROM drill_queue WHERE kind='drill' "
+        f"SELECT id, drill_url, source_hands, depth_scope FROM drill_queue "
+        f"WHERE kind='drill' "
         f"{status} ORDER BY id")
     tally = {"checked": len(rows), "updated": 0, "unresolved": 0}
     for row in rows:
         entries = _as_list(row["source_hands"])
         normalized = await normalize_source_entries(conn, entries)
         rebuilt = await queue_drill_url_from_sources(conn, normalized)
+        from spot_naming import drill_depth_scope
+        rebuilt_scope = drill_depth_scope({"drill_url": rebuilt})
         if not rebuilt:
             tally["unresolved"] += 1
-        if rebuilt != row["drill_url"] or normalized != entries:
+        if (rebuilt != row["drill_url"] or normalized != entries
+                or rebuilt_scope != row["depth_scope"]):
             await conn.execute(
                 "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb, "
-                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL WHERE id=$1",
-                row["id"], rebuilt, json.dumps(normalized))
+                "depth_scope=$4, gtow_settings_hash=NULL, "
+                "gtow_drill_synced_at=NULL WHERE id=$1",
+                row["id"], rebuilt, json.dumps(normalized), rebuilt_scope)
             tally["updated"] += 1
     return tally
 
