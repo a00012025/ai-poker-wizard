@@ -452,6 +452,9 @@ def _load_source_hand(dec: dict) -> dict:
             pot_line = preflop_actions_for_pot_from_raw(dec["raw_text"], parsed)
             if pot_line:
                 parsed["preflop_actions_for_pot"] = pot_line
+        if dec.get("street") != "preflop" and parsed.get("_multiway_projection"):
+            from live_flow import training_hand_for_postflop
+            parsed = training_hand_for_postflop(parsed)
         return parsed
 
     raw_path = dec.get("raw_path")

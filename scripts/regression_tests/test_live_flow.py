@@ -2253,6 +2253,131 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
 
 
 @test
+def test_live_multiway_queue_rebuild_uses_the_graded_hu_projection():
+    """Regression for queue row 127: grading correctly projected a 3-way
+    HJ/SB/BB pot to HJ-vs-BB, but later URL reconstruction replayed the raw
+    3-way parsed_json and therefore could not identify one HU villain.
+    """
+    import gtow_custom_url
+    import queue_feed as qf
+
+    hand = {
+        "players_at_table": 8, "effective_bb": 60,
+        "hero_position": "BB", "hero_hand": "Ac5d",
+        "preflop_actions": "F-F-F-R2.5-F-F-C-C",
+        "streets": [
+            {"board": "6h4c7s", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "X"},
+            ]},
+            {"card": "9h", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R5", "size": 5.0},
+                {"position": "HJ", "action": "C"},
+                {"position": "SB", "action": "F"},
+            ]},
+            {"card": "4s", "actions": [
+                {"position": "BB", "action": "R10", "size": 10.0},
+                {"position": "HJ", "action": "F"},
+            ]},
+        ],
+        "_multiway_projection": {
+            "positions": ["HJ", "BB"], "label": "HJ vs BB",
+            "solver_depth_bb": 50.0,
+        },
+    }
+    dec = {
+        "hand_source": "live", "parsed_json": json.dumps(hand),
+        "spot_category": "river", "street": "river", "decision_idx": 0,
+        "position": "BB", "pot_type": "SRP",
+    }
+
+    rebuilt_hand = qf._load_source_hand(dec)
+    assert_eq(rebuilt_hand["preflop_actions"], "F-F-F-R2.5-F-F-F-C")
+    assert_eq(
+        [[a["position"] for a in street["actions"]]
+         for street in rebuilt_hand["streets"]],
+        [["BB", "HJ"], ["BB", "HJ"], ["BB", "HJ"]],
+    )
+    seen = []
+    old_build = gtow_custom_url.build_custom_spot_url
+    gtow_custom_url.build_custom_spot_url = lambda built, *_args: (
+        seen.append(built) or
+        "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot"
+    )
+    try:
+        url = qf.queue_drill_url_for_decision(dec)
+    finally:
+        gtow_custom_url.build_custom_spot_url = old_build
+    assert_true(url is not None, "the HU-recast river drill must be rebuildable")
+    assert_eq(seen[0]["preflop_actions"], "F-F-F-R2.5-F-F-F-C")
+    assert_eq(
+        [[a["position"] for a in street["actions"]]
+         for street in seen[0]["streets"]],
+        [["BB", "HJ"], ["BB", "HJ"], ["BB", "HJ"]],
+    )
+
+
+@test
+def test_live_multiway_ledger_taxonomy_uses_simplified_hu_action_line():
+    """The learning/drill identity must describe the same HU projection that
+    produced the EV grade, not the discarded third player's actions.
+    """
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows, project_multiway_postflop
+
+    hand = {
+        "players_at_table": 8, "effective_bb": 60,
+        "hero_position": "BB", "hero_hand": "Ac5d",
+        "preflop_actions": "F-F-F-R2.5-F-F-C-C",
+        "streets": [
+            {"board": "6h4c7s", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "X"},
+            ]},
+            {"card": "9h", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R5", "size": 5.0},
+                {"position": "HJ", "action": "C"},
+                {"position": "SB", "action": "F"},
+            ]},
+            {"card": "4s", "actions": [
+                {"position": "BB", "action": "R10", "size": 10.0},
+                {"position": "HJ", "action": "F"},
+            ]},
+        ],
+    }
+    projected, meta, reason = project_multiway_postflop(hand)
+    assert_true(projected is not None and reason is None)
+    hand["_multiway_projection"] = meta
+    hand["_multiway_projected_hand"] = projected
+    devmap = {("river", 0): {
+        "street": "river", "hero_action": "R7.5", "gto_action": "X",
+        "hero_freq": 0.0, "gto_freq": 1.0,
+        "hero_action_label": "Bet 7.5bb", "gto_action_label": "Check",
+        "all_freqs": {}, "ev_loss": 0.6714,
+    }}
+
+    hand_row, decisions = build_hand_rows(
+        hand, "live:multiway", datetime(2026, 7, 31, tzinfo=timezone.utc),
+        "raw", devmap,
+    )
+    river = next(d for d in decisions
+                 if d["street"] == "river" and d["decision_idx"] == 0)
+    assert_eq(
+        river["spot_leaf"],
+        "river:SRP:BBvMP:OOP:[x-x|b-c]:first_to_act",
+    )
+    assert_eq(river["flop_seq"], "x-x")
+    assert_eq(river["turn_seq"], "b-c")
+    assert_eq(river["eff_stack"], "medium")
+    assert_in("multiway_recast", river["approx_flags"])
+    assert_true("_multiway_projected_hand" not in json.loads(hand_row["parsed_json"]))
+
+
+@test
 def test_queue_source_normalization_repairs_legacy_missing_decision_index():
     """Old live queue rows omitted decision_idx/src; refresh backfills both."""
     import asyncio
