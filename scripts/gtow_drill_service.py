@@ -190,16 +190,23 @@ class GTOWDrillClient:
         settings = settings_from_trainer_url(trainer_url)
         fingerprint = settings_hash(settings)
         drill = None
+        remote_verified = False
         if known_drill_id:
-            # GTOW's detail GET currently returns 500 for valid Drill UUIDs,
-            # while PATCH on the same endpoint works.  The queue binding is
-            # authoritative: use it directly and avoid a paginated-list miss
-            # creating a duplicate Drill.
-            drill = {
-                "id": str(known_drill_id),
-                "name": str(known_drill_name or ""),
-                "settings": settings,
-            }
+            # The detail GET currently returns 500, so verify the remote name
+            # from the list response.  DB names may already have been migrated;
+            # trusting them would leave an older GTOW display name untouched.
+            drills = self.list_drills()
+            drill = next((item for item in drills
+                          if str(item.get("id")) == str(known_drill_id)), None)
+            remote_verified = drill is not None
+            if drill is None:
+                # A paginated-list miss must not create a duplicate.  Keep the
+                # bound UUID and PATCH it below to enforce the desired state.
+                drill = {
+                    "id": str(known_drill_id),
+                    "name": str(known_drill_name or ""),
+                    "settings": settings,
+                }
         if drill is None:
             drill = find_matching_drill(self.list_drills(), settings)
         wanted_name = preset_name(name)
@@ -214,7 +221,8 @@ class GTOWDrillClient:
                 "tags": [],
             })
             created = True
-        elif (str(drill.get("name") or "") != wanted_name
+        elif (not remote_verified and known_drill_id
+              or str(drill.get("name") or "") != wanted_name
               or (known_drill_id and known_settings_hash != fingerprint)):
             drill_id = str(drill["id"])
             payload = {

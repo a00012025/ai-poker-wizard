@@ -636,6 +636,9 @@ async def enqueue_one(conn, it: dict) -> str:
     'noop'. Drill items merge into an OPEN row of the same leaf (dedupe-aware);
     review items always insert (the scan guards ref_hand_id uniqueness)."""
     kind = it.get("kind", "drill")
+    if kind == "drill":
+        from spot_naming import compact_spot_name
+        it = {**it, "label": compact_spot_name(it)}
     incoming = dedupe_entries(list(it.get("source_hands") or []))
     refresh_bias = "action_bias" in it
     bias = it.get("action_bias") or {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Mapping
+from urllib.parse import parse_qs, urlsplit
 
 from action_bias import BIAS_LABELS
 
@@ -14,6 +15,57 @@ _FACING = {
     "vs_bet": "vs Bet",
     "vs_raise": "vs XR",
 }
+
+_STACK_SUFFIX = {
+    "short": " (≤20bb)",
+    "medium": " (20-50bb)",
+    "large": " (>50bb)",
+}
+
+
+def _depth_band_from_url(url: str) -> tuple[bool, str | None]:
+    """Return whether the URL declares a depth scope and its stack band.
+
+    ``None`` with ``recognized=True`` means the standard all-depth MTT drill,
+    which intentionally carries no suffix.
+    """
+    if not url:
+        return False, None
+    query = parse_qs(urlsplit(url).query)
+    raw = (query.get("depth_list") or query.get("depth") or [""])[0]
+    try:
+        depths = tuple(int(float(value)) for value in raw.split(",") if value)
+    except (TypeError, ValueError):
+        return False, None
+    if not depths:
+        return False, None
+
+    from gtow_trainer_url import DEPTH_BAND_DEPTHS, MTT_DEPTHS
+
+    if depths == tuple(MTT_DEPTHS):
+        return True, None
+    for band in ("short", "medium"):
+        if depths == tuple(DEPTH_BAND_DEPTHS[band]):
+            return True, band
+    if depths == tuple(DEPTH_BAND_DEPTHS["large"]):
+        # The preflop band builder represents >50bb with GTOW's deepest MTT
+        # shortcut (40bb).  A custom postflop spot at exactly 40bb is medium.
+        start = (query.get("fh_start_spot") or [""])[0]
+        return True, "large" if start == "preflop" else "medium"
+
+    # Exact custom spots use one solver depth rather than a band list.
+    if len(depths) == 1:
+        depth = depths[0]
+        return True, "short" if depth <= 20 else ("medium" if depth <= 50 else "large")
+    return False, None
+
+
+def drill_stack_suffix(row: Mapping) -> str:
+    """Short display suffix for a restricted Drill; all-depth stays blank."""
+    recognized, band = _depth_band_from_url(str(row.get("drill_url") or ""))
+    if not recognized:
+        band = str(row.get("depth_scope") or row.get("eff_stack") or "")
+    return _STACK_SUFFIX.get(band, "")
 
 
 def _postflop_name(row: Mapping, leaf: str, category: str) -> str | None:
@@ -105,10 +157,11 @@ def compact_spot_name(row: Mapping) -> str:
     name = (_postflop_name(row, leaf, category)
             if category in _STREET_ZH or leaf.split(":", 1)[0] in _STREET_ZH
             else _preflop_name(row, leaf, category))
-    if name:
-        return name
-    legacy = str(row.get("label") or leaf or "?").strip()
-    return legacy.split("｜", 1)[0].strip() or "?"
+    if not name:
+        legacy = str(row.get("label") or leaf or "?").strip()
+        name = legacy.split("｜", 1)[0].strip() or "?"
+    suffix = drill_stack_suffix(row)
+    return name if not suffix or name.endswith(suffix) else name + suffix
 
 
 def telegram_bias_summary(row: Mapping) -> str:

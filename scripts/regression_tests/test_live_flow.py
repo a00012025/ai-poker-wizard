@@ -1981,6 +1981,68 @@ def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
 
 
 @test
+def test_compact_drill_names_append_only_restricted_stack_band():
+    """Depth-restricted drills say so; the all-depth default stays terse."""
+    from gtow_trainer_url import build_drill_url, MTT_DEPTHS, DEPTH_BAND_DEPTHS
+    from spot_naming import compact_spot_name
+
+    base = {"spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP"}
+    cases = [
+        (DEPTH_BAND_DEPTHS["short"], "LJ vs EP Open (≤20bb)"),
+        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (20-50bb)"),
+        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (>50bb)"),
+        (list(MTT_DEPTHS), "LJ vs EP Open"),
+    ]
+    for depths, expected in cases:
+        url = build_drill_url(
+            "vsOpen", "preflop", 20, ["LJ"],
+            opponent_positions=["UTG", "UTG+1"], depths=depths)
+        assert_eq(compact_spot_name({**base, "drill_url": url}), expected)
+
+
+@test
+def test_compact_drill_name_can_use_live_depth_band_before_url_persistence():
+    from spot_naming import compact_spot_name
+
+    assert_eq(compact_spot_name({
+        "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+        "eff_stack": "short",
+    }), "LJ vs EP Open (≤20bb)")
+
+
+@test
+def test_enqueue_persists_depth_aware_drill_label():
+    """Future DB rows store the same depth-aware name shown in Telegram."""
+    import asyncio
+    from gtow_trainer_url import build_drill_url, DEPTH_BAND_DEPTHS
+    from queue_feed import enqueue_one
+
+    class FakeConn:
+        def __init__(self):
+            self.args = None
+
+        async def fetchrow(self, *_args):
+            return None
+
+        async def execute(self, _sql, *args):
+            self.args = args
+
+    conn = FakeConn()
+    url = build_drill_url(
+        "vsOpen", "preflop", 20, ["LJ"],
+        opponent_positions=["UTG", "UTG+1"],
+        depths=DEPTH_BAND_DEPTHS["short"])
+    result = asyncio.run(enqueue_one(conn, {
+        "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+        "label": "LJ vs EP Open", "drill_url": url,
+        "source_hands": [], "kind": "drill",
+    }))
+
+    assert_eq(result, "inserted")
+    assert_eq(conn.args[2], "LJ vs EP Open (≤20bb)")
+
+
+@test
 def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     """Postflop queue buttons should use the exact custom-spot builder when
     the representative parsed hand is available; bucket URLs can be ignored by
