@@ -210,6 +210,11 @@ class GTOWDrillClient:
         if drill is None:
             drill = find_matching_drill(self.list_drills(), settings)
         wanted_name = preset_name(name)
+        remote_settings_changed = (
+            settings_hash(drill.get("settings")) != fingerprint
+            if drill is not None else False)
+        bound_settings_changed = bool(
+            known_drill_id and known_settings_hash != fingerprint)
         created = False
         if drill is None:
             drill = self._request("POST", "/drills/", json={
@@ -223,7 +228,7 @@ class GTOWDrillClient:
             created = True
         elif (not remote_verified and known_drill_id
               or str(drill.get("name") or "") != wanted_name
-              or (known_drill_id and known_settings_hash != fingerprint)):
+              or bound_settings_changed or remote_settings_changed):
             drill_id = str(drill["id"])
             payload = {
                 "id": drill_id,
@@ -232,7 +237,9 @@ class GTOWDrillClient:
                 "favorite": bool(drill.get("favorite", False)),
                 # Preserve the server's complete settings payload, including
                 # empty keys that canonical matching intentionally ignores.
-                "settings": drill.get("settings") or settings,
+                "settings": (settings if (bound_settings_changed
+                                           or remote_settings_changed)
+                             else drill.get("settings") or settings),
                 "tags": list(drill.get("tags") or []),
             }
             patched = self._request(

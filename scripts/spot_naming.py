@@ -60,12 +60,17 @@ def _depth_band_from_url(url: str) -> tuple[bool, str | None]:
     return False, None
 
 
-def drill_stack_suffix(row: Mapping) -> str:
-    """Short display suffix for a restricted Drill; all-depth stays blank."""
+def drill_depth_scope(row: Mapping) -> str:
+    """Stable queue identity for a Drill's training depth scope."""
     recognized, band = _depth_band_from_url(str(row.get("drill_url") or ""))
     if not recognized:
         band = str(row.get("depth_scope") or row.get("eff_stack") or "")
-    return _STACK_SUFFIX.get(band, "")
+    return band if band in _STACK_SUFFIX else "all"
+
+
+def drill_stack_suffix(row: Mapping) -> str:
+    """Short display suffix for a restricted Drill; all-depth stays blank."""
+    return _STACK_SUFFIX.get(drill_depth_scope(row), "")
 
 
 def _postflop_name(row: Mapping, leaf: str, category: str) -> str | None:

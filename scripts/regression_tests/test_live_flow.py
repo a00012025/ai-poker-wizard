@@ -2040,6 +2040,71 @@ def test_enqueue_persists_depth_aware_drill_label():
 
     assert_eq(result, "inserted")
     assert_eq(conn.args[2], "LJ vs EP Open (≤20bb)")
+    assert_eq(conn.args[18], "short")
+
+
+@test
+def test_enqueue_looks_up_open_drills_by_leaf_and_depth_scope():
+    """The same action line at short and medium depth stays two drills."""
+    import asyncio
+    from gtow_trainer_url import build_drill_url, DEPTH_BAND_DEPTHS
+    from queue_feed import enqueue_one
+
+    class FakeConn:
+        def __init__(self):
+            self.lookups = []
+
+        async def fetchrow(self, _sql, *args):
+            self.lookups.append(args)
+            return None
+
+        async def execute(self, *_args):
+            pass
+
+    conn = FakeConn()
+    for band in ("short", "medium"):
+        url = build_drill_url(
+            "vsOpen", "preflop", 20, ["LJ"],
+            opponent_positions=["UTG", "UTG+1"],
+            depths=DEPTH_BAND_DEPTHS[band])
+        result = asyncio.run(enqueue_one(conn, {
+            "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
+            "drill_url": url, "source_hands": [], "kind": "drill",
+        }))
+        assert_eq(result, "inserted")
+
+    assert_eq(conn.lookups, [
+        ("LJ_vsOpen_EP", "short"),
+        ("LJ_vsOpen_EP", "medium"),
+    ])
+
+
+@test
+def test_live_queue_groups_same_leaf_separately_by_stack_band():
+    import live_flow
+
+    old = live_flow.drill_url_for
+    live_flow.drill_url_for = lambda d: (
+        "https://app.gtowizard.com/practice/trainer?"
+        "fh_start_spot=preflop&depth_list="
+        + ("10.125%2C12.125%2C14.125%2C17.125%2C20.125"
+           if d["eff_stack"] == "short"
+           else "25.125%2C30.125%2C35.125%2C40.125"))
+    try:
+        rows = []
+        for idx, band in enumerate(("short", "medium")):
+            rows.append({
+                "ev_loss_bb": 0.5, "excluded": False, "discarded": False,
+                "limp_origin": False, "spot_leaf": "LJ_vsOpen_EP",
+                "spot_category": "vsOpen", "eff_stack": band,
+                "position": "LJ", "gtow_hand_id": f"live:{idx}",
+                "street": "preflop", "decision_idx": 0,
+            })
+        items = live_flow.select_queue_items(rows)
+    finally:
+        live_flow.drill_url_for = old
+
+    assert_eq([item["depth_scope"] for item in items], ["short", "medium"])
 
 
 @test

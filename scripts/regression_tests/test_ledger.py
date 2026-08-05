@@ -1199,8 +1199,9 @@ def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
         return "inserted"
 
     class FakeConn:
-        async def fetchrow(self, _sql, leaf):
+        async def fetchrow(self, _sql, leaf, depth_scope):
             assert_eq(leaf, item["spot_leaf"])
+            assert_eq(depth_scope, "all")
             return {"id": 91}
 
     focus = [{

@@ -1979,7 +1979,7 @@ class PokerWizardBot:
             "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
             "review_anchor_street, status, n_sources, added_by, "
             "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
-            "bias_direction, bias_n, bias_ev_loss_bb, bias_share "
+            "bias_direction, bias_n, bias_ev_loss_bb, bias_share, depth_scope "
             "FROM drill_queue WHERE status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST "
             "LIMIT $1 OFFSET $2", QUEUE_PAGE_SIZE, page * QUEUE_PAGE_SIZE)
@@ -2024,6 +2024,7 @@ class PokerWizardBot:
                         "SELECT id, spot_leaf, spot_category, label, drill_url, "
                         "source_hands, kind, n_sources, bias_direction, bias_n, "
                         "bias_ev_loss_bb, bias_share, "
+                        "depth_scope, "
                         "gtow_drill_id, gtow_drill_name, gtow_settings_hash, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
                         "gtow_training_started_at "
@@ -2116,7 +2117,8 @@ class PokerWizardBot:
             await query.answer("Database not connected.")
             return
         item = await self.db.pool.fetchrow(
-            "SELECT label, kind, spot_leaf, spot_category, source_hands, ref_hand_id "
+            "SELECT label, kind, spot_leaf, spot_category, drill_url, depth_scope, "
+            "source_hands, ref_hand_id "
             "FROM drill_queue WHERE id=$1",
             queue_id)
         if not item:
