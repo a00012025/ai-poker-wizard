@@ -2309,6 +2309,17 @@ def spot_label_zh(dec: dict) -> str:
 from queue_feed import enqueue, remove_source_hand  # noqa: E402,F401  (shared upsert; used by persist/overwrite)
 
 
+async def open_drill_queue_id(conn, item: dict) -> int | None:
+    """Resolve the open queue row for this exact action line + depth scope."""
+    from spot_naming import drill_depth_scope
+
+    return await conn.fetchval(
+        "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND depth_scope=$2 "
+        "AND kind='drill' AND status IN ('pending','prescribed') "
+        "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
+        item["spot_leaf"], drill_depth_scope(item))
+
+
 # ── DB upserts ───────────────────────────────────────────────────────────────
 def _upsert_sql(table: str, cols: list[str], conflict: str) -> str:
     ph = ", ".join(f"${i+1}" for i in range(len(cols)))
@@ -2559,11 +2570,7 @@ async def persist(result: dict) -> None:
         # Attach the canonical open-row id so its immediate drill button uses
         # the same detail/provisioning menu as /queue instead of bypassing it.
         for item in result["queue"]:
-            item["queue_id"] = await conn.fetchval(
-                "SELECT id FROM drill_queue WHERE spot_leaf=$1 "
-                "AND kind='drill' AND status IN ('pending','prescribed') "
-                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-                item["spot_leaf"])
+            item["queue_id"] = await open_drill_queue_id(conn, item)
     finally:
         await conn.close()
 
@@ -2638,11 +2645,7 @@ async def overwrite_hand(conn, session_id: int, hand_idx: int,
         result = splice_hand(result, hand_idx, new_entry)
         await enqueue(conn, result["queue"])
         for item in result["queue"]:
-            item["queue_id"] = await conn.fetchval(
-                "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND kind='drill' "
-                "AND status IN ('pending','prescribed') "
-                "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-                item["spot_leaf"])
+            item["queue_id"] = await open_drill_queue_id(conn, item)
         page = hand_idx // PER_PAGE if page is None else page
         await update_session_result(conn, session_id, result, page)
         return {"ok": True, "session": session, "result": result, "page": page}

@@ -692,7 +692,8 @@ async def remove_source_hand(conn, hand_id: str) -> None:
     rows as resend fallout.
     """
     rows = await conn.fetch(
-        "SELECT id, source_hands, added_by, kind, drill_url FROM drill_queue "
+        "SELECT id, source_hands, added_by, kind, drill_url, depth_scope "
+        "FROM drill_queue "
         "WHERE status IN ('pending','prescribed') "
         "AND source_hands::text LIKE '%' || $1 || '%'", hand_id)
     for r in rows:
@@ -730,14 +731,18 @@ async def remove_source_hand(conn, hand_id: str) -> None:
                 "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5 WHERE id=$1",
                 r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
         else:
+            from spot_naming import drill_depth_scope
+            rebuilt_scope = drill_depth_scope({"drill_url": rebuilt_url})
             await conn.execute(
                 "UPDATE drill_queue SET source_hands=$2::jsonb, "
                 "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
+                "depth_scope=$6, "
                 "gtow_drill_id=NULL, gtow_drill_name=NULL, "
                 "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
                 "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
                 "WHERE id=$1",
-                r["id"], json.dumps(kept), total, len(kept), rebuilt_url)
+                r["id"], json.dumps(kept), total, len(kept), rebuilt_url,
+                rebuilt_scope)
 
 
 # ── online scan ──────────────────────────────────────────────────────────────
@@ -974,20 +979,25 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
     """Semantically rebuild persisted links from their ledger source decisions."""
     status = "" if include_all else "AND status IN ('pending', 'prescribed')"
     rows = await conn.fetch(
-        f"SELECT id, drill_url, source_hands FROM drill_queue WHERE kind='drill' "
+        f"SELECT id, drill_url, source_hands, depth_scope FROM drill_queue "
+        f"WHERE kind='drill' "
         f"{status} ORDER BY id")
     tally = {"checked": len(rows), "updated": 0, "unresolved": 0}
     for row in rows:
         entries = _as_list(row["source_hands"])
         normalized = await normalize_source_entries(conn, entries)
         rebuilt = await queue_drill_url_from_sources(conn, normalized)
+        from spot_naming import drill_depth_scope
+        rebuilt_scope = drill_depth_scope({"drill_url": rebuilt})
         if not rebuilt:
             tally["unresolved"] += 1
-        if rebuilt != row["drill_url"] or normalized != entries:
+        if (rebuilt != row["drill_url"] or normalized != entries
+                or rebuilt_scope != row["depth_scope"]):
             await conn.execute(
                 "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb, "
-                "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL WHERE id=$1",
-                row["id"], rebuilt, json.dumps(normalized))
+                "depth_scope=$4, gtow_settings_hash=NULL, "
+                "gtow_drill_synced_at=NULL WHERE id=$1",
+                row["id"], rebuilt, json.dumps(normalized), rebuilt_scope)
             tally["updated"] += 1
     return tally
 

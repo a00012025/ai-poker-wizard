@@ -2108,6 +2108,33 @@ def test_live_queue_groups_same_leaf_separately_by_stack_band():
 
 
 @test
+def test_live_queue_id_lookup_includes_depth_scope():
+    """Immediate report buttons must open the matching stack-band Drill."""
+    import asyncio
+    from live_flow import open_drill_queue_id
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        async def fetchval(self, _sql, leaf, depth_scope):
+            self.calls.append((leaf, depth_scope))
+            return {"short": 11, "medium": 22}[depth_scope]
+
+    conn = FakeConn()
+    short_id = asyncio.run(open_drill_queue_id(conn, {
+        "spot_leaf": "LJ_vsOpen_EP", "depth_scope": "short"}))
+    medium_id = asyncio.run(open_drill_queue_id(conn, {
+        "spot_leaf": "LJ_vsOpen_EP", "depth_scope": "medium"}))
+
+    assert_eq((short_id, medium_id), (11, 22))
+    assert_eq(conn.calls, [
+        ("LJ_vsOpen_EP", "short"),
+        ("LJ_vsOpen_EP", "medium"),
+    ])
+
+
+@test
 def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     """Postflop queue buttons should use the exact custom-spot builder when
     the representative parsed hand is available; bucket URLs can be ignored by
@@ -2286,6 +2313,9 @@ def test_queue_url_changes_invalidate_bound_drill_settings_hash():
     refresh_src = inspect.getsource(qf.refresh_trainer_links)
     assert_in("gtow_settings_hash=NULL", refresh_src)
     assert_in("gtow_drill_synced_at=NULL", refresh_src)
+    assert_in("depth_scope=$4", refresh_src)
+    remove_src = inspect.getsource(qf.remove_source_hand)
+    assert_in("depth_scope=$6", remove_src)
 
 
 @test
@@ -4565,8 +4595,10 @@ def remove_source_hand_recomputes_or_clears_open_rows():
     assert_in("source_hands=$2::jsonb", conn.execs[0][0])
     assert_eq(conn.execs[0][1][0], 1)
     assert_eq(json.loads(conn.execs[0][1][1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.35}])
-    assert_eq(conn.execs[0][1][2:], (0.35, 1, "https://rebuilt.example/drill"))
+    assert_eq(conn.execs[0][1][2:],
+              (0.35, 1, "https://rebuilt.example/drill", "all"))
     assert_in("drill_url=$5", conn.execs[0][0])
+    assert_in("depth_scope=$6", conn.execs[0][0])
     assert_in("gtow_drill_id=NULL", conn.execs[0][0])
     assert_in("gtow_training_started_at=NULL", conn.execs[0][0])
     assert_in("gtow_baseline_totals=NULL", conn.execs[0][0])
