@@ -764,6 +764,57 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
 
 
 @test
+def test_empty_parse_rehydrates_ambiguous_followup_after_restart():
+    """A hand-like follow-up gets a second recovery chance after parse=null.
+
+    After a deploy, 「哪些牌是純跟注，不像 K6s 這樣混合 3-bet？」 looks
+    hand-like because it contains K6s + 跟注.  Flash correctly returns no new
+    hand; the follow-up must then restore H3815 instead of querying a default
+    40bb context.
+    """
+    import asyncio as _asyncio
+    import types as _types
+    from gemini_session import GeminiSessionManager
+
+    s = GeminiSessionManager.__new__(GeminiSessionManager)
+    s.hand_contexts = {}
+    s.model = "test-model"
+    s._logger = logging.getLogger("regression-rehydrate-after-empty-parse")
+    calls = []
+
+    s._text_looks_like_hand = lambda _text: True
+
+    async def fake_parse(self, *args, **kwargs):
+        calls.append("parse")
+        return None
+
+    async def fake_ensure(self, chat_id, user_id, refresh_token):
+        calls.append("rehydrate")
+        self.hand_contexts[chat_id] = {"hand": {"effective_bb": 50}}
+        return True
+
+    async def fake_followup(self, chat_id, *args, **kwargs):
+        calls.append("followup")
+        assert_eq(self.hand_contexts[chat_id]["hand"]["effective_bb"], 50)
+        return "grounded next answer"
+
+    async def fake_usage(self, *args, **kwargs):
+        return None
+
+    s._parse_hand = _types.MethodType(fake_parse, s)
+    s._ensure_hand_context = _types.MethodType(fake_ensure, s)
+    s._run_followup_chat = _types.MethodType(fake_followup, s)
+    s._save_usage = _types.MethodType(fake_usage, s)
+
+    result = _asyncio.run(s.send_message(
+        42, "哪些牌是純跟注，不像 K6s 這樣混合 3-bet？",
+        user_id=42, refresh_token="token"))
+
+    assert_eq(result, "grounded next answer")
+    assert_eq(calls, ["parse", "rehydrate", "followup"])
+
+
+@test
 def test_ensure_hand_context_noop_without_token_or_db():
     """Rehydrate is best-effort: no token or no DB → leave context empty."""
     import asyncio as _asyncio

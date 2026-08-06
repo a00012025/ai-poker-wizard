@@ -1241,6 +1241,15 @@ class GeminiSessionManager:
                     chat_id, user_text, hand_json, usage_acc)
             t_parse = time.time()
 
+            # A follow-up can mention a concrete combo plus an action and look
+            # like a new hand to the cheap heuristic (for example H3815:
+            # "哪些牌是純跟注，不像 K6s 這樣混合 3-bet？").  If Flash says it
+            # is not a new hand, take one last chance to restore the previous
+            # snapshot before entering the tool-backed chat path.
+            if hand_json is None and chat_id not in self.hand_contexts:
+                await self._ensure_hand_context(
+                    chat_id, user_id, refresh_token)
+
             if hand_json:
                 self._logger.info(
                     f"[chat={chat_id}] Parsed hand in {t_parse - t0:.1f}s "
