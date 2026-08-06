@@ -2972,8 +2972,11 @@ class _ResilientStatus:
         self._msg = msg
         self._log = log
         self._label = label
+        self._text = None
 
     async def edit_text(self, text, **kwargs):
+        if text == self._text:
+            return
         try:
             await _tg_retry(
                 lambda: self._msg.edit_text(
@@ -2982,6 +2985,7 @@ class _ResilientStatus:
                 ),
                 retries=2, label=self._label, log=self._log,
             )
+            self._text = text
         except Exception:
             if self._log:
                 self._log.debug(f"[{self._label}] Status edit failed (non-fatal): {text[:60]}")
