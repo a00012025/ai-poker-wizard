@@ -43,6 +43,7 @@ PARSE_PROMPT = """\
   turn/river 只給 rank 時，補一個未在牌面重複的合法花色（例如 flop 5c7d9h、turn 5 → card "5s"）。
 - 翻牌後行動順序（重要！）：SB 永遠先行動，然後 BB，然後其他位置按順序，BTN 最後。
   BvB 例子：SB bet, BB call → [{"position":"SB","action":"R2","size":2},{"position":"BB","action":"C"}]（SB 先行動，不要在前面加 BB check！）
+- 單挑底池中，若翻牌後動作沒有重複標位置，動作依真實行動順序歸屬：OOP 先、IP 後。例：HJ raise、BTN call，flop ``x x``、turn ``b9 call``、river ``b12 fold`` → HJ check/BTN check、HJ bet/BTN call、HJ bet/BTN fold；不可反轉成 BTN 先行動。
 - Postflop actions 只列出實際發生的動作，不要自己推測或補上未提及的 check
 - 重要：每條街必須獨立列為一個 street 物件！即使雙方都 check（如 flop x x），也要有獨立的 flop 物件（actions 包含兩個 X）。絕對不能把 flop 和 turn 合併成一個物件！
 - streets：flop 用 "board"（3張牌），turn/river 用 "card"（1張牌）。board 只能放 3 張牌！

@@ -217,23 +217,11 @@ def run_layer1_text(snapshot: dict) -> tuple[bool, str]:
     expected = json.loads(snapshot["expected_json"]) if snapshot.get("expected_json") else json.loads(snapshot["parsed_json"])
 
     try:
-        from google import genai
-        from google.genai import types
-        from gemini_session import PARSE_PROMPT
+        from gemini_session import GeminiSessionManager
 
-        client = genai.Client()
-        prompt = f"{PARSE_PROMPT}\n\n用戶訊息：\n{user_input}"
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0),
-        )
-        import re
-        text = response.text or ""
-        json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-        json_str = json_match.group(1) if json_match else text.strip()
-        result = json.loads(json_str)
-        parsed = result.get("hand")
+        # Exercise the production parser, including deterministic repair gates,
+        # instead of duplicating an obsolete hard-coded Gemini model call.
+        parsed = _run(GeminiSessionManager()._parse_hand(-1, user_input))
     except Exception as e:
         return False, f"Parse error: {e}"
 

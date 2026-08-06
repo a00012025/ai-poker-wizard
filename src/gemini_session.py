@@ -2327,6 +2327,141 @@ class GeminiSessionManager:
             return True
         return False
 
+    @staticmethod
+    def _repair_text_hu_action_positions(user_text: str, hand: dict) -> bool:
+        """Lock unlabeled HU postflop shorthand to poker action order.
+
+        A structurally legal LLM parse can still reverse both players on every
+        street (H3817: HJ vs BTN, raw ``b9 call`` became BTN bet / HJ call).
+        Repair only the narrow, fully determined case: exactly two players
+        survive an initial-round preflop line, every raw street is on its own
+        line with no actor labels, and its action classes/sizes exactly match
+        the parsed street.  Explicit actor text and multi-round preflop lines
+        are left untouched rather than guessed.
+        """
+        from hh_parser import POSITION_ORDERS
+
+        npl = hand.get("players_at_table") or 8
+        order = POSITION_ORDERS.get(npl)
+        streets = hand.get("streets") or []
+        preflop = [
+            tok for tok in str(hand.get("preflop_actions") or "").split("-")
+            if tok
+        ]
+        if not order or not streets or len(preflop) != npl:
+            return False
+        live = {
+            order[index] for index, action in enumerate(preflop)
+            if action.upper() != "F"
+        }
+        if len(live) != 2:
+            return False
+
+        card = r"(?:10|[2-9tjqka])[cdhs]"
+        card_literal = re.compile(rf"(?i)(?:{card}|{card}{card}{card})")
+        actor_label = re.compile(
+            r"(?i)\b(?:hero|utg(?:\+?[12])?|lj|hj|co|btn|bu|sb|bb)\b")
+
+        def raw_actions(text: str) -> list[tuple[str, float | None]]:
+            tokens = re.findall(r"[a-zA-Z]+\d*(?:\.\d+)?|\d+(?:\.\d+)?", text)
+            out: list[tuple[str, float | None]] = []
+            index = 0
+            while index < len(tokens):
+                token = tokens[index].lower()
+                if token in {"x", "check"}:
+                    out.append(("X", None))
+                elif token in {"c", "call"}:
+                    out.append(("C", None))
+                elif token in {"f", "fold"}:
+                    out.append(("F", None))
+                elif token in {"ai", "jam", "shove"}:
+                    out.append(("AI", None))
+                else:
+                    sized = re.fullmatch(
+                        r"(?:b|bet|r|raise)(\d+(?:\.\d+)?)", token)
+                    if sized:
+                        out.append(("R", float(sized.group(1))))
+                    elif token in {"b", "bet", "r", "raise"}:
+                        size = None
+                        if index + 1 < len(tokens) and re.fullmatch(
+                                r"\d+(?:\.\d+)?", tokens[index + 1]):
+                            index += 1
+                            size = float(tokens[index])
+                        out.append(("R", size))
+                index += 1
+            return out
+
+        raw_streets: list[tuple[str, list[tuple[str, float | None]]]] = []
+        for line in user_text.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if not parts or not card_literal.fullmatch(parts[0].strip(" ,.;:")):
+                continue
+            tail = parts[1] if len(parts) == 2 else ""
+            raw_streets.append((tail, raw_actions(tail)))
+        if len(raw_streets) != len(streets):
+            return False
+
+        def parsed_action(action: dict) -> tuple[str, float | None]:
+            code = str(action.get("action") or "").upper()
+            if code.startswith("AI"):
+                cls = "AI"
+            elif code.startswith(("R", "B")):
+                cls = "R"
+            elif code.startswith("C"):
+                cls = "C"
+            elif code.startswith("F"):
+                cls = "F"
+            elif code.startswith("X"):
+                cls = "X"
+            else:
+                cls = code
+            size = action.get("size")
+            if size is None and cls in {"R", "AI"}:
+                match = re.search(r"(\d+(?:\.\d+)?)", code)
+                size = float(match.group(1)) if match else None
+            return cls, float(size) if size is not None else None
+
+        postflop_order = order[-2:] + order[:-2]
+        ordered_live = [position for position in postflop_order if position in live]
+        changed = False
+        active = set(live)
+        for street, (tail, expected) in zip(streets, raw_streets):
+            actions = street.get("actions") or []
+            actual = [parsed_action(action) for action in actions]
+            if (not expected or len(expected) != len(actions)
+                    or [kind for kind, _size in expected]
+                    != [kind for kind, _size in actual]
+                    or actor_label.search(tail)
+                    or any(action.get("position") not in live for action in actions)):
+                return False
+            for (_kind, raw_size), (_actual_kind, parsed_size) in zip(
+                    expected, actual):
+                if raw_size is not None and (
+                        parsed_size is None or abs(raw_size - parsed_size) > 1e-6):
+                    return False
+
+            pending = [position for position in ordered_live if position in active]
+            for action, (kind, raw_size) in zip(actions, expected):
+                if not pending:
+                    return False
+                actor = pending.pop(0)
+                if action.get("position") != actor:
+                    action["position"] = actor
+                    changed = True
+                if kind == "R" and raw_size is not None:
+                    canonical = f"R{raw_size:g}"
+                    if action.get("action") != canonical:
+                        action["action"] = canonical
+                        changed = True
+                if kind == "F":
+                    active.discard(actor)
+                elif kind in {"R", "AI"}:
+                    pending = [
+                        position for position in ordered_live
+                        if position in active and position != actor
+                    ]
+        return changed
+
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None,
                            feedback_hint: str = "") -> dict | None:
@@ -2386,6 +2521,15 @@ class GeminiSessionManager:
             result = json.loads(json_str)
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+                # Text Flash can invent checks for blinds that already folded
+                # (observed while replaying H3817). Apply the same guarded
+                # folded-seat cleanup used by the image parser before locking
+                # the surviving HU actors to raw betting order.
+                self._fix_folded_players_guarded(hand, chat_id)
+                if self._repair_text_hu_action_positions(user_text, hand):
+                    self._logger.info(
+                        f"[chat={chat_id}] Repaired unlabeled HU postflop "
+                        "action positions from raw betting order")
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}")

@@ -45,6 +45,49 @@ def test_coach_facts_class_groups():
 
 
 @test
+def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
+    """H3817: in HJ-vs-BTN HU, bare postflop actions are written in action
+    order. HJ is OOP, so ``2c b9 call / Kc b12 fold`` means Hero leads both
+    streets; a legal-but-wrong LLM parse must not flip every action to BTN.
+    """
+    import gemini_session as gs
+
+    raw = ("eff 50bb hero hj raise QdJs btn call\n"
+           "6hAc5d x x\n"
+           "2c b9 call\n"
+           "Kc b12 fold")
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 50, "hero_position": "HJ", "hero_hand": "QdJs",
+        "preflop_actions": "F-F-F-R2-F-C-F-F",
+        "streets": [
+            {"board": "6hAc5d", "actions": [
+                {"position": "BTN", "action": "X"},
+                {"position": "HJ", "action": "X"}]},
+            {"card": "2c", "actions": [
+                {"position": "BTN", "action": "R", "size": 9},
+                {"position": "HJ", "action": "C"}]},
+            {"card": "Kc", "actions": [
+                {"position": "BTN", "action": "R", "size": 12},
+                {"position": "HJ", "action": "F"}]},
+        ],
+    }
+
+    changed = gs.GeminiSessionManager._repair_text_hu_action_positions(raw, hand)
+
+    assert_true(changed, "legal-but-wrong position attribution is repaired")
+    assert_eq(
+        [[(a["position"], a["action"]) for a in street["actions"]]
+         for street in hand["streets"]],
+        [
+            [("HJ", "X"), ("BTN", "X")],
+            [("HJ", "R9"), ("BTN", "C")],
+            [("HJ", "R12"), ("BTN", "F")],
+        ],
+    )
+
+
+@test
 def test_coach_facts_extract_tokens():
     """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
     import coach_facts as cf
