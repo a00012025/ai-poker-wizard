@@ -1,169 +1,187 @@
 # AI Poker Wizard
 
-GTO 撲克教練 — 結合 GTO Wizard solver 數據與 Gemini LLM，提供即時手牌分析、策略教學與批次偏差比對。
+AI Poker Wizard 是疊加在 [GTO Wizard](https://www.gtowizard.com/) 之上的個人撲克教練系統。
 
-**直接使用：** [t.me/ai_poker_wizard_bot](https://t.me/ai_poker_wizard_bot)
+GTO Wizard 是健身房與器材：提供 solver、Analyzer、Trainer 與題庫；AI Poker Wizard 是教練層：把真實牌局變成回饋、訓練、復盤與評估的循環，主動決定接下來最值得改善的地方。
 
-## 功能
+**Telegram Bot：** [t.me/ai_poker_wizard_bot](https://t.me/ai_poker_wizard_bot)
 
-### 手牌分析
-- 用自然語言描述手牌，自動解析並查詢 GTO solver 策略
-- 支援 Chip EV 與 ICM（MTT 錦標賽）模式
-- 多街分析（preflop → flop → turn → river）
-- 顯示各動作頻率、EV、以及 combo-level suit 差異
+## 理念
 
-### 截圖辨識
-- 上傳撲克回放截圖，自動辨識手牌資訊並分析 GTO 策略
+### 北極星不是 ROI，而是決策品質
 
-### 手牌歷史批次分析
-- 上傳 GGPoker 手牌歷史（.txt 或 .zip），批次比對 GTO 偏差
-- 自動偵測 ICM 階段（bubble、final table 等）
-- 按嚴重程度分類偏差報告
-- 支援 follow-up：回覆 hand ID 可查看該手詳細分析
+MTT 短期結果的雜訊太大，因此系統用以下指標導航：
 
-### AI 教練
-- Gemini Pro 提供個人化教練回饋
-- 多輪對話 — 可追問 range 細節、不同打法比較
-- LLM 可即時查詢 solver 回答 follow-up 問題
+> **真實對局的 EV loss / 100 決策**
+>
+> EV 加權、信心過濾、按 spot family 分解，並持續往 0 推。
 
-### Chrome Extension
-- 一次性 Telegram 配對，之後自動同步 GTO Wizard token
-- Popup 顯示配對、GTOW 登入與最後同步狀態
-- 每台 Chrome 都有可撤銷的 device credential
-- 原始碼在 `chrome-extension/` 目錄
+訓練分數、答題數與連勝都只是中間訊號。真正的「學會」是：練過的 spot family 回到真實牌局後，EV loss 可歸因地下降。
 
-## 使用教學
+### 單手是入口，spot family 才是學習單位
 
-### 1. 綁定 GTO Wizard 帳號
+一手牌可以指出問題，但不能建立穩定能力。系統會把相同行動線聚合起來，找出反覆付出最多 EV 的 family，再把具體錯誤升級成可反覆訓練的課題。
 
-使用前需要綁定你自己的 [GTO Wizard](https://www.gtowizard.com/) 帳號。
+### 不是另一個 solver，也不是解說員
 
-**方法一：Chrome Extension（推薦）**
+- GTOW 已有的 solver、Analyzer、Trainer 能力直接 reuse，不重造通用工具。
+- AI 回答策略問題前會查詢 solver 或 Ledger，不用模糊的撲克常識代替事實。
+- 訓練強調先作答、再看回饋，而不是被動閱讀更多分析。
+- 系統只處理賽後分析與訓練，永不提供對局中的策略輸入。
 
-1. 到 [Releases 頁面](https://github.com/a00012025/ai-poker-wizard/releases) 下載最新版 `ai-poker-wizard-gtow-sync-v2.0.0.zip`
-2. 解壓縮後，Chrome 開啟 `chrome://extensions` → 開啟「開發人員模式」
-3. 點「載入未封裝項目」→ 選擇解壓後的資料夾
-4. 私訊 Telegram bot 輸入 `/pair`，把五分鐘配對碼貼到 Extension popup
-5. 登入 [app.gtowizard.com](https://app.gtowizard.com)；Extension 會自動同步，以後不必再貼 token
+完整產品憲法見 [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md)。
 
-同一帳號可配對多台 Desktop Chrome；每台需依序使用新的 `/pair` 配對碼，並各自登入
-GTOW。任一台取得新 token 後都會自動更新 Bot，但不會替其他瀏覽器注入 token 或登入。
+## 現在能做到什麼
 
-**方法二：手動取得**
+### 1. 分析一手牌
 
-1. 登入 [app.gtowizard.com](https://app.gtowizard.com)
-2. F12 開啟 Console
-3. 貼上：`copy(localStorage.getItem('user_refresh'))`
-4. 回到 Telegram 輸入：`/settoken <貼上>`
+- 直接用中文或英文描述手牌，取得 grounded GTO 分析。
+- 上傳撲克回放截圖，自動辨識牌面、位置、籌碼與行動。
+- 支援 preflop 到 river、多輪追問、range 與 combo-level 差異。
+- 支援 MTT Chip EV、ICM preflop，以及現金桌常見配置。
+- 解析結果會經過撲克規則驗證，避免不合法 action 靜默進入 solver。
 
-### 2. 分析手牌
+### 2. 批次檢查 GGPoker 手牌
 
-直接傳送手牌描述，例如：
+- 上傳 GGPoker `.txt` 或 `.zip`，逐 decision 比對 GTO 偏差。
+- 回覆 hand ID 可回到單手詳細分析。
+- 以 EV loss 呈現錯誤影響，不把單純 frequency 差異誇大成重大失誤。
 
+### 3. 把 GTOW Analyze 變成 Decision Ledger
+
+- Chrome Extension 一鍵同步新上傳的 Analyze hands。
+- 保存每個 decision 的 EV loss、spot、stack depth、信心、近似標記與資料來源。
+- 自動重建 sessions，完成後可立即復盤最近一場，而不是等到週報。
+- 無效、低信心或無法誠實還原的 decision 會被隔離，不污染正式統計。
+
+### 4. 從漏洞產生訓練處方
+
+- `/review`：復盤最近 online session 最昂貴的決策。
+- `/queue`：管理待練 drill 與待看的重大牌局，並可追溯到來源牌局。
+- `/plan`：查看本週訓練計畫；每週日自動挑選新鮮焦點。
+- 精確建立或重用 GTOW Drill，固定對應的 action line、位置與 stack scope。
+- 讀回 GTOW practiced hands、GTO Score 與 EV loss，追蹤本次處方是否完成。
+
+### 5. 記錄與訓練線下 MTT 手牌
+
+- `/live` 接收一批 shorthand hands，解析、修補、評分並寫入 Ledger。
+- 每手可打開 GTOW Study、詢問教練、加入練習或重傳修正。
+- `/lives` 可找回最近保存的線下 sessions。
+- 線下手是選擇性樣本，只用於復盤與 queue，不會混入 online leak 統計。
+
+### 6. 安全同步個人 GTOW session
+
+- Telegram 一次性配對 Chrome Extension，多台 Desktop Chrome 可分別撤銷。
+- Extension 自動同步瀏覽器正在使用的 GTOW session，不需反覆手貼 token。
+- 原始 token 不寫入 Chrome storage；裝置只保存可撤銷的 device credential。
+- Popup 可一鍵攝取 Analyze hands，也保留 `/settoken` 手動備援。
+
+Extension 安裝與安全說明見 [`chrome-extension/README.md`](chrome-extension/README.md)。
+
+## 訓練迴圈
+
+```text
+打牌
+  ↓
+GTOW Analyze / 線下手牌入帳
+  ↓
+找出 EV loss 最高的 spot family
+  ↓
+復盤具體牌局，形成可測試的理解
+  ↓
+進 GTOW Trainer 練到門檻
+  ↓
+回到真實牌局觀察該 family 的 EV loss 是否下降
 ```
-Hero 42bb effective, UTG+1 raise 2bb, hero SB all-in A9s
-```
 
-```
-有效 50bb, CO open 2bb, hero SB AcTh raise 7.5bb, CO call
-flop KsKhQd, SB bet 1/4 CO call
-turn 3h, SB bet 60% CO fold
+時間上分成四層：
+
+| 迴圈 | 節奏 | 系統負責的事 |
+|---|---|---|
+| 內圈 | 每題 | 作答 → 即時 solver 回饋 |
+| 中圈 | 每週 | 診斷 → 選焦點 → 復盤 → drill |
+| 外圈 | 每月 | 比較練過與未練 family 的真實 EV loss |
+| 元圈 | 每季 | 標準化測驗、級別與訓練方向檢討 |
+
+目前已落地的重心是 Decision Ledger、session 復盤、訓練 queue、週課表與 GTOW Drill 串接；更長週期的 playbook、歸因與標準化測驗仍依 North Star 分階段建設。
+
+## 快速開始
+
+### 綁定 GTO Wizard
+
+1. 到 [GitHub Releases](https://github.com/a00012025/ai-poker-wizard/releases) 下載最新版 Extension。
+2. 私訊 Bot 輸入 `/pair`，把五分鐘配對碼貼到 Extension popup。
+3. 登入 [app.gtowizard.com](https://app.gtowizard.com/)；之後 session 會自動同步。
+4. 在 GTOW Analyze 上傳手牌後，點 Extension 的「♠ 同步手牌到 DB」。
+
+### 分析單手
+
+直接傳文字或截圖，例如：
+
+```text
+有效 50bb，CO open 2bb，hero SB AcTh raise 7.5bb，CO call
+flop KsKhQd，SB bet 1/4，CO call
+turn 3h，SB bet 60%，CO fold
 打得合理嗎？
 ```
 
-也可以直接上傳撲克回放截圖。
+訊息提到 `cash`、`現金桌` 或 `ring game` 時會切換到現金桌分析；其餘預設為 MTT。
 
-### 3. 批次分析手牌歷史
+### 匯入線下手牌（owner）
 
-上傳 GGPoker 匯出的 .txt 或 .zip 檔案，自動批次比對 GTO 偏差。
+輸入 `/live`，下一則訊息貼上一批手牌；每手以 `Eff <有效籌碼>` 開頭：
 
-可在 caption 加上起始籌碼與錦標賽大小，例如 `10000 200`（起始 10000 chips，200 人錦標賽）。
+```text
+Eff 25bb co raise hero bb call As2s
+AhQhJh x b1.2 c
+2h x b1.5 f
+```
 
-分析完成後，回覆 hand ID（如 `TM5600279272`）可查看該手詳細 GTO 分析。
+## 常用指令
 
-### Bot 指令
+一般功能：
 
 | 指令 | 說明 |
-|------|------|
-| `/start` | 顯示歡迎訊息與設定教學 |
-| `/pair` | 私訊中產生 Chrome Extension 五分鐘配對碼 |
-| `/devices` | 查看已配對的同步裝置 |
-| `/revoke <ID>` | 撤銷指定同步裝置 |
-| `/settoken` | 手動綁定 GTO Wizard token（備援） |
-| `/logout` | 移除 token 並撤銷全部同步裝置 |
-| `/clear` | 清除對話紀錄 |
+|---|---|
+| `/help` | 使用說明 |
+| `/pair` | 配對 Chrome Extension（私訊） |
+| `/devices` | 查看同步裝置（私訊） |
+| `/revoke <ID>` | 撤銷同步裝置（私訊） |
+| `/settoken <JWT>` | 手動 GTOW token 備援（私訊） |
+| `/logout` | 移除 GTOW session 並撤銷裝置 |
+| `/clear` | 清除對話上下文 |
 
-## 自行部署
+個人訓練功能目前限 owner：
 
-### 環境需求
-- Python 3.11+
-- Docker & Docker Compose
-- Supabase 資料庫（用於儲存使用者 token 與手牌歷史）
+| 指令 | 說明 |
+|---|---|
+| `/ingest` | 增量攝取 GTOW Analyze hands |
+| `/fullingest` | 確認後重掃 ledger epoch（2026-03）以來的完整歷史 |
+| `/review [session_id]` | 復盤最近或指定 online session |
+| `/live` | 匯入線下 shorthand hands |
+| `/lives` | 查看最近線下 sessions |
+| `/queue` | 查看 drill／復盤工作清單 |
+| `/plan` | 重送最新每週訓練計畫 |
 
-### 環境變數（`.env`）
+## 誠實邊界
 
-| 變數 | 說明 |
-|------|------|
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `BOT_TOKEN` | Telegram bot token |
-| `SUPABASE_CONN` | Supabase 連線字串（transaction pooler） |
-| `ADMIN_CHAT_ID` | 管理員 Telegram chat ID |
-| `GTOW_SYNC_PEPPER` | Bot 與 Edge Function 共用的 pairing/device HMAC secret（至少 32 字元） |
+- Leak 與課表一律按 EV loss 排序，不按偏差次數製造焦慮。
+- 每個統計結論都應帶樣本數；低信心與近似過重資料不進正式統計。
+- Online 全量資料與 live 選擇性資料嚴格隔離。
+- 無法精確重建 GTOW spot 時不提供誤導性 Trainer 連結。
+- Drill 分數不是最終成效；真實牌局的 EV loss 下降才是裁決。
+- 這是一個賽後教練系統，不是 RTA。
 
-### 安裝與啟動
+## 文件
 
-```bash
-pip install -r requirements.txt
-
-# 本地測試
-python -m src.main_gemini
-
-# Docker 部署
-docker compose up -d
-```
-
-Chrome Extension自動同步使用 Supabase Edge Function，不需要自訂 domain，也不需要把 Docker host port公開到 Internet。完整首次部署、secret設定、驗證與 rollback流程見 [`docs/GTOW_TOKEN_SYNC_DEPLOY.md`](docs/GTOW_TOKEN_SYNC_DEPLOY.md)。
-
-### 測試
-
-```bash
-# 回歸測試（76 tests）
-python scripts/regression_test.py
-
-# E2E 測試（不需 Telegram）
-python scripts/e2e_test.py "Hero 20bb, UTG raise 2bb, hero BB all-in ATs"
-
-# 互動模式（多輪對話）
-python scripts/e2e_test.py -i "有效 50bb, CO open 2bb, hero SB AcTh raise 7.5bb ..."
-```
-
-## 架構
-
-```
-User (Telegram)
-  ↓
-PokerWizardBot
-  ├── /pair → Supabase one-time pairing
-  ├── Token gate（檢查使用者是否已綁定 GTO Wizard）
-  ↓
-GeminiSessionManager
-  ├── Parse hand (Gemini Flash)
-  ├── GTO analysis (analyze_hand.py → GTO Wizard API)
-  │     ├── gto_api.py — API client
-  │     ├── gto_formatter.py — solver 數據 → 自然語言
-  │     └── icm_modes.py — ICM 階段 & stack 配置
-  └── Coaching (Gemini Pro + tool use for follow-ups)
-```
-
-```
-Chrome Extension popup/content script
-  ↓ HTTPS + revocable device credential
-Supabase Edge Function (gtow-sync)
-  ↓
-users.gto_refresh_token
-  ↓
-Telegram bot / solver API
-```
+- [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md) — 願景、四層迴圈、指標與不變量
+- [`docs/TECHNICAL_OVERVIEW.md`](docs/TECHNICAL_OVERVIEW.md) — 技術架構、主要模組、部署與驗證
+- [`docs/phase1-loop-runbook.md`](docs/phase1-loop-runbook.md) — Ledger 與週訓練迴圈驗收
+- [`docs/analysis-fidelity-runbook.md`](docs/analysis-fidelity-runbook.md) — Analyzer／grader 保真檢查
+- [`docs/GTOW_TOKEN_SYNC_DEPLOY.md`](docs/GTOW_TOKEN_SYNC_DEPLOY.md) — Extension／Edge Function 部署
+- [`chrome-extension/README.md`](chrome-extension/README.md) — Extension 安裝、安全與測試
+- [`AGENTS.md`](AGENTS.md) — 專案結構、開發流程與測試規範
+- [`TODOS.md`](TODOS.md) — 尚未完成的後續工作
 
 ## License
 
