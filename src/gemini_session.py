@@ -45,6 +45,7 @@ from google.genai import types
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS_DIR = _PROJECT_ROOT / "scripts"
 _LOG_DIR = _PROJECT_ROOT / "logs"
+_FOLLOWUP_TIMEOUT_SECONDS = 180
 
 # Allow importing from scripts/
 sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -274,6 +275,12 @@ EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
         required=["hand"],
     ),
 )
+
+# The strategy/range grounding gate must force a solver query, not the local
+# postflop hand evaluator.  Keeping this separate from the full declaration
+# list prevents Gemini from expanding a preflop range question into one
+# evaluate_hand call per candidate combo (H3815).
+_SOLVER_GROUNDING_TOOL_NAMES = ("query_gto", "query_next_actions")
 
 
 # ── Training-loop Tool Declarations (ledger-backed; EV-weighted only) ──
@@ -1389,9 +1396,10 @@ class GeminiSessionManager:
             else:
                 # Not a hand — chat (with tools if hand context exists)
                 await _status("查詢中...")
-                result = await self._chat(chat_id, user_text, on_status=on_status,
-                                          user_id=user_id, refresh_token=refresh_token,
-                                          usage_acc=usage_acc)
+                result = await self._run_followup_chat(
+                    chat_id, user_text, on_status=on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                    usage_acc=usage_acc)
                 elapsed = time.time() - t0
                 self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
                 await self._save_usage(chat_id, "follow_up", self.model,
@@ -2407,6 +2415,20 @@ class GeminiSessionManager:
             return retry
         return hand_json
 
+    async def _run_followup_chat(self, chat_id: int, user_text: str,
+                                 **kwargs) -> str:
+        """Bound a complete follow-up, including every tool-call round.
+
+        Individual Gemini calls already time out, but a multi-round tool loop
+        could otherwise hold a bot handler for many minutes.  Cancellation
+        propagates into the active async request so the Telegram error path can
+        remove the stale status message and accept the next update.
+        """
+        return await asyncio.wait_for(
+            self._chat(chat_id, user_text, **kwargs),
+            timeout=_FOLLOWUP_TIMEOUT_SECONDS,
+        )
+
     async def _chat(self, chat_id: int, user_text: str,
                      on_status: Callable[[str], Any] | None = None,
                      user_id: int | None = None,
@@ -2556,9 +2578,7 @@ class GeminiSessionManager:
                 gen_kwargs["tool_config"] = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
                         mode=types.FunctionCallingConfigMode.ANY,
-                        allowed_function_names=[
-                            "query_gto", "query_next_actions", "evaluate_hand",
-                        ],
+                        allowed_function_names=_SOLVER_GROUNDING_TOOL_NAMES,
                     )
                 )
             response = await asyncio.wait_for(

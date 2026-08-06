@@ -1,9 +1,11 @@
 """Regression tests extracted from the legacy monolithic suite."""
 
+import asyncio
 import json
 import logging
 import os
 import sys
+import types as py_types
 from pathlib import Path
 
 from regression_tests.harness import (
@@ -1524,6 +1526,58 @@ def test_solver_grounding_intent_gate():
                      "我的訓練計畫是什麼", "給我看 progress report"]
     for q in must_not_fire:
         assert_true(not g(q), f"gate must NOT fire for: {q!r}")
+
+
+@test
+def test_solver_grounding_forces_only_solver_navigation_tools():
+    """H3815: a range question must not force evaluate_hand.
+
+    Gemini used the permissive forced-tool list to emit one evaluate_hand call
+    per candidate preflop hand instead of fetching the range once.  Keep the
+    forced lane restricted to solver queries; evaluate_hand remains available
+    later in AUTO mode for real postflop hand-type questions.
+    """
+    from gemini_session import _SOLVER_GROUNDING_TOOL_NAMES
+
+    assert_eq(_SOLVER_GROUNDING_TOOL_NAMES,
+              ("query_gto", "query_next_actions"))
+    assert_not_in("evaluate_hand", _SOLVER_GROUNDING_TOOL_NAMES)
+
+
+@test
+def test_followup_chat_has_total_timeout_and_cancels_stuck_work():
+    """A stuck tool loop must release the bot so later questions can run."""
+    import gemini_session
+
+    manager = object.__new__(gemini_session.GeminiSessionManager)
+    cancelled = {"value": False}
+
+    async def stuck_chat(self, *args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled["value"] = True
+
+    manager._chat = py_types.MethodType(stuck_chat, manager)
+    old_timeout = gemini_session._FOLLOWUP_TIMEOUT_SECONDS
+    gemini_session._FOLLOWUP_TIMEOUT_SECONDS = 0.01
+    try:
+        try:
+            asyncio.run(manager._run_followup_chat(1, "range question"))
+            raise AssertionError("stuck follow-up should time out")
+        except asyncio.TimeoutError:
+            pass
+    finally:
+        gemini_session._FOLLOWUP_TIMEOUT_SECONDS = old_timeout
+
+    assert_true(cancelled["value"], "timed-out follow-up task must be cancelled")
+
+    async def healthy_chat(self, *args, **kwargs):
+        return "next answer"
+
+    manager._chat = py_types.MethodType(healthy_chat, manager)
+    result = asyncio.run(manager._run_followup_chat(1, "next question"))
+    assert_eq(result, "next answer", "later follow-up must still run normally")
 
 
 @test

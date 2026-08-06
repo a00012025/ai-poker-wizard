@@ -1,5 +1,6 @@
 """Regression tests extracted from the legacy monolithic suite."""
 
+import asyncio
 import json
 import logging
 import os
@@ -936,6 +937,34 @@ def test_finalize_followups_noop_when_already_clean():
     assert_eq(clean, response, "clean text is unchanged")
     assert_true(markup is not None, "existing followups still render buttons")
     assert_eq(len(markup.inline_keyboard), 3, "three stored questions → three buttons")
+
+
+@test
+def test_resilient_status_skips_duplicate_edits():
+    """H3815: repeated tool statuses must not hit Telegram again.
+
+    Telegram rejects an identical edit as ``Message is not modified``.  The
+    retry wrapper treated that response as transient and added seconds of
+    delay for every parallel tool call.
+    """
+    from telegram_bot.bot import _ResilientStatus
+
+    class FakeMessage:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    async def run_case():
+        raw = FakeMessage()
+        status = _ResilientStatus(raw)
+        await status.edit_text("⏳ 判斷牌型...")
+        await status.edit_text("⏳ 判斷牌型...")
+        return raw
+
+    raw = asyncio.run(run_case())
+    assert_eq(len(raw.edits), 1, "identical status edit should be a no-op")
 
 
 @test
