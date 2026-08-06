@@ -1903,8 +1903,8 @@ def test_compact_format_shows_gto_for_later_decision_points():
     })
 
     compact = result["text_compact"]
-    turn_section = compact.split("─── Turn: 8♦️ ───", 1)[1].split("─── River:", 1)[0]
-    river_section = compact.split("─── River: Q♣️ ───", 1)[1]
+    turn_section = compact.split("─── Turn: 8🔷 ───", 1)[1].split("─── River:", 1)[0]
+    river_section = compact.split("─── River: Q☘️ ───", 1)[1]
 
     assert_in("→ Hero check", turn_section)
     assert_in("GTO: Call", turn_section,
@@ -2058,7 +2058,7 @@ def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
                   "compact label must not display the nearest solver bucket")
     assert_in("（無 solver 數據）", compact,
               "off-range facing-raise node should show no solver data")
-    river_section = compact.split("─── River: 4♣️ ───", 1)[1]
+    river_section = compact.split("─── River: 4☘️ ───", 1)[1]
     assert_not_in("GTO: Call 100%", river_section,
                   "must not use zero-range exact combo strategy row")
     assert_not_in("GTO: Fold 99%", river_section,
@@ -2151,7 +2151,7 @@ def test_h2915_turn_ends_after_hero_call_without_extra_no_solver_node():
         ],
     })
 
-    turn_section = result["text_compact"].split("─── Turn: K♣️ ───", 1)[1]
+    turn_section = result["text_compact"].split("─── Turn: K☘️ ───", 1)[1]
     assert_in("→ Hero call", turn_section, "turn call should still be shown")
     assert_not_in("（無 solver 數據）", turn_section,
                   "terminal turn call must not be followed by extra no-data node")

@@ -3,7 +3,7 @@
 ─── Preflop ───
 （無 solver 數據）
 
-─── Flop: 4♠️8♦️6♠️ ───
+─── Flop: 4♠️8🔷6♠️ ───
 🎯 高牌 (Q) + 後門花聽牌
 （無 solver 數據）
 
@@ -12,6 +12,6 @@
 （無 solver 數據）
 （無 solver 數據）
 
-─── River: J♣️ ───
+─── River: J☘️ ───
 🎯 順子 (Q-J-T-9-8)
 （無 solver 數據）

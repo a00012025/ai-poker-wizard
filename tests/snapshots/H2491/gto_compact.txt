@@ -3,12 +3,12 @@
 ─── Preflop ───
 GTO: RAISE 2（29% pot） 100%
 
-─── Flop: 6♣️Q♠️8♦️ ───
+─── Flop: 6☘️Q♠️8🔷 ───
 🎯 Ace high + 後門花聽牌
 GTO: Check 97%
 → Hero bet 33% pot ❌ (GTO建議 check)
 
-─── Turn: 6♦️ ───
+─── Turn: 6🔷 ───
 🎯 Ace high + 堅果花聽牌
 GTO: 此手牌 0% 到達此節點
 → Hero check ⚪（off-tree:此線無 solver 對照,非對錯判定）

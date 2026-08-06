@@ -18,28 +18,28 @@ Hero: CO ATs
     RAISE 2（29% pot）: 100.0%（4.0 combos） EV 1.72bb
 
 ==================================================
-【Flop: 6♣️Q♠️8♦️】
+【Flop: 6☘️Q♠️8🔷】
 Hero ATs 牌型: Ace high + 後門花聽牌
-【CO 在 Flop Q♠️8♦️6♣️】底池 6.000bb
+【CO 在 Flop Q♠️8🔷6☘️】底池 6.000bb
   Check: 47.8%（106 combos）
   BET 1.2（20% pot）: 19.4%（43 combos）
   BET 2（33% pot）: 25.1%（56 combos）
   BET 3.3（55% pot）: 7.7%（17 combos）
 
-【CO A♦️T♦️（ATs）】
+【CO A🔷T🔷（ATs）】
   策略: Check 97%, Bet 1.2（20% pot） 3%（EV 2.61bb）
   ATs 其他花色:
     A♠️T♠️: Check 91%, Bet 1.2（20% pot） 8%（EV 2.7bb）
-    A♣️T♣️: Check 93%, Bet 1.2（20% pot） 6%（EV 2.6bb）
+    A☘️T☘️: Check 93%, Bet 1.2（20% pot） 6%（EV 2.6bb）
     A♥️T♥️: Check 96%, Bet 1.2（20% pot） 4%（EV 2.1bb）
 ⚠ EV 損失 0.06bb（Bet 2（33% pot） 2.55bb vs Check 2.61bb）
   → 實際行動: CO R2 2.0bb（solver code: R2）
 
 
 ==================================================
-【Turn: 6♦️（Board: 6♣️Q♠️8♦️6♦️）】
+【Turn: 6🔷（Board: 6☘️Q♠️8🔷6🔷）】
 Hero ATs 牌型: Ace high + 堅果花聽牌
-【CO 在 Turn Q♠️8♦️6♣️6♦️】底池 10.000bb
+【CO 在 Turn Q♠️8🔷6☘️6🔷】底池 10.000bb
   Check: 30.7%（17 combos）
   BET 3.3（33% pot）: 38.9%（21 combos）
   BET 5.5（55% pot）: 30.4%（17 combos）
@@ -55,9 +55,9 @@ Hero ATs 牌型: Ace high + 堅果花聽牌
 
 
 ==================================================
-【River: 2♥️（Board: 6♣️Q♠️8♦️6♦️2♥️）】
+【River: 2♥️（Board: 6☘️Q♠️8🔷6🔷2♥️）】
 Hero ATs 牌型: Ace high
-【CO 在 River Q♠️8♦️6♣️6♦️2♥️】底池 13.500bb
+【CO 在 River Q♠️8🔷6☘️6🔷2♥️】底池 13.500bb
   Fold: 45.3%（8 combos）
   Call: 30.8%（5 combos）
   All-in 13.000: 23.9%（4 combos）

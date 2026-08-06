@@ -20,9 +20,9 @@ Hero: CO A4s
     All-in: 8.5%（0.3 combos） EV -0.00bb
 
 ==================================================
-【Flop: K♦️A♠️A♦️】
+【Flop: K🔷A♠️A🔷】
 Hero A4s 牌型: 三條 (A)
-【CO 在 Flop A♠️A♦️K♦️】底池 10.100bb
+【CO 在 Flop A♠️A🔷K🔷】底池 10.100bb
   Fold: 33.2%（11 combos）
   Call: 47.4%（16 combos）
   RAISE 8.1（33% pot）: 18.3%（6 combos）
@@ -31,14 +31,14 @@ Hero A4s 牌型: 三條 (A)
 【CO A♥️4♥️（A4s）】
   策略: Call 41%, RAISE 8.1（33% pot） 58%, All-in 2%（EV 8.43bb）
   A4s 其他花色:
-    A♣️4♣️: Call 41%, RAISE 8.1（33% pot） 58%, All-in 2%（EV 8.4bb）
+    A☘️4☘️: Call 41%, RAISE 8.1（33% pot） 58%, All-in 2%（EV 8.4bb）
   → 實際行動: CO C 3.7bb（solver code: C）
 
 
 ==================================================
-【Turn: 2♦️（Board: K♦️A♠️A♦️2♦️）】
+【Turn: 2🔷（Board: K🔷A♠️A🔷2🔷）】
 Hero A4s 牌型: 三條 (A)
-【CO 在 Turn A♠️A♦️K♦️2♦️】底池 18.200bb
+【CO 在 Turn A♠️A🔷K🔷2🔷】底池 18.200bb
   Fold: 22.9%（4 combos）
   Call: 38.2%（6 combos）
   All-in 11.400: 38.9%（6 combos）
@@ -46,21 +46,21 @@ Hero A4s 牌型: 三條 (A)
 【CO A♥️4♥️（A4s）】
   策略: Call 54%, All-in 46%（EV 8.50bb）
   A4s 其他花色:
-    A♣️4♣️: Call 54%, All-in 46%（EV 8.5bb）
+    A☘️4☘️: Call 54%, All-in 46%（EV 8.5bb）
   → 實際行動: CO C 5.5bb（solver code: C）
 
 
 ==================================================
-【River: 3♥️（Board: K♦️A♠️A♦️2♦️3♥️）】
+【River: 3♥️（Board: K🔷A♠️A🔷2🔷3♥️）】
 Hero A4s 牌型: 三條 (A)
-【CO 在 River A♠️A♦️K♦️2♦️3♥️】底池 29.600bb
+【CO 在 River A♠️A🔷K🔷2🔷3♥️】底池 29.600bb
   Fold: 24.2%（2 combos）
   Call: 75.8%（5 combos）
 
 【CO A♥️4♥️（A4s）】
   策略: Call 100%（EV 3.32bb）
   A4s 其他花色:
-    A♣️4♣️: Call 100%（EV 3.3bb）
+    A☘️4☘️: Call 100%（EV 3.3bb）
   → 實際行動: CO C 5.9bb（solver code: C）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

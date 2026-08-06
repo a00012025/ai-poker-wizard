@@ -11,14 +11,14 @@ Preflop actions 校正: R2-F-F-F-F-F-F-F-C → R2.3-F-F-F-F-F-F-F-C
 （無 solver 數據）
 
 ==================================================
-【Flop: 4♠️8♦️6♠️】
+【Flop: 4♠️8🔷6♠️】
 Hero Q9o 牌型: 高牌 (Q) + 後門花聽牌
 （無 solver 數據）
   → 實際行動: BB X（solver code: X）
 
 
 ==================================================
-【Turn: T♠️（Board: 4♠️8♦️6♠️T♠️）】
+【Turn: T♠️（Board: 4♠️8🔷6♠️T♠️）】
 Hero Q9o 牌型: 高牌 (Q) + 花聽牌 + 兩頭順聽牌
 （無 solver 數據）
   → 實際行動: BB X（solver code: X）
@@ -28,7 +28,7 @@ Hero Q9o 牌型: 高牌 (Q) + 花聽牌 + 兩頭順聽牌
 
 
 ==================================================
-【River: J♣️（Board: 4♠️8♦️6♠️T♠️J♣️）】
+【River: J☘️（Board: 4♠️8🔷6♠️T♠️J☘️）】
 Hero Q9o 牌型: 順子 (Q-J-T-9-8)
 （無 solver 數據）
   → 實際行動: BB R8.4 8.4bb（solver code: X）

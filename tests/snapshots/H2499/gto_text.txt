@@ -24,9 +24,9 @@ Preflop actions 校正: F-F-F-F-R2-F-R7-F-C → F-F-F-F-R2.2-F-R8.3-F-C
 
 
 ==================================================
-【Flop: K♦️A♣️4♥️】
+【Flop: K🔷A☘️4♥️】
 Hero AJo 牌型: 頂對 (A)
-【SB 在 Flop A♣️K♦️4♥️】底池 18.600bb
+【SB 在 Flop A☘️K🔷4♥️】底池 18.600bb
   Check: 36.0%（39 combos）
   BET 1.85（10% pot）: 24.3%（26 combos）
   BET 4.65（25% pot）: 4.2%（4 combos）
@@ -36,22 +36,22 @@ Hero AJo 牌型: 頂對 (A)
 【SB A♠️J♥️（AJo）】
   策略: Check 1%, Bet 1.85（10% pot） 3%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 94%（EV 20.15bb）
   AJo 其他花色:
-    A♥️J♦️: Check 1%, Bet 1.85（10% pot） 1%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 97%, Bet 13.95（75% pot） 1%（EV 20.2bb）
-    A♠️J♦️: Check 1%, Bet 1.85（10% pot） 2%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 96%, Bet 13.95（75% pot） 1%（EV 20.2bb）
-    A♦️J♥️: Check 5%, Bet 1.85（10% pot） 3%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 91%（EV 20.4bb）
-    A♥️J♣️: Check 10%, Bet 1.85（10% pot） 2%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 86%（EV 20.2bb）
-    A♠️J♣️: Check 11%, Bet 1.85（10% pot） 4%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 84%（EV 20.1bb）
-    A♦️J♣️: Check 16%, Bet 1.85（10% pot） 4%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 80%（EV 20.3bb）
+    A♥️J🔷: Check 1%, Bet 1.85（10% pot） 1%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 97%, Bet 13.95（75% pot） 1%（EV 20.2bb）
+    A♠️J🔷: Check 1%, Bet 1.85（10% pot） 2%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 96%, Bet 13.95（75% pot） 1%（EV 20.2bb）
+    A🔷J♥️: Check 5%, Bet 1.85（10% pot） 3%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 91%（EV 20.4bb）
+    A♥️J☘️: Check 10%, Bet 1.85（10% pot） 2%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 86%（EV 20.2bb）
+    A♠️J☘️: Check 11%, Bet 1.85（10% pot） 4%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 84%（EV 20.1bb）
+    A🔷J☘️: Check 16%, Bet 1.85（10% pot） 4%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 80%（EV 20.3bb）
     A♥️J♠️: Check 17%, Bet 1.85（10% pot） 6%, Bet 4.65（25% pot） 2%, Bet 9.3（50% pot） 75%（EV 20.1bb）
-    A♦️J♠️: Check 21%, Bet 1.85（10% pot） 9%, Bet 4.65（25% pot） 2%, Bet 9.3（50% pot） 68%（EV 20.2bb）
+    A🔷J♠️: Check 21%, Bet 1.85（10% pot） 9%, Bet 4.65（25% pot） 2%, Bet 9.3（50% pot） 68%（EV 20.2bb）
 ⚠ EV 損失 0.08bb（Bet 4.65（25% pot） 20.07bb vs Bet 9.3（50% pot） 20.15bb）
   → 實際行動: SB R4 4.0bb（solver code: R4.65）
 
 
 ==================================================
-【Turn: 8♦️（Board: K♦️A♣️4♥️8♦️）】
+【Turn: 8🔷（Board: K🔷A☘️4♥️8🔷）】
 Hero AJo 牌型: 頂對 (A)
-【SB 在 Turn A♣️K♦️4♥️8♦️】底池 27.900bb
+【SB 在 Turn A☘️K🔷4♥️8🔷】底池 27.900bb
   Check: 49.8%（2 combos）
   BET 2.8（10% pot）: 0.5%（0 combos）
   BET 7（25% pot）: 38.6%（2 combos）

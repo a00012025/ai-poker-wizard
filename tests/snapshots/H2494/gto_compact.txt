@@ -5,7 +5,7 @@
 ─── Preflop ───
 GTO: RAISE 2.3（37% pot） 100%
 
-─── Flop: K♣️9♦️3♦️ ───
+─── Flop: K☘️9🔷3🔷 ───
 🎯 Ace high + 後門花聽牌
 GTO: Bet 3.5（55% pot） 48% / Check 40% / Bet 2.1（33% pot） 10%
 → Hero bet 33% pot ✅ (GTO建議 bet 55% pot)
