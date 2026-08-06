@@ -3,7 +3,7 @@
 ─── Preflop ───
 GTO: Call 100%
 
-─── Flop: 9♠️Q♠️J♣️ ───
+─── Flop: 9♠️Q♠️J☘️ ───
 🎯 頂對 (Q)
 GTO: Check 100%
 → Hero check ✅

@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import re
 
-SUIT_EMOJI = {"c": "♣️", "d": "♦️", "h": "♥️", "s": "♠️"}
+# Use a four-colour deck at presentation boundaries. Telegram renders the
+# standard club and spade glyphs in the same dark colour, which makes them hard
+# to distinguish at the compact sizes used by reports. Shamrock and large blue
+# diamond preserve the familiar silhouettes while adding redundant colour.
+SUIT_EMOJI = {"c": "☘️", "d": "🔷", "h": "♥️", "s": "♠️"}
 _CARD_RE = re.compile(r"(?<![A-Za-z0-9])([2-9TJQKA])([cdhs])(?![A-Za-z0-9])", re.IGNORECASE)
 _CONCAT_CARDS_RE = re.compile(r"^(?:[2-9TJQKA][cdhs])+$", re.IGNORECASE)
 
 
 def card_to_emoji(card: str | None) -> str:
-    """Display one exact card: ``Ac`` -> ``A♣️``.
+    """Display one exact card: ``Ac`` -> ``A☘️``.
 
     Unknown/partial inputs pass through unchanged; this is display-only and
     deliberately not a parser.
@@ -29,7 +33,7 @@ def card_to_emoji(card: str | None) -> str:
 
 
 def cards_to_emoji(cards: str | None) -> str:
-    """Display concatenated exact cards: ``AcKdQs`` -> ``A♣️K♦️Q♠️``.
+    """Display concatenated exact cards: ``AcKdQs`` -> ``A☘️K🔷Q♠️``.
 
     Class hands (``T9s``, ``K2o``, ``AA``) and malformed values pass through.
     """
@@ -42,7 +46,7 @@ def cards_to_emoji(cards: str | None) -> str:
 def card_tokens_to_emoji(text: str | None) -> str:
     """Replace standalone ASCII exact-card tokens inside user-facing text.
 
-    Examples: ``"Board Ac Kd"`` -> ``"Board A♣️ K♦️"``.  Concatenated boards
+    Examples: ``"Board Ac Kd"`` -> ``"Board A☘️ K🔷"``.  Concatenated boards
     like ``AcKdQs`` should use :func:`cards_to_emoji` directly so we do not
     accidentally rewrite machine URL/query parameters embedded in prose.
     """

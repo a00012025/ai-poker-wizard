@@ -36,65 +36,65 @@ Preflop actions 校正: F-F-F-F-R2.2-F-F-R10-C → F-F-F-F-R2.3-F-F-R10.3-C
 
 
 ==================================================
-【Flop: K♠️2♦️Q♣️】
+【Flop: K♠️2🔷Q☘️】
 Hero KQo 牌型: 兩對 (K, Q)
-【CO 在 Flop K♠️Q♣️2♦️】底池 27.600bb
+【CO 在 Flop K♠️Q☘️2🔷】底池 27.600bb
   Fold: 16.7%（31 combos）
   Call: 81.6%（152 combos）
   RAISE 16.4（33% pot）: 1.7%（3 combos）
 
-【CO K♥️Q♦️（KQo）】
+【CO K♥️Q🔷（KQo）】
   策略: Call 95%, RAISE 16.4（33% pot） 5%（EV 36.92bb）
   KQo 其他花色:
-    K♣️Q♦️: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.1bb）
-    K♦️Q♠️: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.2bb）
-    K♦️Q♥️: Call 89%, RAISE 16.4（33% pot） 11%（EV 36.8bb）
-    K♣️Q♥️: Call 96%, RAISE 16.4（33% pot） 4%（EV 36.9bb）
-    K♣️Q♠️: Call 97%, RAISE 16.4（33% pot） 3%（EV 37.3bb）
+    K☘️Q🔷: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.1bb）
+    K🔷Q♠️: Call 89%, RAISE 16.4（33% pot） 11%（EV 37.2bb）
+    K🔷Q♥️: Call 89%, RAISE 16.4（33% pot） 11%（EV 36.8bb）
+    K☘️Q♥️: Call 96%, RAISE 16.4（33% pot） 4%（EV 36.9bb）
+    K☘️Q♠️: Call 97%, RAISE 16.4（33% pot） 3%（EV 37.3bb）
     K♥️Q♠️: Call 99%, RAISE 16.4（33% pot） 1%（EV 37.1bb）
   → 實際行動: CO C 7.5bb（solver code: C）
 
 
 ==================================================
-【Turn: 4♥️（Board: K♠️2♦️Q♣️4♥️）】
+【Turn: 4♥️（Board: K♠️2🔷Q☘️4♥️）】
 Hero KQo 牌型: 兩對 (K, Q)
-【CO 在 Turn K♠️Q♣️2♦️4♥️】底池 33.100bb
+【CO 在 Turn K♠️Q☘️2🔷4♥️】底池 33.100bb
   Check: 53.7%（81 combos）
   BET 3.3（10% pot）: 2.1%（3 combos）
   BET 8.3（25% pot）: 1.8%（3 combos）
   BET 16.55（50% pot）: 42.3%（64 combos）
   BET 24.8（75% pot）: 0.1%（0 combos）
 
-【CO K♥️Q♦️（KQo）】
+【CO K♥️Q🔷（KQo）】
   策略: Check 11%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 88%（EV 40.62bb）
   KQo 其他花色:
-    K♣️Q♠️: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
-    K♦️Q♠️: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
-    K♣️Q♦️: Check 2%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 97%（EV 40.4bb）
+    K☘️Q♠️: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
+    K🔷Q♠️: Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 98%（EV 40.9bb）
+    K☘️Q🔷: Check 2%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 97%（EV 40.4bb）
     K♥️Q♠️: Check 3%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 95%（EV 41.1bb）
-    K♣️Q♥️: Check 6%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 92%（EV 40.5bb）
-    K♦️Q♥️: Check 9%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 90%（EV 40.5bb）
+    K☘️Q♥️: Check 6%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 92%（EV 40.5bb）
+    K🔷Q♥️: Check 9%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 90%（EV 40.5bb）
 ⚠ EV 損失 0.01bb（Check 40.61bb vs Bet 16.55（50% pot） 40.62bb）
   → 實際行動: CO X（solver code: X）
 
 
 ==================================================
-【River: 4♣️（Board: K♠️2♦️Q♣️4♥️4♣️）】
+【River: 4☘️（Board: K♠️2🔷Q☘️4♥️4☘️）】
 Hero KQo 牌型: 兩對 (K, Q)
-【CO 在 River K♠️Q♣️2♦️4♥️4♣️】底池 33.100bb
+【CO 在 River K♠️Q☘️2🔷4♥️4☘️】底池 33.100bb
   Check: 53.0%（43 combos）
   BET 12（36% pot）: 0.7%（1 combos）
   BET 20.5（62% pot）: 11.3%（9 combos）
   BET 29（88% pot）: 22.6%（18 combos）
   All-in 44.200: 12.4%（10 combos）
 
-【CO K♥️Q♦️（KQo）】
+【CO K♥️Q🔷（KQo）】
   策略: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.60bb）
   KQo 其他花色:
-    K♣️Q♦️: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.9bb）
+    K☘️Q🔷: Bet 20.5（62% pot） 31%, Bet 29（88% pot） 69%（EV 38.9bb）
     K♥️Q♠️: Bet 20.5（62% pot） 47%, Bet 29（88% pot） 53%（EV 38.6bb）
-    K♦️Q♥️: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.5bb）
-    K♣️Q♥️: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.6bb）
+    K🔷Q♥️: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.5bb）
+    K☘️Q♥️: Bet 20.5（62% pot） 96%, Bet 29（88% pot） 4%（EV 38.6bb）
   → 實際行動: CO R22.4 22.4bb（solver code: R20.5）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

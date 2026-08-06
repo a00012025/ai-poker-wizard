@@ -115,7 +115,7 @@ def test_session_review_postflop_bet_not_raise_with_size():
             "hero_pos": "HJ", "boards": "Qs9s8c"})
     finally:
         sr._load_detail = old_loader
-    assert_in("Flop Q♠️9♠️8♣️: BB Check", ctx["street_line"])
+    assert_in("Flop Q♠️9♠️8☘️: BB Check", ctx["street_line"])
     assert_eq(ctx["action_line"], "Bet 33%→應Check")
 
 
@@ -159,7 +159,7 @@ def test_session_review_turn_first_to_act_keeps_turn_card_and_action_line():
     finally:
         sr._load_detail = old_loader
     assert_eq(ctx["street_lines"], [
-        "Flop 6♠️5♦️4♥️: Hero Check, LP Bet 33%, Hero Call",
+        "Flop 6♠️5🔷4♥️: Hero Check, LP Bet 33%, Hero Call",
         "Turn 5♥️: Hero 首動",
     ])
     assert_eq(ctx["action_line"], "Raise→應Check")

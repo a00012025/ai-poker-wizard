@@ -18,9 +18,9 @@ Hero: HJ ATs
     RAISE 2.3（37% pot）: 100.0%（4.0 combos） EV 1.01bb
 
 ==================================================
-【Flop: K♣️9♦️3♦️】
+【Flop: K☘️9🔷3🔷】
 Hero ATs 牌型: Ace high + 後門花聽牌
-【HJ 在 Flop K♣️9♦️3♦️】底池 6.400bb
+【HJ 在 Flop K☘️9🔷3🔷】底池 6.400bb
   Check: 50.5%（176 combos）
   BET 1.3（20% pot）: 0.8%（3 combos）
   BET 2.1（33% pot）: 18.9%（66 combos）
@@ -28,29 +28,29 @@ Hero ATs 牌型: Ace high + 後門花聽牌
   BET 5.3（83% pot）: 1.3%（5 combos）
   BET 8（125% pot）: 0.1%（1 combos）
 
-【HJ A♣️T♣️（ATs）】
+【HJ A☘️T☘️（ATs）】
   策略: Check 40%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 10%, Bet 3.5（55% pot） 48%, Bet 5.3（83% pot） 2%（EV 2.02bb）
   ATs 其他花色:
     A♥️T♥️: Check 33%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 35%, Bet 5.3（83% pot） 1%（EV 1.4bb）
     A♠️T♠️: Check 33%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 35%, Bet 5.3（83% pot） 1%（EV 1.4bb）
-    A♦️T♦️: Check 40%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 28%, Bet 5.3（83% pot） 1%（EV 6.4bb）
+    A🔷T🔷: Check 40%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 28%, Bet 5.3（83% pot） 1%（EV 6.4bb）
 ⚠ EV 損失 0.01bb（Bet 2.1（33% pot） 2.02bb vs Bet 5.3（83% pot） 2.03bb）
   → 實際行動: HJ R2.5 2.5bb（solver code: R2.1）
 
 
 ==================================================
-【Turn: J♠️（Board: K♣️9♦️3♦️J♠️）】
+【Turn: J♠️（Board: K☘️9🔷3🔷J♠️）】
 Hero ATs 牌型: Ace high + 卡順聽牌
-【HJ 在 Turn K♣️9♦️3♦️J♠️】底池 10.600bb
+【HJ 在 Turn K☘️9🔷3🔷J♠️】底池 10.600bb
   Check: 54.3%（34 combos）
   BET 3.5（33% pot）: 0.5%（0 combos）
   BET 5.85（55% pot）: 34.1%（21 combos）
   BET 8.8（83% pot）: 11.0%（7 combos）
 
-【HJ A♣️T♣️（ATs）】
+【HJ A☘️T☘️（ATs）】
   策略: Bet 5.85（55% pot） 41%, Bet 8.8（83% pot） 59%（EV 2.37bb）
   ATs 其他花色:
-    A♦️T♦️: Bet 3.5（33% pot） 2%, Bet 5.85（55% pot） 86%, Bet 8.8（83% pot） 12%（EV 5.9bb）
+    A🔷T🔷: Bet 3.5（33% pot） 2%, Bet 5.85（55% pot） 86%, Bet 8.8（83% pot） 12%（EV 5.9bb）
     A♥️T♥️: Check 23%, Bet 3.5（33% pot） 1%, Bet 5.85（55% pot） 32%, Bet 8.8（83% pot） 45%（EV 2.4bb）
     A♠️T♠️: Check 22%, Bet 5.85（55% pot） 37%, Bet 8.8（83% pot） 41%（EV 2.4bb）
 ⚠ EV 損失 0.01bb（Check 2.36bb vs Bet 8.8（83% pot） 2.37bb）
@@ -58,15 +58,15 @@ Hero ATs 牌型: Ace high + 卡順聽牌
 
 
 ==================================================
-【River: 5♥️（Board: K♣️9♦️3♦️J♠️5♥️）】
+【River: 5♥️（Board: K☘️9🔷3🔷J♠️5♥️）】
 Hero ATs 牌型: Ace high
-【HJ 在 River K♣️9♦️3♦️J♠️5♥️】底池 10.600bb
+【HJ 在 River K☘️9🔷3🔷J♠️5♥️】底池 10.600bb
   Check: 60.6%（20 combos）
   BET 6（57% pot）: 17.0%（6 combos）
   BET 8.5（80% pot）: 22.1%（7 combos）
   BET 16（151% pot）: 0.3%（0 combos）
 
-【HJ A♣️T♣️（ATs）】
+【HJ A☘️T☘️（ATs）】
   策略: Bet 6（57% pot） 64%, Bet 8.5（80% pot） 35%, Bet 16（151% pot） 1%（EV 0.60bb）
   ATs 其他花色:
     A♥️T♥️: Bet 6（57% pot） 1%, Bet 8.5（80% pot） 98%, Bet 16（151% pot） 1%（EV 0.8bb）

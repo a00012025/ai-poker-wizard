@@ -2991,15 +2991,15 @@ def test_queue_feed_review_and_manual_items():
     manual drill item (kind/added_by/source, ev may be 0)."""
     from datetime import datetime, timezone
     import queue_feed as qf
-    assert_eq(qf.pretty_hand("Qh8c"), "Q♥️8♣️")                   # suits -> glyphs
-    assert_eq(qf.pretty_hand("AsKd"), "A♠️K♦️")
+    assert_eq(qf.pretty_hand("Qh8c"), "Q♥️8☘️")                   # four-colour suits
+    assert_eq(qf.pretty_hand("AsKd"), "A♠️K🔷")
     assert_eq(qf.pretty_hand("T9s"), "T9s")                     # odd/non-exact passes through
     row = {"spot_category": "river", "spot_leaf": "river:SRP:SBvBB:OOP:[b-c|x-b-c]:vs_bet",
            "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP", "hero_pos": "SB",
            "hero_hand": "Qh8c", "max_ev": 22.7, "approx_flags": ["chipev_grading"],
            "played_at": datetime(2026, 6, 1, 3, 0, tzinfo=timezone.utc), "ref_hand_id": "abc"}
     lbl = qf.review_label(row)
-    assert_true(lbl.startswith("復盤 6/1 Q♥️8♣️ "))                # exact combo in the label
+    assert_true(lbl.startswith("復盤 6/1 Q♥️8☘️ "))                # exact combo in the label
     assert_in("−22.7bb", lbl)
     assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
     assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))
@@ -3010,7 +3010,7 @@ def test_queue_feed_review_and_manual_items():
     assert_true(qf.review_url({"ref_hand_id": "x"}) is None)   # no played_at -> no link
     # Normalized UTC storage must render GTOW/Taipei date, not raw UTC or +8h double-shift.
     evening = dict(row, played_at=datetime(2026, 7, 22, 11, 35, tzinfo=timezone.utc))
-    assert_true(qf.review_label(evening).startswith("復盤 7/22 Q♥️8♣️ "))
+    assert_true(qf.review_label(evening).startswith("復盤 7/22 Q♥️8☘️ "))
     assert_in("2026-07-22", qf.review_url(evening))
     assert_not_in("2026-07-23", qf.review_url(evening))
     dec = {"gtow_hand_id": "h9", "street": "flop", "decision_idx": 1, "spot_category": "flop",
@@ -4360,7 +4360,7 @@ def live_report_displays_hand_classes_without_exact_suits():
     html, _prev, _next = live_flow.render_session_page(result, 0)
     assert_in("<b>Hand 1</b> · CO 55", html)
     assert_in("<b>Hand 2</b> · CO K8s", html)
-    assert_not_in("5♣️5♥️", html)
+    assert_not_in("5☘️5♥️", html)
     assert_not_in("K♥️8♥️", html)
 
 
