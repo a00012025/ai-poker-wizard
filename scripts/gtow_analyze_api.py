@@ -50,6 +50,10 @@ LIST_FIELDS = [
 ]
 
 
+class InvalidHandActionsError(RuntimeError):
+    """GTOW retained a hand in Analyze, but permanently rejects its action log."""
+
+
 def get_client_id(path: Path | str = _CLIENT_ID_PATH) -> str:
     p = Path(path)
     if p.exists():
@@ -149,6 +153,17 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
             continue
         if r.status_code in soft_statuses:
             return None
+        if r.status_code == 400:
+            try:
+                payload = r.json()
+            except (ValueError, TypeError):
+                payload = None
+            if (isinstance(payload, dict)
+                    and payload.get("code") == "VALIDATION_ERROR"
+                    and payload.get("detail") == "Incorrect actions"):
+                raise InvalidHandActionsError(
+                    f"GTOW Analyze rejected hand actions for {url}"
+                )
         if r.status_code >= 400:
             raise RuntimeError(f"GTOW Analyze API {r.status_code} for {url}: {r.content[:300]!r}")
         return r.json()

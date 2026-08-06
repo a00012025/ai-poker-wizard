@@ -178,6 +178,7 @@ _LIST_ONLY_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_LIST_ONLY_PROGRESS_EVERY"
 _DETAIL_PREP_PROGRESS_EVERY = max(1, int(os.getenv("GTOW_DETAIL_PREP_PROGRESS_EVERY", "100")))
 _LIST_ONLY_BATCH = max(1, int(os.getenv("GTOW_LIST_ONLY_BATCH", "200")))
 _INCREMENTAL_OVERLAP_HOURS = max(0.0, float(os.getenv("GTOW_INCREMENTAL_OVERLAP_HOURS", "12")))
+_INVALID_ACTIONS = object()
 
 
 def _perf(event: str, **fields) -> None:
@@ -200,8 +201,9 @@ async def _fetch_details_concurrent(hids: list[str], on_progress=None,
                                     ) -> dict:
     """Fetch hand details for `hids` concurrently under a semaphore + a shared
     min-interval pacer (threads run the blocking client via asyncio.to_thread).
-    Returns {hid: detail_or_None}. Backoff/soft-status handling stays in the
-    client; None means skip-and-retry-later (upload not ready / forbidden)."""
+    Returns {hid: detail_or_None_or_invalid_sentinel}. Backoff/soft-status
+    handling stays in the client; None means skip-and-retry-later (upload not
+    ready / forbidden), while invalid actions are a permanent per-hand skip."""
     sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
     pace_lock = asyncio.Lock()
     next_slot = [time.monotonic()]
@@ -223,8 +225,11 @@ async def _fetch_details_concurrent(hids: list[str], on_progress=None,
                 next_slot[0] = max(now, next_slot[0]) + _DETAIL_MIN_INTERVAL
             if wait:
                 await asyncio.sleep(wait)
-            results[hid] = await asyncio.to_thread(gapi.hand_detail, hid,
-                                                   throttle=False)
+            try:
+                results[hid] = await asyncio.to_thread(
+                    gapi.hand_detail, hid, throttle=False)
+            except gapi.InvalidHandActionsError:
+                results[hid] = _INVALID_ACTIONS
         done[0] += 1
         if on_progress and (_done_base + done[0]) % _DETAIL_PROGRESS_EVERY == 0:
             on_progress(_done_base + done[0], total)
@@ -312,7 +317,7 @@ async def incremental_since(conn) -> str:
 
 
 async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = False
-                       ) -> tuple[int, int, int, int]:
+                       ) -> tuple[int, int, int, int, int]:
     started = time.monotonic()
     status = "skipped_zeroloss" if backfill_skipped else "pending"
     pending_started = time.monotonic()
@@ -323,7 +328,8 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
     load_started = time.monotonic()
     list_rows = _load_list_rows(rows)
     load_list_rows_s = time.monotonic() - load_started
-    fetched = ndec = skipped_nodata = skipped_zeroloss = reconstruct_fallback = 0
+    fetched = ndec = skipped_nodata = skipped_zeroloss = skipped_invalid = 0
+    reconstruct_fallback = 0
     # Pass 1 (serial, fast): handle list-only zero-loss hands inline and collect
     # the ones that actually need a network detail fetch. `limit` caps fetch
     # attempts this run (dev/smoke); list-only hands never count against it.
@@ -411,9 +417,14 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
         hand_updates: list[tuple[str, str]] = []
         all_decs: list[dict] = []
         fetched_hids: list[str] = []
+        invalid_hids: list[str] = []
         write_started = time.monotonic()
         for hid, dp, list_row in chunk:
             det = dets.get(hid)
+            if det is _INVALID_ACTIONS:
+                invalid_hids.append(hid)
+                skipped_invalid += 1
+                continue
             if det is None:
                 # no retrievable analysis yet (upload still processing /
                 # forbidden / no solution) — leave detail_fetched=false so a
@@ -432,31 +443,45 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
             written_in_chunk += 1
             if written_in_chunk % _WRITE_PROGRESS_EVERY == 0:
                 print(f"  detail write: {start + written_in_chunk}/{total_detail}", flush=True)
-        if fetched_hids:
+        if fetched_hids or invalid_hids:
             async with conn.transaction():
-                await upsert_hands_batch(conn, hand_rows)
-                await conn.execute(
-                    "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
-                    fetched_hids)
-                await upsert_decisions(conn, all_decs)
-                await conn.executemany(
-                    "UPDATE ledger_hands SET detail_fetched=true, "
-                    "detail_status='fetched', raw_path=$2 WHERE gtow_hand_id=$1",
-                    hand_updates)
+                if fetched_hids:
+                    await upsert_hands_batch(conn, hand_rows)
+                    await conn.execute(
+                        "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
+                        fetched_hids)
+                    await upsert_decisions(conn, all_decs)
+                    await conn.executemany(
+                        "UPDATE ledger_hands SET detail_fetched=true, "
+                        "detail_status='fetched', raw_path=$2 WHERE gtow_hand_id=$1",
+                        hand_updates)
+                if invalid_hids:
+                    await conn.execute(
+                        "DELETE FROM ledger_decisions WHERE gtow_hand_id = ANY($1::text[])",
+                        invalid_hids)
+                    await conn.execute(
+                        "UPDATE ledger_hands SET detail_fetched=false, "
+                        "detail_status='skipped_invalid_actions', raw_path=NULL "
+                        "WHERE gtow_hand_id = ANY($1::text[])",
+                        invalid_hids)
         detail_write_s += time.monotonic() - write_started
     if total_detail:
         print(f"  detail sweep: {total_detail}/{total_detail}", flush=True)
     if skipped_nodata:
         print(f"  detail sweep: skipped {skipped_nodata} hands with no retrievable "
               f"analysis yet (will retry next run)", flush=True)
+    if skipped_invalid:
+        print(f"  detail sweep: skipped {skipped_invalid} hands permanently rejected "
+              f"by GTOW as incorrect actions", flush=True)
     _perf("detail", elapsed_s=time.monotonic() - started,
           pending_query_s=pending_query_s, load_list_rows_s=load_list_rows_s,
           prep_s=prep_s, zero_write_s=zero_write_s, fetch_s=fetch_s,
           detail_write_s=detail_write_s, pending=len(rows),
           needs_detail=total_detail, fetched=fetched,
           skipped_nodata=skipped_nodata, skipped_zeroloss=skipped_zeroloss,
+          skipped_invalid=skipped_invalid,
           reconstruct_fallback=reconstruct_fallback, decisions=ndec)
-    return fetched, ndec, skipped_zeroloss, reconstruct_fallback
+    return fetched, ndec, skipped_zeroloss, reconstruct_fallback, skipped_invalid
 
 
 def _find_list_row(list_path: Path, hand_id: str) -> dict:
@@ -529,19 +554,21 @@ async def amain() -> int:
             return await verify(conn)
         if a.backfill_skipped:
             n_new = n_known = 0
-            n_det, n_dec, n_zero, n_fallback = await sweep_detail(
+            n_det, n_dec, n_zero, n_fallback, n_invalid = await sweep_detail(
                 conn, a.limit, backfill_skipped=True)
             print(f"INGEST list={n_new} detail={n_det} decisions={n_dec} known={n_known} "
-                  f"skipped_zeroloss={n_zero} reconstruct_fallback={n_fallback}")
+                  f"skipped_zeroloss={n_zero} skipped_invalid={n_invalid} "
+                  f"reconstruct_fallback={n_fallback}")
             return 0
         if a.incremental:
             since = await incremental_since(conn)
         else:
             since = f"{a.since}T00:00:00.000Z" if "T" not in a.since else a.since
         n_new, n_known = await sweep_list(conn, since)
-        n_det, n_dec, n_zero, n_fallback = await sweep_detail(conn, a.limit)
+        n_det, n_dec, n_zero, n_fallback, n_invalid = await sweep_detail(conn, a.limit)
         print(f"INGEST list={n_new} detail={n_det} decisions={n_dec} known={n_known} "
-              f"skipped_zeroloss={n_zero} reconstruct_fallback={n_fallback}")
+              f"skipped_zeroloss={n_zero} skipped_invalid={n_invalid} "
+              f"reconstruct_fallback={n_fallback}")
         return 0
     finally:
         await conn.close()

@@ -268,6 +268,8 @@ def _format_summary(summary: str) -> str:
     ]
     if counts.get("skipped_zeroloss"):
         lines.append(f"• 零損失摘要建檔：{counts['skipped_zeroloss']:,}")
+    if counts.get("skipped_invalid"):
+        lines.append(f"• GTOW 動作資料異常，已隔離：{counts['skipped_invalid']:,}")
     return "\n".join(lines)
 
 
