@@ -86,6 +86,42 @@ def test_analyze_api_hand_detail_soft_404_returns_none():
 
 
 @test
+def test_analyze_api_incorrect_actions_is_typed_but_other_400_is_fatal():
+    """Only GTOW's exact permanent per-hand validation failure is typed so a
+    detail sweep can isolate that hand; unrelated 400s must remain fatal."""
+    import gtow_analyze_api as gapi
+
+    def response(body):
+        def fake_request(method, url, **kw):
+            class R:
+                status_code = 400
+                content = json.dumps(body).encode()
+                def json(self): return body
+            return R()
+        return fake_request
+
+    try:
+        gapi.hand_detail(
+            "invalid-actions",
+            request_fn=response({"code": "VALIDATION_ERROR", "detail": "Incorrect actions"}),
+        )
+        assert_true(False, "expected typed invalid-actions error")
+    except gapi.InvalidHandActionsError:
+        pass
+
+    try:
+        gapi.hand_detail(
+            "other-bad-request",
+            request_fn=response({"code": "VALIDATION_ERROR", "detail": "Bad filter"}),
+        )
+        assert_true(False, "other 400 responses must remain fatal")
+    except gapi.InvalidHandActionsError:
+        assert_true(False, "unrelated 400 was misclassified")
+    except RuntimeError:
+        pass
+
+
+@test
 def test_analyze_api_client_id_persisted():
     import gtow_analyze_api as gapi, os, uuid as _uuid
     p = "/tmp/_test_gtow_client_id"
@@ -296,6 +332,10 @@ def test_ingest_detail_status_contract_and_backfill_mode_are_wired():
     assert_in("backfill_skipped", source)
     assert_in("detail_status='fetched'", source)
     assert_in("detail_status='skipped_zeroloss'", source)
+    invalid_migration = (REPO_ROOT / "supabase" / "migrations" /
+                         "20260806090000_ledger_invalid_actions_status.sql").read_text()
+    assert_in("skipped_invalid_actions", invalid_migration)
+    assert_in("detail_status='skipped_invalid_actions'", source)
 
 
 @test
@@ -323,6 +363,8 @@ def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
         _time.sleep(0.03)
         with lock:
             inflight[0] -= 1
+        if hid == "invalid-actions":
+            raise gapi.InvalidHandActionsError("incorrect actions")
         return None if hid == "nodata" else {"id": hid}
 
     orig = gapi.hand_detail
@@ -331,15 +373,17 @@ def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
     ledger_ingest._DETAIL_CONCURRENCY = 4
     ledger_ingest._DETAIL_MIN_INTERVAL = 0.0
     try:
-        hids = [f"h{i}" for i in range(12)] + ["nodata"]
+        hids = [f"h{i}" for i in range(12)] + ["nodata", "invalid-actions"]
         res = asyncio.run(ledger_ingest._fetch_details_concurrent(hids))
     finally:
         gapi.hand_detail = orig
         ledger_ingest._DETAIL_CONCURRENCY = oc
         ledger_ingest._DETAIL_MIN_INTERVAL = oi
 
-    assert_eq(len(res), 13, "every hand mapped")
+    assert_eq(len(res), 14, "every hand mapped")
     assert_eq(res["nodata"], None, "soft-skip surfaces as None")
+    assert_true(res["invalid-actions"] is ledger_ingest._INVALID_ACTIONS,
+                "permanent invalid hand is isolated without cancelling the batch")
     assert_eq(res["h0"], {"id": "h0"}, "detail mapped by hid")
     assert_true(peak[0] > 1, f"fetches overlapped (peak={peak[0]})")
     assert_true(peak[0] <= 4, f"capped at concurrency (peak={peak[0]})")
@@ -2011,7 +2055,7 @@ def test_ingest_runner_surfaces_only_useful_summary_counts():
     from src import ingest_runner
 
     summary = ("INGEST list=12 detail=1 decisions=14 known=8 "
-               "skipped_zeroloss=10 reconstruct_fallback=1")
+               "skipped_zeroloss=10 skipped_invalid=1 reconstruct_fallback=1")
     fake_run, _ = _fake_ingest_env([
         (lambda a, c: "--verify" in a, (0, "VERIFY OK api=20 db=20")),
         (lambda a, c: "--incremental" in a, (0, summary)),
@@ -2030,6 +2074,7 @@ def test_ingest_runner_surfaces_only_useful_summary_counts():
     assert_in("決策紀錄：14", result)
     assert_not_in("已在資料庫", result)
     assert_in("零損失摘要建檔：10", result)
+    assert_in("GTOW 動作資料異常，已隔離：1", result)
     assert_not_in("摘要不足", result)
 
 
