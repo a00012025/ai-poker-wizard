@@ -5,7 +5,11 @@ invariants that live in the message shape: EV-weighted single-session facts,
 no trend verdict / no percentile, deliberate per-item enqueue (no 全部排入),
 and Telegram-safe callback_data.
 """
+import asyncio
+import inspect
+import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from regression_tests.harness import assert_eq, assert_in, assert_not_in, assert_true, test
@@ -280,6 +284,171 @@ def test_session_review_callback_key_survives_session_id_rebuild():
     assert_true(callbacks, "session review has enqueue callbacks")
     assert_true(all(":42:" not in cb for cb in callbacks),
                 f"volatile session id leaked into callbacks: {callbacks}")
+
+
+@test
+def test_recent_online_sessions_are_newest_first_and_bounded():
+    class Conn:
+        async def fetch(self, sql, *args):
+            assert_in("FROM ledger_sessions", sql)
+            assert_in("ORDER BY ended_at DESC", sql)
+            assert_in("LIMIT $1", sql)
+            assert_eq(args, (8,))
+            return [{
+                "id": 42,
+                "started_at": datetime(2026, 7, 14, 12, 14, tzinfo=timezone.utc),
+                "ended_at": datetime(2026, 7, 14, 15, 47, tzinfo=timezone.utc),
+                "duration_min": 213,
+                "tournaments": ["t1", "t2"],
+                "max_concurrent_tables": 2,
+                "hands_count": 283,
+            }]
+
+    sessions = asyncio.run(sr.list_recent_sessions(Conn(), 8))
+    assert_eq(len(sessions), 1)
+    assert_eq(sessions[0]["id"], 42)
+    assert_eq(sessions[0]["hands_count"], 283)
+
+
+@test
+def test_recent_online_sessions_payload_uses_stable_resend_keys():
+    from telegram_bot.bot import _recent_online_sessions_payload
+
+    session = {
+        "id": 42,
+        "started_at": datetime(2026, 7, 14, 12, 14, tzinfo=timezone.utc),
+        "ended_at": datetime(2026, 7, 14, 15, 47, tzinfo=timezone.utc),
+        "duration_min": 213,
+        "tournaments": ["t1", "t2"],
+        "max_concurrent_tables": 2,
+        "hands_count": 283,
+    }
+    html, buttons = _recent_online_sessions_payload([session])
+    stable_key = sr.session_callback_key(session)
+
+    assert_in("最近線上 Sessions", html)
+    assert_in("7/14 20:14–23:47", html)
+    assert_in("283 手", html)
+    assert_in("2 桌", html)
+    assert_eq(buttons[0][0]["callback_data"], f"ors:{stable_key}")
+    assert_not_in(":42", buttons[0][0]["callback_data"])
+
+
+@test
+def test_online_sessions_command_lists_resend_buttons():
+    from telegram_bot.bot import PokerWizardBot
+
+    class Pool:
+        async def fetch(self, _sql, *_args):
+            return [{
+                "id": 42,
+                "started_at": datetime(2026, 7, 14, 12, 14,
+                                       tzinfo=timezone.utc),
+                "ended_at": datetime(2026, 7, 14, 15, 47,
+                                     tzinfo=timezone.utc),
+                "duration_min": 213,
+                "tournaments": ["t1", "t2"],
+                "max_concurrent_tables": 2,
+                "hands_count": 283,
+            }]
+
+    class Message:
+        text = "/sessions"
+        sent = []
+
+        async def reply_text(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    bot = object.__new__(PokerWizardBot)
+    bot.admin_chat_id = 556028753
+    bot.db = SimpleNamespace(pool=Pool())
+    bot.log = logging.getLogger("test-online-sessions-command")
+    bot._user_label = lambda _update: "owner"
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=556028753),
+        effective_chat=SimpleNamespace(id=99),
+        message=Message(),
+    )
+    asyncio.run(bot.online_sessions_command(update, SimpleNamespace()))
+
+    html = update.message.sent[0][0][0]
+    assert_in("最近線上 Sessions", html)
+    assert_in("283 手", html)
+    markup = update.message.sent[0][1]["reply_markup"].to_dict()
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert_true(any(b.get("callback_data", "").startswith("ors:")
+                    for b in buttons))
+
+
+@test
+def test_online_sessions_command_and_resend_callback_are_registered():
+    from src.telegram_bot.bot import PokerWizardBot
+
+    handlers = inspect.getsource(PokerWizardBot.setup_handlers)
+    assert_in('["sessions", "online_sessions"]', handlers)
+    assert_in("|ors|", handlers)
+    menu = (sr.ROOT / "src/main_gemini.py").read_text()
+    assert_in('BotCommand("sessions", "最近線上 sessions／重傳復盤")', menu)
+
+
+@test
+def test_recent_online_session_button_sends_fresh_summary():
+    from telegram_bot.bot import PokerWizardBot
+
+    session = {
+        "id": 42,
+        "started_at": datetime(2026, 7, 14, 12, 14, tzinfo=timezone.utc),
+        "ended_at": datetime(2026, 7, 14, 15, 47, tzinfo=timezone.utc),
+        "duration_min": 213,
+        "tournaments": ["t1"],
+        "max_concurrent_tables": 1,
+        "hands_count": 283,
+    }
+    data = _sample()
+    stable_key = sr.session_callback_key(session)
+    captured = {}
+
+    async def fake_resolve(_conn, key):
+        assert_eq(key, stable_key)
+        return session
+
+    async def fake_compute(_conn, resolved):
+        assert_eq(resolved, session)
+        return data
+
+    class Query:
+        data = f"ors:{stable_key}"
+        answers = []
+
+        async def answer(self, text=None):
+            self.answers.append(text)
+
+    class TgBot:
+        async def send_message(self, *args, **kwargs):
+            captured["send"] = (args, kwargs)
+
+    old_resolve, old_compute = sr.resolve_session_key, sr.compute
+    sr.resolve_session_key, sr.compute = fake_resolve, fake_compute
+    try:
+        bot = object.__new__(PokerWizardBot)
+        bot.admin_chat_id = 556028753
+        bot.db = SimpleNamespace(pool=object())
+        bot.log = logging.getLogger("test-online-session-resend")
+        context = SimpleNamespace(
+            bot=TgBot(), application=SimpleNamespace(bot_data={}))
+        update = SimpleNamespace(
+            callback_query=Query(),
+            effective_user=SimpleNamespace(id=556028753),
+            effective_chat=SimpleNamespace(id=99),
+        )
+        asyncio.run(bot.handle_live_button(update, context))
+    finally:
+        sr.resolve_session_key, sr.compute = old_resolve, old_compute
+
+    assert_eq(update.callback_query.answers, [None])
+    assert_eq(captured["send"][0][0], 99)
+    assert_in("這場復盤", captured["send"][0][1])
+    assert_true(stable_key in context.application.bot_data["srev"])
 
 
 @test
