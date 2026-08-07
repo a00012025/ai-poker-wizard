@@ -57,6 +57,7 @@ MTT 短期結果的雜訊太大，因此系統用以下指標導航：
 ### 4. 從漏洞產生訓練處方
 
 - `/review`：復盤最近 online session 最昂貴的決策。
+- `/sessions`：查看近期 online sessions，點選後重新產生該場復盤。
 - `/queue`：管理待練 drill 與待看的重大牌局，並可追溯到來源牌局。
 - `/plan`：查看本週訓練計畫；每週日自動挑選新鮮焦點。
 - 精確建立或重用 GTOW Drill，固定對應的 action line、位置與 stack scope。
@@ -158,6 +159,7 @@ AhQhJh x b1.2 c
 | `/ingest` | 增量攝取 GTOW Analyze hands |
 | `/fullingest` | 確認後重掃 ledger epoch（2026-03）以來的完整歷史 |
 | `/review [session_id]` | 復盤最近或指定 online session |
+| `/sessions` | 查看近期 online sessions 並重傳復盤 |
 | `/live` | 匯入線下 shorthand hands |
 | `/lives` | 查看最近線下 sessions |
 | `/queue` | 查看 drill／復盤工作清單 |

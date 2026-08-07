@@ -54,6 +54,8 @@ _SESSION_BY_KEY_SQL = _LATEST_SESSION_SQL.replace(
     "WHERE abs(extract(epoch from started_at)::bigint - $1) <= 1 "
     "  AND abs(extract(epoch from ended_at)::bigint - $2) <= 1 "
     "ORDER BY ended_at DESC LIMIT 1")
+_RECENT_SESSIONS_SQL = _LATEST_SESSION_SQL.replace(
+    "ORDER BY ended_at DESC LIMIT 1", "ORDER BY ended_at DESC LIMIT $1")
 
 _OVERVIEW_SQL = f"""
 SELECT count(*) n,
@@ -118,6 +120,18 @@ async def resolve_session(conn, session_id: int | None = None) -> dict | None:
     row = (await conn.fetchrow(_SESSION_BY_ID_SQL, session_id) if session_id
            else await conn.fetchrow(_LATEST_SESSION_SQL))
     return dict(row) if row else None
+
+
+async def list_recent_sessions(conn, limit: int = 8) -> list[dict]:
+    """Return recent reconstructed online sessions, newest first.
+
+    ``ledger_sessions`` is rebuilt exclusively from ``ledger_hands`` rows with
+    ``source='online'``.  Keep the list bounded because each button is only an
+    index into the existing session-review surface, not a new report feed.
+    """
+    limit = max(1, min(int(limit), 20))
+    rows = await conn.fetch(_RECENT_SESSIONS_SQL, limit)
+    return [dict(row) for row in rows]
 
 
 _B36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"

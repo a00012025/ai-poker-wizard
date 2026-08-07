@@ -37,6 +37,7 @@ MAX_MESSAGE_LENGTH = 4096
 QUEUE_PAGE_SIZE = 10
 QUEUE_SOURCE_PAGE_SIZE = 8
 LIVE_SESSION_LIST_LIMIT = 8
+ONLINE_SESSION_LIST_LIMIT = 8
 
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 
@@ -164,6 +165,31 @@ def _recent_live_sessions_payload(sessions: list[dict]
         buttons.append([{
             "text": f"↩ {i}　{stamp}（{hands} 手）",
             "callback_data": f"lvs:{session['id']}",
+        }])
+    return "\n".join(lines), buttons
+
+
+def _recent_online_sessions_payload(sessions: list[dict]
+                                    ) -> tuple[str, list[list[dict]]]:
+    """Render recent online ledger sessions with stable summary callbacks."""
+    if not sessions:
+        return ("♠️ 還沒有線上 session — 先用 ♠ 同步手牌或 /ingest。", [])
+
+    from html import escape as _esc
+    from session_review import _session_span, session_callback_key
+
+    lines = ["♠️ <b>最近線上 Sessions</b>",
+             "點按鈕可重新產生並傳送該場復盤 summary。", ""]
+    buttons: list[list[dict]] = []
+    for i, session in enumerate(sessions, 1):
+        span = _session_span(session["started_at"], session["ended_at"])
+        hands = int(session.get("hands_count") or 0)
+        tables = int(session.get("max_concurrent_tables") or 1)
+        lines.append(
+            f"{i}. <b>{_esc(span)}</b> · {hands} 手 · 最多 {tables} 桌")
+        buttons.append([{
+            "text": f"↩ {i}　{span}（{hands} 手）",
+            "callback_data": f"ors:{session_callback_key(session)}",
         }])
     return "\n".join(lines), buttons
 
@@ -1799,6 +1825,23 @@ class PokerWizardBot:
             html, parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(buttons))
 
+    async def online_sessions_command(self, update: Update,
+                                      context: ContextTypes.DEFAULT_TYPE):
+        """/sessions — owner-only: list recent online sessions for review resend."""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("Database not connected.")
+            return
+        self.log.info(f"[{self._user_label(update)}] /sessions")
+        from session_review import list_recent_sessions
+        sessions = await list_recent_sessions(
+            self.db.pool, ONLINE_SESSION_LIST_LIMIT)
+        html, buttons = _recent_online_sessions_payload(sessions)
+        await update.message.reply_text(
+            html, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons))
+
     async def _process_live_batch(self, update: Update, text: str):
         """Run scripts/live_flow.py on the batch, reply with the deviation
         report + [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
@@ -2251,20 +2294,26 @@ class PokerWizardBot:
             return
         parts = (update.message.text or "").split()
         sid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        from session_review import compute, render_tg, resolve_session, session_callback_key
+        from session_review import resolve_session
         session = await resolve_session(self.db.pool, sid)
         if not session:
             await update.message.reply_text(
                 "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。")
             return
+        out = await self._online_session_review_payload(context, session)
+        await update.message.reply_text(
+            out["html"], parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(out["buttons"]))
+
+    async def _online_session_review_payload(self, context, session: dict) -> dict:
+        """Compute/cache/render one online session for /review and /sessions."""
+        from session_review import compute, render_tg, session_callback_key
+
         data = await compute(self.db.pool, session)
         cache = context.application.bot_data.setdefault("srev", {})
         cache[data["session_id"]] = data
         cache[session_callback_key(data)] = data
-        out = render_tg(data)
-        await update.message.reply_text(
-            out["html"], parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(out["buttons"]))
+        return render_tg(data)
 
     async def _session_review_enqueue(self, update: Update,
                                       context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2460,6 +2509,22 @@ class PokerWizardBot:
                 reply_markup=markup)
             async with self.db.pool.acquire() as conn:
                 await set_session_message(conn, session["id"], sent.message_id)
+            return
+
+        if data.startswith("ors:"):
+            from session_review import resolve_session_key
+
+            _, stable_key = data.split(":", 1)
+            session = await resolve_session_key(self.db.pool, stable_key)
+            if not session:
+                await query.answer("找不到這個線上 session，可能已被重建。")
+                return
+            await query.answer()
+            out = await self._online_session_review_payload(context, session)
+            await context.bot.send_message(
+                chat_id, out["html"], parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=self._rows_to_markup(out["buttons"]))
             return
 
         if data.startswith("lvpg:"):
@@ -2848,6 +2913,8 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("live", self.live_command))
         self.application.add_handler(CommandHandler(
             ["lives", "live_sessions"], self.live_sessions_command))
+        self.application.add_handler(CommandHandler(
+            ["sessions", "online_sessions"], self.online_sessions_command))
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("review", self.review_command))
@@ -2858,7 +2925,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|lvs|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
+                pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))
