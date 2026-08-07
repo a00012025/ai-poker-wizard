@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -2342,3 +2343,30 @@ def _register_snapshot_tests():
 
 
 _register_snapshot_tests()
+
+
+@test
+def test_snapshot_solver_cache_is_fully_tracked():
+    """Snapshot analysis must not silently depend on ignored local API data.
+
+    A cache miss can fetch a newer solver response and make the committed
+    golden disagree only on machines that lack the ignored file.  Run this
+    after every snapshot L2 test so any newly fetched cache key is reported
+    and must be committed with the golden update.
+    """
+    cache_dir = REPO_ROOT / "tests" / "snapshots" / ".gto_cache"
+    proc = subprocess.run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard",
+         str(cache_dir)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ignored = [line for line in proc.stdout.splitlines() if line.endswith(".json")]
+    assert_eq(
+        ignored,
+        [],
+        "snapshot solver cache contains ignored API responses; force-add them "
+        "with the matching golden so clean checkouts stay deterministic",
+    )
