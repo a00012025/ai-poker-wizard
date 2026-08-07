@@ -2224,47 +2224,46 @@ class GeminiSessionManager:
                 )
 
     @staticmethod
-    def _parse_street_actions_string(actions_str: str, hand: dict) -> list[dict]:
+    def _parse_street_actions_string(
+            actions_str: str, hand: dict,
+            active_positions: list[str] | None = None) -> list[dict]:
         """Convert flat action string (e.g. 'X-X-R1.52-C') to structured actions.
 
         Uses postflop position order: SB first, then BB, then positions in order, BTN last.
         Only assigns positions to players still in the hand (didn't fold preflop).
         """
-        POSITION_ORDERS = {
-            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            5: ["HJ", "CO", "BTN", "SB", "BB"],
-            4: ["CO", "BTN", "SB", "BB"],
-            3: ["BTN", "SB", "BB"],
-            2: ["SB", "BB"],
-        }
+        from hh_parser import POSITION_ORDERS
+
         n = hand.get("players_at_table", 8)
         pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
 
         # Find who's still in the hand after preflop
         preflop = hand.get("preflop_actions", "")
         preflop_parts = preflop.split("-")
-        active_positions = []
-        for i, act in enumerate(preflop_parts[:len(pos_order)]):
-            if act.upper() != "F":
-                active_positions.append(pos_order[i])
+        if active_positions is None:
+            active_positions = []
+            for i, act in enumerate(preflop_parts[:len(pos_order)]):
+                if act.upper() != "F":
+                    active_positions.append(pos_order[i])
 
         # Postflop order: SB first, BB next, then others in order, BTN last
         postflop_order = []
-        for pos in ["SB", "BB"] + [p for p in pos_order if p not in ("SB", "BB")]:
+        betting_order = (["BB", "SB"] if n == 2 else
+                         ["SB", "BB"]
+                         + [p for p in pos_order if p not in ("SB", "BB")])
+        for pos in betting_order:
             if pos in active_positions:
                 postflop_order.append(pos)
+        table_clock = list(postflop_order)
 
         parts = actions_str.split("-")
         result = []
-        pos_idx = 0
+        next_pos = postflop_order[0] if postflop_order else "?"
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            pos = postflop_order[pos_idx % len(postflop_order)] if postflop_order else "?"
+            pos = next_pos
             action_entry = {"position": pos}
 
             if part.upper() == "X":
@@ -2286,9 +2285,81 @@ class GeminiSessionManager:
                 action_entry["action"] = part
 
             result.append(action_entry)
-            pos_idx += 1
+            # Folded/all-in seats cannot act again. Removing them here makes
+            # the token clock deterministic within a multiway street too.
+            code = str(action_entry.get("action") or "").upper()
+            if postflop_order and (code == "F" or code.startswith("AI")):
+                postflop_order.remove(pos)
+            if postflop_order:
+                actor_index = table_clock.index(pos)
+                next_pos = next(
+                    table_clock[(actor_index + offset) % len(table_clock)]
+                    for offset in range(1, len(table_clock) + 1)
+                    if table_clock[(actor_index + offset) % len(table_clock)]
+                    in postflop_order
+                )
+            else:
+                next_pos = "?"
 
         return result
+
+    @staticmethod
+    def _normalize_text_action_tokens(hand: dict):
+        """Make text-parser postflop positions a deterministic concern.
+
+        Flash is responsible only for extracting ordered action tokens.  It may
+        still occasionally return the legacy ``[{position, action}, ...]``
+        shape; discard those model-chosen positions, retain the action tokens,
+        and run the existing positional parser for every street.
+        """
+        hand["hero_hand"] = re.sub(r"10", "T", hand["hero_hand"])
+        from hh_parser import POSITION_ORDERS
+
+        n = hand.get("players_at_table", 8)
+        pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
+        first_round = str(hand.get("preflop_actions") or "").split("-")
+        can_act = [
+            position for position, action in zip(pos_order, first_round)
+            if action.upper() != "F"
+        ]
+
+        for street in hand.get("streets", []):
+            if "board" in street:
+                street["board"] = re.sub(r"10", "T", street["board"])
+            if "card" in street:
+                street["card"] = re.sub(r"10", "T", street["card"])
+
+            actions = street.get("actions")
+            if isinstance(actions, str):
+                token_string = actions
+            elif isinstance(actions, list):
+                tokens = []
+                for action in actions:
+                    if isinstance(action, str):
+                        tokens.append(action)
+                        continue
+                    if not isinstance(action, dict):
+                        continue
+                    code = str(action.get("action") or "").upper()
+                    if code in {"B", "BET", "R", "RAISE"}:
+                        size = action.get("size")
+                        code = f"R{float(size):g}" if size is not None else "R"
+                    elif code.startswith("B"):
+                        code = "R" + code[1:]
+                    elif code in {"ALLIN", "ALL-IN", "SHOVE", "JAM"}:
+                        size = action.get("size")
+                        code = f"AI{float(size):g}" if size is not None else "AI"
+                    tokens.append(code)
+                token_string = "-".join(tokens)
+            else:
+                continue
+            street["actions"] = GeminiSessionManager._parse_street_actions_string(
+                token_string, hand, active_positions=can_act)
+            for action in street["actions"]:
+                code = str(action.get("action") or "").upper()
+                if code == "F" or code.startswith("AI"):
+                    position = action.get("position")
+                    can_act = [p for p in can_act if p != position]
 
     def _text_looks_like_hand(self, user_text: str) -> bool:
         """Heuristic check: does the text contain enough info to be a new hand?
@@ -2326,141 +2397,6 @@ class GeminiSessionManager:
         if has_hand and has_action:
             return True
         return False
-
-    @staticmethod
-    def _repair_text_hu_action_positions(user_text: str, hand: dict) -> bool:
-        """Lock unlabeled HU postflop shorthand to poker action order.
-
-        A structurally legal LLM parse can still reverse both players on every
-        street (H3817: HJ vs BTN, raw ``b9 call`` became BTN bet / HJ call).
-        Repair only the narrow, fully determined case: exactly two players
-        survive an initial-round preflop line, every raw street is on its own
-        line with no actor labels, and its action classes/sizes exactly match
-        the parsed street.  Explicit actor text and multi-round preflop lines
-        are left untouched rather than guessed.
-        """
-        from hh_parser import POSITION_ORDERS
-
-        npl = hand.get("players_at_table") or 8
-        order = POSITION_ORDERS.get(npl)
-        streets = hand.get("streets") or []
-        preflop = [
-            tok for tok in str(hand.get("preflop_actions") or "").split("-")
-            if tok
-        ]
-        if not order or not streets or len(preflop) != npl:
-            return False
-        live = {
-            order[index] for index, action in enumerate(preflop)
-            if action.upper() != "F"
-        }
-        if len(live) != 2:
-            return False
-
-        card = r"(?:10|[2-9tjqka])[cdhs]"
-        card_literal = re.compile(rf"(?i)(?:{card}|{card}{card}{card})")
-        actor_label = re.compile(
-            r"(?i)\b(?:hero|utg(?:\+?[12])?|lj|hj|co|btn|bu|sb|bb)\b")
-
-        def raw_actions(text: str) -> list[tuple[str, float | None]]:
-            tokens = re.findall(r"[a-zA-Z]+\d*(?:\.\d+)?|\d+(?:\.\d+)?", text)
-            out: list[tuple[str, float | None]] = []
-            index = 0
-            while index < len(tokens):
-                token = tokens[index].lower()
-                if token in {"x", "check"}:
-                    out.append(("X", None))
-                elif token in {"c", "call"}:
-                    out.append(("C", None))
-                elif token in {"f", "fold"}:
-                    out.append(("F", None))
-                elif token in {"ai", "jam", "shove"}:
-                    out.append(("AI", None))
-                else:
-                    sized = re.fullmatch(
-                        r"(?:b|bet|r|raise)(\d+(?:\.\d+)?)", token)
-                    if sized:
-                        out.append(("R", float(sized.group(1))))
-                    elif token in {"b", "bet", "r", "raise"}:
-                        size = None
-                        if index + 1 < len(tokens) and re.fullmatch(
-                                r"\d+(?:\.\d+)?", tokens[index + 1]):
-                            index += 1
-                            size = float(tokens[index])
-                        out.append(("R", size))
-                index += 1
-            return out
-
-        raw_streets: list[tuple[str, list[tuple[str, float | None]]]] = []
-        for line in user_text.splitlines():
-            parts = line.strip().split(maxsplit=1)
-            if not parts or not card_literal.fullmatch(parts[0].strip(" ,.;:")):
-                continue
-            tail = parts[1] if len(parts) == 2 else ""
-            raw_streets.append((tail, raw_actions(tail)))
-        if len(raw_streets) != len(streets):
-            return False
-
-        def parsed_action(action: dict) -> tuple[str, float | None]:
-            code = str(action.get("action") or "").upper()
-            if code.startswith("AI"):
-                cls = "AI"
-            elif code.startswith(("R", "B")):
-                cls = "R"
-            elif code.startswith("C"):
-                cls = "C"
-            elif code.startswith("F"):
-                cls = "F"
-            elif code.startswith("X"):
-                cls = "X"
-            else:
-                cls = code
-            size = action.get("size")
-            if size is None and cls in {"R", "AI"}:
-                match = re.search(r"(\d+(?:\.\d+)?)", code)
-                size = float(match.group(1)) if match else None
-            return cls, float(size) if size is not None else None
-
-        postflop_order = order[-2:] + order[:-2]
-        ordered_live = [position for position in postflop_order if position in live]
-        changed = False
-        active = set(live)
-        for street, (tail, expected) in zip(streets, raw_streets):
-            actions = street.get("actions") or []
-            actual = [parsed_action(action) for action in actions]
-            if (not expected or len(expected) != len(actions)
-                    or [kind for kind, _size in expected]
-                    != [kind for kind, _size in actual]
-                    or actor_label.search(tail)
-                    or any(action.get("position") not in live for action in actions)):
-                return False
-            for (_kind, raw_size), (_actual_kind, parsed_size) in zip(
-                    expected, actual):
-                if raw_size is not None and (
-                        parsed_size is None or abs(raw_size - parsed_size) > 1e-6):
-                    return False
-
-            pending = [position for position in ordered_live if position in active]
-            for action, (kind, raw_size) in zip(actions, expected):
-                if not pending:
-                    return False
-                actor = pending.pop(0)
-                if action.get("position") != actor:
-                    action["position"] = actor
-                    changed = True
-                if kind == "R" and raw_size is not None:
-                    canonical = f"R{raw_size:g}"
-                    if action.get("action") != canonical:
-                        action["action"] = canonical
-                        changed = True
-                if kind == "F":
-                    active.discard(actor)
-                elif kind in {"R", "AI"}:
-                    pending = [
-                        position for position in ordered_live
-                        if position in active and position != actor
-                    ]
-        return changed
 
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None,
@@ -2521,15 +2457,11 @@ class GeminiSessionManager:
             result = json.loads(json_str)
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
-                # Text Flash can invent checks for blinds that already folded
-                # (observed while replaying H3817). Apply the same guarded
-                # folded-seat cleanup used by the image parser before locking
-                # the surviving HU actors to raw betting order.
+                # Text Flash extracts ordered action tokens; actor ownership is
+                # always assigned by poker order in deterministic code.  Ignore
+                # any legacy model-provided position labels.
+                self._normalize_text_action_tokens(hand)
                 self._fix_folded_players_guarded(hand, chat_id)
-                if self._repair_text_hu_action_positions(user_text, hand):
-                    self._logger.info(
-                        f"[chat={chat_id}] Repaired unlabeled HU postflop "
-                        "action positions from raw betting order")
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
             self._logger.warning(f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}")

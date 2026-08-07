@@ -52,10 +52,6 @@ def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
     """
     import gemini_session as gs
 
-    raw = ("eff 50bb hero hj raise QdJs btn call\n"
-           "6hAc5d x x\n"
-           "2c b9 call\n"
-           "Kc b12 fold")
     hand = {
         "gametype": "MTTGeneral", "players_at_table": 8,
         "effective_bb": 50, "hero_position": "HJ", "hero_hand": "QdJs",
@@ -73,9 +69,8 @@ def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
         ],
     }
 
-    changed = gs.GeminiSessionManager._repair_text_hu_action_positions(raw, hand)
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
 
-    assert_true(changed, "legal-but-wrong position attribution is repaired")
     assert_eq(
         [[(a["position"], a["action"]) for a in street["actions"]]
          for street in hand["streets"]],
@@ -84,6 +79,48 @@ def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
             [("HJ", "R9"), ("BTN", "C")],
             [("HJ", "R12"), ("BTN", "F")],
         ],
+    )
+
+
+@test
+def test_text_action_tokens_track_folds_across_streets():
+    """Text action replay removes a folded seat before the next street."""
+    import gemini_session as gs
+
+    hand = {
+        "players_at_table": 8, "hero_position": "CO", "hero_hand": "AsKs",
+        "preflop_actions": "F-F-F-F-R2-C-F-C",
+        "streets": [
+            {"board": "Qc7d2h", "actions": "X-X-R3-F-C"},
+            {"card": "4s", "actions": "X-R8-C"},
+        ],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
+
+    assert_eq(
+        [[a["position"] for a in street["actions"]]
+         for street in hand["streets"]],
+        [["BB", "CO", "BTN", "BB", "CO"], ["CO", "BTN", "CO"]],
+    )
+
+
+@test
+def test_text_action_tokens_heads_up_bb_acts_first_postflop():
+    """At a true two-player table, BB is OOP and acts before SB/BTN."""
+    import gemini_session as gs
+
+    hand = {
+        "players_at_table": 2, "hero_position": "SB", "hero_hand": "AhKd",
+        "preflop_actions": "R2-C",
+        "streets": [{"board": "Qs7h2d", "actions": "X-R2-C"}],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
+
+    assert_eq(
+        [a["position"] for a in hand["streets"][0]["actions"]],
+        ["BB", "SB", "BB"],
     )
 
 
