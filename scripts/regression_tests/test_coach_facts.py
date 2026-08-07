@@ -45,6 +45,86 @@ def test_coach_facts_class_groups():
 
 
 @test
+def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
+    """H3817: in HJ-vs-BTN HU, bare postflop actions are written in action
+    order. HJ is OOP, so ``2c b9 call / Kc b12 fold`` means Hero leads both
+    streets; a legal-but-wrong LLM parse must not flip every action to BTN.
+    """
+    import gemini_session as gs
+
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 50, "hero_position": "HJ", "hero_hand": "QdJs",
+        "preflop_actions": "F-F-F-R2-F-C-F-F",
+        "streets": [
+            {"board": "6hAc5d", "actions": [
+                {"position": "BTN", "action": "X"},
+                {"position": "HJ", "action": "X"}]},
+            {"card": "2c", "actions": [
+                {"position": "BTN", "action": "R", "size": 9},
+                {"position": "HJ", "action": "C"}]},
+            {"card": "Kc", "actions": [
+                {"position": "BTN", "action": "R", "size": 12},
+                {"position": "HJ", "action": "F"}]},
+        ],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
+
+    assert_eq(
+        [[(a["position"], a["action"]) for a in street["actions"]]
+         for street in hand["streets"]],
+        [
+            [("HJ", "X"), ("BTN", "X")],
+            [("HJ", "R9"), ("BTN", "C")],
+            [("HJ", "R12"), ("BTN", "F")],
+        ],
+    )
+
+
+@test
+def test_text_action_tokens_track_folds_across_streets():
+    """Text action replay removes a folded seat before the next street."""
+    import gemini_session as gs
+
+    hand = {
+        "players_at_table": 8, "hero_position": "CO", "hero_hand": "AsKs",
+        "preflop_actions": "F-F-F-F-R2-C-F-C",
+        "streets": [
+            {"board": "Qc7d2h", "actions": "X-X-R3-F-C"},
+            {"card": "4s", "actions": "X-R8-C"},
+        ],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
+
+    assert_eq(
+        [[a["position"] for a in street["actions"]]
+         for street in hand["streets"]],
+        [["BB", "CO", "BTN", "BB", "CO"], ["CO", "BTN", "CO"]],
+    )
+
+
+@test
+def test_text_action_tokens_heads_up_bb_acts_first_postflop():
+    """At a true two-player table, BB is OOP and acts before SB/BTN."""
+    import gemini_session as gs
+
+    hand = {
+        "players_at_table": 2, "hero_position": "SB", "hero_hand": "AhKd",
+        "preflop_actions": "R2-C",
+        "streets": [{"board": "Qs7h2d", "actions": "X-R2-C"}],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand)
+
+    assert_eq(
+        [a["position"] for a in hand["streets"][0]["actions"]],
+        ["BB", "SB", "BB"],
+    )
+
+
+@test
 def test_coach_facts_extract_tokens():
     """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
     import coach_facts as cf
