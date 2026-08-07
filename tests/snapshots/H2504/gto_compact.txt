@@ -1,4 +1,4 @@
-♠ BB A9s | 11bb MTT
+♠ BB A🔷9🔷 | 11bb MTT
 ⚠ Postflop 深度升級: 12bb 無翻後解，已改用 14bb solver（深度近似，SPR 相關結論請保守解讀）
 
 ─── Preflop ───

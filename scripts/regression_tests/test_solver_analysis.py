@@ -704,12 +704,32 @@ def test_preflop_pending_facing_allin_uses_allin_effective_depth():
     compact = result["text_compact"]
     preflop_spots = [s for s in result["hero_spots"] if s["street"] == "preflop"]
     assert_true(len(preflop_spots) >= 2, f"expected facing-all-in spot, got {preflop_spots}")
-    assert_in("♠ UTG 66 | 20bb MTT", compact)
+    assert_in("♠ UTG 6♠️6☘️ | 20bb MTT", compact)
     assert_in("─── Preflop — Facing all-in ───", compact)
     facing_section = compact.split("─── Preflop — Facing all-in ───", 1)[1]
     assert_in("GTO:", facing_section)
     assert_eq(preflop_spots[1]["params"]["depth"], 20.125)
     assert_in("RAI", preflop_spots[1]["params"]["preflop_actions"])
+
+
+@test
+def test_exact_combo_summary_preserves_suits():
+    """User-facing summaries keep a concrete hero combo instead of its 169 class."""
+    from analyze_hand import analyze_hand_full
+
+    result = analyze_hand_full({
+        "gametype": "MTTGeneral",
+        "hero_hand": "QdJc",
+        "effective_bb": 50,
+        "hero_position": "HJ",
+        "preflop_actions": "F-F-F-R2.3-F-F-F-F",
+        "players_at_table": 8,
+    })
+
+    assert_in("♠ HJ Q🔷J☘️ | 50bb MTT", result["text_compact"])
+    assert_not_in("♠ HJ QJo |", result["text_compact"])
+    assert_in("Hero: HJ Q🔷J☘️", result["text"])
+    assert_not_in("Hero: HJ QJo", result["text"])
 
 
 @test

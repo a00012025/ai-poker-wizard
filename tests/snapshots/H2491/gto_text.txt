@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 17.3bb（使用 17bb solver）
-Hero: CO ATs
+Hero: CO A🔷T🔷
 
 
 ==================================================
@@ -19,7 +19,7 @@ Hero: CO ATs
 
 ==================================================
 【Flop: 6☘️Q♠️8🔷】
-Hero ATs 牌型: Ace high + 後門花聽牌
+Hero A🔷T🔷 牌型: Ace high + 後門花聽牌
 【CO 在 Flop Q♠️8🔷6☘️】底池 6.000bb
   Check: 47.8%（106 combos）
   BET 1.2（20% pot）: 19.4%（43 combos）
@@ -38,7 +38,7 @@ Hero ATs 牌型: Ace high + 後門花聽牌
 
 ==================================================
 【Turn: 6🔷（Board: 6☘️Q♠️8🔷6🔷）】
-Hero ATs 牌型: Ace high + 堅果花聽牌
+Hero A🔷T🔷 牌型: Ace high + 堅果花聽牌
 【CO 在 Turn Q♠️8🔷6☘️6🔷】底池 10.000bb
   Check: 30.7%（17 combos）
   BET 3.3（33% pot）: 38.9%（21 combos）
@@ -56,7 +56,7 @@ Hero ATs 牌型: Ace high + 堅果花聽牌
 
 ==================================================
 【River: 2♥️（Board: 6☘️Q♠️8🔷6🔷2♥️）】
-Hero ATs 牌型: Ace high
+Hero A🔷T🔷 牌型: Ace high
 【CO 在 River Q♠️8🔷6☘️6🔷2♥️】底池 13.500bb
   Fold: 45.3%（8 combos）
   Call: 30.8%（5 combos）

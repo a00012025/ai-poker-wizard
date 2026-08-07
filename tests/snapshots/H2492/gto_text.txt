@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 23.9bb（使用 25bb solver）
-Hero: UTG A6s
+Hero: UTG A☘️6☘️
 Preflop actions 校正: R2-F-F-C-F-F-F-F → R2.1-F-F-C-F-F-F-F
 ⚠ 近似說明: UTG raise 2bb → 校正為 R2.1
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -20,7 +20,7 @@ Preflop actions 校正: R2-F-F-C-F-F-F-F → R2.1-F-F-C-F-F-F-F
 
 ==================================================
 【Flop: 2☘️T♥️J🔷】
-Hero A6s 牌型: Ace high + 後門花聽牌
+Hero A☘️6☘️ 牌型: Ace high + 後門花聽牌
 【UTG 在 Flop J🔷T♥️2☘️】底池 6.700bb
   Check: 25.4%（53 combos）
   BET 1.35（20% pot）: 23.5%（50 combos）
@@ -39,7 +39,7 @@ Hero A6s 牌型: Ace high + 後門花聽牌
 
 ==================================================
 【Turn: 4♠️（Board: 2☘️T♥️J🔷4♠️）】
-Hero A6s 牌型: Ace high
+Hero A☘️6☘️ 牌型: Ace high
 【UTG 在 Turn J🔷T♥️2☘️4♠️】底池 6.700bb
   Check: 56.1%（30 combos）
   BET 1.35（20% pot）: 1.0%（1 combos）
@@ -60,7 +60,7 @@ Hero A6s 牌型: Ace high
 
 ==================================================
 【River: 8♠️（Board: 2☘️T♥️J🔷4♠️8♠️）】
-Hero A6s 牌型: Ace high
+Hero A☘️6☘️ 牌型: Ace high
 【UTG 在 River J🔷T♥️2☘️4♠️8♠️】底池 17.800bb
   Check: 45.2%（6 combos）
   BET 2（11% pot）: 0.1%（0 combos）

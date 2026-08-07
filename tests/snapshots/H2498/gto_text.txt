@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 17.4bb（使用 17bb solver）
-Hero: LJ AQs
+Hero: LJ A♠️Q♠️
 Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2-F-F-F-F-C
 ⚠ 近似說明: LJ raise 2.2bb → 校正為 R2
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -23,7 +23,7 @@ Preflop actions 校正: F-F-R2.2-F-F-F-F-C → F-F-R2-F-F-F-F-C
 
 ==================================================
 【Flop: K☘️J☘️8🔷】
-Hero AQs 牌型: Ace high + 卡順聽牌
+Hero A♠️Q♠️ 牌型: Ace high + 卡順聽牌
 【LJ 在 Flop K☘️J☘️8🔷】底池 5.500bb
   Check: 9.7%（15 combos）
   BET 1.1（20% pot）: 29.5%（46 combos）
@@ -42,7 +42,7 @@ Hero AQs 牌型: Ace high + 卡順聽牌
 
 ==================================================
 【Turn: 6♠️（Board: K☘️J☘️8🔷6♠️）】
-Hero AQs 牌型: Ace high + 卡順聽牌
+Hero A♠️Q♠️ 牌型: Ace high + 卡順聽牌
 【LJ 在 Turn K☘️J☘️8🔷6♠️】底池 9.100bb
   Check: 38.3%（25 combos）
   BET 3（33% pot）: 2.1%（1 combos）

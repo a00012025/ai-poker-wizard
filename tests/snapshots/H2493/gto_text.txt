@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 28.4bb（使用 30bb solver）
-Hero: BTN AJo
+Hero: BTN A🔷J♥️
 Preflop actions 校正: F-F-F-F-F-R2.2-F-C → F-F-F-F-F-R2.1-F-C
 ⚠ 近似說明: BTN raise 2.2bb → 校正為 R2.1
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -20,7 +20,7 @@ Preflop actions 校正: F-F-F-F-F-R2.2-F-C → F-F-F-F-F-R2.1-F-C
 
 ==================================================
 【Flop: T♥️5♥️A♥️】
-Hero AJo 牌型: 頂對 (A) + 花聽牌
+Hero A🔷J♥️ 牌型: 頂對 (A) + 花聽牌
 【BTN 在 Flop A♥️T♥️5♥️】底池 5.700bb
   Check: 2.7%（15 combos）
   BET 1.15（20% pot）: 16.7%（92 combos）
@@ -46,7 +46,7 @@ Hero AJo 牌型: 頂對 (A) + 花聽牌
 
 ==================================================
 【Turn: 4☘️（Board: T♥️5♥️A♥️4☘️）】
-Hero AJo 牌型: 頂對 (A) + 花聽牌
+Hero A🔷J♥️ 牌型: 頂對 (A) + 花聽牌
 【BTN 在 Turn A♥️T♥️5♥️4☘️】底池 8.000bb
   Check: 42.7%（39 combos）
   BET 2.65（33% pot）: 1.9%（2 combos）
@@ -69,7 +69,7 @@ Hero AJo 牌型: 頂對 (A) + 花聽牌
 
 ==================================================
 【River: 9🔷（Board: T♥️5♥️A♥️4☘️9🔷）】
-Hero AJo 牌型: 頂對 (A)
+Hero A🔷J♥️ 牌型: 頂對 (A)
 【BTN 在 River A♥️T♥️5♥️4☘️9🔷】底池 21.300bb
   Check: 39.3%（3 combos）
   BET 13（61% pot）: 3.9%（0 combos）
