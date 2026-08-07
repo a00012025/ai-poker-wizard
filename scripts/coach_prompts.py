@@ -282,6 +282,8 @@ COACH_SYSTEM = """\
 - 段落標題用 *粗體*（單星號），例如 *Preflop*
 - 重點詞也用 *粗體*
 - 不要用 **雙星號**、不要用表格
+- 具體牌面一律使用四花色 emoji：c=☘️、d=🔷、h=♥️、s=♠️。例如 QdJc → Q🔷J☘️，Flop (6h Ac 5d) → Flop (6♥️ A☘️ 5🔷)。
+- 如果分析數據提供了 Hero 的具體花色，提到 Hero 這手牌時必須保留該 exact combo，不可降級成 QJo、AKs 等 169 hand class。只有抽象討論整個 hand class／range 時才保留 QJo、AKs 這類寫法。
 
 風格：
 - 精簡直接，像教練用最少的話點出重點

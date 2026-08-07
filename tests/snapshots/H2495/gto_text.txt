@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 62.4bb（使用 60bb solver）
-Hero: BB 88
+Hero: BB 8♠️8🔷
 Preflop actions 校正: F-F-F-R2-F-F-F-R9-C → F-F-F-R2.3-F-F-F-R10.3-C
 ⚠ 近似說明: HJ raise 2bb → 校正為 R2.3; BB raise 9bb → 校正為 R10.3
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -24,7 +24,7 @@ Preflop actions 校正: F-F-F-R2-F-F-F-R9-C → F-F-F-R2.3-F-F-F-R10.3-C
 
 ==================================================
 【Flop: 9♥️A☘️T♥️】
-Hero 88 牌型: 口袋對 (88) < 牌面
+Hero 8♠️8🔷 牌型: 口袋對 (88) < 牌面
 【BB 在 Flop A☘️T♥️9♥️】底池 22.100bb
   Check: 24.3%（23 combos）
   BET 2.2（10% pot）: 10.2%（10 combos）

@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 16.2bb（使用 17bb solver）
-Hero: BB Q7o
+Hero: BB Q☘️7🔷
 Preflop actions 校正: F-R2.1-F-F-F-F-F-C → F-R2-F-F-F-F-F-C
 ⚠ 近似說明: UTG+1 raise 2.1bb → 校正為 R2
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -21,7 +21,7 @@ Preflop actions 校正: F-R2.1-F-F-F-F-F-C → F-R2-F-F-F-F-F-C
 
 ==================================================
 【Flop: 9♠️Q♠️J☘️】
-Hero Q7o 牌型: 頂對 (Q)
+Hero Q☘️7🔷 牌型: 頂對 (Q)
 【BB 在 Flop Q♠️J☘️9♠️】底池 5.500bb
   Check: 100.0%（868 combos）
 
@@ -62,7 +62,7 @@ Hero Q7o 牌型: 頂對 (Q)
 
 ==================================================
 【Turn: A♠️（Board: 9♠️Q♠️J☘️A♠️）】
-Hero Q7o 牌型: 中對 (Q)
+Hero Q☘️7🔷 牌型: 中對 (Q)
 【BB 在 Turn Q♠️J☘️9♠️A♠️】底池 15.100bb
   Check: 54.4%（33 combos）
   BET 3（20% pot）: 6.7%（4 combos）
@@ -82,7 +82,7 @@ Hero Q7o 牌型: 中對 (Q)
 
 ==================================================
 【River: 3♠️（Board: 9♠️Q♠️J☘️A♠️3♠️）】
-Hero Q7o 牌型: 中對 (Q)
+Hero Q☘️7🔷 牌型: 中對 (Q)
 【BB 在 River Q♠️J☘️9♠️A♠️3♠️】底池 15.100bb
   Check: 41.2%（12 combos）
   BET 1.5（10% pot）: 6.6%（2 combos）

@@ -32,7 +32,7 @@ def _sample(empty: bool = False) -> dict:
              "drill_url": None, "enqueue_item": {}},
         ],
         "top_decisions": [] if empty else [
-            {"combo": "Q♣️J♣️", "position": "HJ", "depth": 30.125,
+            {"combo": "Q☘️J☘️", "position": "HJ", "depth": 30.125,
              "boards": "", "desc": "MP flat 後面對 squeeze（對手 BB，你 IP）",
              "street_lines": [
                  "翻前: LJ Raise, HJ Call, BB Raise",
@@ -43,12 +43,12 @@ def _sample(empty: bool = False) -> dict:
             {"combo": "T♠️9♠️", "position": "CO", "depth": 25.0,
              "boards": "8h7c2d5sQc", "desc": "SRP 底池（HU），Hero CO 對 BB、處於 IP，轉牌首動",
              "street_lines": [
-                 "Flop 8♥️7♣️2♦️: BB Check, Hero Bet 33%, BB Call",
+                 "Flop 8♥️7☘️2🔷: BB Check, Hero Bet 33%, BB Call",
                  "Turn 5♠️: BB Check",
              ],
              "action_line": "Raise→應Call", "ev_loss": 3.4,
              "exact_url": "https://app.gtowizard.com/a", "drill_url": None, "enqueue_item": {}},
-            {"combo": "A♥️Q♦️", "position": "UTG+1", "depth": 40.0,
+            {"combo": "A♥️Q🔷", "position": "UTG+1", "depth": 40.0,
              "boards": "KsJd4c9h", "desc": "面對 3bet fold",
              "action_line": "Fold→應Call", "ev_loss": 2.6,
              "exact_url": "https://app.gtowizard.com/b", "drill_url": None, "enqueue_item": {}},
@@ -211,15 +211,15 @@ def test_session_review_full_message():
     assert_in("turn OOP 面對下注", html)
     assert_in("6.1 bb", html)
     assert_in("最值得回看的 8 個決策", html)
-    assert_in("Q♣️J♣️", html)
+    assert_in("Q☘️J☘️", html)
     assert_in("HJ 有效 30bb", html)
     assert_in("MP flat 後面對 squeeze", html)
-    assert_in("1️⃣ Q♣️J♣️ HJ 有效 30bb｜MP flat 後面對 squeeze", html)
+    assert_in("1️⃣ Q☘️J☘️ HJ 有效 30bb｜MP flat 後面對 squeeze", html)
     assert_in("翻前: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
     assert_in("Call→應Fold", html)
     assert_in("−<b>0.76bb</b>", html)
     assert_in("T♠️9♠️", html)
-    assert_in("Flop 8♥️7♣️2♦️: BB Check, Hero Bet 33%, BB Call", html)
+    assert_in("Flop 8♥️7☘️2🔷: BB Check, Hero Bet 33%, BB Call", html)
     assert_in("Turn 5♠️: BB Check｜<b>Raise→應Call</b>", html)
     # honesty caveat with session-scoped counts
     assert_in("limp 6 手未計", html)

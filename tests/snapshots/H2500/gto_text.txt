@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 62.3bb（使用 60bb solver）
-Hero: CO KQo
+Hero: CO K♥️Q🔷
 Preflop actions 校正: F-F-F-F-R2.2-F-F-R10-C → F-F-F-F-R2.3-F-F-R10.3-C
 ⚠ 近似說明: CO raise 2.2bb → 校正為 R2.3; BB raise 10bb → 校正為 R10.3
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -37,7 +37,7 @@ Preflop actions 校正: F-F-F-F-R2.2-F-F-R10-C → F-F-F-F-R2.3-F-F-R10.3-C
 
 ==================================================
 【Flop: K♠️2🔷Q☘️】
-Hero KQo 牌型: 兩對 (K, Q)
+Hero K♥️Q🔷 牌型: 兩對 (K, Q)
 【CO 在 Flop K♠️Q☘️2🔷】底池 27.600bb
   Fold: 16.7%（31 combos）
   Call: 81.6%（152 combos）
@@ -57,7 +57,7 @@ Hero KQo 牌型: 兩對 (K, Q)
 
 ==================================================
 【Turn: 4♥️（Board: K♠️2🔷Q☘️4♥️）】
-Hero KQo 牌型: 兩對 (K, Q)
+Hero K♥️Q🔷 牌型: 兩對 (K, Q)
 【CO 在 Turn K♠️Q☘️2🔷4♥️】底池 33.100bb
   Check: 53.7%（81 combos）
   BET 3.3（10% pot）: 2.1%（3 combos）
@@ -80,7 +80,7 @@ Hero KQo 牌型: 兩對 (K, Q)
 
 ==================================================
 【River: 4☘️（Board: K♠️2🔷Q☘️4♥️4☘️）】
-Hero KQo 牌型: 兩對 (K, Q)
+Hero K♥️Q🔷 牌型: 兩對 (K, Q)
 【CO 在 River K♠️Q☘️2🔷4♥️4☘️】底池 33.100bb
   Check: 53.0%（43 combos）
   BET 12（36% pot）: 0.7%（1 combos）

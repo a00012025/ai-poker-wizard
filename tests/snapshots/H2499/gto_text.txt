@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 35.5bb（使用 35bb solver）
-Hero: SB AJo
+Hero: SB A♠️J♥️
 Preflop actions 校正: F-F-F-F-R2-F-R7-F-C → F-F-F-F-R2.2-F-R8.3-F-C
 ⚠ 近似說明: CO raise 2bb → 校正為 R2.2; SB raise 7bb → 校正為 R8.3
   此場景無法被 solver 完全模擬，使用最接近的 solver 解作為參考
@@ -25,7 +25,7 @@ Preflop actions 校正: F-F-F-F-R2-F-R7-F-C → F-F-F-F-R2.2-F-R8.3-F-C
 
 ==================================================
 【Flop: K🔷A☘️4♥️】
-Hero AJo 牌型: 頂對 (A)
+Hero A♠️J♥️ 牌型: 頂對 (A)
 【SB 在 Flop A☘️K🔷4♥️】底池 18.600bb
   Check: 36.0%（39 combos）
   BET 1.85（10% pot）: 24.3%（26 combos）
@@ -50,7 +50,7 @@ Hero AJo 牌型: 頂對 (A)
 
 ==================================================
 【Turn: 8🔷（Board: K🔷A☘️4♥️8🔷）】
-Hero AJo 牌型: 頂對 (A)
+Hero A♠️J♥️ 牌型: 頂對 (A)
 【SB 在 Turn A☘️K🔷4♥️8🔷】底池 27.900bb
   Check: 49.8%（2 combos）
   BET 2.8（10% pot）: 0.5%（0 combos）

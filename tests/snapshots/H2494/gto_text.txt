@@ -1,6 +1,6 @@
 ==================================================
 籌碼深度: 41.1bb（使用 35bb solver）
-Hero: HJ ATs
+Hero: HJ A☘️T☘️
 ⚠ 多人底池：保留真實下注結構，棄牌的 cold caller 簡化為單一棄牌（翻後單挑 HJ vs SB）
 有效籌碼微調: 41bb → 35bb（維持多人底池 SPR，死錢 ~1bb）
 
@@ -19,7 +19,7 @@ Hero: HJ ATs
 
 ==================================================
 【Flop: K☘️9🔷3🔷】
-Hero ATs 牌型: Ace high + 後門花聽牌
+Hero A☘️T☘️ 牌型: Ace high + 後門花聽牌
 【HJ 在 Flop K☘️9🔷3🔷】底池 6.400bb
   Check: 50.5%（176 combos）
   BET 1.3（20% pot）: 0.8%（3 combos）
@@ -40,7 +40,7 @@ Hero ATs 牌型: Ace high + 後門花聽牌
 
 ==================================================
 【Turn: J♠️（Board: K☘️9🔷3🔷J♠️）】
-Hero ATs 牌型: Ace high + 卡順聽牌
+Hero A☘️T☘️ 牌型: Ace high + 卡順聽牌
 【HJ 在 Turn K☘️9🔷3🔷J♠️】底池 10.600bb
   Check: 54.3%（34 combos）
   BET 3.5（33% pot）: 0.5%（0 combos）
@@ -59,7 +59,7 @@ Hero ATs 牌型: Ace high + 卡順聽牌
 
 ==================================================
 【River: 5♥️（Board: K☘️9🔷3🔷J♠️5♥️）】
-Hero ATs 牌型: Ace high
+Hero A☘️T☘️ 牌型: Ace high
 【HJ 在 River K☘️9🔷3🔷J♠️5♥️】底池 10.600bb
   Check: 60.6%（20 combos）
   BET 6（57% pot）: 17.0%（6 combos）

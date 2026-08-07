@@ -1547,6 +1547,7 @@ def _run_analysis(hand: dict) -> dict:
     hero_pos = hand["hero_position"]
     hero_hand_raw = hand["hero_hand"]
     hero_hand = normalize_hand_name(hero_hand_raw)
+    hero_hand_display = cards_to_emoji(hero_hand_raw)
     no_hero_hand = hand.get("no_hero_hand", False)
     # Compute 1326-combo index for exact postflop lookup (e.g. Ah6h vs generic A6s)
     hero_combo_idx = combo_index_for_hand(hero_hand_raw)
@@ -3021,7 +3022,7 @@ def _run_analysis(hand: dict) -> dict:
     results = []
     results.append("=" * 50)
     hero_label = (f"Hero: {display_hero_pos}" if no_hero_hand
-                  else f"Hero: {display_hero_pos} {cards_to_emoji(hero_hand)}")
+                  else f"Hero: {display_hero_pos} {hero_hand_display}")
     if is_icm:
         depth_display = depth if isinstance(depth, str) else f"{depth}"
         results.append(hero_label)
@@ -3103,7 +3104,7 @@ def _run_analysis(hand: dict) -> dict:
                         eval_input = hero_hand_raw if len(hero_hand_raw) == 4 else hero_hand
                         eval_result = _eval_hand(eval_input, spot_board)
                         if eval_result["full_label"]:
-                            results.append(f"Hero {cards_to_emoji(hero_hand)} 牌型: {eval_result['full_label']}")
+                            results.append(f"Hero {hero_hand_display} 牌型: {eval_result['full_label']}")
 
         if display_sol:
             # When no hero hand specified, show only range-level summary (no hero-specific detail).
@@ -3167,7 +3168,7 @@ def _run_analysis(hand: dict) -> dict:
     else:
         mode_str = "MTT"
     compact_hero = (f"♠ {display_hero_pos} | {eff_str} {mode_str}" if no_hero_hand
-                    else f"♠ {display_hero_pos} {cards_to_emoji(hero_hand)} | {eff_str} {mode_str}")
+                    else f"♠ {display_hero_pos} {hero_hand_display} | {eff_str} {mode_str}")
     compact = [compact_hero]
     if multiway_note:
         # multiway_note already starts with ⚠ — don't double it

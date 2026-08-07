@@ -2252,6 +2252,12 @@ def test_coach_system_terminology_rule():
     assert_in("不要用「彩池」", cs, "彩池→底池 canonical rule missing")
     assert_in("詐唬（不要用「唬牌」）", cs, "唬牌→詐唬 canonical rule missing")
     assert_in("all-in", cs, "English-abbreviation whitelist missing")
+    assert_in("c=☘️、d=🔷、h=♥️、s=♠️", cs,
+              "four-colour card display mapping missing")
+    assert_in("QdJc → Q🔷J☘️", cs,
+              "exact hero combo display example missing")
+    assert_in("抽象討論整個 hand class", cs,
+              "prompt must distinguish exact combos from abstract classes")
     assert_true("pot control / 控制底池" not in cs,
                 "prompt body still contains a banned bilingual gloss")
 
