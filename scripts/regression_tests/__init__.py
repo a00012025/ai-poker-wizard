@@ -14,6 +14,7 @@ TEST_MODULES = (
     "test_coaching_surfaces",
     "test_data_ingestion",
     "test_coach_facts",
+    "test_coach_teaching",
     "test_validation",
     "test_ledger",
     "test_ingest_progress",

@@ -56,6 +56,12 @@ from coach_prompts import (  # noqa: F401 — re-exported for existing importers
     _needs_solver_grounding,
 )
 from card_display import cards_to_emoji
+from coach_teaching import (
+    audit_draft as audit_teaching_draft,
+    build_teaching_digest,
+    render_fallback as render_teaching_fallback,
+    render_prompt_block as render_teaching_prompt_block,
+)
 
 QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
     name="query_next_actions",
@@ -1201,10 +1207,12 @@ class GeminiSessionManager:
                     self.hand_contexts[chat_id] = context
                     self.pending_images.pop(chat_id, None)
 
+                    teaching_block = self._initial_teaching_block(context)
                     coaching_prompt = (
                         f"用戶要求切換到 ICM 決賽桌模式重新分析。\n\n"
                         f"GTO Solver 數據（ICM 模式）：\n{gto_data}\n\n"
-                        f"請分析 hero 在 ICM 決賽桌下的最佳策略，並與之前的 Chip EV 分析做比較。"
+                        f"請分析 hero 在 ICM 決賽桌下的最佳策略，並與之前的 Chip EV 分析做比較。\n\n"
+                        f"{teaching_block}"
                     )
                     result = await self._verified_initial_coaching(
                         chat_id, coaching_prompt, context, user_text,
@@ -1366,10 +1374,11 @@ class GeminiSessionManager:
                     "問題要具體、跟這手牌相關、能用 GTO solver 回答。例如「BB 在 turn 的 check-raise 範圍是什麼？」"
                     "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
                 )
+                teaching_block = self._initial_teaching_block(context)
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                    f"{coaching_instruction}{followup_instruction}"
+                    f"{coaching_instruction}\n\n{teaching_block}{followup_instruction}"
                 )
                 # Verified generation (retries transient 503/500 internally;
                 # routes the verdict through the coach_facts claim verifier)
@@ -1575,11 +1584,13 @@ class GeminiSessionManager:
                 )
             else:
                 img_coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+            teaching_block = self._initial_teaching_block(context)
             coaching_prompt = (
                 f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
                 f"用戶留言：{user_q}\n\n"
                 f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                f"{img_coaching_instruction}"
+                f"{img_coaching_instruction}\n\n"
+                f"{teaching_block}"
                 "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
                 "FOLLOWUP: 問題一\n"
                 "FOLLOWUP: 問題二\n"
@@ -2540,28 +2551,107 @@ class GeminiSessionManager:
                                           refresh_token: str | None = None,
                                           usage_acc: dict | None = None,
                                           disable_tools: bool = False) -> str:
-        """Generate the initial coaching verdict.
+        """Generate and fact-audit the initial coaching verdict.
 
-        The initial combo-whitelist verifier is intentionally disabled: it was
-        too coarse to distinguish solver-frequency claims from ordinary poker
-        heuristics (H3689: mentioning TT as a possible stronger hand), causing
-        useful analysis to be replaced by a warning. Follow-up answers still use
-        the grounded solver/coach_facts verification path when users ask for
-        ranges, specific combos, or hypotheticals.
+        The audit is scoped to the deterministic teaching skeleton.  It leaves
+        wording and causal explanation to the LLM, while rejecting unsupported
+        combo lists, hand categories, blocker targets, nuts claims, and invented
+        polarization.  A failed draft degrades to a deterministic three-section
+        coach answer rather than showing an internal warning to the user.
         """
         for attempt in range(3):
             try:
-                return await self._chat_with_tools(
+                draft = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,
                     usage_acc=usage_acc, force_tool_eligible=False,
                     disable_tools=disable_tools)
+                digest = context.get("_teaching_digest") or build_teaching_digest(context)
+                if not digest:
+                    return draft
+                audit = audit_teaching_draft(
+                    draft,
+                    digest,
+                    # The raw solver text contains same-class suit tables and
+                    # other details that were intentionally *not* selected as
+                    # teaching mechanisms.  Whitelist only the user's own
+                    # named cards plus the deterministic teaching card (added
+                    # inside audit_draft), otherwise the model can smuggle an
+                    # unselected combo example into the explanation.
+                    source_texts=[user_text],
+                )
+                if audit.ok:
+                    return draft
+                self._logger.warning(
+                    f"[chat={chat_id}] Initial coaching fact audit failed: "
+                    f"{', '.join(audit.violations)}"
+                )
+                original_followups = [
+                    line for line in draft.splitlines()
+                    if line.strip().startswith("FOLLOWUP:")
+                ][:3]
+                repair_prompt = (
+                    "上一版教練回覆引用了 deterministic 骨架未支持的事實："
+                    f"{', '.join(audit.violations)}。請完全重寫，不要辯解或提及審核。\n\n"
+                    "只可使用下列骨架中的因果材料；保留自然解釋空間，但必須涵蓋每個焦點，"
+                    "不得從一般牌理補出未列出的聽牌、blocker target、牌型、combo 或數字。\n\n"
+                    f"{render_teaching_prompt_block(digest)}"
+                )
+                repaired = await self._chat_with_tools(
+                    chat_id, repair_prompt, on_status=on_status,
+                    user_id=user_id, refresh_token=refresh_token,
+                    usage_acc=usage_acc, force_tool_eligible=False,
+                    disable_tools=disable_tools,
+                )
+                repaired_audit = audit_teaching_draft(
+                    repaired, digest, source_texts=[user_text],
+                )
+                if repaired_audit.ok:
+                    repaired_followups = [
+                        line for line in repaired.splitlines()
+                        if line.strip().startswith("FOLLOWUP:")
+                    ]
+                    if original_followups and not repaired_followups:
+                        repaired += "\n\n" + "\n".join(original_followups)
+                    return repaired
+                self._logger.warning(
+                    f"[chat={chat_id}] Repaired coaching fact audit failed: "
+                    f"{', '.join(repaired_audit.violations)}"
+                )
+                fallback = render_teaching_fallback(digest)
+                followups = [
+                    line for line in repaired.splitlines()
+                    if line.strip().startswith("FOLLOWUP:")
+                ][:3] or original_followups
+                if followups:
+                    fallback += "\n\n" + "\n".join(followups)
+                history = self.histories.get(chat_id, [])
+                if history and getattr(history[-1], "role", None) == "model":
+                    history[-1] = types.Content(
+                        role="model", parts=[types.Part(text=fallback)])
+                    self.histories[chat_id] = history
+                return fallback
             except genai_errors.ServerError as e:
                 if attempt == 2:
                     raise
                 self._logger.warning(
                     f"[chat={chat_id}] Coaching retry {attempt+1}/3: {e}")
                 await asyncio.sleep(2 * (attempt + 1))
+
+    @staticmethod
+    def _initial_teaching_block(context: dict) -> str:
+        """Cache and render the deterministic coaching card for this hand."""
+        try:
+            digest = build_teaching_digest(context)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Teaching digest unavailable; using legacy coaching prompt: %s", exc
+            )
+            return ""
+        if not digest:
+            return ""
+        context["_teaching_digest"] = digest
+        return render_teaching_prompt_block(digest)
 
     async def _chat_with_tools(self, chat_id: int, user_text: str,
                                 on_status: Callable[[str], Any] | None = None,
