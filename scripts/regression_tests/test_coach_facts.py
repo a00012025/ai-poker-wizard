@@ -719,8 +719,8 @@ def test_classify_ev_impact_postflop_is_pot_relative():
 def test_ev_loss_detail_preflop_negligible_high_freq_call():
     """H3510-style: SB 55 Call 97% vs all-in ~0.02bb apart → negligible mix.
 
-    The deterministic layer must report this as a near-zero loss so the coach
-    frames it as a frequency/mix preference, not a "serious mistake".
+    Both actions are in the solver mix, so the deterministic layer reports
+    zero actionable regret and keeps the difference as a frequency preference.
     """
     from gto_formatter import ev_loss_detail
     from hh_deviation_check import HAND_TO_169
@@ -750,9 +750,10 @@ def test_ev_loss_detail_preflop_negligible_high_freq_call():
     d = ev_loss_detail(sol, taken_code="RAI", hero_hand="55",
                        hero_pos="SB", is_preflop=True)
     assert_true(d is not None, "ev_loss_detail returns data")
-    assert_eq(round(d["ev_loss"], 2), 0.02, "ev_loss is ~0.02bb")
-    assert_eq(d["best_code"], "C", "best action is Call")
-    assert_true(d["negligible"], "0.02bb preflop is negligible → frequency issue")
+    assert_eq(round(d["ev_loss"], 2), 0.0, "in-mix action has zero actionable regret")
+    assert_eq(d["best_code"], "RAI", "taken in-mix action owns the zero-loss basis")
+    assert_true(d["taken_in_mix"], "3% all-in is a solver-supported branch")
+    assert_true(d["negligible"], "in-mix preflop action is a frequency issue")
     assert_true(d["pot_frac"] is None, "preflop carries no pot fraction")
 
 

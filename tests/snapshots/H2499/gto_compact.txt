@@ -7,9 +7,9 @@ GTO: All-in 69% / RAISE 8.3（95% pot） 31%
 ─── Flop: K🔷A☘️4♥️ ───
 🎯 頂對 (A)
 GTO: Bet 9.3（50% pot） 94%
-→ Hero bet 25% pot ❌ (GTO建議 bet 50% pot)
+→ Hero bet 25% pot ✅（GTO 多為 bet 50% pot 94%,屬頻率/mix 偏好,非錯誤）
 
 ─── Turn: 8🔷 ───
 🎯 頂對 (A)
 GTO: Bet 13.95（50% pot） 49% / Bet 7（25% pot） 35% / Check 15%
-→ Hero all-in ✅ (GTO建議 bet 50% pot)
+→ Hero all-in ❌ EV損失 -0.16bb（0.6% pot） (GTO建議 bet 50% pot)

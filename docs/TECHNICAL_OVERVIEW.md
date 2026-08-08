@@ -18,7 +18,9 @@ GeminiSessionManager
   │     ├── gto_formatter.py
   │     ├── hand_validator.py
   │     └── icm_modes.py
-  └── coach：Gemini Pro + grounded solver/ledger tools
+  └── coach
+        ├── initial：deterministic 教學骨架 → GPT-5.6 Terra narrator → fact audit/fallback
+        └── follow-up：Gemini Pro + grounded solver/ledger tools
 ```
 
 ### GTOW session 與 Ledger 攝取
@@ -144,6 +146,8 @@ incremental/full ingest
 | `GEMINI_API_KEY` | Gemini API key |
 | `GEMINI_MODEL` / `GEMINI_PARSE_MODEL` | coaching 與 hand parse 模型 |
 | `GEMINI_LIVE_PARSE_MODEL` | `/live` lexical parser 模型 |
+| `OPENAI_API_KEY` | 初始 grounded-coach narrator；未設定時安全退回 Gemini |
+| `COACH_NARRATOR_PROVIDER` / `OPENAI_COACH_MODEL` | 初始教練 provider 與低成本 narrator 模型（預設有 key 時為 OpenAI / `gpt-5.6-terra`） |
 | `SUPABASE_CONN` | PostgreSQL transaction-pooler DSN |
 | `SUPABASE_ACCESS_TOKEN` | Supabase CLI deploy token |
 | `SUPABASE_PROJECT_REF` | Supabase project ref |

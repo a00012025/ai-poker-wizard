@@ -52,6 +52,7 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from coach_prompts import (  # noqa: F401 — re-exported for existing importers
     PARSE_PROMPT, IMAGE_PARSE_PROMPT, HERO_HAND_ONLY_PROMPT, COACH_SYSTEM,
+    INITIAL_COACH_SYSTEM,
     _TERM_REPLACEMENTS, _normalize_terms, _GROUNDING_PATTERNS,
     _needs_solver_grounding,
 )
@@ -380,6 +381,25 @@ class GeminiSessionManager:
         self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
         self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        default_narrator = "openai" if openai_key else "gemini"
+        self.coach_narrator_provider = os.getenv(
+            "COACH_NARRATOR_PROVIDER", default_narrator,
+        ).strip().lower()
+        self.coach_narrator_model = os.getenv(
+            "OPENAI_COACH_MODEL", "gpt-5.6-terra",
+        )
+        self.coach_narrator_reasoning = os.getenv(
+            "OPENAI_COACH_REASONING_EFFORT", "low",
+        )
+        self.coach_narrator_max_output_tokens = int(os.getenv(
+            "OPENAI_COACH_MAX_OUTPUT_TOKENS", "900",
+        ))
+        self._openai_narrator_client = None
+        if self.coach_narrator_provider == "openai" and openai_key:
+            from openai import AsyncOpenAI
+
+            self._openai_narrator_client = AsyncOpenAI(api_key=openai_key)
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
@@ -1365,7 +1385,11 @@ class GeminiSessionManager:
                         "絕對不要在沒有查詢的情況下自行編造特定手牌的頻率或聽牌描述！"
                     )
                 else:
-                    coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                    coaching_instruction = (
+                        "逐街 GTO summary 已由系統另外顯示。教練段只解釋 deterministic "
+                        "教學骨架列出的焦點，不得評論骨架未選中的街；若用戶另問假設情境，"
+                        "再用工具取得該情境資料。"
+                    )
                 followup_instruction = (
                     "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
                     "FOLLOWUP: 問題一\n"
@@ -1375,9 +1399,13 @@ class GeminiSessionManager:
                     "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
                 )
                 teaching_block = self._initial_teaching_block(context)
+                solver_prompt_data = (
+                    "逐街 solver 結果已由系統顯示；本段以 deterministic 教學骨架為唯一教練事實。"
+                    if teaching_block and not context.get("no_hero_hand") else gto_data
+                )
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
-                    f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+                    f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
                     f"{coaching_instruction}\n\n{teaching_block}{followup_instruction}"
                 )
                 # Verified generation (retries transient 503/500 internally;
@@ -1583,12 +1611,19 @@ class GeminiSessionManager:
                     "不要提及或分析任何特定手牌（如 AA）的策略。"
                 )
             else:
-                img_coaching_instruction = "請先根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
+                img_coaching_instruction = (
+                    "逐街 GTO summary 已由系統另外顯示。教練段只解釋 deterministic "
+                    "教學骨架列出的焦點，不得評論骨架未選中的街。"
+                )
             teaching_block = self._initial_teaching_block(context)
+            solver_prompt_data = (
+                "逐街 solver 結果已由系統顯示；本段以 deterministic 教學骨架為唯一教練事實。"
+                if teaching_block and not context.get("no_hero_hand") else gto_data
+            )
             coaching_prompt = (
                 f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
                 f"用戶留言：{user_q}\n\n"
-                f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+                f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
                 f"{img_coaching_instruction}\n\n"
                 f"{teaching_block}"
                 "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
@@ -2545,6 +2580,76 @@ class GeminiSessionManager:
                     f"[chat={chat_id}] Follow-up retry {attempt+1}/3: {e}")
                 await asyncio.sleep(2 * (attempt + 1))
 
+    async def _call_openai_narrator(self, prompt: str, system: str,
+                                    usage_acc: dict | None = None) -> str:
+        """Call the low-cost OpenAI narrator on an already grounded card."""
+        client = getattr(self, "_openai_narrator_client", None)
+        if client is None:
+            raise RuntimeError("OpenAI narrator is not configured")
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = await asyncio.wait_for(
+                    client.responses.create(
+                        model=self.coach_narrator_model,
+                        instructions=system,
+                        input=prompt,
+                        reasoning={"effort": self.coach_narrator_reasoning},
+                        text={"verbosity": "low"},
+                        max_output_tokens=self.coach_narrator_max_output_tokens,
+                    ),
+                    timeout=120,
+                )
+                usage = getattr(response, "usage", None)
+                details = getattr(usage, "output_tokens_details", None)
+                if usage_acc is not None and usage is not None:
+                    self._accumulate_usage(usage_acc, {
+                        "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                        "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+                        "thinking_tokens": getattr(details, "reasoning_tokens", 0) or 0,
+                        "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+                    })
+                return response.output_text or ""
+            except Exception as exc:
+                last_error = exc
+                if attempt == 2:
+                    break
+                await asyncio.sleep(2 * (attempt + 1))
+        raise last_error or RuntimeError("OpenAI narrator failed")
+
+    async def _generate_initial_narrator(self, chat_id: int, prompt: str, *,
+                                           digest: dict | None,
+                                           on_status=None,
+                                           user_id: int | None = None,
+                                           refresh_token: str | None = None,
+                                           usage_acc: dict | None = None,
+                                           disable_tools: bool = False,
+                                           system_override: str | None = None) -> str:
+        """Use OpenAI only for grounded prose; safely fall back to Gemini."""
+        if digest and getattr(self, "_openai_narrator_client", None) is not None:
+            try:
+                result = await self._call_openai_narrator(
+                    prompt, system_override or INITIAL_COACH_SYSTEM, usage_acc,
+                )
+                if result.strip():
+                    result = _normalize_terms(result)
+                    self._logger.debug(
+                        "[chat=%s] Initial narrator response (model=%s, %s chars)",
+                        chat_id, self.coach_narrator_model, len(result),
+                    )
+                    return result
+            except Exception as exc:
+                self._logger.warning(
+                    "[chat=%s] OpenAI narrator failed; falling back to Gemini: %s",
+                    chat_id, exc,
+                )
+        return await self._chat_with_tools(
+            chat_id, prompt, on_status=on_status,
+            user_id=user_id, refresh_token=refresh_token,
+            usage_acc=usage_acc, force_tool_eligible=False,
+            disable_tools=disable_tools, system_override=system_override,
+        )
+
     async def _verified_initial_coaching(self, chat_id: int, coaching_prompt: str,
                                           context: dict, user_text: str, *,
                                           on_status=None, user_id: int | None = None,
@@ -2559,17 +2664,19 @@ class GeminiSessionManager:
         polarization.  A failed draft degrades to a deterministic three-section
         coach answer rather than showing an internal warning to the user.
         """
+        digest = context.get("_teaching_digest") or build_teaching_digest(context)
+        narrator_system = INITIAL_COACH_SYSTEM if digest else None
         for attempt in range(3):
             try:
                 if not hasattr(self, "histories"):
                     self.histories = {}
                 history_before_draft = list(self.histories.get(chat_id, []))
-                draft = await self._chat_with_tools(
-                    chat_id, coaching_prompt, on_status=on_status,
-                    user_id=user_id, refresh_token=refresh_token,
-                    usage_acc=usage_acc, force_tool_eligible=False,
-                    disable_tools=disable_tools)
-                digest = context.get("_teaching_digest") or build_teaching_digest(context)
+                draft = await self._generate_initial_narrator(
+                    chat_id, coaching_prompt, digest=digest,
+                    on_status=on_status, user_id=user_id,
+                    refresh_token=refresh_token, usage_acc=usage_acc,
+                    disable_tools=disable_tools, system_override=narrator_system,
+                )
                 if not digest:
                     return draft
                 audit = audit_teaching_draft(
@@ -2605,11 +2712,11 @@ class GeminiSessionManager:
                 # anchoring on the exact hallucinations and numeric clutter
                 # the audit just rejected.
                 self.histories[chat_id] = history_before_draft
-                repaired = await self._chat_with_tools(
-                    chat_id, repair_prompt, on_status=on_status,
-                    user_id=user_id, refresh_token=refresh_token,
-                    usage_acc=usage_acc, force_tool_eligible=False,
-                    disable_tools=disable_tools,
+                repaired = await self._generate_initial_narrator(
+                    chat_id, repair_prompt, digest=digest,
+                    on_status=on_status, user_id=user_id,
+                    refresh_token=refresh_token, usage_acc=usage_acc,
+                    disable_tools=disable_tools, system_override=narrator_system,
                 )
                 repaired_audit = audit_teaching_draft(
                     repaired, digest, source_texts=[user_text],
@@ -2667,7 +2774,8 @@ class GeminiSessionManager:
                                 refresh_token: str | None = None,
                                 usage_acc: dict | None = None,
                                 force_tool_eligible: bool = True,
-                                disable_tools: bool = False) -> str:
+                                disable_tools: bool = False,
+                                system_override: str | None = None) -> str:
         """Chat with GTO tools for data-driven follow-up answers.
 
         force_tool_eligible: when True (the follow-up path), strategy/range
@@ -2701,7 +2809,7 @@ class GeminiSessionManager:
 
         # Build system prompt with hand context
         hand_summary = self._build_hand_summary(chat_id)
-        system = COACH_SYSTEM + "\n\n" + hand_summary
+        system = system_override or (COACH_SYSTEM + "\n\n" + hand_summary)
 
         history = self.histories.get(chat_id, [])
         messages = list(history) + [

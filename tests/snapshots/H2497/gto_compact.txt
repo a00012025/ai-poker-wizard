@@ -8,7 +8,7 @@ GTO: Call 100%
 GTO: Check 100%
 → Hero check ✅
 GTO: Call 99%
-→ Hero raise 33% pot ❌ (GTO建議 call)
+→ Hero raise 33% pot ✅（GTO 多為 call 99%,屬頻率/mix 偏好,非錯誤）
 
 ─── Turn: A♠️ ───
 🎯 中對 (Q)

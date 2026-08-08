@@ -3335,11 +3335,10 @@ def _run_analysis(hand: dict) -> dict:
                         f"（off-tree:此線無 solver 對照,非對錯判定）"
                     )
                 else:
-                    # Structured EV loss vs the solver's best action. Magnitude
-                    # is judged per-street: preflop in absolute bb, postflop
-                    # relative to the pot (classify_ev_impact). A negligible loss
-                    # means hero merely picked a different branch of a mix — a
-                    # frequency preference, not an error.
+                    # Structured EV loss vs the solver's supported mix.
+                    # Magnitude is judged per-street: preflop in absolute bb,
+                    # postflop relative to the pot. Frequency alone never turns
+                    # a solver-supported branch into an EV error.
                     is_pf = spot["street"] == "preflop"
                     ev_detail = (
                         None if facing_allin_call
@@ -3354,35 +3353,16 @@ def _run_analysis(hand: dict) -> dict:
                     sizing_hint = (
                         f" (GTO建議 {gto_top_label})" if gto_top_label else ""
                     )
-                    # Determine ✅ vs ❌ (thresholds unchanged):
-                    #   ❌ if EV loss ≥ 0.5bb, OR
-                    #   ❌ if GTO top action ≥ 80% and hero deviated (preflop
-                    #      keeps ✅ unless EV loss ≥ 0.5bb).
-                    is_bad = False
-                    if ev_detail and ev_loss >= 0.5:
-                        is_bad = True
-                    if (
-                        gto_top_label
-                        and gto_top_freq >= 0.80
-                        and not (is_pf and ev_loss < 0.5)
-                    ):
-                        is_bad = True
-                    if is_pf and not is_bad and ev_loss < 0.5:
+                    # ✅/❌ is EV-weighted, never frequency-weighted. A 3%
+                    # equilibrium branch is still correct; an off-mix action
+                    # with negligible regret is reported as low impact rather
+                    # than fabricated into a mistake by a 97% frequency gap.
+                    is_bad = bool(ev_detail and not ev_negligible)
+                    if is_pf and not is_bad:
                         sizing_hint = ""
 
                     if is_bad:
-                        # Preflop keeps the bare bb figure; postflop appends the
-                        # pot-relative magnitude so the coach can gauge severity
-                        # against the pot, not in absolute bb.
-                        ev_part = ""
-                        if ev_loss >= 0.5:
-                            pot_part = (
-                                f"（{ev_detail['pot_frac'] * 100:.1f}% pot）"
-                                if ev_detail
-                                and ev_detail.get("pot_frac") is not None
-                                else ""
-                            )
-                            ev_part = f" EV損失 -{ev_loss:.1f}bb{pot_part}"
+                        ev_part = f" EV損失 -{format_ev_magnitude(ev_detail)}"
                         compact.append(
                             f"→ Hero {hero_action_short} ❌{ev_part}{sizing_hint}"
                         )
@@ -3392,15 +3372,14 @@ def _run_analysis(hand: dict) -> dict:
                         and ev_negligible
                         and gto_top_freq >= 0.80
                     ):
-                        # Stark frequency gap (GTO almost always does X) but ~zero
-                        # EV: hero just took the low-frequency branch of a
-                        # near-indifferent mix. Spell it out so the coach does not
-                        # mistake a frequency choice for a blunder (H3510).
+                        if ev_detail.get("taken_in_mix"):
+                            note = "屬頻率/mix 偏好,非錯誤"
+                        else:
+                            note = "不在可採信 mix,但 EV 影響小"
                         compact.append(
                             f"→ Hero {hero_action_short} ✅"
                             f"（GTO 多為 {gto_top_label} {gto_top_freq * 100:.0f}%,"
-                            f"但 EV 僅差 {format_ev_magnitude(ev_detail)},"
-                            f"屬頻率/mix 偏好,非錯誤）"
+                            f"{note}）"
                         )
                     else:
                         compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")

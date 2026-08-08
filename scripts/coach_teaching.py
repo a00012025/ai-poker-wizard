@@ -48,7 +48,7 @@ _DRAW_ZH = {
     "gutshot": "卡順聽牌",
     "oesd": "兩頭順子聽牌",
     "flush_draw": "同花聽牌",
-    "nut_flush_draw": "nuts 同花聽牌",
+    "nut_flush_draw": "堅果同花聽牌",
     "combo_draw": "複合聽牌",
 }
 
@@ -71,7 +71,8 @@ _CATEGORY_TERMS = {
     "overpair": ("超對", "overpair"),
     "full_house": ("葫蘆", "full house"),
     "quads": ("四條", "quads"),
-    "flush_draw": ("同花聽牌", "梅花聽牌", "花聽", "flush draw", "後門同花"),
+    "flush_draw": ("同花聽牌", "梅花聽牌", "花聽", "flush draw"),
+    "backdoor_flush": ("後門同花", "後門花", "backdoor flush"),
     "straight_draw": ("卡順", "兩頭順", "順子聽牌", "gutshot", "oesd"),
 }
 
@@ -248,6 +249,17 @@ def _draw_name(solution: dict, player_info: dict, combo_idx: int) -> str | None:
     return names.get(categories[combo_idx])
 
 
+def _deterministic_hand_truth(hero_hand: str, board: str) -> dict | None:
+    """Cross-check exact combo categories with the repo's poker-rules evaluator."""
+    try:
+        from hand_eval import evaluate
+
+        truth = evaluate(hero_hand, board)
+    except (ImportError, TypeError, ValueError, IndexError):
+        return None
+    return truth if truth.get("made_hand") else None
+
+
 def _range_band(percentile: float | None) -> str:
     if percentile is None or percentile < 0:
         return "位置不明"
@@ -300,6 +312,16 @@ def _exact_actions(solution: dict, combo_idx: int) -> list[dict]:
             "pot_ratio": _float(action.get("betsize_by_pot"), -1.0),
         })
     return rows
+
+
+def _best_in_mix_action(actions: list[dict]) -> dict:
+    """Use the same 1% in-mix EV basis as the canonical deviation grader."""
+    from hh_deviation_check import _best_in_mix
+
+    frequencies = {row["code"]: row["frequency"] for row in actions if row.get("code")}
+    evs = {row["code"]: row["ev_bb"] for row in actions if row.get("code")}
+    code, _ = _best_in_mix(frequencies, evs)
+    return next(row for row in actions if row.get("code") == code)
 
 
 def _range_plan(solution: dict) -> dict:
@@ -488,9 +510,10 @@ def _range_equity_story(hero: str, villain: str, hero_pi: dict, villain_pi: dict
             f"{hero} 的 range equity 優勢支持高頻進攻容量；"
             "單一 combo 是否入選仍由牌力角色與 blocker 決定"
         )
-    elif gap <= -0.04 and (
-        (action_contract.get("continue_frequency") or 0.0) >= 0.80
-        or preferred_code == "RAI"
+    elif (
+        gap <= -0.04
+        and actual_code == "F"
+        and (action_contract.get("continue_frequency") or 0.0) >= 0.80
     ):
         use = "prevents_bad_inference"
         interpretation = (
@@ -574,6 +597,38 @@ def _decision_type(preferred: dict, made_category: str | None,
         if made_category in _UNPAIRED_CATEGORIES:
             return "bluff"
     return "strategy"
+
+
+def _mix_strategy_story(actions: list[dict], actual: dict | None,
+                        preferred: dict, ev_loss: float) -> dict | None:
+    """Explain an equilibrium mix without turning frequency into correctness."""
+    if (
+        not actual
+        or actual.get("frequency", 0.0) < 0.01
+        or actual.get("code") == preferred.get("code")
+        or ev_loss > 1e-9
+    ):
+        return None
+    mixed = [
+        row for row in actions
+        if row.get("frequency", 0.0) >= 0.05
+        or row.get("code") in {actual.get("code"), preferred.get("code")}
+    ]
+    if len(mixed) < 2:
+        return None
+    labels = [row["label"] for row in sorted(mixed, key=lambda row: -row["frequency"])]
+    return {
+        "actual_label": actual["label"],
+        "actual_frequency": actual["frequency"],
+        "preferred_label": preferred["label"],
+        "preferred_frequency": preferred["frequency"],
+        "mixed_labels": labels,
+        "interpretation": (
+            f"這個 combo 明確在 {'、'.join(labels)}之間混合；"
+            "實戰動作是 solver 保留的分支，"
+            "最高頻動作只是較常用，不是唯一正解"
+        ),
+    }
 
 
 def _range_evidence(hero: str, villain: str, hero_pi: dict, villain_pi: dict) -> list[dict]:
@@ -916,15 +971,35 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     actions = _exact_actions(solution, combo_idx)
     if not actions:
         return None
-    best = max(actions, key=lambda row: row["ev_bb"])
     actual_code = spot.get("taken_code")
     actual = next((row for row in actions if row["code"] == actual_code), None)
+    best = (
+        actual
+        if actual and actual.get("frequency", 0.0) >= 0.01
+        else _best_in_mix_action(actions)
+    )
     preferred = max(actions, key=lambda row: row["frequency"])
     ev_loss = max(0.0, best["ev_bb"] - actual["ev_bb"]) if actual else 0.0
     pot = _float((solution.get("game") or {}).get("pot"))
     ev_loss_pot = ev_loss / pot if pot > 0 else None
+    board = (solution.get("game") or {}).get("board") or ""
     made_category = _category_name(solution, hero_pi, combo_idx)
     draw_category = _draw_name(solution, hero_pi, combo_idx)
+    hand_truth = _deterministic_hand_truth(hero_hand, board)
+    if hand_truth:
+        truth_made = hand_truth.get("made_hand")
+        if truth_made == "high_card":
+            truth_made = "no_made_hand"
+        # GTOW's range-relative pair buckets are more precise than the generic
+        # evaluator (for example 88 on J93 is third_pair, not merely low_pair).
+        # Use poker-rules made-hand truth only when the solved node lacks one.
+        if not made_category and truth_made in _MADE_ZH:
+            made_category = truth_made
+        truth_draws = hand_truth.get("draws") or []
+        for candidate in ("nut_flush_draw", "flush_draw", "combo_draw", "oesd", "gutshot"):
+            if candidate in truth_draws:
+                draw_category = candidate
+                break
     percentiles = hero_pi.get("eq_percentile") or []
     percentile = _float(percentiles[combo_idx], -1.0) if combo_idx < len(percentiles) else -1.0
     band = _range_band(percentile if percentile >= 0 else None)
@@ -936,9 +1011,12 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     evidence = _range_evidence(hero, villain, hero_pi, villain_pi)
     range_structure = _range_structure(hero, villain, hero_pi, villain_pi)
     size_structure = _size_structure(solution, hero_pi)
-    aggressive_code = (
-        actual.get("code") if actual and (actual.get("code") or "").startswith("R")
-        else best.get("code")
+    aggressive_code = next(
+        (
+            action.get("code") for action in (actual, preferred)
+            if action and (action.get("code") or "").startswith("R")
+        ),
+        None,
     )
     blocker = _blocker_story(
         solution, hero_pi, combo_idx, hero_hand, made_category, aggressive_code, street,
@@ -958,9 +1036,10 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     size_choice = _size_choice_story(
         solution, hero_pi, hero_hand, made_category, actual, preferred,
     )
+    mix_strategy = _mix_strategy_story(actions, actual, preferred, ev_loss)
     decision = {
         "street": street,
-        "board": (solution.get("game") or {}).get("board") or "",
+        "board": board,
         "hero": hero,
         "villain": villain,
         "hero_hand": hero_hand,
@@ -971,10 +1050,12 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
             "draw": draw_category,
             "draw_label": _DRAW_ZH.get(draw_category, draw_category or "聽牌狀態未知"),
             "combo_equity": combo_equity,
+            "deterministic_hand": hand_truth,
         },
         "actual_action": actual,
         "preferred_action": preferred,
         "best_action_by_ev": best,
+        "available_actions": actions,
         "ev_loss_bb": ev_loss,
         "ev_loss_pot": ev_loss_pot,
         "range_plan": range_plan,
@@ -987,6 +1068,7 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "range_evidence": evidence,
         "size_structure": size_structure,
         "size_choice": size_choice,
+        "mix_strategy": mix_strategy,
         "blocker": blocker,
         "opponent_card_effects": opponent_card_effects,
         "confidence": "medium" if reach_weight < 0.005 else "high",
@@ -1065,6 +1147,8 @@ def build_teaching_digest(context: dict) -> dict | None:
             allowed_categories.add(role["made_hand"])
         if role.get("draw") in {"flush_draw", "nut_flush_draw"}:
             allowed_categories.add("flush_draw")
+        if role.get("draw") in {"onecard_bdfd", "twocards_bdfd"}:
+            allowed_categories.add("backdoor_flush")
         if role.get("draw") in {"gutshot", "oesd"}:
             allowed_categories.add("straight_draw")
         for evidence in row["range_evidence"]:
@@ -1079,6 +1163,9 @@ def build_teaching_digest(context: dict) -> dict | None:
                 allowed_percentages.add(round(100 * action["frequency"], 1))
                 if action["pot_ratio"] >= 0:
                     allowed_percentages.add(round(100 * action["pot_ratio"], 1))
+        for action in row.get("available_actions") or []:
+            if action.get("frequency", 0.0) >= 0.005 and action.get("pot_ratio", -1.0) >= 0:
+                allowed_percentages.add(round(100 * action["pot_ratio"], 1))
         allowed_percentages |= {
             round(100 * frequency, 1)
             for frequency in row["range_plan"]["frequencies"].values()
@@ -1168,7 +1255,23 @@ def render_prompt_block(digest: dict | None) -> str:
                 f"（約 {100 * loss:.1f}% pot）"
             )
         elif actual:
-            verdict = f"Hero 的 {actual['label']} 沒有實質 EV 損失"
+            if actual.get("code") == preferred.get("code"):
+                purity = (
+                    "幾乎純用此動作"
+                    if preferred.get("frequency", 0.0) >= 0.97
+                    else "是最高頻動作"
+                )
+                verdict = f"Hero 的 {actual['label']} 沒有實質 EV 損失，而且{purity}"
+            elif actual.get("frequency", 0.0) >= 0.01:
+                verdict = (
+                    f"Hero 的 {actual['label']} 沒有實質 EV 損失，"
+                    "而且是 solver 保留的 mix 分支"
+                )
+            else:
+                verdict = (
+                    f"Hero 的 {actual['label']} EV 代價低於實質門檻，"
+                    "但不在可採信的 solver mix；不要稱為低頻 mix 分支"
+                )
         else:
             verdict = f"solver 最偏好 {preferred['label']}"
         lines.extend([
@@ -1213,6 +1316,8 @@ def render_prompt_block(digest: dict | None) -> str:
             lines.append(f"• Price/defense：{decision['defense_price']['interpretation']}。")
         if decision.get("equity_denial"):
             lines.append(f"• Equity denial：{decision['equity_denial']['interpretation']}。")
+        if decision.get("mix_strategy"):
+            lines.append(f"• Mix contract：{decision['mix_strategy']['interpretation']}。")
         if decision.get("size_choice"):
             lines.append(f"• Exact-class sizing：{decision['size_choice']['interpretation']}。")
         category_story = _category_sentence(decision)
@@ -1256,6 +1361,9 @@ def render_prompt_block(digest: dict | None) -> str:
         "只輸出三段：*核心判斷*、*為什麼*、*你要記得*；每段最多兩句，全文約 180–300 字。",
         "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
         "GTO street summary 會由系統另外顯示；禁止再加 Preflop／Flop／Turn／River 逐街複述。",
+        "只可評價骨架列出的焦點街；即使其他街出現在用戶描述或 solver summary，也不得自行判定其正誤、嚴重度或原因。",
+        "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
+        "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "*為什麼*只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
@@ -1273,6 +1381,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
         "*你要記得*給一條可帶走的 heuristic，並保留 exact-node 邊界，避免泛化成所有相似牌面。",
+        "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
 
@@ -1292,6 +1401,11 @@ def render_fallback(digest: dict) -> str:
         if actual:
             if actual.get("code") == preferred.get("code"):
                 return f"{street} 的 {actual['label']} 是正確選擇"
+            if actual.get("frequency", 0.0) < 0.01:
+                return (
+                    f"{street} 的 {actual['label']} EV 影響很小，"
+                    f"但不在可採信的 solver mix，應偏向 {preferred['label']}"
+                )
             return f"{street} 的 {actual['label']} 沒有實質 EV 損失"
         return f"{street} 應偏向 {preferred['label']}"
 
@@ -1305,6 +1419,8 @@ def render_fallback(digest: dict) -> str:
         ]
         if decision.get("equity_denial"):
             pieces.append(decision["equity_denial"]["interpretation"])
+        elif decision.get("mix_strategy"):
+            pieces.append(decision["mix_strategy"]["interpretation"])
         elif decision.get("defense_price"):
             pieces.append(decision["defense_price"]["interpretation"])
         elif decision.get("size_choice"):
@@ -1361,6 +1477,7 @@ def render_fallback(digest: dict) -> str:
 
     lesson = {
         "低 SPR 下的 equity denial 與脆弱成牌保護": "低 SPR 面對大注時，脆弱成牌可能用 jam 向未成牌與聽牌收取 realization 代價；不要只看平均 range equity。",
+        "exact combo 的 mixed strategy 分配": "solver 明確保留的 mix 分支都不是錯誤；把頻率偏好和 EV 損失分開學，並且只在同一個 node 套用。",
         "下注價格、整體防守門檻與 Hero 在自身 range 的位置": "range 劣勢不等於 fold；先比較下注價格與防守門檻，再看 exact combo 在自身 range 的位置。",
         "價值 hand class 的 size allocation": "價值牌的 size 要看 solver 把這個 hand class 分配到哪個下注 bucket；平均 range equity 不能替你選 size。",
         "整體 range strategy": "當 solver 在同一節點採近乎全 range 的計畫時，先服從 range-level strategy，再談單一 combo 的微調。",
@@ -1410,14 +1527,40 @@ class AuditResult:
 
 
 def _body_without_followups(text: str) -> str:
-    return "\n".join(
-        line for line in (text or "").splitlines()
-        if not line.strip().startswith("FOLLOWUP:")
-    )
+    kept = []
+    seen_takeaway = False
+    followup_block = False
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if "你要記得" in stripped:
+            seen_takeaway = True
+        if re.match(
+            r"^(?:[*#_\s-]*follow[ -]?up|[*#_\s-]*你可以問|[*#_\s-]*提問建議)",
+            stripped,
+            re.I,
+        ):
+            followup_block = True
+            continue
+        if followup_block or re.match(r"^FOLLOWUP\s*[:：]", stripped, re.I):
+            continue
+        if (
+            seen_takeaway
+            and re.match(r"^(?:[•*+-]|\d+[.)、])\s*", stripped)
+            and ("？" in stripped or "?" in stripped)
+        ):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
-_CARD_RE = re.compile(
-    r"([2-9TJQKA])\s*(c|d|h|s|♣|♧|☘(?:️)?|♦|♢|🔷|♥(?:️)?|♡|♠(?:️)?|♤)",
+_ASCII_CARD_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[2-9TJQKA][cdhs])"
+    r"(?:[\s,/-]*(?:[2-9TJQKA][cdhs]))*(?![A-Za-z0-9])",
+    re.I,
+)
+_ASCII_CARD_RE = re.compile(r"([2-9TJQKA])([cdhs])", re.I)
+_EMOJI_CARD_RE = re.compile(
+    r"([2-9TJQKA])\s*(♣|♧|☘(?:️)?|♦|♢|🔷|♥(?:️)?|♡|♠(?:️)?|♤)",
     re.I,
 )
 _SUIT_NORMALIZATION = {
@@ -1430,11 +1573,16 @@ _SUIT_NORMALIZATION = {
 
 def _normalized_cards(text: str) -> list[tuple[int, int, str]]:
     cards = []
-    for match in _CARD_RE.finditer(text or ""):
+    for run in _ASCII_CARD_RUN_RE.finditer(text or ""):
+        for match in _ASCII_CARD_RE.finditer(run.group(0)):
+            start = run.start() + match.start()
+            end = run.start() + match.end()
+            cards.append((start, end, match.group(1).upper() + match.group(2).lower()))
+    for match in _EMOJI_CARD_RE.finditer(text or ""):
         suit = _SUIT_NORMALIZATION.get(match.group(2).lower())
         if suit:
             cards.append((match.start(), match.end(), match.group(1).upper() + suit))
-    return cards
+    return sorted(set(cards))
 
 
 def _audit_exact_combos(body: str, digest: dict) -> list[str]:
@@ -1590,6 +1738,25 @@ def _family_frequency(decision: dict, family: str, range_level: bool) -> float |
     )
 
 
+def _sized_family_frequency(decision: dict, family: str, range_level: bool,
+                            pot_ratio: float) -> float | None:
+    """Frequency for one concrete bet/raise size rather than all aggression."""
+    frequencies = (
+        decision["range_plan"]["frequencies"]
+        if range_level else decision["action_contract"]["frequencies"]
+    )
+    matches = [
+        row for row in decision.get("available_actions") or []
+        if abs(row.get("pot_ratio", -1.0) - pot_ratio) <= 0.015
+        and _action_family(
+            row.get("code") or "", decision["range_plan"]["facing_bet"],
+        ) == family
+    ]
+    if not matches:
+        return None
+    return sum(frequencies.get(row["code"], 0.0) for row in matches)
+
+
 def _nearest_action_family(sentence: str, start: int, end: int) -> str | None:
     """Bind a percentage to its closest action noun, not any noun nearby."""
     candidates = []
@@ -1634,15 +1801,36 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
                 re.I,
             )) or bool(re.search(r"(?:範圍|range)", level_suffix, re.I))
             candidates = digest["decisions"]
-            street_match = re.search(r"(flop|turn|river|翻牌|轉牌|河牌)", sentence, re.I)
+            street_matches = [
+                match for match in re.finditer(
+                    r"(flop|turn|river|翻牌|轉牌|河牌)", sentence, re.I,
+                )
+                if match.start() <= number.start()
+            ]
+            street_match = street_matches[-1] if street_matches else None
             if street_match:
                 street = {
                     "翻牌": "flop", "轉牌": "turn", "河牌": "river",
                 }.get(street_match.group(1).lower(), street_match.group(1).lower())
                 candidates = [row for row in candidates if row["street"] == street]
+            size_matches = [
+                match for match in re.finditer(
+                    r"(\d+(?:\.\d+)?)\s*(?:%|％)\s*(?:pot|底池)",
+                    sentence[:number.start()],
+                    re.I,
+                )
+                if number.start() - match.end() <= 40
+            ]
+            size_ratio = float(size_matches[-1].group(1)) / 100 if size_matches else None
             claimed = float(number.group(1)) / 100
             if not any(
-                (frequency := _family_frequency(row, family, range_level)) is not None
+                (
+                    frequency := (
+                        _sized_family_frequency(row, family, range_level, size_ratio)
+                        if size_ratio is not None else
+                        _family_frequency(row, family, range_level)
+                    )
+                ) is not None
                 and abs(claimed - frequency) <= 0.011
                 for row in candidates
             ):
@@ -1663,8 +1851,8 @@ def _audit_category_ownership(body: str, digest: dict) -> list[str]:
             for actor in (decision["hero"], decision["villain"]):
                 pattern = (
                     rf"(?<![A-Za-z0-9+]){re.escape(actor)}(?![A-Za-z0-9+])"
-                    rf"[^。；，,\n而]{{0,30}}(?:{'|'.join(re.escape(term) for term in terms)})"
-                    rf"[^。；，,\n而]{{0,12}}(?:更多|較多|more)"
+                    rf"[^。；，,、\n而]{{0,30}}(?:{'|'.join(re.escape(term) for term in terms)})"
+                    rf"[^。；，,、\n而]{{0,12}}(?:更多|較多|more)"
                 )
                 if actor != owner and re.search(pattern, body, re.I):
                     violations.append(f"category owner mismatch {category}:{actor}!={owner}")
@@ -1743,6 +1931,164 @@ def _audit_exact_hand_categories(body: str, digest: dict) -> list[str]:
     return violations
 
 
+_STREET_ALIASES = {
+    "preflop": "preflop", "翻牌前": "preflop",
+    "flop": "flop", "翻牌": "flop",
+    "turn": "turn", "轉牌": "turn",
+    "river": "river", "河牌": "river",
+}
+
+
+def _mentioned_streets(body: str) -> set[str]:
+    """Return explicit streets without reading 翻牌 inside 翻牌前."""
+    mentions = set()
+    for match in re.finditer(
+        r"preflop|翻牌前|flop|翻牌|turn|轉牌|river|河牌",
+        body or "",
+        re.I,
+    ):
+        mentions.add(_STREET_ALIASES[match.group(0).lower()])
+    return mentions
+
+
+def _audit_selected_streets(body: str, digest: dict) -> list[str]:
+    """The narrator may explain only nodes selected by the deterministic card."""
+    selected = {row.get("street") for row in digest.get("decisions") or []}
+    return [
+        f"unsupported street {street}"
+        for street in sorted(_mentioned_streets(body) - selected)
+    ]
+
+
+def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
+    """Prevent frequency preferences from being rewritten as EV mistakes."""
+    violations = []
+    street_terms = {
+        "flop": r"(?:flop|翻牌)",
+        "turn": r"(?:turn|轉牌)",
+        "river": r"(?:river|河牌)",
+    }
+    negative = re.compile(
+        r"(?:錯誤|失誤|漏洞|打錯|不正確|不應該|不該|偏離|"
+        r"(?:有|造成|產生|損失)[^。；\n]{0,8}EV\s*(?:loss|損失))",
+        re.I,
+    )
+    negation = re.compile(
+        r"(?:不是|並非|不算|沒有|無)[^。；\n]{0,10}"
+        r"(?:錯誤|失誤|漏洞|EV\s*(?:loss|損失))",
+        re.I,
+    )
+    positive = re.compile(
+        r"(?:正確|沒(?:有)?實質\s*EV\s*損失|沒有\s*EV\s*損失|"
+        r"不是[^。；\n]{0,6}(?:錯誤|失誤)|solver\s*(?:保留|支持)|mix\s*分支)",
+        re.I,
+    )
+
+    def names_actual(sentence: str, decision: dict) -> bool:
+        actual = decision.get("actual_action") or {}
+        family = _action_family(
+            actual.get("code") or "", decision["range_plan"]["facing_bet"],
+        )
+        pattern = _ACTION_TEXT_PATTERNS.get(family)
+        return bool(
+            (pattern and re.search(pattern, sentence, re.I))
+            or re.search(r"(?:這個|這次|實戰)(?:動作|選擇|打法)|Hero 的行動", sentence, re.I)
+        )
+
+    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
+    core_sentences = [row for row in re.split(r"[。！？\n]", core) if row.strip()]
+    for sentence in re.split(r"[。！？\n]", body or ""):
+        if not sentence.strip():
+            continue
+        for decision in digest.get("decisions") or []:
+            street = decision.get("street")
+            if not street or not re.search(street_terms[street], sentence, re.I):
+                continue
+            if not names_actual(sentence, decision):
+                continue
+            has_material_loss = (decision.get("ev_loss_pot") or 0.0) >= 0.003
+            if not has_material_loss and negative.search(sentence) and not negation.search(sentence):
+                violations.append(f"verdict mismatch {street}:in-mix-called-error")
+            if has_material_loss and positive.search(sentence):
+                violations.append(f"verdict mismatch {street}:loss-called-correct")
+    if len(digest.get("decisions") or []) == 1:
+        decision = digest["decisions"][0]
+        street = decision["street"]
+        has_material_loss = (decision.get("ev_loss_pot") or 0.0) >= 0.003
+        for sentence in core_sentences:
+            if not names_actual(sentence, decision):
+                continue
+            if not has_material_loss and negative.search(sentence) and not negation.search(sentence):
+                violations.append(f"verdict mismatch {street}:in-mix-called-error")
+            if has_material_loss and positive.search(sentence):
+                violations.append(f"verdict mismatch {street}:loss-called-correct")
+    return violations
+
+
+def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
+    """An off-mix action may be cheap in EV without becoming a solver branch."""
+    violations = []
+    for decision in digest.get("decisions") or []:
+        actual = decision.get("actual_action") or {}
+        if actual.get("frequency", 0.0) >= 0.01:
+            continue
+        family = _action_family(
+            actual.get("code") or "", decision["range_plan"]["facing_bet"],
+        )
+        action_pattern = _ACTION_TEXT_PATTERNS.get(family)
+        if not action_pattern:
+            continue
+        for sentence in re.split(r"[。！？；\n]", body or ""):
+            if not re.search(action_pattern, sentence, re.I):
+                continue
+            claims_supported = (
+                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持)|mix\s*分支)", sentence, re.I)
+                or re.search(rf"(?:低頻|少量)[^。；\n]{{0,12}}{action_pattern}", sentence, re.I)
+                or re.search(rf"{action_pattern}[^。；\n]{{0,10}}(?:可用|可採用)", sentence, re.I)
+            )
+            explicitly_off_mix = re.search(
+                r"(?:不在|未進入|不是)[^。；\n]{0,12}(?:solver\s*)?mix|"
+                r"(?:solver[^。；\n]{0,12}(?:不採用|未保留))",
+                sentence,
+                re.I,
+            )
+            if claims_supported and not explicitly_off_mix:
+                violations.append(f"off-mix action called supported {decision['street']}")
+                break
+    return violations
+
+
+def _audit_range_structure_causality(body: str, digest: dict) -> list[str]:
+    """Secondary category ownership is context, not a derived action rule."""
+    violations = []
+    action_terms = (
+        r"(?:策略|混合|bet|check|call|fold|raise|all[- ]?in|"
+        r"下注|過牌|跟注|棄牌|加注|全下)"
+    )
+    causal_terms = r"(?:因此|所以|導致|決定|使得|讓|支撐|支持)"
+    for decision in digest.get("decisions") or []:
+        primary = (decision.get("drivers") or {}).get("primary")
+        if primary == "雙方強牌結構":
+            continue
+        labels = [row.get("label") for row in decision.get("range_evidence") or []]
+        labels = [label for label in labels if label]
+        if not labels:
+            continue
+        category_terms = "|".join(re.escape(label) for label in labels)
+        for clause in re.split(r"[。！？；，,\n]", body or ""):
+            if not re.search(category_terms, clause, re.I):
+                continue
+            if (
+                re.search(causal_terms, clause, re.I)
+                and re.search(action_terms, clause, re.I)
+            ):
+                violations.append(
+                    f"unsupported category-to-strategy causality {decision['street']}"
+                )
+                break
+    return violations
+
+
 def _audit_unsupported_categories(body: str, allowed: set[str]) -> list[str]:
     """Match human category terms without double-counting draws as made hands."""
     violations = []
@@ -1807,6 +2153,10 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_action_frequency_claims(body, digest))
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
+    violations.extend(_audit_selected_streets(body, digest))
+    violations.extend(_audit_action_verdicts(body, digest))
+    violations.extend(_audit_actual_mix_status(body, digest))
+    violations.extend(_audit_range_structure_causality(body, digest))
 
     allowed = set(digest.get("allowed_categories") or [])
     violations.extend(_audit_unsupported_categories(body, allowed))
@@ -1821,17 +2171,35 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     ):
         violations.append("unsupported blocker target")
-    if re.search(r"\b(?:nuts?|nut advantage)\b|堅果", lowered, re.I):
+    nut_claim_body = body
+    if any(
+        (row.get("hero_role") or {}).get("draw") == "nut_flush_draw"
+        for row in digest["decisions"]
+    ):
+        nut_claim_body = re.sub(
+            r"(?:\bnuts?\b|堅果)\s*(?:同花聽牌|花聽|flush\s+draw)",
+            "",
+            nut_claim_body,
+            flags=re.I,
+        )
+    if re.search(r"\b(?:nuts?|nut advantage)\b|堅果", nut_claim_body, re.I):
         violations.append("unsupported nuts claim")
 
     supports_range_equity = any(
         (row.get("range_equity") or {}).get("use") != "omit"
         for row in digest["decisions"]
     )
+    range_equity_claim_body = re.sub(
+        r"(?:不是|並非|不靠|不能(?:只)?靠|不要(?:只)?看)[^。；\n]{0,20}"
+        r"(?:range\s+equity|範圍勝率)[^。；\n]{0,16}",
+        "",
+        body,
+        flags=re.I,
+    )
     if not supports_range_equity and re.search(
         r"(?:range|範圍|整體)[^。；\n]{0,20}(?:equity|勝率)[^。；\n]{0,16}(?:優勢|劣勢|領先|落後)"
         r"|(?:range equity|範圍勝率)",
-        body,
+        range_equity_claim_body,
         re.I,
     ):
         violations.append("unsupported range-equity explanation")
@@ -1901,7 +2269,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     ]
     for match in re.finditer(
         r"\bSPR\b\s*(?:極低|很低|低)?\s*[（(]?\s*"
-        r"(?:約(?:為)?|大約|為|=)?\s*(\d+(?:\.\d+)?)",
+        r"(?:約(?:為)?|大約|為|=)?\s*(\d+(?:\.\d+)?)(?!\s*[- ]?bet\b|[A-Za-z])",
         body,
         re.I,
     ):

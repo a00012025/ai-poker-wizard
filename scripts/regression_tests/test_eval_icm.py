@@ -103,6 +103,16 @@ def test_hand_eval_top_pair():
 
 
 @test
+def test_hand_eval_ac7c_on_7h5c4c_is_nut_flush_draw():
+    """Exact real-hand regression used by grounded coaching."""
+    from hand_eval import evaluate
+
+    result = evaluate("Ac7c", "7h5c4c")
+    assert_eq(result["made_hand"], "top_pair")
+    assert_in("nut_flush_draw", result["draws"])
+
+
+@test
 def test_hand_eval_board_pair_not_hero():
     """H2671: JTo on KhQdKd = J high (board pair K, hero has no K)."""
     from hand_eval import evaluate

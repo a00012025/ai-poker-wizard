@@ -64,6 +64,16 @@ CAUSAL_RULES = (
         primary_priority=100,
     ),
     CausalRule(
+        id="exact_combo_mix",
+        title="exact combo 的 mixed strategy 分配",
+        evidence_tier="A_direct_node_fact",
+        required_facts=("exact_action_frequencies", "actual_action_in_mix"),
+        claim_scope="實戰 action 是 solver 明確保留的 mix 分支，較高頻 action 只是偏好而非唯一正解",
+        forbidden_inferences=("把低頻 mix 稱為 EV 錯誤", "跨 node 套用相同 mix"),
+        applies=lambda row: bool(row.get("mix_strategy")),
+        primary_priority=95,
+    ),
+    CausalRule(
         id="defense_price",
         title="下注價格、整體防守門檻與 Hero 在自身 range 的位置",
         evidence_tier="A_direct_node_fact",
@@ -102,6 +112,16 @@ CAUSAL_RULES = (
         forbidden_inferences=("range 劣勢等於 fold", "continue 等於 call"),
         applies=_wide_defense,
         primary_priority=75,
+    ),
+    CausalRule(
+        id="exact_combo_action_role",
+        title="Hero 這個 combo 的 range 角色與 EV",
+        evidence_tier="A_direct_node_fact",
+        required_facts=("exact_action_ev", "hero_range_band", "hero_made_category"),
+        claim_scope="先描述 exact combo 在此 node 的動作、range 位置與 EV，再把 range 結構當背景",
+        forbidden_inferences=("用 range 類別差距單獨推出 exact action",),
+        applies=lambda row: row.get("decision_type") != "bluff",
+        primary_priority=72,
     ),
     CausalRule(
         id="strong_hand_structure",

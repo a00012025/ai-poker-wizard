@@ -2219,6 +2219,11 @@ def test_normalize_terms_deterministic():
     assert_eq(n("這是純唬牌"), "這是純詐唬")
     assert_eq(n("用 c-bet 施壓"), "用 cbet 施壓")
     assert_eq(n("C-Bet 30%"), "cbet 30%")
+    assert_eq(
+        n("牌面 Ad♠️8h♥️2c☘️，手牌 Jh♥️Ts♠️"),
+        "牌面 A🔷8♥️2☘️，手牌 J♥️T♠️",
+        "text suit codes followed by an emoji must collapse to the coded suit",
+    )
 
     # ordering: compound forms replaced before the 彩池 substring
     # (must not leave a 底池控制 artifact)

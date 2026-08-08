@@ -1070,6 +1070,9 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
     )
     taken_freq = strategy_freqs.get(taken_code) if strategy_freqs else None
     max_freq = max(strategy_freqs.values()) if strategy_freqs else None
+    from hh_deviation_check import IN_MIX_FREQ_FLOOR
+    if taken_freq is not None and taken_freq >= IN_MIX_FREQ_FLOOR:
+        return None
     if (
         taken_code == "F"
         and taken_freq is not None
@@ -1083,8 +1086,14 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
     if hero_ev is None:
         return None
 
-    best_code = max(action_evs, key=action_evs.get)
-    best_ev = action_evs[best_code]
+    if strategy_freqs:
+        from hh_deviation_check import _best_in_mix
+        best_code, best_ev = _best_in_mix(strategy_freqs, action_evs)
+    else:
+        best_code = max(action_evs, key=action_evs.get)
+        best_ev = action_evs[best_code]
+    if best_code is None or best_ev is None:
+        return None
     ev_loss = best_ev - hero_ev
 
     if ev_loss < 0.005:
@@ -1134,7 +1143,8 @@ def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
     Returns None when there is no meaningful loss or data is unavailable
     (mirrors format_ev_comparison's gating, including the max-frequency-fold
     case). Otherwise returns
-    {ev_loss, hero_ev, best_ev, best_code, pot_bb, pot_frac, negligible}.
+    {ev_loss, hero_ev, best_ev, best_code, pot_bb, pot_frac, negligible,
+    taken_freq, taken_in_mix}.
     """
     if not spot_solution or "action_solutions" not in spot_solution:
         return None
@@ -1161,6 +1171,7 @@ def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
     )
     taken_freq = strategy_freqs.get(taken_code) if strategy_freqs else None
     max_freq = max(strategy_freqs.values()) if strategy_freqs else None
+    from hh_deviation_check import IN_MIX_FREQ_FLOOR
     if (
         taken_code == "F"
         and taken_freq is not None
@@ -1174,8 +1185,16 @@ def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
     if hero_ev is None:
         return None
 
-    best_code = max(action_evs, key=action_evs.get)
-    best_ev = action_evs[best_code]
+    if taken_freq is not None and taken_freq >= IN_MIX_FREQ_FLOOR:
+        best_code, best_ev = taken_code, hero_ev
+    elif strategy_freqs:
+        from hh_deviation_check import _best_in_mix
+        best_code, best_ev = _best_in_mix(strategy_freqs, action_evs)
+    else:
+        best_code = max(action_evs, key=action_evs.get)
+        best_ev = action_evs[best_code]
+    if best_code is None or best_ev is None:
+        return None
     ev_loss = best_ev - hero_ev
     if ev_loss < 0:
         ev_loss = 0.0
@@ -1194,6 +1213,10 @@ def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
         "hero_ev": hero_ev,
         "best_ev": best_ev,
         "best_code": best_code,
+        "taken_freq": taken_freq,
+        "taken_in_mix": bool(
+            taken_freq is not None and taken_freq >= IN_MIX_FREQ_FLOOR
+        ),
         "pot_bb": pot_bb,
         "pot_frac": impact["pot_frac"],
         "negligible": impact["negligible"],

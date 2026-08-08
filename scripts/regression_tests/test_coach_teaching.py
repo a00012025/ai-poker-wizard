@@ -872,8 +872,10 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("coach-teaching-test")
     manager.histories = {}
+    observed_systems = []
 
     async def fake_chat(self, chat_id, prompt, **kwargs):
+        observed_systems.append(kwargs.get("system_override"))
         return (
             "*核心判斷*\nRiver bet 正確。\n\n"
             "*為什麼*\nQdJs blocks JT nuts。\n\n"
@@ -888,6 +890,8 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     assert_in("*你要記得*", answer)
     assert_not_in("JT", answer)
     assert_not_in("nuts", answer)
+    assert_true(all(observed_systems), "initial narrator must use compact system override")
+    assert_true(all("Deterministic 教學骨架" in item for item in observed_systems))
 
 
 @test
@@ -937,3 +941,384 @@ def test_session_initial_coaching_accepts_grounded_repair():
         "repair must not see the rejected draft in conversation history",
     )
     assert_in("FOLLOWUP: River 為什麼能下注？", answer)
+
+
+@test
+def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
+    """OpenAI narrates the distilled card; Gemini remains the safe fallback."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager, INITIAL_COACH_SYSTEM
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            assert_eq(kwargs["model"], "gpt-5.6-terra")
+            assert_in("Deterministic 教學骨架", kwargs["instructions"])
+            details = py_types.SimpleNamespace(reasoning_tokens=7)
+            usage = py_types.SimpleNamespace(
+                input_tokens=100,
+                output_tokens=25,
+                total_tokens=125,
+                output_tokens_details=details,
+            )
+            return py_types.SimpleNamespace(output_text="grounded narrator", usage=usage)
+
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("openai-initial-narrator-test")
+    manager._openai_narrator_client = py_types.SimpleNamespace(responses=FakeResponses())
+    manager.coach_narrator_model = "gpt-5.6-terra"
+    manager.coach_narrator_reasoning = "low"
+    manager.coach_narrator_max_output_tokens = 900
+
+    async def forbidden_gemini(self, *args, **kwargs):
+        raise AssertionError("grounded OpenAI narrator should not load Gemini context")
+
+    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
+    usage = {}
+    answer = asyncio.run(manager._generate_initial_narrator(
+        7, "card", digest={"decisions": [{}]},
+        usage_acc=usage, system_override=INITIAL_COACH_SYSTEM,
+    ))
+    assert_eq(answer, "grounded narrator")
+    assert_eq(usage["prompt_tokens"], 100)
+    assert_eq(usage["thinking_tokens"], 7)
+
+
+@test
+def test_session_grounded_initial_narrator_falls_back_to_gemini():
+    """An OpenAI outage must not break the existing initial coach flow."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager, INITIAL_COACH_SYSTEM
+
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("openai-initial-narrator-fallback-test")
+    manager._openai_narrator_client = object()
+
+    async def failing_openai(self, *args, **kwargs):
+        raise RuntimeError("temporary OpenAI failure")
+
+    async def fallback_gemini(self, chat_id, prompt, **kwargs):
+        assert_eq(chat_id, 7)
+        assert_eq(prompt, "card")
+        assert_true(kwargs["disable_tools"])
+        assert_eq(kwargs["system_override"], INITIAL_COACH_SYSTEM)
+        return "gemini fallback"
+
+    manager._call_openai_narrator = py_types.MethodType(failing_openai, manager)
+    manager._chat_with_tools = py_types.MethodType(fallback_gemini, manager)
+    answer = asyncio.run(manager._generate_initial_narrator(
+        7, "card", digest={"decisions": [{}]},
+        disable_tools=True, system_override=INITIAL_COACH_SYSTEM,
+    ))
+    assert_eq(answer, "gemini fallback")
+
+
+@test
+def test_coach_teaching_ignores_zero_frequency_ev_noise():
+    """Coach focus and loss must not use an action outside the solver mix."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "C"
+    action_rows = context["solutions"][0]["action_solutions"]
+    hero_idx = gf.combo_index_for_hand("8s8d")
+    # Fold/call/RAI: all-in has an impossible high EV but is below the same
+    # 1% in-mix floor used by the deviation grader.
+    action_rows[0]["strategy"][hero_idx] = 0.33
+    action_rows[0]["evs"][hero_idx] = -3.0
+    action_rows[1]["strategy"][hero_idx] = 0.669
+    action_rows[1]["evs"][hero_idx] = -2.62
+    action_rows[2]["strategy"][hero_idx] = 0.001
+    action_rows[2]["evs"][hero_idx] = 7.30
+
+    digest = ct.build_teaching_digest(context)
+    assert_true(digest is not None)
+    decision = digest["decisions"][0]
+    assert_eq(decision["preferred_action"]["code"], "C")
+    assert_eq(decision["best_action_by_ev"]["code"], "C")
+    assert_eq(decision["ev_loss_bb"], 0.0)
+    assert_true(decision["equity_denial"] is None)
+
+
+@test
+def test_coach_teaching_card_parser_does_not_read_words_as_combos():
+    """English prose such as 'exact combo' must not tokenize as AcTc."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    answer = (
+        "*核心判斷*\nFlop fold 是明顯失誤。\n\n"
+        "*為什麼*\n這個 exact combo 是脆弱第三對，低 SPR 下應 all-in。\n\n"
+        "*你要記得*\n先看這個 combo 的 solver action；只適用目前 node。"
+    )
+    violations = ct.audit_draft(answer, digest).violations
+    assert_not_in("unsupported exact combo AcTc", violations)
+
+
+@test
+def test_coach_teaching_audit_ignores_followup_questions_not_claims():
+    """Suggested questions may name hypotheticals; they are not coach claims."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    with_questions = ct.render_fallback(digest) + (
+        "\n\n• 若 Hero 改拿 A♥️8♥️，策略會如何？"
+        "\n• SB 哪些牌會面對 all-in 繼續？"
+        "\n• 如果 turn 是 K☘️，range 會怎麼調整？"
+    )
+    audit = ct.audit_draft(with_questions, digest)
+    assert_true(audit.ok, str(audit.violations))
+
+
+@test
+def test_coach_teaching_allows_verified_nut_flush_draw_only():
+    """Verified nut-flush draw is safe; literal nuts remains banned."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    decision = digest["decisions"][0]
+    decision["hero_hand"] = "Ac7c"
+    decision["board"] = "7h5c4c"
+    decision["hero_role"].update({
+        "made_hand": "top_pair",
+        "made_hand_label": "頂對",
+        "draw": "nut_flush_draw",
+        "draw_label": "堅果同花聽牌",
+    })
+    digest["allowed_categories"] = sorted(
+        set(digest["allowed_categories"]) | {"top_pair", "flush_draw"}
+    )
+    good = (
+        "*核心判斷*\nFlop fold 是明顯失誤。\n\n"
+        "*為什麼*\nA☘️7☘️ 是頂對加堅果同花聽牌。\n\n"
+        "*你要記得*\n先看 combo 在自身 range 的角色；只適用目前 node。"
+    )
+    assert_true(ct.audit_draft(good, digest).ok)
+    bad = good.replace("堅果同花聽牌", "目前的 nuts")
+    assert_in("unsupported nuts claim", ct.audit_draft(bad, digest).violations)
+
+
+@test
+def test_coach_teaching_category_owner_stops_at_list_delimiter():
+    """One actor's category must not leak across '、' into the next actor."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    decision = digest["decisions"][0]
+    good = "SB 的超對較多、HJ 的 set 較多。"
+    assert_eq(ct._audit_category_ownership(good, digest), [])
+    bad = "HJ 的超對較多、SB 的 set 較多。"
+    violations = ct._audit_category_ownership(bad, digest)
+    assert_true(bool(violations), "inverted ownership must still fail")
+
+
+@test
+def test_coach_teaching_backdoor_flush_is_not_flush_draw():
+    """Backdoor potential is allowed only as backdoor wording, not a real draw."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    digest["decisions"][0]["hero_role"].update({
+        "draw": "twocards_bdfd",
+        "draw_label": "雙張後門同花潛力",
+    })
+    digest["allowed_categories"] = sorted(
+        set(digest["allowed_categories"]) | {"backdoor_flush"}
+    )
+    good = (
+        "*核心判斷*\nFlop fold 是明顯失誤。\n\n"
+        "*為什麼*\n這是第三對，帶雙張後門同花潛力。\n\n"
+        "*你要記得*\n只適用目前 node。"
+    )
+    assert_true(ct.audit_draft(good, digest).ok)
+    bad = good.replace("雙張後門同花潛力", "同花聽牌")
+    assert_in("unsupported category flush_draw", ct.audit_draft(bad, digest).violations)
+
+
+@test
+def test_coach_teaching_action_frequency_binds_to_size_and_nearest_street():
+    """A size's frequency is not the sum of every bet/raise size."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    good = "River 這個 combo 以 bet 58% pot 為主（約 94%）。"
+    assert_eq(ct._audit_action_frequency_claims(good, digest), [])
+    bad = "River 這個 combo 以 bet 58% pot 為主（約 55%）。"
+    assert_in(
+        "action-frequency mismatch bet 55%",
+        ct._audit_action_frequency_claims(bad, digest),
+    )
+
+
+@test
+def test_coach_teaching_spr_audit_does_not_read_3bet_as_spr_three():
+    """The token '3bet' is a pot type, never an SPR numeric claim."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    answer = ct.render_fallback(digest).replace("低 SPR", "低 SPR 3bet 底池", 1)
+    assert_not_in("SPR mismatch 3", ct.audit_draft(answer, digest).violations)
+
+
+@test
+def test_coach_teaching_fallback_self_audits_supported_shapes():
+    """Deterministic degradation is a safety boundary and must itself be clean."""
+    import coach_teaching as ct
+
+    for context in (_h3818_like_context(), _low_spr_88_context(), _value_size_context()):
+        digest = ct.build_teaching_digest(context)
+        fallback = ct.render_fallback(digest)
+        audit = ct.audit_draft(fallback, digest)
+        assert_true(audit.ok, f"{audit.violations}: {fallback}")
+
+
+@test
+def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
+    """A meaningful fold/raise mix teaches allocation without reversing verdict."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "F"
+    rows = context["solutions"][0]["action_solutions"]
+    idx = gf.combo_index_for_hand("8s8d")
+    rows[0]["strategy"][idx], rows[0]["evs"][idx] = 0.42, 0.0
+    rows[1]["strategy"][idx], rows[1]["evs"][idx] = 0.02, -4.0
+    rows[2]["strategy"][idx], rows[2]["evs"][idx] = 0.56, 8.0
+
+    digest = ct.build_teaching_digest(context)
+    decision = digest["decisions"][0]
+    assert_eq(decision["ev_loss_bb"], 0.0)
+    assert_eq(decision["drivers"]["primary"], "exact combo 的 mixed strategy 分配")
+    assert_in("實戰動作是 solver 保留的分支", decision["mix_strategy"]["interpretation"])
+    fallback = ct.render_fallback(digest)
+    assert_in("沒有實質 EV 損失", fallback)
+    assert_in("最高頻動作只是較常用，不是唯一正解", fallback)
+    assert_true(ct.audit_draft(fallback, digest).ok)
+
+
+@test
+def test_coach_teaching_audit_rejects_unselected_street_commentary():
+    """Raw solver text must not lure the narrator into grading another street."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    answer = ct.render_fallback(digest).replace(
+        "*為什麼*\n",
+        "*為什麼*\nPreflop call 雖然低頻，也是小錯。",
+    )
+    assert_in("unsupported street preflop", ct.audit_draft(answer, digest).violations)
+
+
+@test
+def test_coach_teaching_audit_rejects_in_mix_action_called_error():
+    """A selected solver-supported mix branch cannot be narrated as a leak."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "F"
+    rows = context["solutions"][0]["action_solutions"]
+    idx = gf.combo_index_for_hand("8s8d")
+    rows[0]["strategy"][idx], rows[0]["evs"][idx] = 0.42, 0.0
+    rows[1]["strategy"][idx], rows[1]["evs"][idx] = 0.02, -4.0
+    rows[2]["strategy"][idx], rows[2]["evs"][idx] = 0.56, 8.0
+    digest = ct.build_teaching_digest(context)
+    answer = ct.render_fallback(digest).replace(
+        "Flop 的 fold 沒有實質 EV 損失",
+        "Flop 的 fold 是小錯誤",
+    )
+    assert_in(
+        "verdict mismatch flop:in-mix-called-error",
+        ct.audit_draft(answer, digest).violations,
+    )
+
+
+@test
+def test_coach_teaching_audit_rejects_secondary_category_as_action_cause():
+    """Strong-hand ownership cannot directly explain a non-bluff exact action."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    answer = ct.render_fallback(digest).replace(
+        "SB 的超對較多",
+        "SB 的超對較多因此整體策略採混合",
+    )
+    assert_in(
+        "unsupported category-to-strategy causality flop",
+        ct.audit_draft(answer, digest).violations,
+    )
+
+
+@test
+def test_coach_teaching_low_ev_offmix_action_stays_offmix():
+    """Negligible EV loss and solver support are separate deterministic facts."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "C"
+    rows = context["solutions"][0]["action_solutions"]
+    idx = gf.combo_index_for_hand("8s8d")
+    rows[0]["strategy"][idx], rows[0]["evs"][idx] = 0.0, -3.0
+    rows[1]["strategy"][idx], rows[1]["evs"][idx] = 0.0, 7.99
+    rows[2]["strategy"][idx], rows[2]["evs"][idx] = 1.0, 8.0
+    digest = ct.build_teaching_digest(context)
+    prompt = ct.render_prompt_block(digest)
+    fallback = ct.render_fallback(digest)
+    assert_in("不在可採信的 solver mix", prompt)
+    assert_in("不在可採信的 solver mix", fallback)
+    invented_mix = fallback.replace(
+        "不在可採信的 solver mix",
+        "是 solver 保留的低頻 mix 分支",
+    )
+    assert_in(
+        "off-mix action called supported flop",
+        ct.audit_draft(invented_mix, digest).violations,
+    )
+    unrelated_fold = fallback.replace(
+        "*為什麼*\n",
+        "*為什麼*\n這手第二對不該 fold。",
+    )
+    assert_not_in(
+        "verdict mismatch flop:in-mix-called-error",
+        ct.audit_draft(unrelated_fold, digest).violations,
+    )
+
+
+@test
+def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
+    """The core verdict cannot evade auditing by saying '這裡' instead of Turn."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    answer = ct.render_fallback(digest).replace(
+        "Flop 的 fold 是明顯失誤",
+        "這裡 fold 沒有實質 EV 損失",
+    )
+    assert_in(
+        "verdict mismatch flop:loss-called-correct",
+        ct.audit_draft(answer, digest).violations,
+    )
+
+
+@test
+def test_coach_teaching_pure_preferred_action_is_not_called_mix():
+    """A near-pure preferred branch should be described as pure, not mixed."""
+    import coach_teaching as ct
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "RAI"
+    digest = ct.build_teaching_digest(context)
+    prompt = ct.render_prompt_block(digest)
+    assert_in("幾乎純用此動作", prompt)
+    core_line = next(
+        line for line in prompt.splitlines() if line.startswith("• 核心判定")
+    )
+    assert_not_in("mix 分支", core_line)

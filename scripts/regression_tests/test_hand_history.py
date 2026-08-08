@@ -519,7 +519,10 @@ def test_hh_check_hand_second_decision_queries_after_intervening_fold():
     assert_in("F-F-F-F-R2-C-R7-F-F", calls)
     assert_eq(devs[1]["spot"], "facing 3bet/4bet")
     assert_eq(devs[1]["hero_action"], "C")
-    assert_eq(devs[1]["ev_loss"], 1.0)
+    assert_eq(
+        devs[1]["ev_loss"], 0.0,
+        "a pure solver call is equilibrium-approved despite inconsistent raw EVs",
+    )
 
 
 @test
