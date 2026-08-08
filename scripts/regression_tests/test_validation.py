@@ -826,6 +826,52 @@ def test_postflop_allin_caps_effective_bb_by_hero_stack():
 
 
 @test
+def test_h3828_river_allin_uses_cumulative_investment_for_effective_bb():
+    """H3828: a river shove size is street-local, not the starting stack.
+
+    HJ invested 2bb pre-flop, 1.3bb on the flop, 2bb on the turn, then shoved
+    6.4bb on the river.  Treating only the final 6.4bb as the whole effective
+    stack selected the 6bb tree, whose post-flop node has no solution.  The
+    contested stack is the cumulative 11.7bb and must select the 12bb tree.
+    """
+    from analyze_hand import (
+        _nearest_depth_for_gametype,
+        _postflop_allin_effective_bb,
+        POSITION_ORDER,
+    )
+    hand = {
+        "hero_position": "BB", "hero_starting_stack": 39.5,
+        "effective_bb": 11.7, "players_at_table": 7,
+        "preflop_actions": "F-F-R2-F-F-F-C",
+        "streets": [
+            {"board": "TdJs6h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "R1.3", "size": 1.3},
+                {"position": "BB", "action": "C", "size": 1.3},
+            ]},
+            {"card": "Ts", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "R2", "size": 2.0},
+                {"position": "BB", "action": "C", "size": 2.0},
+            ]},
+            {"card": "7c", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "R6.4", "size": 6.4,
+                 "allin": True},
+                {"position": "BB", "action": "C", "size": 6.4},
+            ]},
+        ],
+    }
+    effective = _postflop_allin_effective_bb(hand, "BB")
+    assert_eq(effective, 11.7)
+    assert_eq(_nearest_depth_for_gametype(effective, "MTTGeneral"), 12.125)
+    # Production pads 7-max MTT hands onto the 8-max solver tree before this
+    # helper runs; the explicitly supplied solver order must preserve the actor.
+    padded = {**hand, "preflop_actions": "F-" + hand["preflop_actions"]}
+    assert_eq(_postflop_allin_effective_bb(padded, "BB", POSITION_ORDER), 11.7)
+
+
+@test
 def test_analyze_flop_allin_solved_at_hero_stack_not_deep_fallback():
     """H3660 end-to-end: a flop shove hero calls solves at hero's ~35bb, not the
     80bb tree the max_raise*10 effective_bb fallback leaves in place.

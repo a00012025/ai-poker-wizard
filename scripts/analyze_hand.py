@@ -395,7 +395,11 @@ def _preflop_allin_effective_bb(hand: dict, hero_position: str, position_order: 
     return best
 
 
-def _postflop_allin_effective_bb(hand: dict, hero_position: str) -> float | None:
+def _postflop_allin_effective_bb(
+    hand: dict,
+    hero_position: str,
+    position_order: list[str] | None = None,
+) -> float | None:
     """Infer effective stack from a POST-flop all-in that hero contests.
 
     The pre-flop cap (:func:`_preflop_allin_effective_bb`) only inspects the
@@ -408,9 +412,12 @@ def _postflop_allin_effective_bb(hand: dict, hero_position: str) -> float | None
 
     When hero jams, calls a jam, or faces a jam on a street where hero is a live
     participant, the hand's effective depth is bounded by hero's own stack
-    (effective ≤ hero_start by definition) and by the shove size.  Returns that
-    bound, or ``None`` when no such all-in is present.  Scoped to all-in spots,
-    so non-all-in hands are untouched.
+    (effective ≤ hero_start by definition) and by the shover's *cumulative*
+    investment.  Post-flop action sizes are street-local: a 6.4bb river shove
+    after investing 2bb pre-flop, 1.3bb on the flop, and 2bb on the turn is an
+    11.7bb stack, not a 6.4bb stack (H3828).  Returns that bound, or ``None``
+    when no such all-in is present.  Scoped to all-in spots, so non-all-in
+    hands are untouched.
     """
     hero_stack = hand.get("hero_starting_stack") or hand.get("effective_bb")
     try:
@@ -427,32 +434,77 @@ def _postflop_allin_effective_bb(hand: dict, hero_position: str) -> float | None
         c = code.upper()
         return c[0] in ("R", "B") or c.startswith("AI") or c.startswith("ALL")
 
+    positions = position_order
+    if positions is None:
+        players = int(hand.get("players_at_table") or hand.get("num_players") or 0)
+        positions = _get_position_order(players) if players else POSITION_ORDER
+
+    # Replay pre-flop commitments by actor so a later street-local shove can be
+    # converted back to the shover's starting-stack investment.
+    committed: dict[str, float] = {p: 0.0 for p in positions}
+    if len(positions) >= 2:
+        committed[positions[-2]] = 0.5
+        committed[positions[-1]] = 1.0
+    tokens = [t for t in (hand.get("preflop_actions") or "").split("-") if t]
+    if tokens:
+        from gtow_action_resolver import _replay_preflop_actors
+        actors = _replay_preflop_actors(tokens, positions)
+        current_bet = 1.0
+        for actor, code in zip(actors, tokens):
+            if code == "C":
+                committed[actor] = current_bet
+                continue
+            raw_size = None
+            if code.startswith("AI"):
+                raw_size = code[2:]
+            elif code.startswith(("R", "B")):
+                raw_size = code[1:]
+            if raw_size is None:
+                continue
+            try:
+                size = float(raw_size) if raw_size else float(
+                    hand.get("effective_bb") or hero_stack or 0)
+            except (TypeError, ValueError):
+                continue
+            if size > 0:
+                committed[actor] = size
+                current_bet = max(current_bet, size)
+
     best: float | None = None
     for st in hand.get("streets") or []:
         actions = st.get("actions") or []
-        # A shove only bounds hero's effective stack on a street hero actually
-        # contests — an all-in between others that hero folded to does not.
-        if not any(a.get("position") == hero_position for a in actions):
-            continue
-        if not any(a.get("allin") for a in actions):
-            continue
-        # An all-in street hero contests bounds the effective depth by hero's own
-        # stack; each all-in aggression's total is an additional commitment bound.
-        candidates = [hero_stack] if hero_stack else []
+        street_investments: dict[str, float] = {}
         for a in actions:
-            if not (a.get("allin") and _is_aggression(a.get("action"))):
-                continue
             try:
                 size = float(a.get("size")) if a.get("size") is not None else None
             except (TypeError, ValueError):
                 size = None
             if size and size > 0:
-                candidates.append(size)
-        candidates = [v for v in candidates if v and v > 0]
-        if not candidates:
-            continue
-        eff = min(candidates)
-        best = eff if best is None else min(best, eff)
+                pos = a.get("position")
+                if pos:
+                    street_investments[pos] = max(street_investments.get(pos, 0.0), size)
+
+        # A shove only bounds hero's effective stack on a street hero actually
+        # contests — an all-in between others that hero folded to does not.
+        hero_contests = any(a.get("position") == hero_position for a in actions)
+        if hero_contests and any(a.get("allin") for a in actions):
+            # Hero's own stack and each all-in aggressor's total contribution
+            # independently upper-bound the effective stack.
+            candidates = [hero_stack] if hero_stack else []
+            for a in actions:
+                if not (a.get("allin") and _is_aggression(a.get("action"))):
+                    continue
+                pos = a.get("position")
+                size = street_investments.get(pos, 0.0)
+                if size > 0:
+                    candidates.append(committed.get(pos, 0.0) + size)
+            candidates = [v for v in candidates if v and v > 0]
+            if candidates:
+                eff = min(candidates)
+                best = eff if best is None else min(best, eff)
+
+        for pos, size in street_investments.items():
+            committed[pos] = committed.get(pos, 0.0) + size
     return best
 
 
@@ -1651,7 +1703,7 @@ def _run_analysis(hand: dict) -> dict:
     # A shove can also land post-flop (H3660): take the tighter of the pre-flop
     # and post-flop all-in caps so a flop/turn/river jam is not solved at the
     # deep raw-effective_bb depth.
-    postflop_allin = _postflop_allin_effective_bb(hand, hero_pos)
+    postflop_allin = _postflop_allin_effective_bb(hand, hero_pos, pos_order)
     if postflop_allin and (allin_effective is None or postflop_allin < allin_effective):
         allin_effective = postflop_allin
     if allin_effective and allin_effective < float(hand["effective_bb"]) - 0.5:
