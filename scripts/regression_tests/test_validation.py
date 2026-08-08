@@ -597,6 +597,85 @@ def test_mtt_hu_depth_below_eight_bb_is_not_clamped_to_general_floor():
 
 
 @test
+def test_h3834_two_player_mtt_auto_routes_to_heads_up_solution():
+    """A physical two-player MTT is the HU format even when the parser emits
+    its generic ``MTTGeneral`` default.  It must not be padded into an 8-max
+    fold-to-SB-open node: HU SB acts first preflop but is IP postflop.
+    """
+    import analyze_hand
+
+    original_next = analyze_hand.get_next_actions
+    original_spot = analyze_hand.get_spot_solution
+    analyze_hand.get_next_actions = lambda **kw: {
+        "next_actions": {"available_actions": []}
+    }
+    analyze_hand.get_spot_solution = lambda **kw: None
+    try:
+        result = analyze_hand.analyze_hand_full({
+            "gametype": "MTTGeneral",
+            "players_at_table": 2,
+            "hero_position": "BB",
+            "hero_hand": "9c3c",
+            "effective_bb": 14.2,
+            "preflop_actions": "R2-C",
+            "streets": [{
+                "board": "4cAh2s",
+                "actions": [
+                    {"position": "BB", "action": "X"},
+                    {"position": "SB", "action": "R2", "size": 2.0},
+                    {"position": "BB", "action": "R4.9", "size": 4.9},
+                    {"position": "SB", "action": "C", "size": 2.9},
+                ],
+            }],
+        })
+    finally:
+        analyze_hand.get_next_actions = original_next
+        analyze_hand.get_spot_solution = original_spot
+
+    assert_eq(result["gametype"], "MTTHUGeneral")
+    assert_eq(result["preflop_actions"], "R2-C")
+    assert_true(result["deeplink_raw_preflop"] is None)
+    assert_true(result["deeplink_raw_players"] is None)
+    assert_true(result["hero_spots"], "expected HU decision spots")
+    assert_true(all(
+        spot["params"]["gametype"] == "MTTHUGeneral"
+        for spot in result["hero_spots"]
+    ))
+
+
+@test
+def test_multiplayer_table_bvb_stays_on_general_mtt_solution():
+    """SB-vs-BB after folds at a multiplayer table is BvB, not HU format."""
+    import analyze_hand
+
+    original_next = analyze_hand.get_next_actions
+    original_spot = analyze_hand.get_spot_solution
+    analyze_hand.get_next_actions = lambda **kw: {
+        "next_actions": {"available_actions": []}
+    }
+    analyze_hand.get_spot_solution = lambda **kw: None
+    try:
+        result = analyze_hand.analyze_hand_full({
+            "gametype": "MTTGeneral",
+            "players_at_table": 8,
+            "hero_position": "BB",
+            "hero_hand": "9c3c",
+            "effective_bb": 14.2,
+            "preflop_actions": "F-F-F-F-F-F-R2-C",
+        })
+    finally:
+        analyze_hand.get_next_actions = original_next
+        analyze_hand.get_spot_solution = original_spot
+
+    assert_eq(result["gametype"], "MTTGeneral")
+    assert_eq(result["preflop_actions"], "F-F-F-F-F-F-R2-C")
+    assert_true(all(
+        spot["params"]["gametype"] == "MTTGeneral"
+        for spot in result["hero_spots"]
+    ))
+
+
+@test
 def test_node_depth_same_bucket_no_caveat():
     """No caveat when consecutive nodes land in the SAME depth bucket —
     don't spam the user with a meaningless warning."""

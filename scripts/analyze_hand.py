@@ -1580,6 +1580,21 @@ def _run_analysis(hand: dict) -> dict:
     t0 = time.time()
     hand = _normalize_positions(hand)
     gametype = hand.get("gametype", "MTTGeneral")
+    declared_players = int(
+        hand.get("players_at_table") or hand.get("num_players") or 0
+    )
+    if (
+        gametype == "MTTGeneral"
+        and declared_players == 2
+        and hand.get("game_format") != "cash"
+    ):
+        # Parser/OCR inputs use MTTGeneral as their generic tournament default.
+        # A physical two-player table is nevertheless a different GTOW tree:
+        # SB/Button acts first preflop but is IP postflop, so padding R2-C into
+        # the 8-max fold-to-SB-open node reverses the postflop positions (H3834).
+        gametype = "MTTHUGeneral"
+        hand = dict(hand)
+        hand["gametype"] = gametype
 
     # Ensure effective_bb exists — estimate from preflop raises if missing
     if "effective_bb" not in hand or hand["effective_bb"] is None:
@@ -1771,7 +1786,9 @@ def _run_analysis(hand: dict) -> dict:
         chipev_gametype = gametype
         chipev_depth = depth
     else:
-        chipev_gametype = gametype if gametype == "MTTHUGeneral" else "MTTGeneral"
+        chipev_gametype = (
+            "MTTHUGeneral" if physical_num_players == 2 else "MTTGeneral"
+        )
         chipev_depth = _nearest_depth_for_gametype(
             hand["effective_bb"], chipev_gametype)
 
