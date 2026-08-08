@@ -61,13 +61,13 @@ Hero A☘️T☘️ 牌型: Ace high + 卡順聽牌
 【River: 5♥️（Board: K☘️9🔷3🔷J♠️5♥️）】
 Hero A☘️T☘️ 牌型: Ace high
 【HJ 在 River K☘️9🔷3🔷J♠️5♥️】底池 10.600bb
-  Check: 60.6%（20 combos）
+  Check: 60.7%（20 combos）
   BET 6（57% pot）: 17.0%（6 combos）
-  BET 8.5（80% pot）: 22.1%（7 combos）
+  BET 8.5（80% pot）: 22.0%（7 combos）
   BET 16（151% pot）: 0.3%（0 combos）
 
 【HJ A☘️T☘️（ATs）】
-  策略: Bet 6（57% pot） 64%, Bet 8.5（80% pot） 35%, Bet 16（151% pot） 1%（EV 0.60bb）
+  策略: Bet 6（57% pot） 60%, Bet 8.5（80% pot） 40%, Bet 16（151% pot） 1%（EV 0.58bb）
   ATs 其他花色:
     A♥️T♥️: Bet 6（57% pot） 1%, Bet 8.5（80% pot） 98%, Bet 16（151% pot） 1%（EV 0.8bb）
     A♠️T♠️: Bet 8.5（80% pot） 98%, Bet 16（151% pot） 1%（EV 0.8bb）
