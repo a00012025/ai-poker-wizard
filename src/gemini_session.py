@@ -2561,6 +2561,9 @@ class GeminiSessionManager:
         """
         for attempt in range(3):
             try:
+                if not hasattr(self, "histories"):
+                    self.histories = {}
+                history_before_draft = list(self.histories.get(chat_id, []))
                 draft = await self._chat_with_tools(
                     chat_id, coaching_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,
@@ -2597,6 +2600,11 @@ class GeminiSessionManager:
                     "不得從一般牌理補出未列出的聽牌、blocker target、牌型、combo 或數字。\n\n"
                     f"{render_teaching_prompt_block(digest)}"
                 )
+                # The rejected prose must not become context for its own
+                # repair.  Starting from the pre-draft history reduces
+                # anchoring on the exact hallucinations and numeric clutter
+                # the audit just rejected.
+                self.histories[chat_id] = history_before_draft
                 repaired = await self._chat_with_tools(
                     chat_id, repair_prompt, on_status=on_status,
                     user_id=user_id, refresh_token=refresh_token,

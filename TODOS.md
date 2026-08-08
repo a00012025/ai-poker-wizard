@@ -1,5 +1,34 @@
 # TODOS
 
+## P1 — Grounded Coach causal evidence follow-ups
+
+### Opponent response child-node facts
+After Hero chooses a solver-supported bet/raise size, query the exact Villain response
+node and extract fold/call/raise frequencies, category/equity composition, and the
+equity carried by the folding range. Promote explanations such as equity denial,
+value targeting, raise vulnerability, or inducing only when this response node exists.
+
+- **Why:** The current Hero node can prove what Hero should do, but not what Villain
+  folds, calls, raises, or later bluffs. This is the missing evidence behind AA check
+  stories, thin-value sizing, and rigorous equity-denial claims.
+- **Guardrail:** Node path, size, depth, board, positions, and reach probability must
+  match exactly. No response-node match means no opponent-response causal claim.
+- **Depends on:** Reuse the response-node traversal already designed in
+  `docs/superpowers/specs/2026-06-07-coach-followup-grounding-design.md`.
+
+### Turn-card and stack-depth counterfactual comparisons
+Query matched sibling solutions where exactly one variable changes: either the turn
+card with the prior line fixed, or the effective stack/depth bucket with the spot
+fixed. Compare range equity, 90–100% top-equity mass, category shares, action
+frequency, size construction, and exact-combo EV/frequency.
+
+- **Why:** This upgrades “the turn card/low SPR caused the strategy change” from a
+  theory-informed correlation to counterfactual evidence.
+- **Guardrail:** Only narrate the changed variable when every other node dimension is
+  verified equal; otherwise retain the current exact-node explanation.
+- **Cost control:** Cache sibling nodes and request them only for material EV
+  deviations where the current-node evidence cannot supply a useful explanation.
+
 ## P1 — Weekly Report v2 follow-ups
 
 ### GTOW trainer URL schema reverse-engineering (Option Z)
