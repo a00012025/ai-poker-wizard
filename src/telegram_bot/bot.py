@@ -2300,16 +2300,18 @@ class PokerWizardBot:
             await update.message.reply_text(
                 "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。")
             return
-        out = await self._online_session_review_payload(context, session)
+        out = await self._online_session_review_payload(
+            context, session, user_id=update.effective_user.id)
         await update.message.reply_text(
             out["html"], parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=self._rows_to_markup(out["buttons"]))
 
-    async def _online_session_review_payload(self, context, session: dict) -> dict:
+    async def _online_session_review_payload(self, context, session: dict,
+                                             user_id: int | None = None) -> dict:
         """Compute/cache/render one online session for /review and /sessions."""
         from session_review import compute, render_tg, session_callback_key
 
-        data = await compute(self.db.pool, session)
+        data = await compute(self.db.pool, session, user_id=user_id)
         cache = context.application.bot_data.setdefault("srev", {})
         cache[data["session_id"]] = data
         cache[session_callback_key(data)] = data
@@ -2337,7 +2339,8 @@ class PokerWizardBot:
             if not session:
                 await query.answer("找不到這個 session。")
                 return
-            cached = await compute(self.db.pool, session)
+            cached = await compute(
+                self.db.pool, session, user_id=update.effective_user.id)
             cache = context.application.bot_data.setdefault("srev", {})
             cache[cached["session_id"]] = cached
             cache[session_callback_key(cached)] = cached
@@ -2471,6 +2474,7 @@ class PokerWizardBot:
     async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Practice-queue + live-hand callbacks (all owner-only, §6.3):
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
+        src2:<stable_session_key>:<i> — coach the i-th online session decision;
         qsrc:<queue_id>[:source_page[:queue_page]] — exact online/live
         source-hand menu;
         qraw:<queue_id>:<source_page>:<queue_page>:<hand_id> — show stored
@@ -2520,7 +2524,8 @@ class PokerWizardBot:
                 await query.answer("找不到這個線上 session，可能已被重建。")
                 return
             await query.answer()
-            out = await self._online_session_review_payload(context, session)
+            out = await self._online_session_review_payload(
+                context, session, user_id=user_id)
             await context.bot.send_message(
                 chat_id, out["html"], parse_mode="HTML",
                 disable_web_page_preview=True,
@@ -2685,6 +2690,83 @@ class PokerWizardBot:
             await self._session_review_enqueue(update, context, data)
             return
 
+        if data.startswith("src2:"):
+            _, stable_key, i_s = data.split(":")
+            from session_review import (compute, resolve_session_key,
+                                        session_callback_key, _load_detail)
+
+            cache = context.application.bot_data.setdefault("srev", {})
+            cached = cache.get(stable_key)
+            if cached is None:
+                session = await resolve_session_key(self.db.pool, stable_key)
+                if not session:
+                    await query.answer("找不到這個線上 session，可能已被重建。")
+                    return
+                cached = await compute(self.db.pool, session, user_id=user_id)
+                cache[cached["session_id"]] = cached
+                cache[session_callback_key(cached)] = cached
+            decisions = cached.get("top_decisions") or []
+            i = int(i_s)
+            if i < 0 or i >= len(decisions):
+                await query.answer("這個決策已不在清單上。")
+                return
+            hand_id = decisions[i].get("ref_hand_id")
+            row = await self.db.pool.fetchrow(
+                "SELECT gtow_hand_id, raw_path, position, hero_hand, total_players, "
+                "preflop_depth_bb FROM ledger_hands "
+                "WHERE gtow_hand_id=$1 AND source='online'", hand_id)
+            detail = _load_detail(row["raw_path"] if row else None)
+            if not row or not detail:
+                await query.answer("找不到這手的 Analyzer 原始資料。", show_alert=True)
+                return
+            try:
+                from analysis_fidelity_check import reconstruct_analyze_hand
+                hand_json = reconstruct_analyze_hand(dict(row), detail)
+            except Exception:
+                self.log.exception("online session coach reconstruction failed: %s", hand_id)
+                await query.answer("無法重建這手的教練分析資料。", show_alert=True)
+                return
+
+            await query.answer()
+            label = f"online-session-coach-{chat_id}"
+            self.log.info("[%s] deep dive %s", label, hand_id)
+            await context.bot.send_message(chat_id, f"💬 教練分析：`{hand_id}`", parse_mode="Markdown")
+            raw_status = await context.bot.send_message(chat_id, "🔍 分析中...")
+            status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
+
+            async def _on_status(m: str):
+                await status_msg.edit_text(f"⏳ {m}")
+
+            refresh_token = await self._get_user_refresh_token(user_id)
+            try:
+                response = await self._analyze_online_parsed_hand(
+                    chat_id, user_id, hand_id, hand_json, _on_status, refresh_token)
+                await status_msg.delete()
+                if response and response.strip():
+                    response, markup = self._finalize_followups(
+                        chat_id, response, include_gto_link=True)
+                    formatted = _format_for_telegram(response)
+                    chunks = [c for c in _split_message(formatted) if c.strip()]
+                    for j, chunk in enumerate(chunks):
+                        chunk_markup = markup if j == len(chunks) - 1 else None
+                        try:
+                            await context.bot.send_message(
+                                chat_id, chunk, parse_mode="Markdown",
+                                reply_markup=chunk_markup)
+                        except Exception:
+                            await context.bot.send_message(
+                                chat_id, _strip_markdown(chunk),
+                                reply_markup=chunk_markup)
+                await self._send_pending_range_images(update, chat_id, label)
+            except Exception as exc:
+                self.log.error("[%s] Error: %s", label, exc, exc_info=True)
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                await context.bot.send_message(chat_id, "抱歉，教練分析時出錯了。")
+            return
+
         await query.answer()
         hand_id = data[4:]                          # lvd:<hand_id>
         raw = None
@@ -2826,6 +2908,57 @@ class PokerWizardBot:
             response += f"\n\n{warning}"
         return f"📋 `{hand_id}`\n\n{response}"
 
+    async def _analyze_online_parsed_hand(self, chat_id: int, user_id: int,
+                                          hand_id: str, hand_json: dict,
+                                          on_status, refresh_token: str | None) -> str:
+        """Coach one archived online Analyzer hand through the grounded path."""
+        if not refresh_token:
+            return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
+
+        if on_status:
+            await on_status("查詢 GTO 策略中...")
+        def analyze_with_user_token():
+            self._setup_user_token(user_id, refresh_token)
+            try:
+                from analyze_hand import analyze_hand_full
+                return analyze_hand_full(hand_json)
+            finally:
+                self._clear_user_token()
+
+        solver_context = await asyncio.to_thread(analyze_with_user_token)
+
+        gto_data = solver_context["text"]
+        self.session_manager.hand_contexts[chat_id] = solver_context
+        pending_images = getattr(self.session_manager, "pending_images", None)
+        if isinstance(pending_images, dict):
+            pending_images.pop(chat_id, None)
+
+        if on_status:
+            await on_status("分析回覆中...")
+        prompt = (
+            "這是線上 session 總結中選出的 Analyzer 手牌。"
+            "手牌已從封存的 GTOW Analyzer 原始資料精確重建；"
+            "不要重新解析或改寫動作。\n\n"
+            f"手牌摘要：\n{self._live_hand_desc(hand_id, hand_json)}\n\n"
+            f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
+            "請根據上面的 GTO 數據分析 hero 的行動，聚焦最大 EV loss 決策，"
+            "並用可帶上桌的 heuristic 收尾。"
+            "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題：\n"
+            "FOLLOWUP: 問題一\nFOLLOWUP: 問題二\nFOLLOWUP: 問題三\n"
+        )
+        response = await self.session_manager._chat_with_tools(
+            chat_id, prompt, on_status=on_status, user_id=user_id,
+            refresh_token=refresh_token, force_tool_eligible=False)
+        response, followups = self.session_manager._extract_followups(response)
+        if followups:
+            ctx = self.session_manager.hand_contexts.get(chat_id)
+            if ctx is not None:
+                ctx["followup_questions"] = followups
+        warning = (solver_context.get("validation") or {}).get("user_warning")
+        if warning:
+            response += f"\n\n{warning}"
+        return f"📋 `{hand_id}`\n\n{response}"
+
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report — admin-only analytics report."""
         user_id = update.effective_user.id
@@ -2925,7 +3058,7 @@ class PokerWizardBot:
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2):"))
+                pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2|src2):"))
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button,
                                  pattern=r"^fullingest:"))

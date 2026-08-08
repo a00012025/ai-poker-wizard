@@ -8,6 +8,7 @@ and Telegram-safe callback_data.
 import asyncio
 import inspect
 import logging
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -42,7 +43,9 @@ def _sample(empty: bool = False) -> dict:
                  "翻前: LJ Raise, HJ Call, BB Raise",
              ],
              "action_line": "Call→應Fold", "ev_loss": 0.76,
+             "ref_hand_id": "online-hand-1",
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
+             "study_url": "https://app.gtowizard.com/solutions?history_spot=3",
              "drill_url": "https://app.gtowizard.com/practice?d=1", "enqueue_item": {}},
             {"combo": "T♠️9♠️", "position": "CO", "depth": 25.0,
              "boards": "8h7c2d5sQc", "desc": "SRP 底池（HU），Hero CO 對 BB、處於 IP，轉牌首動",
@@ -51,15 +54,21 @@ def _sample(empty: bool = False) -> dict:
                  "Turn 5♠️: BB Check",
              ],
              "action_line": "Raise→應Call", "ev_loss": 3.4,
-             "exact_url": "https://app.gtowizard.com/a", "drill_url": None, "enqueue_item": {}},
+             "ref_hand_id": "online-hand-2",
+             "exact_url": "https://app.gtowizard.com/a",
+             "study_url": "https://app.gtowizard.com/solutions?history_spot=7",
+             "drill_url": None, "enqueue_item": {}},
             {"combo": "A♥️Q🔷", "position": "UTG+1", "depth": 40.0,
              "boards": "KsJd4c9h", "desc": "面對 3bet fold",
              "action_line": "Fold→應Call", "ev_loss": 2.6,
-             "exact_url": "https://app.gtowizard.com/b", "drill_url": None, "enqueue_item": {}},
+             "ref_hand_id": "online-hand-3",
+             "exact_url": "https://app.gtowizard.com/b", "study_url": None,
+             "drill_url": None, "enqueue_item": {}},
         ] + [
             {"combo": f"A{i}♠", "position": "BTN", "depth": 20.0,
              "boards": "", "desc": "vsOpen", "action_line": "Fold→應Raise",
-             "ev_loss": 1.0 + i / 10, "exact_url": f"https://app.gtowizard.com/{i}",
+             "ev_loss": 1.0 + i / 10, "ref_hand_id": f"online-hand-{i}",
+             "exact_url": f"https://app.gtowizard.com/{i}", "study_url": None,
              "drill_url": None, "enqueue_item": {}}
             for i in range(4, 9)
         ],
@@ -180,6 +189,38 @@ def test_session_review_decision_depth_prefers_solver_effective_stack():
 
 
 @test
+def test_session_review_study_url_binds_user_token_and_fails_closed():
+    """Study links use per-user auth and never fall back to approximate nodes."""
+    import gto_api
+    import gto_credentials
+
+    calls = []
+    old_builder = sr.qf._study_solution_url
+    old_credentials = gto_credentials.get_user_credentials
+    old_set = gto_api.set_user_token
+    old_clear = gto_api.clear_user_token
+    try:
+        gto_credentials.get_user_credentials = lambda user_id: SimpleNamespace(
+            access_token="access", client_id="client")
+        gto_api.set_user_token = lambda token, client_id, user_id: calls.append(
+            ("set", token, client_id, user_id))
+        gto_api.clear_user_token = lambda: calls.append(("clear",))
+        sr.qf._study_solution_url = lambda _row: (
+            "https://app.gtowizard.com/solutions?history_spot=3")
+        url = sr._decision_study_url({}, user_id=123)
+        sr.qf._study_solution_url = lambda _row: None
+        missing = sr._decision_study_url({}, user_id=None)
+    finally:
+        sr.qf._study_solution_url = old_builder
+        gto_credentials.get_user_credentials = old_credentials
+        gto_api.set_user_token = old_set
+        gto_api.clear_user_token = old_clear
+    assert_in("/solutions?", url)
+    assert_eq(calls, [("set", "access", "client", 123), ("clear",)])
+    assert_eq(missing, None)
+
+
+@test
 def test_session_review_compacts_preflop_history():
     assert_eq(
         sr._format_street_history("preflop", [
@@ -249,15 +290,24 @@ def test_session_review_deliberate_enqueue_only():
     assert_true(not any("全部" in t for t in labels), f"unexpected batch button: {labels}")
     assert_true(not any("略過" in t for t in labels), f"skip button must be gone: {labels}")
     assert_true(any("排入佇列" in t for t in labels), "missing spot enqueue button")
-    assert_true(any("復盤" in t for t in labels), "missing decision review button")
+    assert_true(any("手牌" in t for t in labels), "missing exact-hand button")
+    assert_true(any("復盤" in t for t in labels), "missing GTOW Study review button")
+    assert_true(any("教練" in t for t in labels), "missing coach button")
     assert_true(sum("排入佇列" in t for t in labels) >= 2, "missing enqueue buttons")
     assert_true(not any("queue" in t for t in labels), "enqueue copy should be 統一中文")
     assert_true(not any("🎯 練" in t for t in labels),
                 "decision drill buttons make Telegram reply_markup too large")
-    # every review button links to the exact hand_id__in filter, not a day range
+    hand_btns = [b for b in _all_buttons(out["buttons"]) if "手牌" in b["text"]]
+    assert_true(hand_btns and all("/analyze/" in b["url"] or b["url"].endswith(("/a", "/b", "/4", "/5", "/6", "/7", "/8"))
+                                  for b in hand_btns),
+                "hand buttons must retain exact Analyzer hand links")
     review_btns = [b for b in _all_buttons(out["buttons"]) if "復盤" in b["text"]]
-    assert_true(review_btns and all("url" in b for b in review_btns),
-                "review buttons must be exact-hand URL links")
+    assert_true(review_btns and all("/solutions?" in b["url"] for b in review_btns),
+                "review buttons must link directly to GTOW Study solutions")
+    coach_btns = [b for b in _all_buttons(out["buttons"]) if "教練" in b["text"]]
+    assert_true(coach_btns and all(b.get("callback_data", "").startswith("src2:")
+                                   for b in coach_btns),
+                "coach buttons must use stable online-session callbacks")
 
 
 @test
@@ -267,7 +317,8 @@ def test_session_review_callback_data_telegram_safe():
         cb = b.get("callback_data")
         if cb is not None:
             assert_true(len(cb.encode()) <= 64, f"callback_data too long: {cb}")
-            assert_true(cb.split(":")[0] in {"srd2", "srv2"}, f"bad callback: {cb}")
+            assert_true(cb.split(":")[0] in {"srd2", "srv2", "src2"},
+                        f"bad callback: {cb}")
 
 
 @test
@@ -284,6 +335,67 @@ def test_session_review_callback_key_survives_session_id_rebuild():
     assert_true(callbacks, "session review has enqueue callbacks")
     assert_true(all(":42:" not in cb for cb in callbacks),
                 f"volatile session id leaked into callbacks: {callbacks}")
+
+
+@test
+def test_online_session_coach_uses_grounded_solver_context():
+    from telegram_bot.bot import PokerWizardBot
+    import analyze_hand
+
+    captured = {}
+
+    class SessionManager:
+        def __init__(self):
+            self.hand_contexts = {}
+            self.pending_images = {}
+
+        async def _chat_with_tools(self, chat_id, prompt, **kwargs):
+            captured["prompt"] = prompt
+            captured["kwargs"] = kwargs
+            return "教練文字\nFOLLOWUP: 為什麼？"
+
+        @staticmethod
+        def _extract_followups(_response):
+            return "教練文字", ["為什麼？"]
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.session_manager = SessionManager()
+    main_thread = threading.get_ident()
+    worker_threads = []
+    bot._setup_user_token = lambda *_args: worker_threads.append(threading.get_ident())
+    bot._clear_user_token = lambda: worker_threads.append(threading.get_ident())
+    old_analyze = analyze_hand.analyze_hand_full
+    try:
+        def fake_analyze(hand):
+            worker_threads.append(threading.get_ident())
+            return {"text": "已驗證 solver 事實", "hand": hand,
+                    "validation": {}}
+        analyze_hand.analyze_hand_full = fake_analyze
+        result = asyncio.run(bot._analyze_online_parsed_hand(
+            10, 20, "online-hand-1",
+            {"hero_position": "CO", "hero_hand": "AsKs",
+             "effective_bb": 30, "players_at_table": 8,
+             "preflop_actions": "F-F-R2", "streets": []},
+            None, "refresh-token"))
+    finally:
+        analyze_hand.analyze_hand_full = old_analyze
+
+    assert_in("教練文字", result)
+    assert_in("已驗證 solver 事實", captured["prompt"])
+    assert_in("不要重新解析或改寫動作", captured["prompt"])
+    assert_eq(bot.session_manager.hand_contexts[10]["followup_questions"], ["為什麼？"])
+    assert_true(worker_threads and all(tid != main_thread for tid in worker_threads),
+                "token binding and solver analysis must stay off the event-loop thread")
+
+
+@test
+def test_online_session_coach_callback_is_registered_and_routed():
+    from telegram_bot.bot import PokerWizardBot
+
+    handler_source = inspect.getsource(PokerWizardBot.handle_live_button)
+    setup_source = inspect.getsource(PokerWizardBot.setup_handlers)
+    assert_in('data.startswith("src2:")', handler_source)
+    assert_in("|src2):", setup_source)
 
 
 @test
@@ -412,8 +524,9 @@ def test_recent_online_session_button_sends_fresh_summary():
         assert_eq(key, stable_key)
         return session
 
-    async def fake_compute(_conn, resolved):
+    async def fake_compute(_conn, resolved, user_id=None):
         assert_eq(resolved, session)
+        captured["compute_user_id"] = user_id
         return data
 
     class Query:
@@ -445,6 +558,7 @@ def test_recent_online_session_button_sends_fresh_summary():
     finally:
         sr.resolve_session_key, sr.compute = old_resolve, old_compute
 
+    assert_eq(captured["compute_user_id"], 556028753)
     assert_eq(update.callback_query.answers, [None])
     assert_eq(captured["send"][0][0], 99)
     assert_in("這場復盤", captured["send"][0][1])

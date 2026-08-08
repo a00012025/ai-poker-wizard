@@ -475,7 +475,7 @@ async def _send_session_review(pool, bot, user_id, application=None):
         session = await resolve_session(pool, None)
         if not session:
             return
-        data = await compute(pool, session)
+        data = await compute(pool, session, user_id=user_id)
         if not should_auto_send(data):
             return
         if application is not None:   # warm the callback cache (recompute fallback exists)
