@@ -7,7 +7,7 @@ North Star §7 不變量 11（回饋延遲預算：session 復盤「能過夜不
 
   • 共幾手、平均 EV loss（單場、**不作趨勢判斷**）
   • EV loss 加總最多的 spot（→ 現在練 / 排入佇列）
-  • EV loss 最高的 8 個具體決策（→ 復盤 / 排入佇列；練習由 spot/queue 處方承接）
+  • EV loss 最高的 8 個具體決策（→ 手牌 / Study 復盤 / 教練 / 排入佇列）
 
 不變量：**只讀不改本週焦點 spot**（中圈穩定性 §3）。排入動作走既有 `drill_queue`
 （`kind='drill'`/`'review'`，`added_by='session'`），與週掃描產生同構的 rows。口徑沿用
@@ -203,7 +203,8 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
     return out
 
 
-async def _decision_items(conn, session_id: int) -> list[dict]:
+async def _decision_items(conn, session_id: int,
+                          user_id: int | None = None) -> list[dict]:
     rows = await conn.fetch(_TOP_DECISIONS_SQL, session_id)
     out = []
     for r in rows:
@@ -224,7 +225,9 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
         row["max_ev"] = row.get("ev_loss_bb")
         row["worst_street"] = row.get("street")
         row["worst_idx"] = row.get("decision_idx")
+        study_url = await asyncio.to_thread(_decision_study_url, row, user_id)
         out.append({
+            "ref_hand_id": row["ref_hand_id"],
             "combo": pretty_hand(row.get("hero_hand")),
             "position": row.get("hero_pos"),
             "depth": _decision_display_depth(row),
@@ -236,6 +239,7 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
                             or action_line(row.get("taken_code"), row.get("best_code"))),
             "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
             "exact_url": exact_url,
+            "study_url": study_url,
             "drill_url": drill_url,
             "enqueue_item": {
                 "kind": "review", "added_by": "session", "source": "online",
@@ -248,6 +252,31 @@ async def _decision_items(conn, session_id: int) -> list[dict]:
             },
         })
     return out
+
+
+def _decision_study_url(row: dict, user_id: int | None = None) -> str | None:
+    """Build a strict real-action GTOW Study link for one Analyzer decision.
+
+    The resolver needs the requesting user's GTOW session.  Bind and clear it
+    inside this worker thread because GTO auth is thread-local.  If exact
+    current-tree resolution fails, omit the button instead of substituting the
+    archived approximate action line/depth.
+    """
+    token_bound = False
+    try:
+        if user_id is not None:
+            from gto_credentials import get_user_credentials
+            from gto_api import set_user_token
+            credentials = get_user_credentials(user_id)
+            set_user_token(credentials.access_token, credentials.client_id, user_id)
+            token_bound = True
+        return qf._study_solution_url(row)
+    except Exception:
+        return None
+    finally:
+        if token_bound:
+            from gto_api import clear_user_token
+            clear_user_token()
 
 
 def drill_desc(row: dict, bias: dict | None) -> str:
@@ -534,12 +563,12 @@ def decision_mark(i: int) -> str:
     return keycaps[i] if i < len(keycaps) else f"{i+1}."
 
 
-async def compute(conn, session: dict) -> dict:
+async def compute(conn, session: dict, user_id: int | None = None) -> dict:
     sid = session["id"]
     ov = await conn.fetchrow(_OVERVIEW_SQL, sid)
     hon = await conn.fetchrow(_HONESTY_SQL, sid)
     spots = await _spot_items(conn, sid)
-    decisions = await _decision_items(conn, sid)
+    decisions = await _decision_items(conn, sid, user_id=user_id)
     return {
         "session_id": sid,
         "started_at": session["started_at"],
@@ -580,8 +609,8 @@ def render_tg(d: dict) -> dict:
 
     Pure function of ``compute()``'s output — no DB, no network. Returns
     ``{"html": str, "buttons": rows}`` where rows is list[list[button dict]].
-    Buttons: URL (現在練/復盤) + callback (排入). callback_data stays
-    <64B via `srd2|srv2:{stable_session_key}:{i}` index keys.
+    Buttons: URL (現在練/手牌/Study 復盤) + callback (教練/排入).
+    callback_data stays <64B via stable-session-key + index keys.
     """
     sid = d["session_id"]
     skey = session_callback_key(d)
@@ -634,7 +663,10 @@ def render_tg(d: dict) -> dict:
             m = decision_mark(i)
             row = []
             if h.get("exact_url"):
-                row.append({"text": f"{m} 📖 復盤", "url": h["exact_url"]})
+                row.append({"text": f"{m} 🃏 手牌", "url": h["exact_url"]})
+            if h.get("study_url"):
+                row.append({"text": f"{m} 🔍 復盤", "url": h["study_url"]})
+            row.append({"text": f"{m} 💬 教練", "callback_data": f"src2:{skey}:{i}"})
             # Decision-level Trainer deep-links are very long; 8 of them can exceed
             # Telegram's inline-keyboard payload limit and make the whole review fail.
             # Keep concrete review links here; practice is still available via the
