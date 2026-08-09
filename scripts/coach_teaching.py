@@ -381,9 +381,94 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
     }
 
 
+def _off_tree_decision(context: dict, spot: dict, solution: dict,
+                       hero_hand: str) -> dict | None:
+    """Keep a real Hero action visible when the exact combo has 0% reach.
+
+    There is no counterfactual EV comparison at this node, so this record is
+    deliberately coverage-only: it can say why the action is ungraded, but it
+    can never become a deep causal focus or a correct/incorrect verdict.
+    """
+    street = spot.get("street") or ""
+    if street not in {"flop", "turn", "river"}:
+        return None
+    combo_idx = gf.combo_index_for_hand(hero_hand)
+    if combo_idx is None:
+        return None
+    hero = spot.get("solver_hero_pos") or context.get("hero_position")
+    players = _players(solution)
+    hero_pi = players.get(hero)
+    if not hero_pi or (solution.get("game") or {}).get("active_position") != hero:
+        return None
+    player_range = hero_pi.get("range") or []
+    if combo_idx < len(player_range) and _float(player_range[combo_idx]) > 0:
+        return None
+
+    action_rows = solution.get("action_solutions") or []
+    facing_bet = any(
+        (row.get("action") or {}).get("code") in {"F", "C"}
+        for row in action_rows
+    )
+    actual_code = spot.get("taken_code") or ""
+    actual_solution = next(
+        (
+            row for row in action_rows
+            if (row.get("action") or {}).get("code") == actual_code
+        ),
+        None,
+    )
+    if actual_solution:
+        action = actual_solution.get("action") or {}
+        actual_label = _action_label(actual_solution, facing_bet)
+        pot_ratio = _float(action.get("betsize_by_pot"), -1.0)
+    else:
+        actual_label = {
+            "X": "check", "C": "call", "F": "fold", "RAI": "all-in",
+        }.get(actual_code, "實戰動作")
+        pot_ratio = -1.0
+    actual = {
+        "code": actual_code,
+        "label": actual_label,
+        "frequency": 0.0,
+        "ev_bb": 0.0,
+        "pot_ratio": pot_ratio,
+    }
+    range_plan = _range_plan(solution)
+    villain = next((position for position in players if position != hero), None)
+    return {
+        "street": street,
+        "board": (solution.get("game") or {}).get("board") or "",
+        "hero": hero,
+        "villain": villain,
+        "hero_hand": hero_hand,
+        "actual_action": actual,
+        "preferred_action": None,
+        "best_action_by_ev": None,
+        "available_actions": [],
+        "ev_loss_bb": None,
+        "ev_loss_pot": None,
+        "range_plan": range_plan,
+        "action_contract": {
+            "mode": "off_tree",
+            "frequencies": {},
+            "continue_frequency": None,
+            "summary": "exact combo 0% 到達，沒有 action EV 對照",
+        },
+        "off_tree": True,
+        "confidence": "off_tree",
+        "scope": "這個 exact combo 0% 到達此節點，不能判定實戰動作對錯",
+    }
+
+
 def _decision_verdict(decision: dict) -> str:
     """Render one compact, deterministic verdict for the narrator contract."""
     actual = decision.get("actual_action")
+    if decision.get("off_tree"):
+        label = (actual or {}).get("label") or "實戰動作"
+        return (
+            f"{label} 屬 off-tree：這個 combo 0% 到達此節點，"
+            "沒有 solver 對照，無法判定對錯"
+        )
     preferred = decision["preferred_action"]
     loss = decision.get("ev_loss_pot") or 0.0
     if not actual:
@@ -1237,9 +1322,11 @@ def build_teaching_digest(context: dict) -> dict | None:
             if spot.get("street") == "preflop"
             else _decision(context, spot, solution, hero_hand)
         )
+        if item is None and spot.get("street") != "preflop":
+            item = _off_tree_decision(context, spot, solution, hero_hand)
         if item:
             all_decisions.append(item)
-            if item["street"] != "preflop":
+            if item["street"] != "preflop" and not item.get("off_tree"):
                 postflop_decisions.append(item)
     if not all_decisions:
         return None
@@ -1497,6 +1584,7 @@ def render_prompt_block(digest: dict | None) -> str:
         )
     lines.extend([
         "• 上述每點只需一句；非焦點不得自行補因果，exact combo mix 本身就是足夠理由。",
+        "• off-tree 節點必須照寫『無法判定對錯』，並把學習焦點指回最後一個可評分節點；不得改判為正確或錯誤。",
         "",
         "【深講焦點｜只在 *為什麼* 展開】",
     ])
@@ -1597,7 +1685,10 @@ def render_prompt_block(digest: dict | None) -> str:
                 f"{blocker['same_class_suit_sensitivity']}。"
             )
         card_effects = decision.get("opponent_card_effects")
-        if card_effects:
+        selected_rule_ids = {
+            row.get("id") for row in decision.get("causal_mechanisms") or []
+        }
+        if card_effects and "blocker_candidate_ranking" in selected_rule_ids:
             effects = "、".join(
                 f"Villain 持 {row['card']} 時該 action "
                 f"{'上升' if row['direction'] == 'increase' else '下降'}"
@@ -1616,9 +1707,10 @@ def render_prompt_block(digest: dict | None) -> str:
         "【輸出契約】",
         "只輸出三段：*核心判斷*、*為什麼*、*你要記得*。",
         "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
-        "*核心判斷* 必須按 D1、D2…順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用骨架提供的 Preflop／Flop ①／Turn 等原樣標籤。",
+        "*核心判斷* 必須按 D1、D2…順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用逐點判定提供的原樣標籤；只有一個 Flop 決策時就寫 Flop，不得自行加 ①。",
         "每個 bullet 只寫『Hero 動作如何＋solver 偏好』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
         "逐點判定可評價所有 D# 的正誤或 mix；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
+        "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
         "若沒有深講焦點，*為什麼* 只說 exact combo strategy 已足以判定，不補一般牌理。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
@@ -1652,6 +1744,12 @@ def render_fallback(digest: dict) -> str:
 
     def _core(decision: dict) -> str:
         actual = decision.get("actual_action")
+        if decision.get("off_tree"):
+            label = (actual or {}).get("label") or "實戰動作"
+            return (
+                f"{label} 屬 off-tree，這個 combo 0% 到達此節點，"
+                "沒有 solver 對照，無法判定對錯"
+            )
         preferred = decision["preferred_action"]
         loss = decision.get("ev_loss_pot") or 0.0
         if actual and loss >= 0.003:
@@ -1740,10 +1838,16 @@ def render_fallback(digest: dict) -> str:
                 )
             reasons = [contrast]
     if not reasons:
-        reasons = [
-            "這手只有 preflop 決策；exact hand class 的 solver action 分配"
-            "已足以判定，不需要另外補一般牌理。"
-        ]
+        if any(row.get("off_tree") for row in coverage):
+            reasons = [
+                "沒有可深講的已評分 postflop 節點；off-tree 只表示缺少 "
+                "exact-combo solver 對照，不能補一般牌理。"
+            ]
+        else:
+            reasons = [
+                "這手只有 preflop 決策；exact hand class 的 solver action 分配"
+                "已足以判定，不需要另外補一般牌理。"
+            ]
 
     lesson = {
         "低 SPR 下的 equity denial 與脆弱成牌保護": "低 SPR 面對大注時，脆弱成牌可能用 jam 向未成牌與聽牌收取 realization 代價；不要只看平均 range equity。",
@@ -1757,6 +1861,11 @@ def render_fallback(digest: dict) -> str:
         (primary.get("drivers") or {}).get("primary"),
         "先判斷這手牌在自身 range 的角色與 EV，再服從這個 node 的 solver action。",
     )
+    if primary.get("off_tree"):
+        lesson = (
+            "off-tree 節點不判定對錯；先回到最後一個可評分節點，"
+            "確認是哪個動作讓 exact combo 離開 solver 路徑。"
+        )
     if (
         (primary.get("drivers") or {}).get("primary") == "雙方強牌結構"
         and any(
@@ -2076,7 +2185,10 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
                 level_prefix,
                 re.I,
             )) or bool(re.search(r"(?:範圍|range)", level_suffix, re.I))
-            candidates = _covered_decisions(digest)
+            candidates = [
+                row for row in _covered_decisions(digest)
+                if not row.get("off_tree")
+            ]
             street_matches = [
                 match for match in re.finditer(
                     r"(preflop|翻牌前|flop|turn|river|翻牌|轉牌|河牌)", sentence, re.I,
@@ -2246,8 +2358,59 @@ def _audit_decision_coverage(body: str, digest: dict) -> list[str]:
     violations = []
     for decision in _covered_decisions(digest):
         label = decision.get("coverage_label")
-        if label and len(re.findall(re.escape(label), core, re.I)) != 1:
+        label_count = (
+            len(re.findall(
+                rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
+                core,
+                re.I,
+            ))
+            if label else 0
+        )
+        if label and label_count != 1:
             violations.append(f"missing decision coverage {decision.get('decision_id', label)}")
+        if label and not re.search(r"[①②③④⑤⑥]", label):
+            if re.search(
+                rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]+[①②③④⑤⑥][ \t]*[：:]",
+                core,
+                re.I | re.M,
+            ):
+                violations.append(
+                    f"decision label mismatch {decision.get('decision_id', label)}"
+                )
+    return violations
+
+
+def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
+    """An unreachable exact combo must stay explicitly ungraded."""
+    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
+    violations = []
+    for decision in _covered_decisions(digest):
+        if not decision.get("off_tree"):
+            continue
+        label = decision.get("coverage_label") or ""
+        line = next(
+            (
+                row for row in core.splitlines()
+                if label and re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
+                    row,
+                    re.I,
+                )
+            ),
+            "",
+        )
+        if not line:
+            continue
+        if not re.search(
+            r"off[- ]?tree|0\s*%[^。；\n]{0,12}到達|"
+            r"(?:沒有|無)[^。；\n]{0,12}solver[^。；\n]{0,12}對照|"
+            r"無法[^。；\n]{0,12}判定",
+            line,
+            re.I,
+        ):
+            violations.append(f"off-tree decision graded {decision.get('street')}")
+        if re.search(r"(?:正確|錯誤|失誤|漏洞|EV\s*(?:loss|損失))", line, re.I):
+            violations.append(f"off-tree decision graded {decision.get('street')}")
     return violations
 
 
@@ -2293,6 +2456,8 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
         if not sentence.strip():
             continue
         for decision in _covered_decisions(digest):
+            if decision.get("off_tree"):
+                continue
             street = decision.get("street")
             if not street or not re.search(street_terms[street], sentence, re.I):
                 continue
@@ -2303,7 +2468,10 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
                 violations.append(f"verdict mismatch {street}:in-mix-called-error")
             if has_material_loss and positive.search(sentence):
                 violations.append(f"verdict mismatch {street}:loss-called-correct")
-    if len(_covered_decisions(digest)) == 1:
+    if (
+        len(_covered_decisions(digest)) == 1
+        and not _covered_decisions(digest)[0].get("off_tree")
+    ):
         decision = _covered_decisions(digest)[0]
         street = decision["street"]
         has_material_loss = (decision.get("ev_loss_pot") or 0.0) >= 0.003
@@ -2321,6 +2489,8 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
     """An off-mix action may be cheap in EV without becoming a solver branch."""
     violations = []
     for decision in _covered_decisions(digest):
+        if decision.get("off_tree"):
+            continue
         actual = decision.get("actual_action") or {}
         if actual.get("frequency", 0.0) >= 0.01:
             continue
@@ -2449,6 +2619,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
     violations.extend(_audit_decision_coverage(body, digest))
+    violations.extend(_audit_off_tree_verdicts(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
     violations.extend(_audit_range_structure_causality(body, digest))
