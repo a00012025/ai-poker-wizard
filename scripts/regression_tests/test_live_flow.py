@@ -3996,8 +3996,20 @@ def test_backfill_spots_incremental_selection():
     assert_in("spot_leaf IS NULL", INCREMENTAL_MISSING_SQL)
     assert_in("spot_parent IS NULL", INCREMENTAL_MISSING_SQL)
     assert_in("played_depth_bb IS NULL", INCREMENTAL_MISSING_SQL)
+    assert_in("node:solved_partial_hand", INCREMENTAL_MISSING_SQL)
+    assert_in("node:no_solution", INCREMENTAL_MISSING_SQL)
     from backfill_spots import READINESS_GAP_SQL
     assert_in("spot_leaf IS NULL", READINESS_GAP_SQL)
+    from backfill_spots import UPDATE_SQL, _row
+    assert_in("excluded=$24", UPDATE_SQL)
+    repair = _row({
+        "gtow_hand_id": "h", "street": "preflop", "decision_idx": 0,
+        "category": "vsRaiseCall", "leaf": "BB_vsRaiseCall_OOP",
+        "keys": {}, "tags": {},
+    }, {"confidence": 1.0, "approx_flags": ["node:solved_partial_hand"],
+        "excluded": False})
+    assert_eq(len(repair), 24)
+    assert_eq(repair[-1], False)
 
 
 @test

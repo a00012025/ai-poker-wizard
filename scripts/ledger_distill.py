@@ -86,19 +86,25 @@ def _facing(street_actions: list[dict]) -> str:
     return "checked_to" if saw_check else "unopened"
 
 
-def _hand_flags(list_row: dict, ga: dict) -> tuple[list[str], bool]:
-    """Hand-level honesty flags + hand-level exclusion."""
-    flags, excluded = [], False
+def _hand_flags(list_row: dict, ga: dict) -> list[str]:
+    """Return hand-level audit flags without poisoning solved hero nodes.
+
+    GTOW can label a hand ``NO_GTO_SOLUTION`` when only part of its action
+    path is unsupported while still returning a fully solved hero game point.
+    Eligibility is therefore decided per game point in ``distill_hand``; these
+    hand-level statuses remain as provenance only.
+    """
+    flags = []
     ss = list_row.get("solution_status")
     if ss and ss != "OK":
-        flags.append(f"solution:{ss}"); excluded = True
+        flags.append(f"solution:{ss}")
     ws = ga.get("warning_status")
     if ws and ws != "OK":
-        flags.append(f"warning:{ws}"); excluded = True
+        flags.append(f"warning:{ws}")
     ar = ga.get("approximation_reason")
     if ar:
         flags.extend(["analyzer_approximation", f"approx:{ar}"])
-    return flags, excluded
+    return flags
 
 
 def _decision_depths(played_depth: float, gp: dict) -> tuple[float | None, float]:
@@ -379,7 +385,7 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
     played_depth = float(list_row.get("preflop_game_depth") or 0)
     hand_row = distill_hand_row(list_row)
 
-    hand_flags, hand_excluded = _hand_flags(list_row, ga)
+    hand_flags = _hand_flags(list_row, ga)
     gtow_texture = "/".join(x for x in (list_row.get("board_flop_connectedness"),
                                         list_row.get("board_flop_pairedness")) if x) or None
 
@@ -407,7 +413,11 @@ def distill_hand(list_row: dict, detail: dict) -> tuple[dict, list[dict]]:
             idx = hero_count[street]
 
             flags = list(hand_flags)
-            excluded = hand_excluded
+            excluded = gp.get("has_solution") is not True
+            if excluded:
+                flags.append("node:no_solution")
+            elif any(f.startswith(("solution:", "warning:")) for f in hand_flags):
+                flags.append("node:solved_partial_hand")
             corr = sel.get("correctness")
             if corr in (None, "UNSOLVED"):
                 flags.append("unsolved"); excluded = True
