@@ -1504,6 +1504,306 @@ def test_evidence_audit_rejects_blocker_target_joined_from_separate_facts():
 
 
 @test
+def test_evidence_audit_rejects_ev_ranking_inferred_from_pure_frequency():
+    """A 100% action is a recommendation, not evidence of an EV ranking."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {},
+        "92s：equity 74%；solver 動作：跟注 100%",
+    )
+    audit = audit_evidence_answer(
+        "這手 EV 最高的路線是跟注。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_in("EV ranking", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_requires_causal_gate_for_category_to_action_join():
+    """More sets in a range do not alone prove the betting range is strong."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {},
+        "因果優先序：exact combo mixed strategy；次要機制：range equity guardrail\n"
+        "可辨認強牌類別：CO 的set較多",
+    )
+    answer = "CO 有較多 set，因此讓整體下注 range 有足夠強度。"
+    audit = audit_evidence_answer(answer, bundle, ["E1.1"], require_refs=True)
+    assert_in("unconditioned range category", " | ".join(audit.violations))
+
+    supported = EvidenceBundle()
+    supported.add_text(
+        "query_coach_facts", {},
+        "因果優先序：exact combo；次要機制：range 頂端與強端的厚度\n"
+        "可辨認強牌類別：CO 的順子、set較多",
+    )
+    allowed = audit_evidence_answer(
+        "CO 有較多順子與 set，因此可讓部分底端聽牌加注。",
+        supported, ["E1.1"], require_refs=True,
+    )
+    assert_true(allowed.ok, "explicit strong-end causal card should authorize the join")
+
+
+@test
+def test_evidence_audit_rejects_unmeasured_induced_action_story():
+    """A pure call frequency does not prove an induce/preserve-range motive."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_coach_facts", {}, "92s：solver 動作跟注 100%")
+    audit = audit_evidence_answer(
+        "跟注是為了保留對手下注範圍。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_in("induced-action", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_personalized_mix_choice():
+    """GTO mixing is randomized, not selected from momentary comfort."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {}, "A6s：加注 54% | 棄牌 42% | 跟注 2%",
+    )
+    audit = audit_evidence_answer(
+        "如果不想加注，就直接 fold。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_in("personalized", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_exact_combo_action_from_class_average():
+    """A9s aggregate frequencies cannot be attributed to A♦9♦."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=BTN Ad9d")
+    bundle.add_text(
+        "query_gto", {}, "A9s：Call 83% | Raise 17%",
+    )
+    audit = audit_evidence_answer(
+        "A♦9♦ 主要 call 83%。", bundle, ["E2.1"], require_refs=True,
+    )
+    assert_in("exact combo action", " | ".join(audit.violations))
+
+    exact = EvidenceBundle()
+    exact.add_text("current_hand", {}, "hero=BTN Ad9d")
+    exact.add_text(
+        "query_gto", {}, "A♦9♦（A9s）\n策略: Call 82% | Raise 17%",
+    )
+    allowed = audit_evidence_answer(
+        "A♦9♦ 主要 call 82%。", exact, ["E2.1", "E2.2"], require_refs=True,
+    )
+    assert_true(allowed.ok)
+
+
+@test
+def test_evidence_audit_rejects_exact_action_from_zero_reach_notice():
+    """A low-reach notice proves absence, not an exact-combo recommendation."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=UTG+1 Ad8d")
+    bundle.add_text(
+        "query_coach_facts", {},
+        "A♦8♦（A8s）：在 GTO 中此線極少出現（頻率近 0），數據參考性低",
+    )
+    bundle.add_text(
+        "query_gto", {},
+        "Exact combo 在此 solver node 沒有可用的 range／strategy；"
+        "不可把下方 hand-class 平均直接套用到這個花色。\n"
+        "UTG+1 整體 Fold 8.4% / Call 91.6%",
+    )
+    audit = audit_evidence_answer(
+        "A♦8♦ 應以 call 為主，solver 顯示 call 91.6%。",
+        bundle, ["E2.1", "E3.1", "E3.2"], require_refs=True,
+    )
+    assert_in("exact combo action", " | ".join(audit.violations))
+
+    honest = audit_evidence_answer(
+        "A♦8♦ 在這個節點無法可靠判定該 call 或 fold；exact combo 沒有可用策略。",
+        bundle, ["E2.1", "E3.1"], require_refs=True,
+    )
+    assert_true(honest.ok, "an explicit refusal is not an action recommendation")
+
+
+@test
+def test_evidence_audit_binds_hand_class_action_to_local_not_node_totals():
+    """Whole-range Call 91.6% cannot be renamed as an A8s class average."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=UTG+1 Ad8d")
+    bundle.add_text(
+        "query_gto", {},
+        "UTG+1 整體 Fold: 8.4%\nUTG+1 整體 Call: 91.6%\n"
+        "【UTG+1 A♦8♦（A8s）】\n"
+        "Exact combo 在此 solver node 沒有可用的 range／strategy",
+    )
+    bad = audit_evidence_answer(
+        "A8s 類別平均主要 call 91.6%，但 A♦8♦ 無法可靠判定。",
+        bundle, ["E2.1", "E2.2", "E2.3"], require_refs=True,
+    )
+    assert_in("hand-class action attributed", " | ".join(bad.violations))
+
+    local = EvidenceBundle()
+    local.add_text(
+        "query_gto", {},
+        "【BTN A9s】\nRange 頻率 80%\n策略:\nCall 82%\nRaise 18%",
+    )
+    good = audit_evidence_answer(
+        "A9s 主要 call 82%。", local, ["E1.1", "E1.4"], require_refs=True,
+    )
+    assert_true(good.ok, str(good.violations))
+
+
+@test
+def test_evidence_audit_forbids_judging_actual_action_when_exact_is_unavailable():
+    """Zero reach permits recording Hero's fold, not calling it reasonable."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=SB 3h2h; taken=F")
+    bundle.add_text(
+        "query_coach_facts", {},
+        "3♥2♥：在 GTO 中此線極少出現（頻率近 0），數據參考性低",
+    )
+    bad = audit_evidence_answer(
+        "3♥2♥ 實戰 fold 是合理的。",
+        bundle, ["E2.1"], require_refs=True,
+    )
+    assert_in("unavailable exact combo", " | ".join(bad.violations))
+
+    honest = audit_evidence_answer(
+        "3♥2♥ 實戰選擇 fold，但現有資料無法判定正確或錯誤。",
+        bundle, ["E2.1"], require_refs=True,
+    )
+    assert_true(honest.ok, str(honest.violations))
+
+
+@test
+def test_evidence_audit_rejects_hero_verdict_from_villain_range_only():
+    """An action-conditioned villain range cannot prove Hero should fold."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=UTG+1 Ad8d")
+    bundle.add_text(
+        "query_coach_facts", {},
+        "對手採取 all-in 後的 action-conditioned range：overpair 29%",
+    )
+    audit = audit_evidence_answer(
+        "A♦8♦ 在這裡 solver 指定 fold。", bundle, ["E2.1"], require_refs=True,
+    )
+    assert_in("exact combo action", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_raw_equity_as_bet_cause():
+    """High equity describes strength; it does not itself select bet vs check."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hero=CO Ac7c")
+    bundle.add_text(
+        "query_coach_facts", {},
+        "A♣7♣：equity 80%、percentile 94%\nsolver 動作：下注 87% | 過牌 12%",
+    )
+    audit = audit_evidence_answer(
+        "A♣7♣ equity 80%，因此被分配進下注策略。",
+        bundle, ["E2.1", "E2.2"], require_refs=True,
+    )
+    assert_in("raw equity", " | ".join(audit.violations))
+
+    across_clause = audit_evidence_answer(
+        "這手 equity 80%，同時有改善空間；因此能進入下注 range。",
+        bundle, ["E2.1", "E2.2"], require_refs=True,
+    )
+    assert_in("raw equity", " | ".join(across_clause.violations))
+
+
+@test
+def test_evidence_audit_rejects_invented_check_raise_label():
+    """Opponent check then Hero bet is not a Hero check-raise."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "current_hand", {},
+        "decision flop#1: taken=R1; actions_before=X\n"
+        "decision flop#2: taken=RAI; actions_before=X-R1-R3.75",
+    )
+    bundle.add_text(
+        "query_coach_facts", {}, "9♥2♥：solver 動作跟注 100%",
+    )
+    audit = audit_evidence_answer(
+        "check-raise 到 1bb 後應該跟注。",
+        bundle, ["E2.1"], require_refs=True,
+    )
+    assert_in("action-line label", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_preserves_facing_bet_vs_raise_semantics():
+    """Raw R4 after a check is a bet, not a raise to 4bb."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "current_hand", {},
+        "hero=SB 3h2h\n"
+        "decision river#2: taken=F; actions_before=X-R4; "
+        "facing_villain_action=bet_to_4bb",
+    )
+    bundle.add_text(
+        "query_coach_facts", {},
+        "3♥2♥：在 GTO 中此線極少出現（頻率近 0）",
+    )
+    wrong = audit_evidence_answer(
+        "3♥2♥ 面對 river 加注至 4bb 無法可靠判定。",
+        bundle, ["E2.1"], require_refs=True,
+    )
+    assert_in("facing action semantics", " | ".join(wrong.violations))
+
+    right = audit_evidence_answer(
+        "3♥2♥ 面對 river 下注 4bb 無法可靠判定。",
+        bundle, ["E2.1"], require_refs=True,
+    )
+    assert_true(right.ok, str(right.violations))
+
+
+@test
+def test_compact_evidence_context_labels_facing_villain_action():
+    """The GPT context carries deterministic bet/raise semantics, not raw R only."""
+    from gemini_session import GeminiSessionManager
+
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager.last_hand_ids = {7: "H-test"}
+    manager.hand_contexts = {7: {
+        "hero_position": "SB",
+        "hero_hand": "32s",
+        "hand": {"hero_position": "SB", "hero_hand": "3h2h", "effective_bb": 30},
+        "hero_spots": [{
+            "street": "river", "taken_code": "F", "action_desc": "fold",
+            "params": {"river_actions": "X-R4"},
+            "street_actions_before_hero": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R", "size": 4},
+            ],
+        }],
+        "solutions": [{"game": {"board": "9c7h4c2sKh"}}],
+        "street_states": {"river": {"board": "9c7h4c2sKh"}},
+        "final_actions": {"river_actions": "X-R4-F"},
+    }}
+    text = manager._build_compact_evidence_context(7)
+    assert_in("facing_villain_action=bet_to_4bb", text)
+
+
+@test
 def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
     """A failed narrator degrades to useful facts, not hand_id/gametype internals."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -1514,6 +1814,63 @@ def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
     answer = render_safe_fallback(bundle)
     assert_in("BTN call 61%", answer)
     assert_not_in("hand_id", answer)
+
+
+@test
+def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable():
+    """A failed exact-combo narration must not expose range totals as advice."""
+    from coach_evidence import EvidenceBundle, render_safe_fallback
+
+    bundle = EvidenceBundle()
+    bundle.add_text("evaluate_hand", {}, "A♦8♦ 在 turn 是中對")
+    bundle.add_text(
+        "query_coach_facts", {},
+        "A♦8♦（A8s）：在 GTO 中此線極少出現（頻率近 0），數據參考性低",
+    )
+    bundle.add_text(
+        "query_gto", {},
+        "UTG+1 整體 Fold: 8.4%\nUTG+1 整體 Call: 91.6%\n"
+        "Exact combo 在此 solver node 沒有可用的 range／strategy；"
+        "不可用 hand-class 平均替代。",
+    )
+    answer = render_safe_fallback(bundle)
+    assert_in("Exact combo", answer)
+    assert_in("頻率近 0", answer)
+    assert_in("中對", answer)
+    assert_not_in("91.6%", answer)
+    assert_not_in("8.4%", answer)
+
+
+@test
+def test_evidence_repair_guidance_explains_frequency_is_not_ev_rank():
+    """Semantic audit failures produce an actionable constrained rewrite."""
+    from coach_evidence import repair_guidance_for_violations
+
+    guidance = repair_guidance_for_violations([
+        "unsupported EV ranking from action frequency",
+    ])
+    assert_in("頻率不是 EV 排名", guidance)
+    assert_in("高頻 raise 不代表", guidance)
+
+
+@test
+def test_evidence_safe_fallback_prioritizes_causal_facts_over_titles():
+    """Even a failed narrator leaves a compact learnable evidence card."""
+    from coach_evidence import EvidenceBundle, render_safe_fallback
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {},
+        "CO 在 turn 的 solver 決策數據：\n"
+        "A6s：equity 15%\n"
+        "solver 動作：加注 54% | 棄牌 42% | 跟注 2%\n"
+        "Hero range 角色：range 底端的A高，卡順聽牌\n"
+        "因果優先序：mixed strategy；次要機制：range 頂端厚度",
+    )
+    answer = render_safe_fallback(bundle)
+    assert_in("solver 動作", answer)
+    assert_in("因果優先序", answer)
+    assert_not_in("solver 決策數據：", answer)
 
 
 @test
@@ -1638,6 +1995,51 @@ def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
     assert_eq(len(manager.histories[7]), 2)
     assert_in("對手 turn", manager._content_text(manager.histories[7][0]))
     assert_in("頂對", manager._content_text(manager.histories[7][1]))
+
+
+@test
+def test_openai_hero_range_query_is_enriched_with_exact_combo():
+    """One range query returns both the full range and exact-suit strategy."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-hero-range", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_gto",
+            arguments=_json.dumps({"street": "turn", "position": "HJ"}),
+            call_id="call-hero-range",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-after-range", usage=None, output_text="NO_TOOL", output=[],
+    )
+    final = py_types.SimpleNamespace(
+        id="answer-hero-range", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\nHero turn range 以 check 為主；Q♦J♠ check 97%。",
+            "fact_refs": ["E2.1", "E2.2"],
+            "needs_more_evidence": False,
+            "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, _ = _evidence_manager([planner, after_tool, final])
+    manager.hand_contexts[7]["hand"] = {
+        "hero_position": "HJ", "hero_hand": "QdJs",
+    }
+    observed = []
+
+    async def fake_execute(chat_id, user_text, name, args, **kwargs):
+        observed.append((name, dict(args)))
+        return "HJ turn range：Check 72%\nQ♦J♠\n策略: Check 97%"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "Hero turn 的範圍怎麼分？",
+    ))
+    assert_in("Q♦J♠", answer)
+    assert_eq(observed[0][1].get("hand"), "QdJs")
 
 
 @test

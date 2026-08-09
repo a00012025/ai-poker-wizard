@@ -2698,6 +2698,8 @@ class GeminiSessionManager:
 
     def _build_compact_evidence_context(self, chat_id: int) -> str:
         """Strict node identity without the old giant range/system prompt."""
+        from coach_facts import villain_aggression_marker
+
         ctx = self.hand_contexts.get(chat_id)
         if not ctx:
             return "目前沒有已分析手牌。"
@@ -2743,11 +2745,13 @@ class GeminiSessionManager:
             street_counts[street] = street_counts.get(street, 0) + 1
             params = spot.get("params") or {}
             node_actions = params.get(f"{street}_actions", "")
+            facing = villain_aggression_marker(spot, hero)
+            facing_marker = f"; facing_villain_action={facing}" if facing else ""
             rows.append(
                 f"decision {street}#{street_counts[street]}: "
                 f"taken={spot.get('taken_code') or '?'}; "
                 f"description={spot.get('action_desc') or ''}; "
-                f"actions_before={node_actions}"
+                f"actions_before={node_actions}{facing_marker}"
             )
         rows.append(
             "node contract: 上述 depth/board/action line 必須完整一致；不同節點的 range 不可混用。"

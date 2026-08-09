@@ -585,6 +585,41 @@ def test_format_hand_detail_specific_combo():
 
 
 @test
+def test_format_hand_detail_omits_class_fallback_for_zero_reach_exact_combo():
+    """An absent exact suit is labelled unavailable without class advice."""
+    from gto_formatter import format_hand_detail
+
+    zeroes = [0.0] * 1326
+    sol = {
+        "game": {"board": "9c7h4c2sKh"},
+        "players_info": [{
+            "player": {"position": "SB"},
+            "range": zeroes,
+            "simple_hand_counters": {
+                "32s": {
+                    "total_combos_available": 3.0,
+                    "total_combos": 0.1,
+                    "total_frequency": 0.041,
+                    "hand_ev": 0.0,
+                    "hand_eq": 0.306,
+                    "actions_total_frequencies": {"F": 0.833, "C": 0.024},
+                    "actions_total_combos": {"F": 0.08, "C": 0.002},
+                },
+            },
+        }],
+        "action_solutions": [
+            {"action": {"code": code}, "strategy": zeroes}
+            for code in ("F", "C")
+        ],
+    }
+    text = format_hand_detail(sol, "3h2h", "SB")
+    assert_in("3♥️2♥️", text)
+    assert_in("Exact combo 在此 solver node 沒有可用", text)
+    assert_in("不可用 hand-class 平均替代", text)
+    assert_not_in("Range 頻率", text)
+
+
+@test
 def test_pot_pct_action_matching():
     """API: find_closest_action_by_pot_pct matches by pot percentage, not absolute bb."""
     from gto_api import get_next_actions, find_closest_action, find_closest_action_by_pot_pct

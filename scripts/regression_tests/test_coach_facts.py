@@ -358,6 +358,45 @@ def test_coach_facts_fetch_fold_equity():
     for ln in facts.lines:
         for tok in cf.extract_combo_tokens(ln):
             assert_in(tok, facts.allowed_claims, f"{tok} must be grounded")
+    assert_true(
+        any("加注至" in ln for ln in facts.lines),
+        "an opponent responding aggressively to Hero's bet is raising, not betting",
+    )
+
+
+@test
+def test_coach_facts_zero_reach_exact_combo_does_not_inherit_class_actions():
+    """A missing exact suit must not borrow its 169-class action mix."""
+    import coach_facts as cf
+    import gto_formatter as gf
+
+    combo = "3h2h"
+    idx = gf.combo_index_for_hand(combo)
+    zeroes = [0.0] * 1326
+    sol = {
+        "game": {"active_position": "SB"},
+        "players_info": [{
+            "player": {"position": "SB"},
+            "range": zeroes,
+            "simple_hand_counters": {
+                "32s": {
+                    "hand_eq": 0.306,
+                    "actions_total_frequencies": {"F": 0.833, "C": 0.024, "RAI": 0.142},
+                },
+            },
+        }],
+        "action_solutions": [
+            {"action": {"code": code}, "strategy": zeroes}
+            for code in ("F", "C", "RAI")
+        ],
+    }
+    assert_true(idx is not None)
+    exact = cf._hero_combo_facts(sol, "SB", combo)
+    assert_true(exact.get("low_weight"))
+    assert_true(not exact.get("actions"), "exact combo has no usable strategy")
+
+    aggregate = cf._hero_combo_facts(sol, "SB", "32s")
+    assert_eq(aggregate["actions"]["F"], 0.833)
 
 
 @test
@@ -367,9 +406,67 @@ def test_coach_facts_fetch_villain_range():
     facts = cf._fetch_villain_range_from(hero, hctx)
     assert_true(facts is not None, "D fetch returns facts")
     assert_eq(facts.intent, "villain_range")
+    assert_in("action-conditioned", facts.title)
+    assert_true(any("不是 action 前的整體 range" in line for line in facts.lines))
+    assert_true(facts.meta.get("action_conditioned"))
     for ln in facts.lines:
         for tok in cf.extract_combo_tokens(ln):
             assert_in(tok, facts.allowed_claims, f"{tok} must be grounded")
+
+
+@test
+def test_villain_range_ignores_wrong_decision_index_and_selects_facing_node():
+    """A planner cannot relabel Hero's earlier node as villain's bet range."""
+    import coach_facts as cf
+
+    first = {"game": {"active_position": "SB"}}
+    facing = {"game": {"active_position": "SB"}}
+    context = {
+        "hero_position": "SB",
+        "hero_spots": [
+            {"street": "river", "street_actions_before_hero": []},
+            {"street": "river", "street_actions_before_hero": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "R", "size": 4},
+            ]},
+        ],
+        "solutions": [first, facing],
+    }
+    spot, solution = cf._hero_spot_facing_villain_aggression(
+        cf.Ctx(
+            question="對手 river 的下注範圍是什麼？",
+            hand_context=context,
+            decision_index=1,
+        ),
+        "river",
+    )
+    assert_true(solution is facing)
+    assert_eq(spot["street_actions_before_hero"][-1]["position"], "BB")
+    assert_eq(cf._villain_aggression_label(spot), "下注至 4bb")
+
+    raised = {"street_actions_before_hero": [
+        {"position": "SB", "action": "R", "size": 2},
+        {"position": "BB", "action": "R", "size": 6.1},
+    ]}
+    assert_eq(cf._villain_aggression_label(raised), "加注至 6.1bb")
+    assert_eq(
+        cf._villain_aggression_label(raised, "SB 加注到 3.75bb 的範圍？"),
+        "加注至實戰 3.75bb（solver 近似節點 6.1bb）",
+    )
+
+
+@test
+def test_coach_facts_combo_parser_ignores_bare_labeled_percentile():
+    """A narrator writing 'percentile 94' must not invent a 94 hand class."""
+    import coach_facts as cf
+
+    assert_eq(
+        cf.extract_combo_tokens(
+            "equity 80、percentile 94、percentile 是 94、94 percentile",
+        ),
+        set(),
+    )
+    assert_in("94", cf.extract_combo_tokens("94 應該 fold"))
 
 
 @test

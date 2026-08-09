@@ -62,9 +62,8 @@ Hero A♠️Q♠️ 牌型: Ace high + 卡順聽牌
   Fold: 26.4%（0 combos）
   Call: 73.6%（0 combos）
 
-【LJ AQs】
-  Range 頻率: 0.0%（0.0/4 combos）
-  EV: 0.00bb | Equity: 0.0%
+【LJ A♠️Q♠️（AQs）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: LJ F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

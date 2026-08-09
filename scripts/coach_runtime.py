@@ -23,6 +23,7 @@ from coach_evidence import (
     display_exact_cards,
     normalize_emoji_cards,
     parse_structured_answer,
+    repair_guidance_for_violations,
     render_safe_fallback,
 )
 from coach_prompts import _needs_solver_grounding, _normalize_terms
@@ -56,7 +57,11 @@ async def run_evidence_chat(
     # Hand type is deterministic and local. Preload it for causal/action
     # questions so the narrator never has to count outs or infer draws, even
     # if the evidence planner forgets to request evaluate_hand.
-    raw_hero = ((ctx or {}).get("hand") or {}).get("hero_hand", "")
+    raw_hand = (ctx or {}).get("hand") or {}
+    raw_hero = raw_hand.get("hero_hand") or (ctx or {}).get("hero_hand", "")
+    hero_position = (
+        (ctx or {}).get("hero_position") or raw_hand.get("hero_position") or ""
+    )
     if (re.fullmatch(r"[2-9TJQKA][cdhs][2-9TJQKA][cdhs]", raw_hero, re.I)
             and re.search(
                 r"(為什麼|为何|why|牌型|牌力|聽牌|听牌|draw|blocker|阻斷|all[- ]?in|全下)",
@@ -161,6 +166,25 @@ async def run_evidence_chat(
                 result = f"工具參數無法解析：{exc}"
                 status = "error"
             else:
+                # A Hero range query can include ``hand`` without losing the
+                # whole-range breakdown. Enrich it deterministically so the
+                # narrator never applies a 169-class average to the exact suit
+                # combo merely because the planner omitted one optional arg.
+                if (
+                    name == "query_gto"
+                    and not args.get("hand")
+                    and re.fullmatch(
+                        r"[2-9TJQKA][cdhs][2-9TJQKA][cdhs]", raw_hero, re.I,
+                    )
+                    and str(args.get("position") or "").upper()
+                    == str(hero_position).upper()
+                    and re.search(
+                        r"(?:\bHero\b|我的|我在|我方|這手|这手)",
+                        user_text,
+                        re.I,
+                    )
+                ):
+                    args["hand"] = raw_hero
                 signature = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
                 if signature in seen_calls:
                     result = "相同工具與參數已執行，本次重複呼叫未執行。"
@@ -258,7 +282,8 @@ async def run_evidence_chat(
             prompt += (
                 "\n\n上一版未通過事實檢查："
                 + "；".join(last_violations)
-                + "。請重寫且只保留有編號證據支持的具體事實。"
+                + "。請重寫且只保留有編號證據支持的具體事實。\n"
+                + repair_guidance_for_violations(last_violations)
             )
         final_response = await session._openai_response(
             model=session.coach_narrator_model,
@@ -294,7 +319,7 @@ async def run_evidence_chat(
             if not (set(refs) & solver_fact_ids):
                 violations.append("solver answer does not reference solver evidence")
         needs_exact_hero = bool(re.search(
-            r"(為什麼|为何|why|這手|这手|我的|hero|all[- ]?in|全下)",
+            r"(為什麼|为何|why|這手|这手|我的|hero)",
             user_text,
             re.I,
         ))

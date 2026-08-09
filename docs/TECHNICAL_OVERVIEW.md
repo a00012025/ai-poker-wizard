@@ -30,6 +30,13 @@ credential boundary、具體 tool executor、usage 與歷史紀錄。正常路�
 GPT 失敗時靜默改用 Gemini 寫教練答案；有 deterministic 教學卡就呈現安全
 fallback，缺 solver 證據則明確說無法驗證。
 
+Follow-up 的 deterministic boundary 另外鎖住四種容易被 LLM 混用的語義：
+exact combo 不可回退成 169 hand-class 平均；zero-reach combo 不得借用整體
+range 的 Fold／Call 比例；對手自己的 action-conditioned bet/raise range 不得與
+「面對 Hero 下注後的 response range」混用；實戰尺寸與 solver 近似 bucket
+不同時必須同時標示。Verifier 失敗會帶具體 repair guidance 重寫，仍失敗才顯示
+不含危險 range totals 的 deterministic fallback。
+
 ### GTOW session 與 Ledger 攝取
 
 ```text

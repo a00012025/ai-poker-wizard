@@ -377,6 +377,17 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
                 lines.extend(_format_combo_breakdown(other, spot_solution))
             return "\n".join(lines)
 
+        # Do not silently fall through from an unavailable exact combo to the
+        # 169-class average.  Showing the aggregate here is both verbose and
+        # unsafe: on a suit-sensitive board it can invert the recommendation.
+        # A caller that genuinely wants class context can make a separate,
+        # explicitly class-level query.
+        return "\n".join([
+            f"【{position} {cards_to_emoji(original_hand)}（{hand_name}）】",
+            "  Exact combo 在此 solver node 沒有可用的 range／strategy；"
+            "不可用 hand-class 平均替代。",
+        ])
+
     # Standard aggregated output
     combos_avail = hand_data["total_combos_available"]
     combos_in_range = hand_data["total_combos"]

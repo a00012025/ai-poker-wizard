@@ -49,15 +49,8 @@ Hero 8♠️8🔷 牌型: 口袋對 (88) < 牌面
   RAISE 34.5（33% pot）: 9.8%（3 combos）
   All-in 49.700: 17.9%（5 combos）
 
-【BB 88】
-  Range 頻率: 1.5%（0.1/6 combos）
-  EV: -0.00bb | Equity: 24.3%
-  策略:
-    Fold: 100.0%（0.1 combos） EV -0.00bb
-  花色差異:
-    8♥️8☘️: Fold 100%（EV -0.0bb）
-    8♥️8🔷: Fold 100%（EV -0.0bb）
-    8♠️8♥️: Fold 100%（EV -0.0bb）
+【BB 8♠️8🔷（88）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: BB F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.0s | Total: 0.0s
