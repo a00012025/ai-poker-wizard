@@ -2197,3 +2197,54 @@ def test_card_display_helper_is_display_only():
     assert_eq(cards_to_emoji("K2o"), "K2o")
     assert_eq(card_tokens_to_emoji("Hero Ac Kd on board Qs"),
               "Hero A☘️ K🔷 on board Q♠️")
+
+
+@test
+def test_formatter_ev_loss_excludes_zero_frequency_noise():
+    """User-facing EV loss must share grading's in-mix action basis.
+
+    A 0.1%-frequency all-in with noisy +pot EV must not turn a valid mixed
+    call into the phantom 9.92bb mistake observed in a real A6s coach run.
+    """
+    import gto_formatter as gf
+    import hh_deviation_check as hd
+
+    solution = {"action_solutions": [{"action": {"code": "C"}}],
+                "game": {"pot": "7.3"}}
+    action_evs = {"F": 0.0, "C": -2.62, "R4.8": -1.50, "RAI": 7.30}
+    frequencies = {"F": 0.33, "C": 0.33, "R4.8": 0.32, "RAI": 0.001}
+    original_evs = hd._get_action_evs_postflop
+    original_freqs = gf._get_action_strategy_frequencies
+    hd._get_action_evs_postflop = lambda *args, **kwargs: action_evs
+    gf._get_action_strategy_frequencies = lambda *args, **kwargs: frequencies
+    try:
+        detail = gf.ev_loss_detail(solution, "C", "A6s", "CO", False)
+        comparison = gf.format_ev_comparison(solution, "C", "A6s", "CO", False)
+    finally:
+        hd._get_action_evs_postflop = original_evs
+        gf._get_action_strategy_frequencies = original_freqs
+
+    assert_true(detail is not None)
+    assert_eq(detail["best_code"], "C")
+    assert_eq(detail["ev_loss"], 0.0)
+    assert_eq(comparison, None)
+
+
+@test
+def test_grade_action_choice_never_charges_an_in_mix_action():
+    """Mixed actions are equilibrium-approved even when raw action EVs disagree."""
+    from hh_deviation_check import _grade_action_choice
+
+    freqs = {"F": 0.33, "C": 0.333, "R4.8": 0.324, "RAI": 0.001}
+    evs = {"F": 0.0, "C": -2.62, "R4.8": -1.50, "RAI": 7.30}
+    recommendation, best_ev, hero_ev, loss = _grade_action_choice(freqs, evs, "C")
+    assert_eq(recommendation, "C")
+    assert_eq(best_ev, -2.62)
+    assert_eq(hero_ev, -2.62)
+    assert_eq(loss, 0.0)
+
+    recommendation, best_ev, hero_ev, loss = _grade_action_choice(freqs, evs, "RAI")
+    assert_eq(recommendation, "F")
+    assert_eq(best_ev, 0.0)
+    assert_eq(hero_ev, 7.30)
+    assert_eq(loss, 0.0, "negative noisy regret clamps to zero")

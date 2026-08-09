@@ -11,7 +11,7 @@ GTO: Check 88% / Bet 1.35（20% pot） 7%
 ─── Turn: 4♠️ ───
 🎯 Ace high
 GTO: Check 98%
-→ Hero bet 75% pot ❌ (GTO建議 check)
+→ Hero bet 75% pot ❌ EV損失 -0.12bb（1.8% pot） (GTO建議 check)
 
 ─── River: 8♠️ ───
 🎯 Ace high

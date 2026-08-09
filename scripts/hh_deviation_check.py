@@ -412,6 +412,35 @@ def _best_in_mix(freqs: dict, action_evs: dict,
     return best, action_evs[best]
 
 
+def _grade_action_choice(freqs: dict, action_evs: dict | None,
+                         hero_code: str,
+                         floor: float = IN_MIX_FREQ_FLOOR):
+    """Return a dominant recommendation and a safe EV-loss comparison.
+
+    Any action the equilibrium actually mixes at ``floor`` or above is an
+    approved action and therefore has zero actionable regret.  GTOW's raw
+    per-action EV arrays can use terminal accounting that differs by action;
+    comparing those numbers inside the mix fabricated large losses for valid
+    calls/folds (real A6s regression).  Off-mix actions are still compared with
+    the highest-EV action among the solver's supported mix.
+    """
+    if not freqs:
+        return None, None, None, None
+    action_evs = action_evs or {}
+    hero_ev = action_evs.get(hero_code)
+    if freqs.get(hero_code, 0.0) >= floor:
+        recommendation = max(freqs, key=freqs.get)
+        return recommendation, hero_ev, hero_ev, 0.0 if hero_ev is not None else None
+    recommendation, best_ev = _best_in_mix(freqs, action_evs, floor=floor)
+    if recommendation is None:
+        recommendation = max(freqs, key=freqs.get)
+    loss = (
+        max(0.0, best_ev - hero_ev)
+        if best_ev is not None and hero_ev is not None else None
+    )
+    return recommendation, best_ev, hero_ev, loss
+
+
 def _fmt_betsize(v) -> str:
     """Format betsize, stripping unnecessary trailing zeros."""
     return f"{float(v):.3f}".rstrip("0").rstrip(".")
@@ -567,23 +596,26 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             hero_freq = freqs.get(hero_pf_action, 0)
             hand_ev = _get_hand_ev(sol, hero_hand, hero_pos, is_preflop=True)
             action_evs = _get_action_evs_preflop(sol, hero_hand, hero_pos)
-            # Recommendation + EV loss come from the highest-EV IN-MIX action
-            # (freq >= floor), so a 0%-frequency noisy size can't fabricate a
-            # loss for an action already in the GTO mix (H2). Consistent basis.
-            best_action, best_act_ev = _best_in_mix(freqs, action_evs or {})
-            if best_action is None:
-                best_action = max(freqs, key=freqs.get)
+            # Recommend the dominant mix action, but grade an in-mix Hero
+            # action against itself. Only an off-mix action is compared with
+            # the highest-EV supported branch, so 0%-frequency EV noise cannot
+            # fabricate a loss (H2).
+            best_action, best_act_ev, hero_act_ev, safe_loss = _grade_action_choice(
+                freqs, action_evs, hero_pf_action,
+            )
             best_freq = freqs.get(best_action, 0)
             ev_entry = {}
-            if action_evs:
-                hero_act_ev = action_evs.get(hero_pf_action)
-                if hero_act_ev is not None and best_act_ev is not None:
-                    ev_entry = {
-                        "hero_action_ev": hero_act_ev,
-                        "best_action_ev": best_act_ev,
-                        "ev_loss": best_act_ev - hero_act_ev,
-                        "action_evs": action_evs,
-                    }
+            if (
+                hero_act_ev is not None
+                and best_act_ev is not None
+                and safe_loss is not None
+            ):
+                ev_entry = {
+                    "hero_action_ev": hero_act_ev,
+                    "best_action_ev": best_act_ev,
+                    "ev_loss": safe_loss,
+                    "action_evs": action_evs,
+                }
             deviations.append({
                 "street": "preflop",
                 "spot": "open/first action",
@@ -653,22 +685,21 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                 freqs2 = _get_preflop_hand_freqs(sol2, hero_hand, hero_pos)
                 if freqs2:
                     hero_freq2 = freqs2.get(hero_cont, 0)
-                    best2 = max(freqs2, key=freqs2.get)
+                    action_evs2 = _get_action_evs_preflop(sol2, hero_hand, hero_pos)
+                    best2, best_act_ev2, hero_act_ev2, safe_loss2 = _grade_action_choice(
+                        freqs2, action_evs2, hero_cont,
+                    )
                     best_freq2 = freqs2[best2]
 
                     hand_ev2 = _get_hand_ev(sol2, hero_hand, hero_pos, is_preflop=True)
-                    action_evs2 = _get_action_evs_preflop(sol2, hero_hand, hero_pos)
                     ev_entry2 = {}
-                    if action_evs2:
-                        hero_act_ev2 = action_evs2.get(hero_cont)
-                        best_act_ev2 = max(action_evs2.values()) if action_evs2 else None
-                        if hero_act_ev2 is not None and best_act_ev2 is not None:
-                            ev_entry2 = {
-                                "hero_action_ev": hero_act_ev2,
-                                "best_action_ev": best_act_ev2,
-                                "ev_loss": best_act_ev2 - hero_act_ev2,
-                                "action_evs": action_evs2,
-                            }
+                    if hero_act_ev2 is not None and best_act_ev2 is not None and safe_loss2 is not None:
+                        ev_entry2 = {
+                            "hero_action_ev": hero_act_ev2,
+                            "best_action_ev": best_act_ev2,
+                            "ev_loss": safe_loss2,
+                            "action_evs": action_evs2,
+                        }
                     deviations.append({
                         "street": "preflop",
                         "spot": "facing 3bet/4bet",
@@ -785,24 +816,25 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                                                     is_preflop=False, combo_idx=hero_combo_idx)
                         action_evs_post = _get_action_evs_postflop(
                             sol_post, hero_hand, hero_pos, combo_idx=hero_combo_idx)
-                        # Recommendation + EV loss come from the highest-EV
-                        # IN-MIX action, so a 0%-frequency noisy size can't
-                        # fabricate a loss for an action already in the mix (H2).
-                        best_post, best_act_ev_p = _best_in_mix(
-                            freqs_post, action_evs_post or {})
-                        if best_post is None:
-                            best_post = max(freqs_post, key=freqs_post.get)
+                        # Recommend the dominant mix action, while grading an
+                        # in-mix Hero action against itself. Off-mix actions use
+                        # the highest-EV supported branch (H2).
+                        best_post, best_act_ev_p, hero_act_ev_p, safe_loss_p = _grade_action_choice(
+                            freqs_post, action_evs_post, taken_code,
+                        )
                         best_freq_post = freqs_post.get(best_post, 0)
                         ev_entry_post = {}
-                        if action_evs_post:
-                            hero_act_ev_p = action_evs_post.get(taken_code)
-                            if hero_act_ev_p is not None and best_act_ev_p is not None:
-                                ev_entry_post = {
-                                    "hero_action_ev": hero_act_ev_p,
-                                    "best_action_ev": best_act_ev_p,
-                                    "ev_loss": best_act_ev_p - hero_act_ev_p,
-                                    "action_evs": action_evs_post,
-                                }
+                        if (
+                            hero_act_ev_p is not None
+                            and best_act_ev_p is not None
+                            and safe_loss_p is not None
+                        ):
+                            ev_entry_post = {
+                                "hero_action_ev": hero_act_ev_p,
+                                "best_action_ev": best_act_ev_p,
+                                "ev_loss": safe_loss_p,
+                                "action_evs": action_evs_post,
+                            }
                         deviations.append({
                             "street": street_name,
                             "spot": f"board {cards_to_emoji(board)}",

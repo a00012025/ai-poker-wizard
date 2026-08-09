@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import gto_formatter as gf
+from card_display import cards_to_emoji
 from gto_api import get_spot_solution
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class Ctx:
     hand_context: dict
     user_id: int | None = None
     refresh_token: str | None = None
+    decision_index: int | None = None
 
 
 @dataclass
@@ -141,6 +143,20 @@ def _num_adjacent(text: str, start: int, end: int) -> bool:
     if before.isdigit() or before == ".":
         return True
     if after in ("%", "％", ".") or after.isdigit():
+        return True
+    # Bare numeric metrics such as "percentile 94" and "equity 80" are not
+    # poker classes.  The narrator may omit the percent sign even though the
+    # evidence card includes it, so use the immediately preceding label too.
+    prefix = text[max(0, start - 28):start]
+    if re.search(
+        r"(?:percentile|equity|頻率|比例|佔|占|combos?|組合|pp)"
+        r"\s*(?:是|為|约|約|达|達|=|:)?\s*$",
+        prefix,
+        re.I,
+    ):
+        return True
+    suffix = text[end:end + 24]
+    if re.match(r"\s*%?\s*(?:percentile|equity|頻率|比例|pp)\b", suffix, re.I):
         return True
     return False
 
@@ -327,10 +343,12 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
     pi = _players(sol).get(hero_pos)
     if not pi:
         return None
+    exact_requested = bool(_RE_COMBO.fullmatch(hero_hand or ""))
     idx = gf.combo_index_for_hand(hero_hand) if hero_hand else None
     cls = gf.normalize_hand_name(hero_hand) if hero_hand else None
     out: dict = {"class": cls}
     if idx is not None:
+        out["combo"] = hero_hand
         rng = pi.get("range") or []
         out["weight"] = rng[idx] if idx < len(rng) else None
         for k_src, k_dst in (("hand_eqs", "eq"), ("hand_eqrs", "eqr"),
@@ -338,6 +356,18 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
             arr = pi.get(k_src) or []
             if idx < len(arr):
                 out[k_dst] = arr[idx]
+        exact_actions = {}
+        for action_solution in sol.get("action_solutions") or []:
+            strategy = action_solution.get("strategy") or []
+            if idx >= len(strategy):
+                continue
+            frequency = _to_float(strategy[idx]) or 0.0
+            if frequency > 0.01:
+                code = (action_solution.get("action") or {}).get("code")
+                if code:
+                    exact_actions[code] = frequency
+        if exact_actions:
+            out["actions"] = exact_actions
     # Degenerate when the combo is essentially not in range here.
     w = out.get("weight")
     pctile = out.get("percentile")
@@ -349,10 +379,24 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
         out["percentile"] = None  # drop the -1 sentinel
     shc = (pi.get("simple_hand_counters") or {}).get(cls or "")
     if shc:
-        out["actions"] = {k: v for k, v in (shc.get("actions_total_frequencies") or {}).items()
-                          if v and v > 0.01}
+        # Exact 1326-combo strategy wins.  The 169-class counters average all
+        # suits and can materially disagree on flush-sensitive boards.
+        # Never fill a missing exact-combo strategy with the 169-class
+        # average.  At an off-strategy/zero-reach node the class can have a
+        # perfectly ordinary mix while the requested suit has no strategy at
+        # all; attributing that aggregate back to the exact cards is one of
+        # the most damaging coaching errors on flush-sensitive boards.
+        if not exact_requested and not out.get("actions"):
+            out["actions"] = {
+                k: v for k, v in (shc.get("actions_total_frequencies") or {}).items()
+                if v and v > 0.01
+            }
         if out.get("eq") is None:
             out["eq"] = shc.get("hand_eq")
+    out["facing_bet"] = any(
+        (row.get("action") or {}).get("code") == "F"
+        for row in (sol.get("action_solutions") or [])
+    )
     return out
 
 
@@ -394,9 +438,29 @@ def _hero_spot_and_sol(ctx: Ctx, street: str | None, prefer: str = "last"):
     if not pairs:
         return None, None
     if street:
-        for sp, s in pairs:
-            if sp.get("street") == street:
-                return sp, s
+        street_pairs = [(sp, s) for sp, s in pairs if sp.get("street") == street]
+        if street_pairs:
+            if ctx.decision_index:
+                selected = max(1, int(ctx.decision_index)) - 1
+                if selected < len(street_pairs):
+                    return street_pairs[selected]
+                return None, None
+            question = (ctx.question or "").lower()
+            wanted = []
+            if any(token in question for token in ("all-in", "all in", "全下", "推進")):
+                wanted.append("RAI")
+            if any(token in question for token in ("fold", "棄牌", "弃牌")):
+                wanted.append("F")
+            if any(token in question for token in ("call", "跟注")):
+                wanted.append("C")
+            for action in wanted:
+                matching = [
+                    pair for pair in street_pairs
+                    if str(pair[0].get("taken_code") or "").upper() == action
+                ]
+                if matching:
+                    return matching[-1]
+            return street_pairs[0] if prefer == "first" else street_pairs[-1]
     post = [(sp, s) for sp, s in pairs if sp.get("street") in ("flop", "turn", "river")]
     if post and prefer == "first":
         return post[0]
@@ -413,7 +477,7 @@ def _question_board(ctx: Ctx) -> str:
 # ── category display (Chinese) ──
 _CAT_ZH = {
     "no_made_hand": "無對子", "king_high": "K高", "ace_high": "A高", "low_pair": "小對",
-    "third_pair": "三對位", "second_pair": "中對", "top_pair": "頂對", "over_pair": "超對",
+    "third_pair": "第三對", "second_pair": "中對", "top_pair": "頂對", "over_pair": "超對",
     "two_pair": "兩對", "set": "三條", "trips": "三條", "straight": "順子", "flush": "同花",
     "full_house": "葫蘆", "quads": "四條", "straight_flush": "同花順",
 }
@@ -423,7 +487,7 @@ def _cat_zh(name: str) -> str:
     return _CAT_ZH.get(name, name)
 
 
-def _fmt_actions(actions: dict) -> str:
+def _fmt_actions(actions: dict, *, facing_bet: bool = False) -> str:
     parts = []
     for code, fr in sorted(actions.items(), key=lambda kv: -kv[1]):
         if code == "X":
@@ -435,7 +499,7 @@ def _fmt_actions(actions: dict) -> str:
         elif code == "RAI":
             label = "全下"
         else:
-            label = f"下注{code[1:]}"
+            label = f"加注至{code[1:]}" if facing_bet else f"下注{code[1:]}"
         parts.append(f"{label} {_pct(fr)}%")
     return " | ".join(parts)
 
@@ -474,8 +538,9 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
     for c in cands:
         hf = _hero_combo_facts(sol, actor, c)
         if hf and (hf.get("eq") is not None or hf.get("actions")):
-            name = hf.get("class") or c
-            f = (shc.get(name, {}) or {}).get("total_frequency", 0.0) or 0.0
+            hand_class = hf.get("class") or c
+            name = c if _RE_COMBO.fullmatch(c or "") else hand_class
+            f = (shc.get(hand_class, {}) or {}).get("total_frequency", 0.0) or 0.0
             if best is None or f > best[2]:
                 best = (name, hf, f)
     return (best[0], best[1]) if best else (None, None)
@@ -483,7 +548,13 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
 
 def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
     facts.allowed_claims |= canonical_forms(name)
-    head = f"  {name}："
+    if _RE_COMBO.fullmatch(name or ""):
+        display_name = cards_to_emoji(name)
+        if hf.get("class"):
+            display_name += f"（{hf['class']}）"
+    else:
+        display_name = name
+    head = f"  {display_name}："
     # Skip the per-combo equity when the hand barely reaches this node
     # (off-strategy line) — the sentinel eq would be a misleading '0%'.
     if hf.get("eq") is not None and not hf.get("low_weight"):
@@ -496,8 +567,25 @@ def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
         facts.note = "你的實際打法偏離 solver 建議，此節點數據僅供參考"
     facts.lines.append(head)
     if hf.get("actions"):
-        facts.lines.append(f"      solver 動作：{_fmt_actions(hf['actions'])}")
+        facts.lines.append(
+            f"      solver 動作：{_fmt_actions(hf['actions'], facing_bet=hf.get('facing_bet', False))}"
+        )
         facts.numbers |= {_pct(v) for v in hf["actions"].values()}
+
+
+def _append_decision_evidence(facts: Facts, hand_context: dict,
+                              spot: dict | None, sol: dict | None) -> None:
+    """Attach the shared causal card after the exact node has been resolved."""
+    if not spot or not sol:
+        return
+    try:
+        from coach_teaching import build_decision_evidence, render_decision_evidence
+
+        decision = build_decision_evidence(hand_context, spot, sol)
+        facts.lines.extend(render_decision_evidence(decision))
+        facts.meta["causal_decision"] = decision
+    except Exception as exc:
+        logger.debug("coach_facts: causal decision evidence unavailable: %s", exc)
 
 
 # ── P0 fetchers ─────────────────────────────────────────────────────────────
@@ -534,6 +622,10 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
         _why_hand_lines(name, hf, facts)
     facts.meta = {"hero_hand": hero_hand, "board": board,
                   "hands": [n for n, _ in resolved]}
+    # This causal card is for Hero's exact combo only, not arbitrary named
+    # members in questions such as "why does A3 bet but Q9 check?".
+    if not named and actor == hero:
+        _append_decision_evidence(facts, ctx.hand_context, spot, sol)
     _attach_chart(facts, sol, actor)
     if spot and actor == hero:
         _attach_node(facts, spot.get("street"))
@@ -670,6 +762,126 @@ def _resolve_villain_response_node(ctx: Ctx) -> dict | None:
         return None
 
 
+def _hero_spot_facing_villain_aggression(ctx: Ctx, street: str | None):
+    """Select the Hero node immediately after a villain bet/raise/all-in.
+
+    ``villain_range`` means the opponent's *action-conditioned* aggressive
+    range. A planner-supplied decision_index is advisory and must never move
+    this intent to Hero's earlier check/bet node on the same street.
+    """
+    hero = ctx.hand_context.get("hero_position")
+    pairs = [
+        (spot, sol)
+        for spot, sol in zip(
+            ctx.hand_context.get("hero_spots") or [],
+            ctx.hand_context.get("solutions") or [],
+        )
+        if sol and (not street or spot.get("street") == street)
+    ]
+    candidates = []
+    wants_allin = any(
+        token in (ctx.question or "").lower()
+        for token in ("all-in", "all in", "全下", "推進")
+    )
+    for spot, sol in pairs:
+        before = spot.get("street_actions_before_hero") or []
+        if not before:
+            continue
+        last = before[-1] or {}
+        action = str(last.get("action") or "").upper()
+        actor = str(last.get("position") or "").upper()
+        aggressive = action.startswith(("R", "B", "AI", "ALLIN"))
+        if not aggressive or (hero and actor == str(hero).upper()):
+            continue
+        is_allin = bool(last.get("allin")) or action.startswith(("AI", "ALLIN"))
+        candidates.append((spot, sol, is_allin))
+    if wants_allin:
+        allin_candidates = [pair for pair in candidates if pair[2]]
+        if allin_candidates:
+            spot, sol, _ = allin_candidates[-1]
+            return spot, sol
+    if candidates:
+        spot, sol, _ = candidates[-1]
+        return spot, sol
+    return None, None
+
+
+def villain_aggression_semantics(spot: dict) -> dict | None:
+    """Deterministic actor/kind/size for the last aggression before Hero."""
+    before = spot.get("street_actions_before_hero") or []
+    if not before:
+        return None
+    last = before[-1] or {}
+    action = str(last.get("action") or "").upper()
+    if not action.startswith(("R", "B", "AI", "ALLIN")):
+        return None
+    prior_aggression = any(
+        str((row or {}).get("action") or "").upper().startswith(
+            ("R", "B", "AI", "ALLIN")
+        )
+        for row in before[:-1]
+    )
+    is_allin = bool(last.get("allin")) or action.startswith(("AI", "ALLIN"))
+    size = last.get("size")
+    if size is None and not is_allin:
+        match = re.search(r"(\d+(?:\.\d+)?)", action)
+        size = match.group(1) if match else None
+    if size is not None:
+        try:
+            size = f"{float(size):g}"
+        except (TypeError, ValueError):
+            size = str(size)
+    return {
+        "actor": str(last.get("position") or "").upper(),
+        "kind": "raise" if prior_aggression else "bet",
+        "allin": is_allin,
+        "size": size,
+    }
+
+
+def villain_aggression_marker(spot: dict, hero: str = "") -> str | None:
+    """Machine-readable marker shared by current-hand context and audits."""
+    semantics = villain_aggression_semantics(spot)
+    if not semantics or (hero and semantics["actor"] == str(hero).upper()):
+        return None
+    if semantics["allin"]:
+        return f"{semantics['kind']}_allin"
+    if semantics["size"] is None:
+        return semantics["kind"]
+    return f"{semantics['kind']}_to_{semantics['size']}bb"
+
+
+def _villain_aggression_label(spot: dict, question: str = "") -> str | None:
+    """Human label for the last villain aggression before Hero acts."""
+    semantics = villain_aggression_semantics(spot)
+    if not semantics:
+        return None
+    verb = "加注" if semantics["kind"] == "raise" else "下注"
+    if semantics["allin"]:
+        return f"{verb} all-in"
+    solver_size = semantics["size"]
+    if solver_size is None:
+        return verb
+    question_verb = r"(?:加注|raise)" if semantics["kind"] == "raise" else r"(?:下注|bet)"
+    question_match = re.search(
+        question_verb + r"[^\d。；\n]{0,16}(\d+(?:\.\d+)?)\s*(?:bb)?",
+        question or "",
+        re.I,
+    )
+    if question_match:
+        described_size = question_match.group(1)
+        try:
+            differs = abs(float(described_size) - float(solver_size)) > 0.05
+        except (TypeError, ValueError):
+            differs = described_size != str(solver_size)
+        if differs:
+            return (
+                f"{verb}至實戰 {described_size}bb"
+                f"（solver 近似節點 {solver_size}bb）"
+            )
+    return f"{verb}至 {solver_size}bb"
+
+
 def _fetch_fold_equity_from(vsol: dict, hand_context: dict) -> Facts | None:
     if not vsol:
         return None
@@ -684,10 +896,16 @@ def _fetch_fold_equity_from(vsol: dict, hand_context: dict) -> Facts | None:
                   title=f"對手 {villain} 面對你的下注（{board}）的反應：")
     facts.allowed_claims |= canonical_forms(hero_hand or "")
     for name, freq, actions in table:
-        line = f"  {_cat_zh(name)} 佔 {_pct(freq)}% — {_fmt_actions(actions)}"
+        line = (
+            f"  {_cat_zh(name)} 佔 {_pct(freq)}% — "
+            f"{_fmt_actions(actions, facing_bet=True)}"
+        )
         reps = _rep_classes_for_category(vsol, name, top_k=2)
         if reps:
-            ex = "，".join(f"{c}({_fmt_actions(a)})" for c, f, a in reps)
+            ex = "，".join(
+                f"{c}({_fmt_actions(a, facing_bet=True)})"
+                for c, f, a in reps
+            )
             line += f"   例：{ex}"
             for c, f, a in reps:
                 facts.allowed_claims |= canonical_forms(c)
@@ -702,7 +920,8 @@ def _fetch_fold_equity_from(vsol: dict, hand_context: dict) -> Facts | None:
     return facts
 
 
-def _fetch_villain_range_from(hsol: dict, hand_context: dict) -> Facts | None:
+def _fetch_villain_range_from(hsol: dict, hand_context: dict,
+                              action_label: str | None = None) -> Facts | None:
     """Villain bet-range composition at the node where hero faces villain's bet."""
     if not hsol:
         return None
@@ -721,8 +940,18 @@ def _fetch_villain_range_from(hsol: dict, hand_context: dict) -> Facts | None:
     rows.sort(key=lambda r: -r[1])
     if not rows:
         return None
-    facts = Facts(intent="villain_range",
-                  title=f"對手 {villain} 在 {board} 的範圍組成：")
+    facts = Facts(
+        intent="villain_range",
+        title=(
+            f"對手 {villain} 在 {board} 採取"
+            f"{action_label or '剛才的下注／加注動作'}後，"
+            "Hero 面對該動作時的 action-conditioned range 組成："
+        ),
+    )
+    facts.lines.append(
+        "  節點語義：這已是按對手剛才的下注／加注 action 過濾後的 range，"
+        "不是 action 前的整體 range"
+    )
     facts.allowed_claims |= canonical_forms(hero_hand or "")
     cmap = _class_category_map(hsol, villain)
     shc = pi.get("simple_hand_counters") or {}
@@ -744,7 +973,10 @@ def _fetch_villain_range_from(hsol: dict, hand_context: dict) -> Facts | None:
         facts.lines.append(
             f"  你的 {hero_hand} 對上此範圍 equity {eqp[0]}%、percentile {eqp[1]}%")
         facts.numbers |= {eqp[0], eqp[1]}
-    facts.meta = {"villain": villain, "board": board, "rows": rows}
+    facts.meta = {
+        "villain": villain, "board": board, "rows": rows,
+        "action_conditioned": True,
+    }
     _attach_chart(facts, hsol, villain)
     return facts
 
@@ -754,8 +986,15 @@ def fetch_fold_equity(ctx: Ctx) -> Facts | None:
 
 
 def fetch_villain_range(ctx: Ctx) -> Facts | None:
-    spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
-    return _fetch_villain_range_from(sol, ctx.hand_context)
+    spot, sol = _hero_spot_facing_villain_aggression(
+        ctx, _street_from_question(ctx.question),
+    )
+    if not spot or not sol:
+        return None
+    return _fetch_villain_range_from(
+        sol, ctx.hand_context,
+        action_label=_villain_aggression_label(spot, ctx.question),
+    )
 
 
 # ── P1 fetchers ─────────────────────────────────────────────────────────────
@@ -784,6 +1023,14 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
         facts.numbers.add(_pct(fr))
         if bypot:
             facts.numbers.add(_pct(bypot))  # the size % is a legit number too
+    if hero_hand and actor:
+        exact = _hero_combo_facts(hsol, actor, hero_hand)
+        if exact and exact.get("actions"):
+            facts.lines.append(
+                f"  {hero_hand} 的 exact-combo 分配："
+                f"{_fmt_actions(exact['actions'], facing_bet=exact.get('facing_bet', False))}"
+            )
+            facts.numbers |= {_pct(value) for value in exact["actions"].values()}
     facts.meta = {"board": board, "rows": rows}
     _attach_chart(facts, hsol, actor)
     return facts
@@ -792,6 +1039,8 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
 def fetch_sizing(ctx: Ctx) -> Facts | None:
     spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
     facts = _fetch_sizing_from(sol, ctx.hand_context)
+    if facts:
+        _append_decision_evidence(facts, ctx.hand_context, spot, sol)
     if facts and spot:
         _attach_node(facts, spot.get("street"))
     return facts
@@ -1227,6 +1476,36 @@ def answer_followup_ex(ctx: Ctx) -> tuple[str | None, "Facts | None"]:
     logger.info(f"coach_facts: verifier fallback to template (intent={intent}, "
                 f"violations={v.violations})")
     return render_template(facts), facts
+
+
+def fetch_followup_facts(ctx: Ctx, intent: str, *, street: str | None = None) -> Facts | None:
+    """Fetch a deterministic fact card without invoking a classifier/narrator.
+
+    The provider-neutral evidence planner already selected ``intent``.  Keeping
+    this boundary free of any LLM call prevents the old Gemini Flash classifier
+    and narrator from leaking back into the GPT coaching path.  ``street`` is
+    appended to the question only when it is not already named, allowing the
+    existing node resolver to stay the single source of truth.
+    """
+    qt = _BY_INTENT.get(intent)
+    if qt is None:
+        return None
+    question = ctx.question or ""
+    if street and street.lower() not in question.lower():
+        question = f"{question}（指定 {street}）"
+    forced = Ctx(
+        question=question,
+        hand_context=ctx.hand_context,
+        user_id=ctx.user_id,
+        refresh_token=ctx.refresh_token,
+        decision_index=ctx.decision_index,
+    )
+    try:
+        facts = qt.fetch(forced)
+    except Exception as exc:
+        logger.warning("coach_facts: deterministic fetch(%s) failed: %s", intent, exc)
+        return None
+    return facts if facts and facts.lines else None
 
 
 def answer_followup(ctx: Ctx) -> str | None:

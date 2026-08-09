@@ -103,6 +103,16 @@ def test_hand_eval_top_pair():
 
 
 @test
+def test_hand_eval_ac7c_on_7h5c4c_is_nut_flush_draw():
+    """Exact real-hand regression used by grounded coaching."""
+    from hand_eval import evaluate
+
+    result = evaluate("Ac7c", "7h5c4c")
+    assert_eq(result["made_hand"], "top_pair")
+    assert_in("nut_flush_draw", result["draws"])
+
+
+@test
 def test_hand_eval_board_pair_not_hero():
     """H2671: JTo on KhQdKd = J high (board pair K, hero has no K)."""
     from hand_eval import evaluate
@@ -572,6 +582,41 @@ def test_format_hand_detail_specific_combo():
     text_agg = format_hand_detail(sol, "A8s", "CO")
     assert_in("Range 頻率", text_agg,
               "Aggregated query should show Range 頻率 header")
+
+
+@test
+def test_format_hand_detail_omits_class_fallback_for_zero_reach_exact_combo():
+    """An absent exact suit is labelled unavailable without class advice."""
+    from gto_formatter import format_hand_detail
+
+    zeroes = [0.0] * 1326
+    sol = {
+        "game": {"board": "9c7h4c2sKh"},
+        "players_info": [{
+            "player": {"position": "SB"},
+            "range": zeroes,
+            "simple_hand_counters": {
+                "32s": {
+                    "total_combos_available": 3.0,
+                    "total_combos": 0.1,
+                    "total_frequency": 0.041,
+                    "hand_ev": 0.0,
+                    "hand_eq": 0.306,
+                    "actions_total_frequencies": {"F": 0.833, "C": 0.024},
+                    "actions_total_combos": {"F": 0.08, "C": 0.002},
+                },
+            },
+        }],
+        "action_solutions": [
+            {"action": {"code": code}, "strategy": zeroes}
+            for code in ("F", "C")
+        ],
+    }
+    text = format_hand_detail(sol, "3h2h", "SB")
+    assert_in("3♥️2♥️", text)
+    assert_in("Exact combo 在此 solver node 沒有可用", text)
+    assert_in("不可用 hand-class 平均替代", text)
+    assert_not_in("Range 頻率", text)
 
 
 @test

@@ -56,7 +56,6 @@ Hero Q☘️7🔷 牌型: 頂對 (Q)
     Q☘️7♠️: Call 100%（EV 1.2bb）
     Q🔷7♠️: Call 100%（EV 1.2bb）
     Q♥️7♠️: Call 100%（EV 1.2bb）
-⚠ EV 損失 0.11bb（RAISE 4.8（33% pot） 0.68bb vs Call 0.79bb）
   → 實際行動: BB R5 5.0bb（solver code: R4.8）
 
 

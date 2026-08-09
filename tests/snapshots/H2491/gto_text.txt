@@ -44,13 +44,8 @@ Hero A🔷T🔷 牌型: Ace high + 堅果花聽牌
   BET 3.3（33% pot）: 38.9%（21 combos）
   BET 5.5（55% pot）: 30.4%（17 combos）
 
-【CO ATs】
-  Range 頻率: 0.2%（0.0/4 combos）
-  EV: 2.07bb | Equity: 30.4%
-  策略:
-    Check: 50.0%（0.0 combos）
-    Bet 5.5（55% pot）: 45.9%（0.0 combos）
-    Bet 3.3（33% pot）: 4.2%（0.0 combos）
+【CO A🔷T🔷（ATs）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: CO X（solver code: X）
 
 
@@ -62,11 +57,8 @@ Hero A🔷T🔷 牌型: Ace high
   Call: 30.8%（5 combos）
   All-in 13.000: 23.9%（4 combos）
 
-【CO ATs】
-  Range 頻率: 0.1%（0.0/4 combos）
-  EV: 0.51bb | Equity: 23.6%
-  策略:
-    Call: 99.9%（0.0 combos）
+【CO A🔷T🔷（ATs）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: CO F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -6,7 +6,7 @@ GTO: RAISE 2（29% pot） 100%
 ─── Flop: 6☘️Q♠️8🔷 ───
 🎯 Ace high + 後門花聽牌
 GTO: Check 97%
-→ Hero bet 33% pot ❌ (GTO建議 check)
+→ Hero bet 33% pot ❌ EV損失 -0.06bb（1.0% pot） (GTO建議 check)
 
 ─── Turn: 6🔷 ───
 🎯 Ace high + 堅果花聽牌

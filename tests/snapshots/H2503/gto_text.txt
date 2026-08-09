@@ -81,7 +81,6 @@ Hero 8♠️8🔷 牌型: 口袋對 (88)
     8♥️8☘️: Bet 2.5（44% pot） 59%, Bet 4（70% pot） 40%（EV 5.4bb）
     8♠️8☘️: Check 15%, Bet 2.5（44% pot） 51%, Bet 4（70% pot） 34%（EV 5.4bb）
     8🔷8☘️: Check 34%, Bet 2.5（44% pot） 42%, Bet 4（70% pot） 24%（EV 5.3bb）
-⚠ EV 損失 0.03bb（Check 5.36bb vs Bet 2.5（44% pot） 5.39bb）
   → 實際行動: CO X（solver code: X）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -44,7 +44,6 @@ Hero A♠️J♥️ 牌型: 頂對 (A)
     A🔷J☘️: Check 16%, Bet 1.85（10% pot） 4%, Bet 4.65（25% pot） 1%, Bet 9.3（50% pot） 80%（EV 20.3bb）
     A♥️J♠️: Check 17%, Bet 1.85（10% pot） 6%, Bet 4.65（25% pot） 2%, Bet 9.3（50% pot） 75%（EV 20.1bb）
     A🔷J♠️: Check 21%, Bet 1.85（10% pot） 9%, Bet 4.65（25% pot） 2%, Bet 9.3（50% pot） 68%（EV 20.2bb）
-⚠ EV 損失 0.08bb（Bet 4.65（25% pot） 20.07bb vs Bet 9.3（50% pot） 20.15bb）
   → 實際行動: SB R4 4.0bb（solver code: R4.65）
 
 
