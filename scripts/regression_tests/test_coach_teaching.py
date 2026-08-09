@@ -311,6 +311,157 @@ def _value_size_context():
     }
 
 
+def _h3835_multi_decision_context():
+    """Synthetic H3835 shape: five Hero decisions, two of them on the flop."""
+    import gto_formatter as gf
+    from hh_deviation_check import HAND_TO_169
+
+    hero_hand = "9c3c"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    villain_idx = gf.combo_index_for_hand("Ks8h")
+
+    def preflop_solution():
+        hero_range = [0.0] * 169
+        villain_range = [0.0] * 169
+        hand_idx = HAND_TO_169["93s"]
+        hero_range[hand_idx] = 1.0
+
+        def action(code, frequency, ev):
+            strategy = [0.0] * 169
+            evs = [-9.0] * 169
+            strategy[hand_idx] = frequency
+            evs[hand_idx] = ev
+            return {
+                "action": {"code": code},
+                "total_frequency": frequency,
+                "strategy": strategy,
+                "evs": evs,
+            }
+
+        return {
+            "game": {"active_position": "BB", "board": "", "pot": "3.25"},
+            "action_solutions": [action("F", 0.0, 0.0), action("C", 1.0, 0.25)],
+            "players_info": [
+                {"player": {"position": "BB"}, "range": hero_range},
+                {"player": {"position": "SB"}, "range": villain_range},
+            ],
+        }
+
+    def postflop_solution(board, specs, pot):
+        hero_range = _arrays()
+        villain_range = _arrays()
+        hero_range[hero_idx] = 1.0
+        villain_range[villain_idx] = 1.0
+        percentiles = _arrays(-1.0)
+        equities = _arrays()
+        percentiles[hero_idx] = 0.10
+        equities[hero_idx] = 0.10
+
+        def action(code, ratio, total, frequency, ev):
+            strategy = _arrays()
+            evs = _arrays(-9.0)
+            strategy[hero_idx] = frequency
+            evs[hero_idx] = ev
+            return {
+                "action": {
+                    "code": code,
+                    "allin": code == "RAI",
+                    "betsize_by_pot": ratio,
+                },
+                "total_frequency": total,
+                "strategy": strategy,
+                "evs": evs,
+            }
+
+        players = [
+            {"position": "SB", "relative_postflop_position": "IP",
+             "current_stack": "20"},
+            {"position": "BB", "relative_postflop_position": "OOP",
+             "current_stack": "20"},
+        ]
+        return {
+            "game": {
+                "active_position": "BB", "board": board, "pot": str(pot),
+                "players": players,
+            },
+            "action_solutions": [action(*spec) for spec in specs],
+            "players_info": [
+                {
+                    "player": {"position": "BB"}, "range": hero_range,
+                    "eq_percentile": percentiles, "hand_eqs": equities,
+                    "total_eq": 0.40,
+                    "hand_categories": [{"name": "no_made_hand", "index": 0,
+                                         "total_frequency": 1.0}],
+                    "draw_categories": [{"name": "no_draw", "index": 0,
+                                         "total_frequency": 1.0}],
+                },
+                {
+                    "player": {"position": "SB"}, "range": villain_range,
+                    "total_eq": 0.60,
+                    "hand_categories": [{"name": "no_made_hand", "index": 0,
+                                         "total_frequency": 1.0}],
+                    "draw_categories": [{"name": "no_draw", "index": 0,
+                                         "total_frequency": 1.0}],
+                },
+            ],
+            "hand_categories_range": [0] * 1326,
+            "draw_categories_range": [0] * 1326,
+            "blocker_rate": _arrays(-1.0),
+            "unblocker_rate": _arrays(-1.0),
+        }
+
+    params = {"preflop_actions": "R2-C"}
+    spots = [
+        {"street": "preflop", "solver_hero_pos": "BB",
+         "params": {"preflop_actions": "R2"}},
+        {"street": "flop", "taken_code": "X", "solver_hero_pos": "BB",
+         "params": params},
+        {"street": "flop", "taken_code": "R5", "solver_hero_pos": "BB",
+         "params": params},
+        {"street": "turn", "taken_code": "R7", "solver_hero_pos": "BB",
+         "params": params},
+        {"street": "river", "taken_code": "RAI", "solver_hero_pos": "BB",
+         "params": params},
+    ]
+    solutions = [
+        preflop_solution(),
+        postflop_solution("4cAh2s", [("X", None, 1.0, 1.0, 0.58)], 4.25),
+        postflop_solution(
+            "4cAh2s",
+            [("F", None, 0.44, 0.0, 0.0), ("C", None, 0.38, 0.52, 0.52),
+             ("R5", 0.36, 0.17, 0.48, 0.52)],
+            6.25,
+        ),
+        postflop_solution(
+            "4cAh2sQd",
+            [("X", None, 0.51, 0.03, 1.0), ("R3", 0.21, 0.04, 0.01, 1.0),
+             ("R7", 0.49, 0.45, 0.96, 1.11)],
+            14.25,
+        ),
+        postflop_solution(
+            "4cAh2sQdJd",
+            [("X", None, 0.20, 0.94, 0.0), ("R3", 0.11, 0.10, 0.04, 0.0),
+             ("RAI", 0.70, 0.70, 0.02, 0.0)],
+            28.25,
+        ),
+    ]
+    river_blocker = _arrays(-1.0)
+    river_trash = _arrays(-1.0)
+    river_blocker[hero_idx] = 2.0
+    river_trash[hero_idx] = 7.0
+    solutions[-1]["blocker_rate"] = river_blocker
+    solutions[-1]["unblocker_rate"] = river_trash
+    return {
+        "hand": {"hero_hand": hero_hand},
+        "hero_hand": "93s",
+        "hero_position": "BB",
+        "preflop_actions": "R2-C",
+        "hero_spots": spots,
+        "solutions": solutions,
+        "validation": {},
+    }
+
+
 @test
 def test_coach_teaching_real_fixture_builds_human_range_story():
     """Teaching card: real node becomes range role + human category evidence."""
@@ -329,6 +480,57 @@ def test_coach_teaching_real_fixture_builds_human_range_story():
     assert_in("主要機制", prompt)
     assert_in("已觀測 range plan", prompt)
     assert_in("*核心判斷*、*為什麼*、*你要記得*", prompt)
+
+
+@test
+def test_coach_teaching_h3835_covers_every_hero_decision_without_overexplaining():
+    """H3835: five decisions are reviewed; only two remain deep-teaching focus."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3835_multi_decision_context())
+    assert_true(digest is not None)
+    assert_eq(len(digest["all_decisions"]), 5)
+    assert_eq(
+        [row["coverage_label"] for row in digest["all_decisions"]],
+        ["Preflop", "Flop ①", "Flop ②", "Turn", "River"],
+    )
+    assert_true(len(digest["decisions"]) <= 2, "deep explanations must stay selective")
+
+    prompt = ct.render_prompt_block(digest)
+    for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
+        assert_in(label, prompt)
+    assert_in("不得省略打對的決策", prompt)
+
+    fallback = ct.render_fallback(digest)
+    fallback_core = fallback.split("*為什麼*", 1)[0]
+    for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
+        assert_eq(fallback_core.count(label), 1, f"{label} must appear exactly once")
+    assert_true(ct.audit_draft(fallback, digest).ok)
+
+    narrator = (
+        "*核心判斷*\n"
+        "• Preflop：call 正確，solver 幾乎純用。\n"
+        "• Flop ①：check 正確，solver 幾乎純用。\n"
+        "• Flop ②：raise 36% pot 是 solver 保留的 mix，主要仍是 call。\n"
+        "• Turn：bet 49% pot 正確，是主要動作。\n"
+        "• River：all-in 是 solver 保留的 mix，主要仍是 check。\n\n"
+        "*為什麼*\n"
+        "River 這個 combo 在 check、bet 11% pot、all-in 間混合，"
+        "check 約 94% 為偏好；低頻 all-in 不等於錯誤。\n\n"
+        "*你要記得*\n"
+        "把頻率偏好和 EV 錯誤分開；只適用目前 node。"
+    )
+    narrator_audit = ct.audit_draft(narrator, digest)
+    assert_true(narrator_audit.ok, str(narrator_audit.violations))
+
+    river_only = (
+        "*核心判斷*\n• River：all-in 是 solver 保留的 mix。\n\n"
+        "*為什麼*\n這個 combo 主要 check。\n\n"
+        "*你要記得*\n只適用目前 node。"
+    )
+    audit = ct.audit_draft(river_only, digest)
+    assert_in("missing decision coverage D1", audit.violations)
+    assert_in("missing decision coverage D4", audit.violations)
 
 
 @test
@@ -1292,8 +1494,8 @@ def test_coach_teaching_audit_rejects_in_mix_action_called_error():
     rows[2]["strategy"][idx], rows[2]["evs"][idx] = 0.56, 8.0
     digest = ct.build_teaching_digest(context)
     answer = ct.render_fallback(digest).replace(
-        "Flop 的 fold 沒有實質 EV 損失",
-        "Flop 的 fold 是小錯誤",
+        "• Flop：fold 沒有實質 EV 損失，是 solver 保留的 mix，主要仍是 all-in",
+        "• Flop：fold 是小錯誤",
     )
     assert_in(
         "verdict mismatch flop:in-mix-called-error",
@@ -1360,8 +1562,8 @@ def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
 
     digest = ct.build_teaching_digest(_low_spr_88_context())
     answer = ct.render_fallback(digest).replace(
-        "Flop 的 fold 是明顯失誤",
-        "這裡 fold 沒有實質 EV 損失",
+        "• Flop：fold 是明顯失誤，應偏向 all-in",
+        "• Flop：這裡 fold 沒有實質 EV 損失",
     )
     assert_in(
         "verdict mismatch flop:loss-called-correct",
