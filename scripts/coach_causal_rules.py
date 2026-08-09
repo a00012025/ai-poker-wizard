@@ -64,6 +64,24 @@ CAUSAL_RULES = (
         primary_priority=100,
     ),
     CausalRule(
+        id="draw_equity_aggressive_allocation",
+        title="聽牌 equity 來源與進攻分配",
+        evidence_tier="A_direct_node_fact",
+        required_facts=(
+            "verified_live_draws", "combo_equity", "exact_raise_frequency",
+            "exact_call_frequency",
+        ),
+        claim_scope=(
+            "未成牌的 equity 來自已驗證聽牌；solver 將 exact combo 分配到 "
+            "raise/all-in 而非被動 call，因此可描述為有改善 equity 的半詐唬"
+        ),
+        forbidden_inferences=(
+            "精確 fold equity", "所有聽牌都應 all-in", "把 raw equity 當成 size 原因",
+        ),
+        applies=lambda row: bool(row.get("draw_aggression")),
+        primary_priority=98,
+    ),
+    CausalRule(
         id="exact_combo_mix",
         title="exact combo 的 mixed strategy 分配",
         evidence_tier="A_direct_node_fact",
@@ -72,6 +90,24 @@ CAUSAL_RULES = (
         forbidden_inferences=("把低頻 mix 稱為 EV 錯誤", "跨 node 套用相同 mix"),
         applies=lambda row: bool(row.get("mix_strategy")),
         primary_priority=95,
+    ),
+    CausalRule(
+        id="made_hand_showdown_buffer",
+        title="成牌對未成牌的攤牌價值與防守價格",
+        evidence_tier="B_within_node_structure",
+        required_facts=(
+            "hero_made_category", "villain_unpaired_draw_share", "pot_odds",
+            "exact_continue_frequency",
+        ),
+        claim_scope=(
+            "Hero 的成牌仍領先 Villain 下注 range 中已驗證的未成牌聽牌；"
+            "配合價格支持繼續而非 fold"
+        ),
+        forbidden_inferences=(
+            "Hero 領先整個下注 range", "用此事實區分 call/raise", "未驗證的具體 combo",
+        ),
+        applies=lambda row: bool(row.get("showdown_value")),
+        primary_priority=92,
     ),
     CausalRule(
         id="defense_price",
