@@ -73,3 +73,11 @@ dist/
 
 # Extension icons are shipped assets (built from the bot TG avatar)
 !chrome-extension/icons/*.png
+
+# Local agent and one-off operational artifacts
+.gstack/
+scripts/_delete_*_backup*.json
+scripts/_rerun_*_backup.json
+scripts/_rerun_*_result.json
+scripts/_rerun_*_summary.txt
+scripts/_h*_db_backup.json
