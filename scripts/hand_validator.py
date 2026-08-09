@@ -387,7 +387,12 @@ def _soft_issues(hand: dict) -> list[Issue]:
             for idx, a in enumerate(st.get("actions") or []):
                 if is_aggression(a):
                     amt = _amount(a)
-                    if amt is not None and amt > eff_f + tol:
+                    # A covering player's all-in can legitimately exceed the
+                    # shorter effective stack; the excess is simply uncalled
+                    # or returned.  Only unflagged oversized aggression is an
+                    # OCR-depth inconsistency (H3660).
+                    if (amt is not None and amt > eff_f + tol
+                            and not a.get("allin")):
                         issues.append(Issue("SIZE_EXCEEDS_STACK", "soft", board, idx,
                                             [a.get("position")],
                                             f"{board}：下注 {amt} 超過有效籌碼 {eff_f}",

@@ -49,6 +49,10 @@ from card_display import cards_to_emoji
 
 POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
+
+class EffectiveStackUnknownError(ValueError):
+    """Raised when a post-flop hand has no trustworthy solver depth."""
+
 # ── Multiway SPR-depth tuning (real-structure simplification) ──
 # When a multiway pot collapses to a HU node, the dropped cold-callers' dead
 # money makes the solver's pot smaller than reality, so its flop SPR runs too
@@ -487,17 +491,69 @@ def _postflop_allin_effective_bb(
         # A shove only bounds hero's effective stack on a street hero actually
         # contests — an all-in between others that hero folded to does not.
         hero_contests = any(a.get("position") == hero_position for a in actions)
-        if hero_contests and any(a.get("allin") for a in actions):
+        allin_aggressions = [
+            (idx, a)
+            for idx, a in enumerate(actions)
+            if a.get("allin") and _is_aggression(a.get("action"))
+        ]
+        if hero_contests and allin_aggressions:
             # Hero's own stack and each all-in aggressor's total contribution
             # independently upper-bound the effective stack.
             candidates = [hero_stack] if hero_stack else []
-            for a in actions:
-                if not (a.get("allin") and _is_aggression(a.get("action"))):
-                    continue
+            for _, a in allin_aggressions:
                 pos = a.get("position")
                 size = street_investments.get(pos, 0.0)
                 if size > 0:
                     candidates.append(committed.get(pos, 0.0) + size)
+
+            # A call for less than a flagged all-in wager is itself terminal:
+            # the caller has put in every chip they can, even when OCR kept the
+            # action as a plain Call and lost the separate All-In badge.  Its
+            # cumulative contribution can therefore be the tighter effective
+            # bound.  H3838: hero jams 53.2, BB calls all-in for 52.1 after
+            # investing 16.5 earlier, so BB's 68.6bb — not hero's 69.7bb — is
+            # the binding stack.  Equal-size calls only bind when explicitly
+            # tagged all-in; a covering caller may have chips behind.
+            for aggression_idx, aggression in allin_aggressions:
+                try:
+                    wager = float(aggression.get("size"))
+                except (TypeError, ValueError):
+                    continue
+                if wager <= 0:
+                    continue
+                for caller in actions[aggression_idx + 1:]:
+                    code = str(caller.get("action") or "").upper()
+                    if not (code == "C" or code.startswith("CALL")):
+                        continue
+                    try:
+                        call_size = float(caller.get("size"))
+                    except (TypeError, ValueError):
+                        continue
+                    if call_size <= 0:
+                        continue
+                    if not caller.get("allin") and call_size >= wager - 0.05:
+                        continue
+                    pos = caller.get("position")
+                    if not pos:
+                        continue
+                    # Calls are incremental amounts.  They equal the caller's
+                    # whole street contribution only when that player had not
+                    # already put chips in earlier on the street.  H3660's hero
+                    # bet 7.9 then called 20.9 more; treating 20.9 as the whole
+                    # flop investment fabricated a 21.4bb stack.  H3838's BB
+                    # only checked before calling, so 52.1 is complete.
+                    prior_sized = False
+                    for prev in actions[:aggression_idx]:
+                        if prev.get("position") != pos:
+                            continue
+                        try:
+                            prior_sized = float(prev.get("size") or 0) > 0
+                        except (TypeError, ValueError):
+                            prior_sized = False
+                        if prior_sized:
+                            break
+                    if not prior_sized:
+                        candidates.append(committed.get(pos, 0.0) + call_size)
             candidates = [v for v in candidates if v and v > 0]
             if candidates:
                 eff = min(candidates)
@@ -505,7 +561,63 @@ def _postflop_allin_effective_bb(
 
         for pos, size in street_investments.items():
             committed[pos] = committed.get(pos, 0.0) + size
-    return best
+    return round(best, 1) if best is not None else None
+
+
+def _resolve_missing_effective_bb(hand: dict) -> float:
+    """Resolve a missing effective stack without inventing a post-flop tree.
+
+    A terminal contested all-in is action-complete enough to reconstruct a
+    trustworthy stack from cumulative commitments.  Post-flop hands with no
+    independent starting-stack evidence then fail closed: the historical
+    ``largest preflop raise * 10`` heuristic has no relationship to the actual
+    stack and confidently queried the wrong tree for H3838.
+
+    A hand carrying ``hero_starting_stack`` retains the legacy approximation
+    as a last compatibility path.  Some shallow real lines are intentionally
+    represented in a deeper GTOW tree (H3427); removing that approximation is
+    a separate solver-modeling change, not part of this OCR abstain fix.
+    """
+    existing = hand.get("effective_bb")
+    try:
+        if existing is not None and float(existing) > 0:
+            return float(existing)
+    except (TypeError, ValueError):
+        pass
+
+    recovered = _postflop_allin_effective_bb(
+        hand,
+        hand.get("hero_position", ""),
+    )
+    if recovered is not None:
+        hand["effective_bb_source"] = "terminal_allin_recovery"
+        return recovered
+
+    hero_start = hand.get("hero_starting_stack")
+    try:
+        hero_start = float(hero_start) if hero_start is not None else None
+    except (TypeError, ValueError):
+        hero_start = None
+    if hand.get("streets") and not hero_start:
+        raise EffectiveStackUnknownError(
+            "post-flop effective stack is missing and cannot be reconstructed "
+            "from a contested terminal all-in"
+        )
+
+    parts = (hand.get("preflop_actions") or "").split("-")
+    max_raise = 0.0
+    for part in parts:
+        if not part.startswith(("R", "AI")):
+            continue
+        try:
+            max_raise = max(max_raise, float(part.lstrip("RAI")))
+        except ValueError:
+            continue
+    hand["effective_bb_source"] = (
+        "postflop_preflop_raise_fallback"
+        if hand.get("streets") else "preflop_raise_fallback"
+    )
+    return max(max_raise * 10, 20) if max_raise > 0 else 20
 
 
 def _build_hero_spot_depths(hand: dict, *, is_icm: bool, is_cash: bool,
@@ -1596,19 +1708,12 @@ def _run_analysis(hand: dict) -> dict:
         hand = dict(hand)
         hand["gametype"] = gametype
 
-    # Ensure effective_bb exists — estimate from preflop raises if missing
+    # Missing post-flop depth must be recovered from a decisive terminal all-in
+    # or rejected.  Never fabricate a tree from ``open_size * 10``: H3838's
+    # ordinary 2.5bb open silently became a fake 25bb stack despite a 53.2bb
+    # river shove.  The legacy approximation remains preflop-only.
     if "effective_bb" not in hand or hand["effective_bb"] is None:
-        # Estimate from largest preflop raise size × 10, or default 20bb
-        parts = hand.get("preflop_actions", "").split("-")
-        max_raise = 0
-        for p in parts:
-            if p.startswith("R") or p.startswith("AI"):
-                try:
-                    val = float(p.lstrip("RAI"))
-                    max_raise = max(max_raise, val)
-                except ValueError:
-                    pass
-        hand["effective_bb"] = max(max_raise * 10, 20) if max_raise > 0 else 20
+        hand["effective_bb"] = _resolve_missing_effective_bb(hand)
 
     depth = _nearest_depth_for_gametype(hand["effective_bb"], gametype)
     hero_pos = hand["hero_position"]
@@ -3497,7 +3602,40 @@ def analyze_hand_full(hand: dict) -> dict:
         hero_spots: list of {street, params, ...} per hero decision
         solutions: list of raw spot-solution API responses (parallel to hero_spots)
     """
-    result = _run_analysis(hand)
+    try:
+        result = _run_analysis(hand)
+    except EffectiveStackUnknownError:
+        # Fail closed before any solver request.  The bot's existing hard-stop
+        # path renders the validator warning and refuses GTO/coaching, while
+        # CLI/library callers receive an explicit structured result instead of
+        # a plausible-looking analysis at an invented depth.
+        validation = _build_validation(hand)
+        warning = (
+            validation.get("user_warning")
+            or "⚠️ 無法可靠辨識有效籌碼；修正前不提供 GTO 判定。"
+        )
+        return {
+            "text": warning,
+            "text_compact": warning,
+            "hand": hand,
+            "gametype": hand.get("gametype", "MTTGeneral"),
+            "depth": None,
+            "stacks": "",
+            "is_icm": hand.get("tournament_type") == "icm",
+            "hero_position": hand.get("hero_position"),
+            "hero_hand": normalize_hand_name(hand.get("hero_hand", "")),
+            "no_hero_hand": hand.get("no_hero_hand", False),
+            "preflop_actions": hand.get("preflop_actions", ""),
+            "street_states": {},
+            "final_actions": {
+                "flop_actions": "", "turn_actions": "", "river_actions": "",
+            },
+            "hero_spots": [],
+            "solutions": [],
+            "deeplink_raw_preflop": None,
+            "deeplink_raw_players": None,
+            "validation": validation,
+        }
 
     # Last line of defense (§4b): replay the hand as a real betting game.  A
     # hard-invalid parse must NOT silently fall through to "（無 solver 數據）"
