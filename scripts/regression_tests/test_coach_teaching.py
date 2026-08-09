@@ -534,6 +534,69 @@ def test_coach_teaching_h3835_covers_every_hero_decision_without_overexplaining(
 
 
 @test
+def test_coach_teaching_keeps_off_tree_hero_decision_visible_and_neutral():
+    """A 0%-reach Hero action is still a decision, but has no EV verdict."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _h3835_multi_decision_context()
+    hero_idx = gf.combo_index_for_hand("9c3c")
+    turn_solution = context["solutions"][3]
+    turn_solution["players_info"][0]["range"][hero_idx] = 0.0
+
+    digest = ct.build_teaching_digest(context)
+    assert_true(digest is not None)
+    assert_eq(len(digest["all_decisions"]), 5)
+    turn = digest["all_decisions"][3]
+    assert_eq(turn["coverage_label"], "Turn")
+    assert_true(turn.get("off_tree"), "Turn must be represented as off-tree")
+    assert_in("無法判定對錯", turn["coverage_verdict"])
+
+    fallback = ct.render_fallback(digest)
+    assert_in("• Turn：", fallback)
+    assert_in("off-tree", fallback)
+    assert_in("無法判定對錯", fallback)
+    assert_true(ct.audit_draft(fallback, digest).ok)
+
+
+@test
+def test_coach_teaching_flop_coverage_does_not_match_inside_preflop():
+    """A single Flop label must be counted as its own bullet, not Preflop."""
+    import coach_teaching as ct
+
+    context = _h3835_multi_decision_context()
+    keep = (0, 1, 3)
+    context["hero_spots"] = [context["hero_spots"][index] for index in keep]
+    context["solutions"] = [context["solutions"][index] for index in keep]
+    digest = ct.build_teaching_digest(context)
+    fallback = ct.render_fallback(digest)
+    audit = ct.audit_draft(fallback, digest)
+    assert_true(audit.ok, str(audit.violations))
+    mislabeled = fallback.replace("• Flop：", "• Flop ①：")
+    assert_in(
+        "decision label mismatch D2",
+        ct.audit_draft(mislabeled, digest).violations,
+    )
+
+
+@test
+def test_coach_teaching_omits_opponent_card_delta_when_blocker_is_not_selected():
+    """Defense-price coaching should not dump an unrelated blocker-tab metric."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_low_spr_88_context())
+    digest["decisions"][0]["opponent_card_effects"] = {
+        "largest_effects": [
+            {"card": "9h", "direction": "decrease"},
+            {"card": "9c", "direction": "decrease"},
+        ],
+        "scope": "只表示 Villain 持牌時 Hero action frequency 的條件差",
+    }
+    prompt = ct.render_prompt_block(digest)
+    assert_not_in("• Opponent-card conditional delta：", prompt)
+
+
+@test
 def test_coach_teaching_h3818_keeps_range_and_blocker_roles_separate():
     """H3818 shape: nut-region capacity is primary; negative blocker stays secondary."""
     import coach_teaching as ct

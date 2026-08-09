@@ -429,18 +429,25 @@ def validate_hand(hand: dict, *, participants: dict | None = None) -> Report:
     return Report(ok=not hard, hard=hard, soft=soft)
 
 
-# User-facing TG notes (§5).  Kept light by decision #3 — Harry debugs specifics.
+# User-facing TG notes (§5). Hard failures name the exact contradiction so the
+# user can correct the hand instead of receiving an unrelated generic example.
 SOFT_WARNING = "⚠️ 這手牌解析信心度較低，請再次核對動作順序。"
-HARD_WARNING = (
-    "⚠️ 這手牌的動作解析有矛盾（例如出現沒有對象的 call），可能辨識有誤。"
-    "請重傳清楚一點的截圖，或用文字描述這手牌。"
-)
+HARD_WARNING = "⚠️ 這手牌無法可靠分析"
 
 
 def user_warning(report: Report) -> str:
     """The zh-TW note to surface to the user, or '' when the parse looks clean."""
     if report.hard:
-        return HARD_WARNING
+        messages = [
+            issue.message.strip().rstrip("。")
+            for issue in report.hard[:2]
+            if issue.message.strip()
+        ]
+        detail = "；".join(messages) or "解析結果違反撲克規則"
+        return (
+            f"{HARD_WARNING}：{detail}。"
+            "請修正後重傳截圖或用文字描述；修正前不提供 GTO 判定。"
+        )
     if report.soft:
         return SOFT_WARNING
     return ""

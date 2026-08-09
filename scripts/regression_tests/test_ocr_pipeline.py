@@ -961,6 +961,82 @@ def test_merge_ocr_with_gemini_hero_hand_keeps_structural():
 
 
 @test
+def test_h3839_cards_only_crop_keeps_full_suit_area():
+    """H3839: reject a rank-only localizer sliver and use the wide hero crop.
+
+    The old micro-read montage contained only ``K`` and ``2``; both club
+    glyphs were below the crop. Gemini therefore guessed black suits and
+    returned Ks2s, duplicating the 2s turn card.
+    """
+    import cv2
+    import numpy as np
+    from gemini_session import GeminiSessionManager
+    import ocr.region_detector as region_detector
+    import ocr.table_parser as table_parser
+
+    image = np.full((200, 300, 3), 40, np.uint8)
+    image[110:190, 100:145] = 255
+    image[110:190, 150:195] = 255
+    ok, encoded = cv2.imencode(".png", image)
+    assert_true(ok)
+
+    slivers = [
+        np.full((20, 14, 3), 255, np.uint8),
+        np.full((20, 14, 3), 255, np.uint8),
+    ]
+    orig_detect = region_detector.detect_regions
+    orig_locate = table_parser._locate_hero_cards
+    region_detector.detect_regions = lambda _image: {"table": _image}
+    table_parser._locate_hero_cards = lambda _table: slivers
+    try:
+        crop_bytes, mime = GeminiSessionManager._hero_cards_image_for_micro_read(
+            encoded.tobytes(), fallback_mime_type="image/png"
+        )
+    finally:
+        region_detector.detect_regions = orig_detect
+        table_parser._locate_hero_cards = orig_locate
+
+    crop = cv2.imdecode(np.frombuffer(crop_bytes, np.uint8), cv2.IMREAD_COLOR)
+    assert_eq(mime, "image/png")
+    assert_true(crop is not None)
+    assert_true(crop.shape[0] >= 70, f"rank-only crop leaked through: {crop.shape}")
+    assert_true(crop.shape[1] >= 120, f"wide hero context missing: {crop.shape}")
+
+
+@test
+def test_h3839_cards_only_merge_rejects_duplicate_turn_card():
+    """H3839: a micro-read may not create an impossible hero/board duplicate."""
+    from gemini_session import GeminiSessionManager
+
+    ocr_result = {
+        "hand": {
+            "hero_hand": "Ks2c",
+            "hero_position": "BB",
+            "preflop_actions": "F-F-F-F-C-X",
+            "streets": [
+                {"board": "9dQc4h", "actions": []},
+                {"card": "2s", "actions": []},
+            ],
+        },
+        "card_confidence": 0.68,
+        "confidence_parts": {
+            "pot_consistency": 1.0,
+            "player_tracking": 1.0,
+            "ocr_confidence": 1.0,
+        },
+        "diagnostics": {},
+    }
+    assert_eq(
+        GeminiSessionManager._cards_only_merge_safe(ocr_result, "Ks2s"),
+        False,
+    )
+    assert_eq(
+        GeminiSessionManager._cards_only_merge_safe(ocr_result, "Kc2c"),
+        True,
+    )
+
+
+@test
 def test_field_level_fallback_used_when_structural_high():
     """When card_conf < MIN_CARD_CONF but structural_conf >= STRUCTURAL_MIN,
     _parse_hand_from_image should call _gemini_hero_hand_only and merge the

@@ -34,6 +34,24 @@ def test_spot_descriptions_has_new_buckets():
 
 
 @test
+def test_hard_validation_stop_message_blocks_coaching_output():
+    """Hard-invalid image parses must return the validator message, not strategy."""
+    from gemini_session import GeminiSessionManager
+
+    message = GeminiSessionManager._hard_validation_stop_message({
+        "validation": {
+            "hard": [{"code": "DUP_CARD", "message": "重複的牌：2s"}],
+            "user_warning": (
+                "⚠️ 這手牌無法可靠分析：重複的牌：2s。"
+                "修正前不提供 GTO 判定。"
+            ),
+        }
+    })
+    assert_in("重複的牌：2s", message)
+    assert_in("不提供 GTO 判定", message)
+
+
+@test
 def test_aggression_direction_zh_complete():
     """leak_service: AGGRESSION_DIRECTION_ZH has all 4 direction labels."""
     from leak_service import AGGRESSION_DIRECTION_ZH

@@ -896,7 +896,7 @@ class GeminiSessionManager:
             import cv2
             import numpy as np
             from ocr.region_detector import detect_regions
-            from ocr.table_parser import _locate_hero_cards
+            from ocr.table_parser import _hero_pair_healthy, _locate_hero_cards
 
             arr = np.frombuffer(image_bytes, dtype=np.uint8)
             image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -905,7 +905,13 @@ class GeminiSessionManager:
             regions = detect_regions(image)
             table = regions.get("table") if regions else image
             crops = _locate_hero_cards(table)
-            if len(crops) >= 2:
+            # H3839: the bright-blob localizer returned two tiny rank-only
+            # slivers.  The montage showed K/2 but cropped both club glyphs,
+            # so the cards-only VLM guessed spades and created an impossible
+            # duplicate with the 2s turn.  Only use localized crops when the
+            # pair has enough vertical geometry to contain rank *and* suit;
+            # otherwise keep the wider hero-area fallback below.
+            if len(crops) >= 2 and _hero_pair_healthy(crops[:2]):
                 padded: list[np.ndarray] = []
                 max_h = 0
                 for crop in crops[:2]:
@@ -982,6 +988,14 @@ class GeminiSessionManager:
         hand = ocr_result.get("hand") or {}
         if not (hand.get("hero_position") and hand.get("preflop_actions")):
             return False
+
+        if gemini_hero_hand:
+            candidate = dict(hand)
+            candidate["hero_hand"] = gemini_hero_hand
+            from ocr.n8_parser import _duplicate_known_cards
+
+            if _duplicate_known_cards(candidate):
+                return False
 
         diagnostics = ocr_result.get("diagnostics") or {}
         physics_issues = diagnostics.get("preflop_physics_issues") or []
@@ -1114,6 +1128,26 @@ class GeminiSessionManager:
             return True
 
         return False
+
+    @staticmethod
+    def _hard_validation_stop_message(context: dict) -> str | None:
+        """Return the exact user-facing reason a parsed hand cannot be coached."""
+        validation = context.get("validation") or {}
+        if not validation.get("hard"):
+            return None
+        warning = str(validation.get("user_warning") or "").strip()
+        if warning:
+            return warning
+        messages = [
+            str(issue.get("message") or "").strip().rstrip("。")
+            for issue in validation.get("hard") or []
+            if issue.get("message")
+        ]
+        detail = "；".join(messages[:2]) or "解析結果違反撲克規則"
+        return (
+            f"⚠️ 這手牌無法可靠分析：{detail}。"
+            "請修正後重傳截圖或用文字描述；修正前不提供 GTO 判定。"
+        )
 
     @staticmethod
     def _can_keep_ocr_abstain_after_cards_only(
@@ -1364,6 +1398,24 @@ class GeminiSessionManager:
                 _aio.create_task(self._save_snapshot(
                     hand_id, chat_id, "text", user_text,
                     None, hand_json, context))
+                hard_stop = self._hard_validation_stop_message(context)
+                if hard_stop:
+                    # Do not turn an impossible parse into a confident solver
+                    # card plus coaching prose. Keep the snapshot/hand id for
+                    # correction, but remove the bad context and stop before
+                    # GTO summary, deviation capture, or the coaching model.
+                    self.hand_contexts.pop(chat_id, None)
+                    _aio.create_task(self._update_snapshot_coaching(
+                        hand_id, chat_id, hard_stop))
+                    result = (
+                        f"📋 `{hand_id}`\n\n{hard_stop}"
+                        if hand_id else hard_stop
+                    )
+                    await self._save_usage(
+                        chat_id, "hand_analysis", self.model, usage_acc,
+                        int((time.time() - t0) * 1000),
+                    )
+                    return result
                 # Extract deviations for leak detection (fire-and-forget)
                 _aio.create_task(self._extract_deviations(
                     chat_id, hand_id, hand_json, context))
@@ -1608,6 +1660,20 @@ class GeminiSessionManager:
                 hand_id, chat_id, "image", user_text or "[screenshot]",
                 image_bytes, hand_json, context,
                 classifier_conf=ocr_conf_for_hand))
+            hard_stop = self._hard_validation_stop_message(context)
+            if hard_stop:
+                self.hand_contexts.pop(chat_id, None)
+                _aio.create_task(self._update_snapshot_coaching(
+                    hand_id, chat_id, hard_stop))
+                result = (
+                    f"📋 `{hand_id}`\n\n{hard_stop}"
+                    if hand_id else hard_stop
+                )
+                await self._save_usage(
+                    chat_id, "image_analysis", self.model, usage_acc,
+                    int((time.time() - t0) * 1000),
+                )
+                return result
             # Extract deviations for leak detection (fire-and-forget)
             _aio.create_task(self._extract_deviations(
                 chat_id, hand_id, hand_json, context))
