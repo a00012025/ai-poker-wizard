@@ -239,15 +239,45 @@ def test_validator_soft_stacks_len_mismatch():
 def test_validator_user_warning_messages():
     """user_warning picks the right zh-TW note for hard / soft / clean reports."""
     from hand_validator import validate_hand, user_warning, HARD_WARNING, SOFT_WARNING
-    # Hard-invalid → the "contradiction, re-send" message.
+    # Hard-invalid → exact contradiction plus the no-GTO stop condition.
     hard = validate_hand(_vhand(streets=[{"board": "2dQh4c", "actions": [
         {"position": "BB", "action": "X"}, {"position": "BB", "action": "C"}]}]))
-    assert_eq(user_warning(hard), HARD_WARNING, "hard report → hard warning")
+    hard_warning = user_warning(hard)
+    assert_true(hard_warning.startswith(HARD_WARNING), "hard report → hard warning")
+    assert_in("Call", hard_warning)
+    assert_in("不提供 GTO 判定", hard_warning)
     # Soft-only → the low-confidence note; hand still ok.
     soft = validate_hand(_vhand(possible_ft=True))
     assert_eq(user_warning(soft), SOFT_WARNING, "soft-only report → soft warning")
     # Clean → no warning.
     assert_eq(user_warning(validate_hand(_vhand())), "", "clean report → no warning")
+
+
+@test
+def test_h3839_validator_warning_names_the_duplicate_card():
+    """H3839: state the real card conflict, not an orphan-call example."""
+    from hand_validator import validate_hand, user_warning
+
+    report = validate_hand(_vhand(
+        hero_position="BB",
+        hero_hand="Ks2s",
+        players_at_table=6,
+        preflop_actions="F-F-F-F-C-X",
+        streets=[
+            {"board": "9dQc4h", "actions": [
+                {"position": "SB", "action": "R1", "size": 1.0},
+                {"position": "BB", "action": "C", "size": 1.0},
+            ]},
+            {"card": "2s", "actions": [
+                {"position": "SB", "action": "R3.8", "size": 3.8},
+                {"position": "BB", "action": "F"},
+            ]},
+        ],
+    ))
+    warning = user_warning(report)
+    assert_in("重複的牌：2s", warning)
+    assert_not_in("例如出現沒有對象的 call", warning)
+    assert_in("不提供 GTO 判定", warning)
 
 
 @test
