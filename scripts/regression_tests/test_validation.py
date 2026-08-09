@@ -981,6 +981,87 @@ def test_h3828_river_allin_uses_cumulative_investment_for_effective_bb():
 
 
 @test
+def test_h3838_terminal_call_for_less_recovers_missing_effective_stack():
+    """H3838: do not turn a missing OCR stack into ``open_size * 10``.
+
+    The WIN overlay hid hero's displayed 1.1bb, so OCR correctly abstained from
+    emitting ``effective_bb``.  The terminal river action is still decisive:
+    hero shoved 53.2 and BB called all-in for 52.1 after both had already put
+    2.5 pre-flop, 2 on the flop, and 12 on the turn.  BB's cumulative 68.6bb
+    contribution is the binding effective stack and selects the 60bb tree.
+    """
+    from analyze_hand import (
+        _nearest_depth_for_gametype,
+        _postflop_allin_effective_bb,
+        _resolve_missing_effective_bb,
+    )
+
+    hand = {
+        "gametype": "MTTGeneral", "hero_hand": "4d4c",
+        "hero_position": "LJ", "players_at_table": 8,
+        "preflop_actions": "F-F-R2.5-F-F-F-F-C",
+        "streets": [
+            {"board": "Qh3h4s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R2", "size": 2.0},
+                {"position": "BB", "action": "C", "size": 2.0},
+            ]},
+            {"card": "9s", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R12", "size": 12.0},
+                {"position": "BB", "action": "C", "size": 12.0},
+            ]},
+            {"card": "3d", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "LJ", "action": "R53.2", "size": 53.2,
+                 "allin": True},
+                {"position": "BB", "action": "C", "size": 52.1},
+            ]},
+        ],
+    }
+
+    recovered = _postflop_allin_effective_bb(hand, "LJ")
+    assert_eq(recovered, 68.6)
+    assert_eq(_resolve_missing_effective_bb(hand), 68.6)
+    assert_eq(_nearest_depth_for_gametype(recovered, "MTTGeneral"), 60.125)
+
+
+@test
+def test_missing_postflop_effective_stack_has_no_raise_times_ten_fallback():
+    """Unknown postflop depth must stop rather than fabricate a solver tree."""
+    from analyze_hand import (
+        EffectiveStackUnknownError,
+        _resolve_missing_effective_bb,
+    )
+
+    hand = {
+        "hero_position": "CO", "players_at_table": 8,
+        "preflop_actions": "F-F-F-F-R2.5-F-F-C",
+        "streets": [{"board": "Qs7h2d", "actions": [
+            {"position": "BB", "action": "X"},
+            {"position": "CO", "action": "R2", "size": 2.0},
+            {"position": "BB", "action": "C", "size": 2.0},
+        ]}],
+    }
+    try:
+        _resolve_missing_effective_bb(hand)
+    except EffectiveStackUnknownError:
+        pass
+    else:
+        assert_true(False, "missing postflop depth silently fell back to open_size * 10")
+
+    from analyze_hand import analyze_hand_full
+    blocked = analyze_hand_full({
+        **hand,
+        "gametype": "MTTGeneral",
+        "hero_hand": "AsKd",
+    })
+    assert_true(blocked["depth"] is None, "fail-closed result queried a solver depth")
+    assert_eq(blocked["solutions"], [])
+    assert_in("EFFECTIVE_BB", [i["code"] for i in blocked["validation"]["hard"]])
+
+
+@test
 def test_analyze_flop_allin_solved_at_hero_stack_not_deep_fallback():
     """H3660 end-to-end: a flop shove hero calls solves at hero's ~35bb, not the
     80bb tree the max_raise*10 effective_bb fallback leaves in place.
