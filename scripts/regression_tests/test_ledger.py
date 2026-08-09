@@ -1311,12 +1311,12 @@ def test_training_plan_focus_and_readback():
     assert_eq(spot_desc_zh({"spot_leaf": "turn:3bet:EPvSB:IP:[b-c]:vs_bet",
                             "spot_category": "turn", "hero_cat": "EP",
                             "villain_cat": "SB", "ip_oop": "IP"}),
-              "3bet 底池，Hero EP 對 SB、處於 IP，轉牌面對下注")
+              "3bet｜Hero EP 對 SB，IP；翻牌 下注→跟注；轉牌 Hero 面對下注")
     assert_eq(spot_desc_zh({"spot_leaf": "river:SRP:SBvBB:OOP:[b-c]:vs_bet",
                             "spot_category": "river", "diagnosis_level": "parent",
                             "diagnosis_key": "river:SRP:OOP:vs_bet",
                             "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "OOP"}),
-              "SRP 底池，你在 OOP，河牌面對下注（代表：Hero SB 對 BB）")
+              "SRP｜Hero SB 對 BB，OOP；翻牌 下注→跟注；河牌 Hero 面對下注")
     assert_eq(spot_desc_zh({"spot_leaf": "MP_vs3bet_IP", "spot_category": "vs3bet",
                             "diagnosis_level": "parent", "diagnosis_key": "MP_vs3bet",
                             "hero_pos": "HJ", "hero_cat": "MP", "villain_cat": "SB",
@@ -1334,13 +1334,22 @@ def test_training_plan_focus_and_readback():
     assert_eq(data["focus"][0]["spot_leaf"], "MP_vs3bet_IP")
     assert_true(data["focus"][0]["drill_url"].startswith("https://app.gtowizard.com/"))
     html = render_html(data)
-    assert_in("MP_vs3bet_IP", html)
+    assert_in("MP 被 3bet（對手 SB，你 IP）", html)
     assert_in("<svg", html)
     assert_in("EV 損失較高的情境", html)
     assert_in("平均 EV 損失 13.50 bb/100", html)
     assert_true("保守估計" not in html)
     assert_true("收縮" not in html and "誠實層" not in html)
     assert_true("<script src" not in html)
+    # A missing current-week aggregate must not relabel the last populated week
+    # as this week. Live focus can still exist while the online headline is 0 hands.
+    no_current = compute_training_plan(
+        "2026-W29", weekly, [{**spots[0], "source": "live"}], [], None, honesty)
+    assert_eq(no_current["hands"], 0)
+    assert_eq(no_current["previous_hands"], 120)
+    assert_eq(no_current["has_current_week_data"], False)
+    assert_in("尚無符合統計口徑的線上手牌",
+              weekly_tg_html("2026-W29", no_current))
     # readback is computed from the POST-PRESCRIPTION window stats, not the
     # cumulative leaderboard (§2.2: cumulative averages hide the treatment)
     rb_rows = prev_focus_readback([{"spot_leaf": "MP_vs3bet_IP", "per100": 20.0}],
@@ -1369,8 +1378,8 @@ def test_training_plan_focus_and_readback():
     ]
     msg = weekly_tg_html("2026-W28", data)
     assert_in("本週該練的地方", msg)
-    assert_in("（n=120）", msg)
-    assert_in("上週 n=100", msg)
+    assert_in("120 手", msg)
+    assert_in("上週 100 手", msg)
     assert_true("http" not in msg, "no raw/embedded links — drills are buttons now")
     assert_true("北極星" not in msg and "迴圈" not in msg)   # no jargon
     assert_in("chipEV", msg)                                 # honesty caveat
@@ -1395,6 +1404,7 @@ def test_training_plan_focus_and_readback():
     callbacks = [b["callback_data"] for r in payload["buttons"] for b in r
                  if b.get("callback_data")]
     assert_in("qdet:91:0:plan", callbacks)
+    assert_in("qsrc:91", callbacks)
     assert_in("qdet:1:0:plan", callbacks)
     assert_true(any(c.startswith("qsrc:") for c in callbacks))  # source hands menu
 
@@ -1420,7 +1430,13 @@ def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
     assert_eq(item["added_by"], "scorecard_focus")
     assert_eq(item["total_ev_loss_bb"], 4.0)
     assert_eq([s["hand_id"] for s in item["source_hands"]], ["h1", "h2"])
-    assert_true(focus_queue_item({"spot_leaf": "x", "drill_url": None}) is None)
+    missing_link = focus_queue_item({
+        "spot_leaf": "x", "drill_url": None, "source": "live",
+        "samples": [{"gtow_hand_id": "live-1", "street": "turn",
+                     "decision_idx": 0, "ev_loss_bb": 0.7}],
+    })
+    assert_eq(missing_link["source"], "live")
+    assert_eq(missing_link["source_hands"][0]["src"], "live")
 
     import asyncio
     import queue_feed
@@ -1453,6 +1469,35 @@ def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
     assert_eq(ids, [91])
     assert_eq(focus[0]["queue_id"], 91)
     assert_eq(calls[0]["added_by"], "scorecard_focus")
+
+
+@test
+def test_scorecard_html_analyze_links_filter_exact_hand_ids():
+    """Regression: date-range links opened an empty GTOW Analyze table.
+    Weekly HTML must use the same exact hand_id__in filter as the queue source
+    submenu for both focus samples and the expensive-hand list."""
+    import json
+    from urllib.parse import parse_qs, urlsplit
+    from scorecard import exact_analyze_url, render_html
+
+    url = exact_analyze_url(["hand-focus-1", "hand-focus-2"])
+    query = parse_qs(urlsplit(url).query)
+    assert_eq(json.loads(query["filters"][0]), {
+        "hand_id__in": ["hand-focus-1", "hand-focus-2"],
+    })
+    assert_eq(query["preselectGamemode"], ["TOURNAMENT"])
+    html = render_html({
+        "window": "2026-W32", "weekly_series": [], "per100": 1.0,
+        "n": 2, "hands": 2, "delta": 0.0, "leaderboard": [],
+        "readback": [], "focus": [], "honesty": {},
+        "top_hands": [{"gtow_hand_id": "hand-top-1", "hero_hand": "Kh2c",
+                       "position": "BB", "boards": "Qc9c7c6cAc",
+                       "total_ev_loss_bb": 3.1}],
+    })
+    assert_in("hand_id__in", html)
+    assert_in("hand-top-1", html)
+    assert_in("在 Hand Analyzer 看這手", html)
+    assert_true("played_at__range" not in html)
 
 
 @test
@@ -1511,7 +1556,7 @@ def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
         assert_in("明顯傾向：棄牌過多", rendered)
         assert_in("10 手，EV 損失合計 12.69 bb", rendered)
         assert_true("方向混合" not in rendered)
-    assert_in("MP_vs3bet｜棄牌過多", html)
+    assert_in("Hero HJ 對 SB、處於 IP，被 3bet｜棄牌過多", html)
 
     no_bias = dict(row)
     no_bias.pop("action_bias")
@@ -1522,8 +1567,8 @@ def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
 
 @test
 def test_weekly_scorecard_progress_is_sample_aware_without_one_week_verdicts():
-    """A zero is only shown when backed by decisions; one short readback
-    window is an observation, never an improvement verdict (§14)."""
+    """Readback hides noise below 10 decisions, then gives an early direction
+    without claiming the spot is learned (§14)."""
     from scorecard import weekly_tg_html
 
     base = {"per100": 0.95, "delta": -1.36, "focus": [], "leaderboard": [],
@@ -1532,17 +1577,17 @@ def test_weekly_scorecard_progress_is_sample_aware_without_one_week_verdicts():
     msg = weekly_tg_html("2026-W29", {**base, "readback": [
         {"spot_leaf": "river:SRP:SBvBB:OOP:[b-c]:vs_bet",
          "label": "SRP 河牌 OOP 面對下注", "prescribed_per100": 101.4,
-         "current_per100": 0.0, "n": 3, "note": "unused"},
+         "current_per100": 0.0, "n": 10, "note": "unused"},
         {"spot_leaf": "turn:3bet:LPvEP:IP:[b-c]:vs_bet",
          "label": "3bet 底池轉牌 IP 面對下注", "prescribed_per100": 38.7,
          "current_per100": None, "n": 0, "note": "unused"},
     ]})
     assert_in("較上週少了", msg)
     assert_in("1.36 bb/100", msg)
-    assert_in("目前 0.0 bb/100（n=3）", msg)
-    assert_in("樣本不足，暫不判斷", msg)
-    assert_in("尚無新樣本，暫不判斷", msg)
-    assert_in("僅供追蹤，不作進步或退步判斷", msg)
+    assert_in("目前 0.0 bb/100（10 次）", msg)
+    assert_in("初步訊號：比列入訓練時少", msg)
+    assert_true("尚無新樣本" not in msg and "樣本不足" not in msg)
+    assert_in("仍需更多實戰樣本確認", msg)
     assert_true("至少累積 4 週" not in msg)
     for banned in ("有進步", "還在漏", "上週練的那個 spot"):
         assert_true(banned not in msg, f"single-window verdict leaked: {banned}")
@@ -1561,7 +1606,7 @@ def test_weekly_scorecard_other_ev_nodes_are_bulleted_with_samples():
         "honesty": {},
     })
     assert_in("<b>其他 EV 損失節點：</b>\n•", msg)
-    assert_in("14.8 bb/100（n=44；棄牌過多）", msg)
+    assert_in("14.8 bb/100（本週出現 44 次；棄牌過多）", msg)
     assert_true("、" not in msg)
 
 
@@ -1674,11 +1719,13 @@ def test_leaderboard_sql_time_window():
     assert_true("played_at >=" not in band_sql(None))
     for sql in (leader_sql(t), sample_sql(t), band_sql(t)):
         assert_in("source='online'", sql)
+    for sql in (leader_sql(t, "live"), sample_sql(t, "live"), band_sql(t, "live")):
+        assert_in("source='live'", sql)
     from scorecard import top_hands_sql, READBACK_WINDOW_SQL
     assert_in("played_at >= $1", top_hands_sql(t))
     assert_true("played_at >=" not in top_hands_sql(None))
     assert_in("played_at >= $2", READBACK_WINDOW_SQL)
-    assert_in("source='online'", READBACK_WINDOW_SQL)
+    assert_in("source=$3", READBACK_WINDOW_SQL)
 
 
 @test

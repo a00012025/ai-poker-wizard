@@ -752,8 +752,8 @@ def test_session_review_marks_hu_only_for_real_sb_bb_heads_up_pots():
     assert_eq(sr.hand_desc({
         "spot_category": "flop", "spot_leaf": "flop:SRP:SBvBB:IP:vs_raise",
         "hero_cat": "SB", "villain_cat": "BB", "ip_oop": "IP", "hero_pos": "SB",
-    }, is_real_hu=True), "SRP 底池（HU），Hero SB 對 BB、處於 IP，翻牌面對加注")
+    }, is_real_hu=True), "SRP（HU）｜Hero SB 對 BB，IP；翻牌 Hero 面對加注")
     assert_eq(sr.hand_desc({
         "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
         "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
-    }, is_real_hu=False), "SRP 底池，Hero CO 對 SB、處於 IP，翻牌面對加注")
+    }, is_real_hu=False), "SRP｜Hero CO 對 SB，IP；翻牌 Hero 面對加注")

@@ -4067,7 +4067,7 @@ def test_hierarchical_sql_uses_parent_and_confidence_gate():
     import inspect
     from spot_leaderboard import hierarchical_leaderboard
     src = inspect.getsource(hierarchical_leaderboard)
-    assert_in('band_sql(since), row["representative_leaf"]', src)
+    assert_in('band_sql(since, source), row["representative_leaf"]', src)
     assert_in('"prescription_bands"', src)
 
 

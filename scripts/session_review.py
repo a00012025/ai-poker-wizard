@@ -305,7 +305,12 @@ def hand_desc(row: dict, *, is_real_hu: bool = False) -> str:
 
 def _mark_hu_pot(desc: str) -> str:
     """Mark an actually heads-up postflop pot in a user-facing spot label."""
-    return desc.replace(" 底池", " 底池（HU）", 1) if " 底池" in desc else desc
+    if " 底池" in desc:
+        return desc.replace(" 底池", " 底池（HU）", 1)
+    if "｜" in desc:
+        pot, rest = desc.split("｜", 1)
+        return f"{pot}（HU）｜{rest}"
+    return desc
 
 
 def _active_positions_at_gp(gp: dict) -> set[str]:

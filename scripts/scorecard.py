@@ -5,10 +5,9 @@ Diagnose (action-line leak board by avg EV loss) -> prescribe 1-2 focus spots
 with precise multi-depth GTOW Trainer drill links (the drill itself is the
 retrieval practice) -> next-cycle EV-loss readback on the treated spot.
 
-Windows (§2.2 歸因): weekly mode diagnoses over the trailing FOCUS_WINDOW_DAYS
-(a cumulative all-history average would bury recent form), and the readback of
-last week's focus spot is computed strictly over the post-prescription window —
-that is the only window where the treatment effect is observable.
+Windows (§2.2 歸因): weekly mode diagnoses only the current Taipei ISO week,
+and the readback of last week's focus spot is computed strictly over the
+post-prescription window — the only window where treatment can be observed.
 
 --preview   full-history window, no DB writes; emits data/scorecards/preview.*
 --weekly    current ISO week, writes scorecards + coach_focus + readback backfill
@@ -19,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -46,6 +46,70 @@ CAT_ZH = {
 FACING_ZH = {"first_to_act": "首動", "vs_bet": "面對下注", "vs_check": "面對過牌",
              "vs_raise": "面對加注"}
 
+_ACTION_ZH = {"x": "過牌", "b": "下注", "c": "跟注", "r": "加注", "f": "棄牌"}
+_BAND_WEAK_ZH = {"short": "≤20bb 特別弱", "medium": "20–50bb 特別弱",
+                 "large": ">50bb 特別弱"}
+
+
+def _actions_zh(raw: str) -> str:
+    actions = []
+    for token in str(raw or "").split("-"):
+        key = token.strip().lower()[:1]
+        actions.append(_ACTION_ZH.get(key, token))
+    return "→".join(action for action in actions if action)
+
+
+def action_line_zh(row: dict) -> str:
+    """Translate one exact taxonomy leaf into a table-readable action line."""
+    leaf = str(row.get("representative_leaf") or row.get("spot_leaf") or "")
+    cat = str(row.get("spot_category") or "")
+    if cat not in {"flop", "turn", "river"}:
+        hero = row.get("hero_pos") or row.get("hero_cat") or "Hero"
+        villain = row.get("villain_cat")
+        rel = row.get("ip_oop")
+        where = f"（{rel}）" if rel else ""
+        target = f"{villain} " if villain else ""
+        wording = {
+            "RFI": "率先開池",
+            "vsOpen": f"面對 {target}開池",
+            "vsRaiseCall": f"面對 {target}開池及一人跟注",
+            "vsSqueeze": f"面對 {target}squeeze",
+            "vs3bet": f"面對 {target}3bet",
+            "vsCold3bet": f"cold call 前面對 {target}3bet",
+            "vs4bet": f"面對 {target}4bet",
+            "vsCold4bet": f"cold call 前面對 {target}4bet",
+        }.get(cat, CAT_ZH.get(cat, cat or "這個情境"))
+        return f"Hero {hero}{where}，{wording}"
+
+    parts = leaf.split(":")
+    pot = parts[1] if len(parts) > 1 else "?"
+    matchup = parts[2] if len(parts) > 2 else ""
+    match_parts = matchup.split("v", 1)
+    leaf_hero = match_parts[0] if match_parts else ""
+    leaf_villain = match_parts[1] if len(match_parts) > 1 else ""
+    hero = row.get("hero_pos") or row.get("hero_cat") or leaf_hero or "Hero"
+    villain = row.get("villain_cat") or leaf_villain
+    rel = row.get("ip_oop") or (parts[3] if len(parts) > 3 else "")
+    chunks = [f"{pot}｜Hero {hero}" + (f" 對 {villain}" if villain else "")
+              + (f"，{rel}" if rel else "")]
+    match = re.search(r":\[([^\]]*)\]:", leaf)
+    if match:
+        histories = match.group(1).split("|")
+        if histories and histories[0] not in {"", "-", "None", "null"}:
+            chunks.append(f"翻牌 {_actions_zh(histories[0])}")
+        if cat == "river" and len(histories) > 1 and histories[1] not in {
+                "", "-", "None", "null"}:
+            chunks.append(f"轉牌 {_actions_zh(histories[1])}")
+    facing = parts[-1] if parts else ""
+    node = {
+        "first_to_act": f"{CAT_ZH[cat]}輪到 Hero 先行動",
+        "vs_bet": f"{CAT_ZH[cat]} Hero 面對下注",
+        "vs_check": f"{CAT_ZH[cat]}對手過牌到 Hero",
+        "vs_raise": f"{CAT_ZH[cat]} Hero 面對加注",
+    }.get(facing, f"{CAT_ZH[cat]} {FACING_ZH.get(facing, facing)}")
+    chunks.append(node)
+    return "；".join(chunks)
+
 
 # ── human-readable spot description (pure) ─────────────────────────────────
 def spot_desc_zh(row: dict) -> str:
@@ -53,14 +117,8 @@ def spot_desc_zh(row: dict) -> str:
     if row.get("diagnosis_level") == "parent":
         key = row.get("diagnosis_key") or "?"
         parts = key.split(":")
-        if cat in ("flop", "turn", "river") and len(parts) >= 4:
-            desc = (f"{parts[1]} 底池，你在 {parts[2]}，"
-                    f"{CAT_ZH[cat]}{FACING_ZH.get(parts[3], parts[3])}")
-            hero = row.get("hero_pos") or row.get("hero_cat")
-            villain = row.get("villain_cat")
-            if hero and villain:
-                desc += f"（代表：Hero {hero} 對 {villain}）"
-            return desc
+        if cat in ("flop", "turn", "river"):
+            return action_line_zh(row)
         hero = row.get("hero_pos") or row.get("hero_cat") or "?"
         villain = row.get("villain_cat")
         rel = row.get("ip_oop")
@@ -78,16 +136,10 @@ def spot_desc_zh(row: dict) -> str:
             if rel:
                 matchup += f"、處於 {rel}"
             return f"{matchup}，{CAT_ZH[cat]}"
-        return f"{CAT_ZH.get(cat, cat)}這類情境"
+        return action_line_zh(row)
     hc, vc, rel = row.get("hero_cat"), row.get("villain_cat"), row.get("ip_oop")
     if cat in ("flop", "turn", "river"):
-        parts = row["spot_leaf"].split(":")
-        pot = parts[1] if len(parts) > 1 else "?"
-        facing = FACING_ZH.get(parts[-1], parts[-1])
-        hero = row.get("hero_pos") or hc or "?"
-        matchup = (f"Hero {hero} 對 {vc}、處於 {rel or '?'}"
-                   if vc else f"Hero {hero}、處於 {rel or '?'}")
-        return f"{pot} 底池，{matchup}，{CAT_ZH[cat]}{facing}"
+        return action_line_zh(row)
     if cat == "RFI":
         return f"{row.get('hero_pos') or hc} 開池"
     if cat == "vsOpen":
@@ -112,9 +164,9 @@ def _svg_sparkline(values, w=560, h=80) -> str:
             f'<polyline fill="none" stroke="#2b6cb0" stroke-width="2" points="{pts}"/></svg>')
 
 
-# diagnosis window for --weekly: recent form, not all-history
-FOCUS_WINDOW_DAYS = 90
-READBACK_MIN_N = 25  # below the focus-family sample floor: show, never judge
+# diagnosis window for --weekly: current Taipei ISO week, not historical debt
+READBACK_MIN_N = 10  # early directional signal only; never a causal verdict
+LIVE_FOCUS_MIN_TOTAL_BB = 0.10
 
 TRAINING_READINESS_SQL = """
 SELECT count(*) FILTER (
@@ -151,11 +203,21 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
     week's focus but stay on the leak board: hiding a spot from the ranking
     just because it was recently treated would misreport where EV is going.
     """
-    per100 = weekly_series[-1]["per100"] if weekly_series else 0.0
-    n = int(weekly_series[-1].get("n") or 0) if weekly_series else 0
-    previous_n = int(weekly_series[-2].get("n") or 0) if len(weekly_series) >= 2 else 0
-    delta = (weekly_series[-1]["per100"] - weekly_series[-2]["per100"]
-             if len(weekly_series) >= 2 else 0.0)
+    current = weekly_series[-1] if weekly_series else None
+    previous = weekly_series[-2] if len(weekly_series) >= 2 else None
+    if re.fullmatch(r"\d{4}-W\d{2}", window_label):
+        current = next((row for row in weekly_series
+                        if row.get("week") == window_label), None)
+        prior = [row for row in weekly_series
+                 if str(row.get("week") or "") < window_label]
+        previous = prior[-1] if prior else None
+    has_current_week_data = current is not None
+    per100 = float(current.get("per100") or 0.0) if current else 0.0
+    n = int(current.get("n") or 0) if current else 0
+    hands = int(current.get("hands") or n) if current else 0
+    previous_hands = int(previous.get("hands") or previous.get("n") or 0) if previous else 0
+    delta = (per100 - float(previous.get("per100") or 0.0)
+             if current and previous else 0.0)
     change = (f"本週觀察值較上週少 {abs(delta):.2f}" if delta < 0 else
               (f"本週觀察值較上週多 {delta:.2f}" if delta > 0 else "與上週相同"))
     blocked = set(focus_exclude or ())
@@ -176,13 +238,16 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
             "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
             "restrict": it.get("restrict"),
             "fragile": bool(it.get("fragile")),
+            "source": it.get("source", "online"),
             "action_bias": r.get("action_bias"),
             "samples": [dict(s) for s in it.get("samples", [])],
         })
     return {
         "window": window_label,
-        "headline": f"本週平均 EV 損失 {per100:.2f} bb/100（n={n}），{change}",
-        "per100": per100, "n": n, "previous_n": previous_n,
+        "headline": f"本週平均 EV 損失 {per100:.2f} bb/100（共 {hands} 手），{change}",
+        "per100": per100, "n": n, "hands": hands,
+        "previous_hands": previous_hands,
+        "has_current_week_data": has_current_week_data,
         "delta": delta, "weekly_series": weekly_series,
         "leaderboard": [dict(it["row"], drill_url=it["url"], restrict=it.get("restrict"))
                         for it in spots],
@@ -235,10 +300,42 @@ def _trend(v):
     return '<span class="sub">–</span>'
 
 
+def exact_analyze_url(hand_ids) -> str | None:
+    """One GTOW Analyze table link filtered to the exact source hands."""
+    from queue_feed import gtow_analyze_hands_urls
+    urls = gtow_analyze_hands_urls([hand_id for hand_id in hand_ids if hand_id])
+    return urls[0][0] if urls else None
+
+
+def readback_signal(row: dict) -> str | None:
+    """Small-sample-friendly direction without claiming causal improvement."""
+    if row.get("current_per100") is None or int(row.get("n") or 0) < READBACK_MIN_N:
+        return None
+    before = row.get("prescribed_per100")
+    if before is None:
+        return "已達可觀察門檻，繼續追蹤"
+    delta = float(row["current_per100"]) - float(before)
+    if delta < -0.05:
+        return f"初步訊號：比列入訓練時少 {abs(delta):.1f} bb/100"
+    if delta > 0.05:
+        return f"初步訊號：比列入訓練時多 {delta:.1f} bb/100"
+    return "初步訊號：與列入訓練時相近"
+
+
+def _sample_html(sample: dict, source: str) -> str:
+    hand = escape(str(sample.get("hero_hand") or "?"))
+    board = escape(str(sample.get("boards") or ""))
+    loss = float(sample.get("ev_loss_bb") or 0.0)
+    link = exact_analyze_url([sample.get("gtow_hand_id")]) if source == "online" else None
+    action = (f'<a href="{escape(link)}">在 Hand Analyzer 看這手</a>'
+              if link else "線下來源手")
+    return f'<div class="sub">· {hand} {board} 損失 {loss:.1f}bb {action}</div>'
+
+
 def render_html(d: dict) -> str:
     spark = _svg_sparkline([w["per100"] for w in d["weekly_series"]])
     lb_rows = "".join(
-        f"<tr><td>{escape(r.get('diagnosis_key', r['spot_leaf']))}"
+        f"<tr><td>{escape(spot_desc_zh(r))}"
         f"{('｜' + escape(r['action_bias']['label'])) if r.get('action_bias') else ''}</td>"
         f"<td>{r['avg_ev']*100:.2f}</td>"
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
@@ -246,54 +343,48 @@ def render_html(d: dict) -> str:
     for f in d["focus"]:
         drill = (f'<a class="btn" href="{escape(f["drill_url"])}">🎯 進 GTOW Trainer 練這個情境</a>'
                  if f["drill_url"] else '<span class="note">（目前無法建立準確的 Trainer 連結，請從下方 Analyze 樣本複習）</span>')
-        band = f'<div class="note">⛏ 錯誤集中在 {lb.BAND_ZH.get(f["restrict"], f["restrict"])}，練習只選這個籌碼深度</div>' if f.get("restrict") else '<div class="note">練習涵蓋各種籌碼深度</div>'
-        samples = "".join(
-            f'<div class="sub">· {escape(str(s.get("hero_hand") or "?"))} '
-            f'{escape(str(s.get("boards") or ""))} 損失 {s.get("ev_loss_bb",0):.1f}bb '
-            f'<a href="{analyze_table_url(s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"), s["played_at"].astimezone(TPE).strftime("%Y-%m-%d"))}">Analyze</a></div>'
-            for s in f.get("samples", []))
+        band = (f'<div class="note">⛏ {_BAND_WEAK_ZH.get(f["restrict"], f["restrict"] + " 特別弱")}</div>'
+                if f.get("restrict") else '<div class="note">練習涵蓋各種籌碼深度</div>')
+        samples = "".join(_sample_html(s, s.get("hand_source", f["source"]))
+                          for s in f.get("samples", []))
         frag = ('<div class="note">⚠️ 部分下注尺寸不在 GTOW 標準樹上；排除這些手後結果差超過 30%，先不要過度解讀</div>'
                 if f.get("fragile") else '')
         bias = f.get("action_bias")
         bias_html = (f'<div><b>明顯傾向：{escape(bias["label"])}</b>'
                      f'（{bias["n"]} 手，EV 損失合計 {bias["ev_loss_bb"]:.2f} bb）</div>'
                      if bias else '')
+        source_zh = "線下" if f.get("source") == "live" else "線上"
         focus_html += (f'<div class="card"><b>{escape(f["desc"])}</b>'
-                       f'<div class="sub">平均 EV 損失 {f["per100"]:.2f} bb/100（n={f["n"]}） · '
-                       f'<code>{escape(f.get("diagnosis_key") or f["spot_leaf"])}</code></div>'
-                       f'<div class="note">用來建立練習的代表牌局路線：<code>'
-                       f'{escape(f.get("representative_leaf") or f["spot_leaf"])}</code></div>'
+                       f'<div class="sub">{source_zh}｜平均 EV 損失 {f["per100"]:.2f} bb/100'
+                       f'（本週出現 {f["n"]} 次）</div>'
                        f'{bias_html}{drill}{band}{frag}{samples}</div>')
     rb = ""
     if d.get("readback"):
         for r in d["readback"]:
             label = escape(str(r.get("label") or r["spot_leaf"]))
-            if r.get("current_per100") is None:
-                body = "尚無新樣本，暫不判斷"
-            else:
-                body = f'目前 {r["current_per100"]:.2f} bb/100（n={r["n"]}）'
-                if int(r.get("n") or 0) < READBACK_MIN_N:
-                    body += "；樣本不足，暫不判斷"
-            rb += (f'<div class="card">{label}：{body}'
-                   f'<div class="note">僅供追蹤，不作進步或退步判斷。</div></div>')
+            signal = readback_signal(r)
+            if signal:
+                body = f'目前 {r["current_per100"]:.2f} bb/100（{r["n"]} 次）'
+                rb += (f'<div class="card">{label}：{body}'
+                       f'<div class="note">{escape(signal)}；仍需更多實戰驗證。</div></div>')
     top = "".join(
         f'<div class="sub">· {escape(str(h.get("hero_hand") or "?"))} {escape(str(h.get("position") or ""))} '
         f'{escape(str(h.get("boards") or ""))} 損失 {(h.get("total_ev_loss_bb") or 0):.1f}bb '
-        f'<a href="{analyze_table_url(h["played_at"].astimezone(TPE).strftime("%Y-%m-%d"), h["played_at"].astimezone(TPE).strftime("%Y-%m-%d"))}">Analyze</a></div>'
+        f'<a href="{exact_analyze_url([h.get("gtow_hand_id")])}">在 Hand Analyzer 看這手</a></div>'
         for h in d["top_hands"][:3])
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>訓練計畫 {escape(d['window'])}</title><style>{_STYLE}</style></head><body>
 <h1>週訓練計畫</h1><div class="sub">統計期間：{escape(d['window'])}</div>
 <h2>主指標：平均 EV 損失 / 100 決策</h2>
-<div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · n={d.get('n', 0)} · 週變化 {_trend(d['delta'])}</span></div>{spark}
+<div class="metric">{d['per100']:.2f}<span class="sub"> bb/100 · 共 {d.get('hands', d.get('n', 0))} 手 · 週變化 {_trend(d['delta'])}</span></div>{spark}
 <h2>本週最該練的情境（先作答，再練）</h2>{focus_html or '<div class="sub">目前沒有樣本足夠的焦點</div>'}
 {('<h2>列入練習後的實戰追蹤</h2>'+rb) if rb else ''}
 <h2>EV 損失較高的情境</h2>
 <div class="note">優先順序已考慮樣本數；表中顯示原始平均 EV 損失。</div>
 <table><tr><th>情境類型</th><th>平均 EV 損失 bb/100</th><th>樣本決策</th></tr>{lb_rows}</table>
 <h2>最貴 3 手</h2>{top}
-<h2>資料口徑</h2><div class="sub">僅納入高信心的線上決策；翻牌後採 chipEV 評分，翻牌前涉及 limp 的決策不納入。</div>
+<h2>資料口徑</h2><div class="sub">整體指標與其他節點僅納入高信心線上決策；焦點另看本週高信心線下牌，但與線上分開排序。翻牌後採 chipEV 評分，翻牌前涉及 limp 的決策不納入。</div>
 </body></html>"""
 
 
@@ -321,8 +412,8 @@ def repeat_note(q: dict) -> str:
     if times <= 0:
         return ""
     if q.get("bucket") == "relapse":
-        return f"（🔁 又漏了，第 {times + 1} 次排入）"
-    return f"（📼 舊帳輪替，第 {times + 1} 次排入）"
+        return f"（🔁 這週又出現，第 {times + 1} 次排入）"
+    return f"（之前排過但還沒完成，第 {times + 1} 次提醒）"
 
 
 def backlog_remaining(d: dict) -> int:
@@ -342,19 +433,26 @@ def weekly_tg_html(week: str, d: dict) -> str:
     """
     per100 = d.get("per100", 0.0)
     series = d.get("weekly_series") or []
-    n = int(d.get("n") or (series[-1].get("n") if series else 0) or 0)
-    previous_n = int(d.get("previous_n") or
-                     (series[-2].get("n") if len(series) >= 2 else 0) or 0)
+    hands = int(d.get("hands") or
+                (series[-1].get("hands") if series else 0) or d.get("n") or 0)
+    previous_hands = int(d.get("previous_hands") or
+                         (series[-2].get("hands") or series[-2].get("n")
+                          if len(series) >= 2 else 0) or 0)
     delta = d.get("delta", 0.0)
     if delta < -1e-9:
-        trend = f"本週觀察值較上週少了 <b>{abs(delta):.2f} bb/100</b>（上週 n={previous_n}）"
+        trend = f"本週觀察值較上週少了 <b>{abs(delta):.2f} bb/100</b>（上週 {previous_hands} 手）"
     elif delta > 1e-9:
-        trend = f"本週觀察值較上週多 <b>{delta:.2f} bb/100</b>（上週 n={previous_n}）"
+        trend = f"本週觀察值較上週多 <b>{delta:.2f} bb/100</b>（上週 {previous_hands} 手）"
     else:
-        trend = f"與上週相同（上週 n={previous_n}）"
+        trend = f"與上週相同（上週 {previous_hands} 手）"
 
     L = [f"🃏 <b>本週該練的地方</b>（{escape(week)}）", ""]
-    L.append(f"這週平均 EV 損失為 <b>{per100:.2f} bb/100</b>（n={n}），{trend}。")
+    if d.get("has_current_week_data", True):
+        L.append(f"這週共 <b>{hands} 手</b>，平均 EV 損失為 "
+                 f"<b>{per100:.2f} bb/100</b>；{trend}。")
+    else:
+        L.append(f"這週尚無符合統計口徑的線上手牌（<b>0 手</b>）；"
+                 f"上週共 {previous_hands} 手。")
 
     focus = d.get("focus", [])
     if focus:
@@ -363,12 +461,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
         for i, f in enumerate(focus, 1):
             band = ""
             if f.get("restrict"):
-                bz = lb.BAND_ZH.get(f["restrict"], f["restrict"])
-                band = f"（{bz}特別弱，練習按鈕已鎖這個籌碼帶）"
+                band = f"（{_BAND_WEAK_ZH.get(f['restrict'], f['restrict'] + ' 特別弱')}）"
             frag = "（⚠️ 部分下注尺寸不在 GTOW 標準樹上，先保守看）" if f.get("fragile") else ""
-            rep = f.get("representative_leaf") or f.get("spot_leaf") or "?"
-            L.append(f"{i}. {escape(f['desc'])} — 平均 EV 損失 {f['per100']:.1f} bb/100（n={f['n']}）。"
-                     f"代表牌局路線 <code>{escape(rep)}</code>{band}{frag}")
+            source = "線下" if f.get("source") == "live" else "線上"
+            L.append(f"{i}. [{source}] {escape(f['desc'])} — 平均 EV 損失 "
+                     f"{f['per100']:.1f} bb/100（本週出現 {f['n']} 次）{band}{frag}")
             bias = f.get("action_bias")
             if bias:
                 L.append(f"   明顯傾向：{escape(bias['label'])}（{bias['n']} 手，"
@@ -394,8 +491,9 @@ def weekly_tg_html(week: str, d: dict) -> str:
                 # label already reads「復盤 M/D … −Xbb」
                 L.append(f"{qi}. 🔍 {escape(lbl)}{note}")
             else:
-                ev = q.get("total_ev_loss_bb") or 0
-                L.append(f"{qi}. 🎯 {escape(lbl)} — 來自 {q.get('n_sources', 1)} 手，"
+                ev = q.get("week_total_ev_loss_bb", q.get("total_ev_loss_bb")) or 0
+                n_sources = q.get("week_n_sources", q.get("n_sources", 1))
+                L.append(f"{qi}. 🎯 {escape(lbl)} — 來自本週 {n_sources} 手，"
                          f"EV 損失合計 {ev:.1f} bb{note}")
                 from spot_naming import telegram_bias_summary
                 bias = telegram_bias_summary(q)
@@ -415,27 +513,25 @@ def weekly_tg_html(week: str, d: dict) -> str:
         for r in others:
             bias = f"；{r['action_bias']['label']}" if r.get("action_bias") else ""
             L.append(f"• {escape(spot_desc_zh(r))} — 平均 EV 損失 "
-                     f"{r['avg_ev'] * 100:.1f} bb/100（n={r['n']}{escape(bias)}）")
+                     f"{r['avg_ev'] * 100:.1f} bb/100（本週出現 {r['n']} 次{escape(bias)}）")
 
     readback = d.get("readback") or []
-    if readback:
+    visible_readback = [r for r in readback if readback_signal(r)]
+    if visible_readback:
         L.append("")
         L.append("<b>📈 列入練習後的實戰追蹤：</b>")
-        for r in readback:
+        for r in visible_readback:
             label = escape(str(r.get("label") or r.get("spot_leaf") or "?"))
-            if r.get("current_per100") is None:
-                L.append(f"• {label} — 尚無新樣本，暫不判斷")
-            else:
-                status = ("；樣本不足，暫不判斷"
-                          if int(r.get("n") or 0) < READBACK_MIN_N else "；持續觀察")
-                L.append(f"• {label} — 目前 {r['current_per100']:.1f} bb/100（n={r['n']}）{status}")
-        L.append("  僅供追蹤，不作進步或退步判斷。")
+            L.append(f"• {label} — 目前 {r['current_per100']:.1f} bb/100"
+                     f"（{r['n']} 次）；{escape(readback_signal(r))}")
+        L.append("  這是提早回饋，仍需更多實戰樣本確認是否真的學會。")
 
     L.append("")
     L.append("🎯 <b>本週目標</b>：完成以上焦點 spot 的練習與復盤。")
 
     L.append("")
-    L.append("⚠️ <b>統計口徑</b>：僅納入高信心的線上決策；翻牌後採 chipEV 評分，"
+    L.append("⚠️ <b>統計口徑</b>：整體指標與其他節點只算高信心線上決策；"
+             "焦點另看本週高信心線下牌，但不和線上混算。翻牌後採 chipEV 評分，"
              "翻牌前涉及 limp 的決策不納入。")
     return "\n".join(L)
 
@@ -452,8 +548,17 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
     buttons: list[list[dict]] = []
     for i, f in enumerate(d.get("focus", []), 1):
         if f.get("queue_id") is not None:
-            buttons.append([{"text": f"🎯 焦點 {i}",
-                             "callback_data": f"qdet:{f['queue_id']}:0:plan"}])
+            row = [{"text": f"🎯 練焦點 {i}",
+                    "callback_data": f"qdet:{f['queue_id']}:0:plan"}]
+            hand_ids = [s.get("gtow_hand_id") for s in (f.get("samples") or [])
+                        if s.get("gtow_hand_id")]
+            if f.get("source", "online") == "online" and hand_ids:
+                row.append({"text": f"🃏 手牌 {i}",
+                            "url": exact_analyze_url(hand_ids)})
+            else:
+                row.append({"text": f"🃏 手牌 {i}",
+                            "callback_data": f"qsrc:{f['queue_id']}"})
+            buttons.append(row)
     for qi, q in enumerate(ordered_queue(d), 1):
         qid = q.get("id")
         if q.get("kind") == "review":
@@ -490,7 +595,12 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
             if qid is not None:
                 row.append({"text": f"🎯 練習 {qi}",
                             "callback_data": f"qdet:{qid}:0:plan"})
-                row.append({"text": f"📚 來源 {qi}", "callback_data": f"qsrc:{qid}"})
+                if q.get("week_analyze_url"):
+                    row.append({"text": f"🃏 手牌 {qi}",
+                                "url": q["week_analyze_url"]})
+                else:
+                    row.append({"text": f"📚 來源 {qi}",
+                                "callback_data": f"qsrc:{qid}"})
             if row:
                 buttons.append(row)
     return {"html": weekly_tg_html(week, d), "buttons": buttons}
@@ -498,12 +608,13 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
 
 def preview_summary_md(d: dict) -> str:
     L = [f"# 訓練計畫預覽（{d['window']}）", "",
-         f"## 主指標", f"- 平均 EV 損失：**{d['per100']:.2f} bb/100**（n={d.get('n', 0)}；週變化 {d['delta']:+.2f}）",
+         f"## 主指標", f"- 平均 EV 損失：**{d['per100']:.2f} bb/100**"
+         f"（共 {d.get('hands', d.get('n', 0))} 手；週變化 {d['delta']:+.2f}）",
          f"- 已累積：{len(d['weekly_series'])} 週資料", "", "## 本週最該練的情境",
          "優先順序已考慮樣本數；下方顯示原始平均 EV 損失。"]
     for f in d["focus"]:
         L.append(f"### {f['desc']}  `{f.get('diagnosis_key') or f['spot_leaf']}`")
-        L.append(f"- 平均 EV 損失 {f['per100']:.2f} bb/100（n={f['n']}）")
+        L.append(f"- 平均 EV 損失 {f['per100']:.2f} bb/100（出現 {f['n']} 次）")
         if f.get("action_bias"):
             b = f["action_bias"]
             L.append(f"- 明顯傾向：{b['label']}（{b['n']} 手，EV 損失合計 {b['ev_loss_bb']:.2f} bb）")
@@ -520,7 +631,9 @@ def preview_summary_md(d: dict) -> str:
             label += f"｜{r['action_bias']['label']}"
         L.append(f"| {label} | {r['avg_ev']*100:.2f} | {r['n']} |")
     L.append("")
-    L.append("## 資料口徑\n- 僅納入高信心的線上決策；翻牌後採 chipEV 評分，翻牌前涉及 limp 的決策不納入。")
+    L.append("## 資料口徑\n- 整體指標與其他節點只算高信心線上決策；"
+             "焦點另看高信心線下牌，但不和線上混算。翻牌後採 chipEV 評分，"
+             "翻牌前涉及 limp 的決策不納入。")
     return "\n".join(L)
 
 
@@ -530,7 +643,8 @@ def preview_summary_md(d: dict) -> str:
 # surface in their own queue section instead.
 WEEKLY_SQL = """
 SELECT to_char((played_at AT TIME ZONE 'Asia/Taipei'), 'IYYY-"W"IW') week,
-       count(*) n, avg(ev_loss_bb)*100 per100, sum(ev_loss_bb) total_bb
+       count(*) n, count(DISTINCT gtow_hand_id) hands,
+       avg(ev_loss_bb)*100 per100, sum(ev_loss_bb) total_bb
 FROM ledger_decisions
 WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='online'
   AND confidence >= 0.8
@@ -554,7 +668,7 @@ ORDER BY sum(d.ev_loss_bb) DESC LIMIT 3
 READBACK_WINDOW_SQL = """
 SELECT count(*) n, avg(ev_loss_bb)*100 per100
 FROM ledger_decisions
-WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source='online'
+WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND source=$3
   AND confidence >= 0.8 AND played_at >= $2
 """
 READBACK_WINDOW_SQL_PARENT = READBACK_WINDOW_SQL.replace("spot_leaf=$1", "spot_parent=$1")
@@ -601,7 +715,21 @@ async def _honesty(conn) -> dict:
             "sizing_snap_n": snap, "depth_snap_n": dgap, "low_confidence_n": low}
 
 
-async def fetch_drill_queue(conn, exclude_ids=None) -> dict:
+_WEEK_DRILL_EVIDENCE_SQL = """
+SELECT gtow_hand_id hand_id, street, decision_idx, ev_loss_bb
+FROM ledger_decisions
+WHERE spot_leaf=$1 AND source=$2 AND played_at >= $3
+  AND ev_loss_bb >= 0.10 AND NOT excluded AND NOT discarded
+  AND confidence >= 0.8
+ORDER BY ev_loss_bb DESC
+"""
+_WEEK_REVIEW_EVIDENCE_SQL = """
+SELECT count(*) FROM ledger_hands
+WHERE gtow_hand_id=$1 AND source=$2 AND played_at >= $3
+"""
+
+
+async def fetch_drill_queue(conn, exclude_ids=None, since=None) -> dict:
     """This week's practice slate: ``{"picked": [...], "backlog_total": int}``.
 
     Freshness and the reserved online/live seats are decided by
@@ -616,24 +744,54 @@ async def fetch_drill_queue(conn, exclude_ids=None) -> dict:
     for row in rows:
         if row.get("kind") == "drill":
             row["label"] = compact_spot_name(row)
-    return select_weekly_slate(await annotate_rows(conn, rows))
+    rows = await annotate_rows(conn, rows)
+    if since:
+        current = []
+        for row in rows:
+            if row.get("kind") == "review":
+                count = await conn.fetchval(
+                    _WEEK_REVIEW_EVIDENCE_SQL, row.get("ref_hand_id"),
+                    row.get("track", "online"), since)
+            else:
+                evidence = [dict(item) for item in await conn.fetch(
+                    _WEEK_DRILL_EVIDENCE_SQL, row.get("spot_leaf"),
+                    row.get("track", "online"), since)]
+                count = len(evidence)
+            if int(count or 0) > 0:
+                item = dict(row)
+                item["week_evidence_n"] = int(count)
+                if row.get("kind") == "drill":
+                    item["week_source_hands"] = [dict(source, src=row.get(
+                        "track", "online")) for source in evidence]
+                    item["week_n_sources"] = len({source["hand_id"]
+                                                  for source in evidence})
+                    item["week_total_ev_loss_bb"] = round(sum(
+                        float(source.get("ev_loss_bb") or 0.0)
+                        for source in evidence), 4)
+                    if row.get("track") == "online":
+                        item["week_analyze_url"] = exact_analyze_url(
+                            [source["hand_id"] for source in evidence])
+                current.append(item)
+        rows = current
+    return select_weekly_slate(rows)
 
 
 def focus_queue_item(focus: dict) -> dict | None:
     """Build an idempotent drill_queue item for a weekly focus prescription."""
-    if not (focus.get("spot_leaf") and focus.get("drill_url")):
+    if not focus.get("spot_leaf"):
         return None
     sources = [{
         "hand_id": s.get("gtow_hand_id"),
         "street": s.get("street"),
         "decision_idx": s.get("decision_idx"),
         "ev_loss_bb": float(s.get("ev_loss_bb") or 0.0),
-        "src": "online",
+        "src": focus.get("source", "online"),
     } for s in (focus.get("samples") or []) if s.get("gtow_hand_id")]
     if not sources:
         return None
     return {
-        "kind": "drill", "added_by": "scorecard_focus", "source": "online",
+        "kind": "drill", "added_by": "scorecard_focus",
+        "source": focus.get("source", "online"),
         "spot_leaf": focus["spot_leaf"],
         "spot_category": focus.get("spot_category"),
         "label": focus.get("desc") or focus["spot_leaf"],
@@ -675,7 +833,7 @@ async def fetch_readback(conn, prev_focus, prev_at) -> dict:
             continue
         sql = (READBACK_WINDOW_SQL_PARENT
                if f.get("diagnosis_level") == "parent" else READBACK_WINDOW_SQL)
-        r = await conn.fetchrow(sql, key, prev_at)
+        r = await conn.fetchrow(sql, key, prev_at, f.get("source", "online"))
         out[f.get("spot_leaf") or key] = {"n": r["n"] or 0,
                      "per100": float(r["per100"]) if r["per100"] is not None else None}
     return out
@@ -696,6 +854,8 @@ async def focus_history(conn) -> list[dict]:
         fam = row["families"]
         fam = json.loads(fam) if isinstance(fam, str) else fam
         for entry in fam or []:
+            if entry.get("source", "online") != "online":
+                continue
             key = entry.get("diagnosis_key") or entry.get("spot_leaf")
             if key:
                 out.append({"diagnosis_key": key,
@@ -705,12 +865,53 @@ async def focus_history(conn) -> list[dict]:
     return out
 
 
+def weekly_focus_candidates(online: list[dict], live: list[dict],
+                            focus_k: int = 2) -> list[dict]:
+    """Reserve one headline seat for selective live evidence.
+
+    Sources remain statistically isolated: this composes already-ranked lists
+    and never creates a mixed live/online average.  A live candidate gets the
+    first seat because scarce live evidence deserves explicit coaching
+    attention; online fills every unused seat.
+    """
+    picked = []
+    seen = set()
+    material_live = [item for item in live
+                     if float(item["row"].get("total_ev") or 0.0)
+                     >= LIVE_FOCUS_MIN_TOTAL_BB]
+    if material_live:
+        item = dict(material_live[0], source="live")
+        picked.append(item)
+        seen.add(item["row"].get("diagnosis_key") or item["row"].get("spot_leaf"))
+    for item in online:
+        if len(picked) >= focus_k:
+            break
+        key = item["row"].get("diagnosis_key") or item["row"].get("spot_leaf")
+        if key in seen:
+            continue
+        picked.append(dict(item, source="online"))
+        seen.add(key)
+    return picked[:focus_k]
+
+
 async def build(conn, window_label, prev_focus, min_n=50, top=8,
                 since=None, prev_at=None, provision_focus=False,
                 focus_exclude=None):
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
-    spots = await lb.hierarchical_leaderboard(
-        conn, min_n=max(25, min_n // 2), top=top, since=since)
+    online_spots = await lb.hierarchical_leaderboard(
+        conn, min_n=max(25, min_n // 2), top=top, since=since,
+        source="online")
+    # Live capture is sparse and some older imported decisions predate the
+    # parent-family backfill. Rank exact action lines so every graded hand from
+    # this week remains eligible; the material-loss floor below keeps tiny
+    # solver noise from taking the reserved live focus seat.
+    live_spots = await lb.leaderboard(
+        conn, min_n=1, top=top, since=since, source="live")
+    blocked = set(focus_exclude or ())
+    eligible_online = [it for it in online_spots
+                       if (it["row"].get("diagnosis_key")
+                           or it["row"].get("spot_leaf")) not in blocked]
+    spots = weekly_focus_candidates(eligible_online, live_spots)
     top_hands = [dict(r) for r in await conn.fetch(
         top_hands_sql(since), *([since] if since else []))]
     honesty = await _honesty(conn)
@@ -718,12 +919,17 @@ async def build(conn, window_label, prev_focus, min_n=50, top=8,
     if prev_focus and prev_at:
         readback = prev_focus_readback(prev_focus, await fetch_readback(conn, prev_focus, prev_at))
     data = compute_training_plan(window_label, weekly, spots, top_hands,
-                                 readback, honesty, focus_exclude=focus_exclude)
+                                 readback, honesty)
+    # The rest of the public leak board remains online-only.  Live is a
+    # selectively recorded sample and must not be mixed into aggregate ranks.
+    data["leaderboard"] = [dict(it["row"], drill_url=it["url"],
+                                restrict=it.get("restrict"))
+                           for it in online_spots]
     data["focus_excluded"] = sorted(focus_exclude or ())
     focus_queue_ids = (await bind_focus_queue_items(conn, data["focus"])
                        if provision_focus else [])
     data["focus_queue_ids"] = focus_queue_ids
-    slate = await fetch_drill_queue(conn, focus_queue_ids)
+    slate = await fetch_drill_queue(conn, focus_queue_ids, since=since)
     data["drill_queue"] = slate["picked"]
     data["queue_backlog_total"] = slate["backlog_total"]
     return data
@@ -789,15 +995,16 @@ async def _run(mode: str, min_n: int):
         # Runs before the scan: a re-scan would otherwise merge fresh evidence
         # into a row that is about to be closed.
         print(f"gtow auto-close: {await _autoclose(conn)}")
-        # §5.4: scan the online window into the queue BEFORE building the plan,
-        # so this week's fresh drill/review items are eligible to be prescribed
-        # and drained. The scan uses its own 60d window (queue_feed constant),
-        # deliberately distinct from the 90d focus window below.
+        # Keep the durable queue fully refreshed, then let build() show only
+        # evidence played in this ISO week. Older unfinished work remains in
+        # /queue but no longer occupies the new weekly plan.
         from queue_feed import scan_online
         scan = await scan_online(conn)
         print(f"queue scan: {len(scan['drill'])} drill + {len(scan['review'])} "
               f"review candidates, tally={scan['tally']}")
-        since = datetime.now(timezone.utc) - timedelta(days=FOCUS_WINDOW_DAYS)
+        week_start_tpe = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start_tpe -= timedelta(days=now.weekday())
+        since = week_start_tpe.astimezone(timezone.utc)
         excluded = await _focus_exclusions(conn, since)
         if excluded:
             print(f"focus cooldown holds back: {sorted(excluded)}")
@@ -809,6 +1016,7 @@ async def _run(mode: str, min_n: int):
         fam_payload = [{"spot_leaf": f["spot_leaf"],
                         "diagnosis_key": f.get("diagnosis_key"),
                         "diagnosis_level": f.get("diagnosis_level"),
+                        "source": f.get("source", "online"),
                         "desc": f.get("desc"),
                         "per100": f["per100"], "n": f["n"],
                         "drill_url": f["drill_url"]} for f in data["focus"]]
