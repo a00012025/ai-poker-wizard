@@ -101,7 +101,21 @@ _TRAINER_UI_DEFAULTS: dict[str, str] = {
 
 _BASE_URL = "https://app.gtowizard.com/practice/trainer"
 
+# GTOW's official v4 game-mode metadata marks MTTGeneral as
+# ``info.variant=with_limps`` (the no-limp family is ``no_limps``).  The
+# Trainer persists that selection in ``gmff_variant``.  Pin it on every MTT
+# link so a user's previous Game Formats filter cannot silently switch the
+# exercise to a no-limp solution.
+MTT_HAS_LIMP_VARIANT = "with_limps"
+
 _VALID_STREETS = ("preflop", "flop", "turn", "river")
+
+
+def trainer_solution_defaults(gametype: str | None) -> dict[str, str]:
+    """Solution-family filters that must be part of Trainer/Drill identity."""
+    if (gametype or "").upper().startswith("MTT"):
+        return {"gmff_variant": MTT_HAS_LIMP_VARIANT}
+    return {}
 
 
 def apply_trainer_defaults(url: str | None) -> str | None:
@@ -113,6 +127,7 @@ def apply_trainer_defaults(url: str | None) -> str | None:
         return url
     params = dict(parse_qsl(parts.query, keep_blank_values=True))
     params.update(_TRAINER_UI_DEFAULTS)
+    params.update(trainer_solution_defaults(params.get("gametype")))
     return urlunsplit((parts.scheme, parts.netloc, parts.path,
                        urlencode(params), parts.fragment))
 
@@ -201,6 +216,7 @@ def build_drill_url(
         ("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]),
         ("gametype", gametype), ("depth", depth_str), ("depth_list", depth_list_str),
     ]
+    params.extend(trainer_solution_defaults(gametype).items())
     for k, v in _TRAINER_UI_DEFAULTS.items():
         if k in ("solution_type", "dialogs"):
             continue
@@ -313,6 +329,7 @@ def build_trainer_url(
     params.append(("gametype", gametype))
     params.append(("depth", depth_str))
     params.append(("depth_list", depth_str))
+    params.extend(trainer_solution_defaults(gametype).items())
 
     # Trainer UI flags (skip solution_type + dialogs which bookend the URL).
     for k, v in _TRAINER_UI_DEFAULTS.items():

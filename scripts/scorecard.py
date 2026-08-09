@@ -576,7 +576,9 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
                             "url": anchor})
             if q.get("drill_url"):
                 text = f"💥 {qi} 損失" if anchor else f"🔗 復盤 {qi}"
-                row.append({"text": text, "url": q["drill_url"]})
+                from gtow_trainer_url import apply_trainer_defaults
+                row.append({"text": text,
+                            "url": apply_trainer_defaults(q["drill_url"])})
             actions: list[dict] = []
             if qid is not None:
                 actions.append({"text": f"📚 來源 {qi}", "callback_data": f"qsrc:{qid}"})

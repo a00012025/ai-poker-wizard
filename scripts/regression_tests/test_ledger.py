@@ -1408,6 +1408,22 @@ def test_training_plan_focus_and_readback():
     assert_in("qdet:1:0:plan", callbacks)
     assert_true(any(c.startswith("qsrc:") for c in callbacks))  # source hands menu
 
+    # A persisted weekly review link may predate the solution-family filter.
+    # Render-time normalization prevents the plan from reopening no-limp MTT.
+    data["drill_queue"] = [{
+        "id": 3, "kind": "review", "spot_leaf": "SB_RFI",
+        "spot_category": "RFI", "label": "SB RFI review",
+        "drill_url": ("https://app.gtowizard.com/practice/trainer?"
+                      "gametype=MTTGeneral&fh_actions=RFI&fh_hero=SB&"
+                      "gmff_variant=no_limps"),
+        "n_sources": 1, "total_ev_loss_bb": 1.0, "status": "pending",
+    }]
+    review_payload = weekly_tg_payload("2026-W28", data)
+    review_urls = [b["url"] for row in review_payload["buttons"] for b in row
+                   if b.get("url") and "/practice/trainer" in b["url"]]
+    assert_true(any("gmff_variant=with_limps" in url for url in review_urls))
+    assert_true(all("gmff_variant=no_limps" not in url for url in review_urls))
+
 
 @test
 def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():

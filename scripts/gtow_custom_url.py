@@ -139,7 +139,8 @@ def classify_board(board: str) -> dict[str, str]:
 
 from urllib.parse import quote, urlencode
 
-from gtow_trainer_url import _TRAINER_UI_DEFAULTS, _BASE_URL
+from gtow_trainer_url import (_TRAINER_UI_DEFAULTS, _BASE_URL,
+                              trainer_solution_defaults)
 
 _CUSTOM_DIALOGS = "trainer-advanced-filter-dialog_namespace-tra/alpha_tmpNamespace-tmp/primary"
 
@@ -239,6 +240,7 @@ def build_custom_spot_url(
     params.append(("gametype", resolved["gametype"]))
     params.append(("depth", depth_str))
     params.append(("depth_list", depth_str))
+    params.extend(trainer_solution_defaults(resolved["gametype"]).items())
     # Trainer UI flags — skip solution_type (already emitted) and dialogs
     # (we set a custom value below).  All practice links intentionally use
     # GTOW Full hand mode (fh_trainer_mode=stop_end_of_hand), including custom

@@ -526,6 +526,7 @@ def test_build_custom_spot_url_h2665():
     assert_in("depth=30.125", url)
     assert_in("depth_list=30.125", url)
     assert_in("gametype=MTTGeneral", url)
+    assert_in("gmff_variant=with_limps", url)
     assert_in("fh_trainer_mode=stop_end_of_hand", url)
     assert_true("fh_trainer_mode=stop_after_action" not in url,
                 "every queue Trainer link must use GTOW Full hand mode")
