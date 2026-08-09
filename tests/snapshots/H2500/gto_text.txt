@@ -74,7 +74,6 @@ Hero K♥️Q🔷 牌型: 兩對 (K, Q)
     K♥️Q♠️: Check 3%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 95%（EV 41.1bb）
     K☘️Q♥️: Check 6%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 92%（EV 40.5bb）
     K🔷Q♥️: Check 9%, Bet 3.3（10% pot） 1%, Bet 8.3（25% pot） 1%, Bet 16.55（50% pot） 90%（EV 40.5bb）
-⚠ EV 損失 0.01bb（Check 40.61bb vs Bet 16.55（50% pot） 40.62bb）
   → 實際行動: CO X（solver code: X）
 
 

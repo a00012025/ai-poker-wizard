@@ -40,7 +40,6 @@ Hero A🔷J♥️ 牌型: 頂對 (A) + 花聽牌
     A🔷J♠️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
     A♠️J☘️: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
     A♠️J🔷: Bet 1.15（20% pot） 5%, Bet 1.9（33% pot） 39%, Bet 3.15（55% pot） 53%, Bet 4.75（83% pot） 3%（EV 4.6bb）
-⚠ EV 損失 0.01bb（Bet 1.15（20% pot） 7.14bb vs Bet 3.15（55% pot） 7.15bb）
   → 實際行動: BTN R1.1 1.1bb（solver code: R1.15）
 
 

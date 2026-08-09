@@ -29,9 +29,8 @@ Hero 2🔷2☘️ 牌型: 口袋對 (22) < 牌面
   BET 4.75（83% pot）: 4.7%（13 combos）
   BET 7.1（125% pot）: 0.5%（1 combos）
 
-【LJ 22】
-  Range 頻率: 0.0%（0.0/6 combos）
-  EV: 0.00bb | Equity: 0.0%
+【LJ 2🔷2☘️（22）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: LJ R1.3 1.3bb（solver code: R1.15）
 
 
@@ -46,9 +45,8 @@ Hero 2🔷2☘️ 牌型: 口袋對 (22) < 牌面
   BET 6.65（83% pot）: 41.4%（52 combos）
   BET 10（125% pot）: 2.9%（4 combos）
 
-【LJ 22】
-  Range 頻率: 0.0%（0.0/6 combos）
-  EV: 0.00bb | Equity: 0.0%
+【LJ 2🔷2☘️（22）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: LJ X（solver code: X）
 
 
@@ -61,9 +59,8 @@ Hero 2🔷2☘️ 牌型: 口袋對 (22) < 牌面
   RAISE 14.5（34% pot）: 4.4%（2 combos）
   All-in 21.750: 8.9%（5 combos）
 
-【LJ 22】
-  Range 頻率: 0.0%（0.0/6 combos）
-  EV: 0.00bb | Equity: 0.0%
+【LJ 2🔷2☘️（22）】
+  Exact combo 在此 solver node 沒有可用的 range／strategy；不可用 hand-class 平均替代。
   → 實際行動: LJ F（solver code: F）
 
 ⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

@@ -34,7 +34,6 @@ Hero A☘️T☘️ 牌型: Ace high + 後門花聽牌
     A♥️T♥️: Check 33%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 35%, Bet 5.3（83% pot） 1%（EV 1.4bb）
     A♠️T♠️: Check 33%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 35%, Bet 5.3（83% pot） 1%（EV 1.4bb）
     A🔷T🔷: Check 40%, Bet 1.3（20% pot） 1%, Bet 2.1（33% pot） 30%, Bet 3.5（55% pot） 28%, Bet 5.3（83% pot） 1%（EV 6.4bb）
-⚠ EV 損失 0.01bb（Bet 2.1（33% pot） 2.02bb vs Bet 5.3（83% pot） 2.03bb）
   → 實際行動: HJ R2.5 2.5bb（solver code: R2.1）
 
 

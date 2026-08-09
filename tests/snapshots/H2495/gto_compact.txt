@@ -2,11 +2,11 @@
 
 ─── Preflop ───
 GTO: Call 90% / RAISE 10.3（131% pot） 10%
-→ Hero raise 131% pot ✅（GTO 多為 call 90%,但 EV 僅差 0.00bb,屬頻率/mix 偏好,非錯誤）
+→ Hero raise 131% pot ✅（GTO 多為 call 90%,屬頻率/mix 偏好,非錯誤）
 
 ─── Flop: 9♥️A☘️T♥️ ───
 🎯 口袋對 (88) < 牌面
 GTO: Check 72% / Bet 2.2（10% pot） 28%
-→ Hero bet 25% pot ✅ (GTO建議 check)
+→ Hero bet 25% pot ❌ EV損失 -0.26bb（1.2% pot） (GTO建議 check)
 GTO: 此手牌 0% 到達此節點
 → Hero fold ⚪（off-tree:此線無 solver 對照,非對錯判定）

@@ -11,15 +11,31 @@ Telegram message / image / HH file
         ↓
 PokerWizardBot
         ↓
-GeminiSessionManager
+GeminiSessionManager（session／parse boundary）
   ├── parse：Gemini Flash + deterministic validation
   ├── grade：analyze_hand.py → GTO Wizard API
   │     ├── gto_api.py
   │     ├── gto_formatter.py
   │     ├── hand_validator.py
   │     └── icm_modes.py
-  └── coach：Gemini Pro + grounded solver/ledger tools
+  └── coach
+        ├── initial：deterministic 教學骨架 → GPT-5.6 Terra → fact audit
+        └── follow-up：coach_runtime evidence plan → bounded solver/ledger tools
+                       → structured GPT-5.6 Terra answer → generic fact audit
 ```
+
+GPT 教練的工具 schema 與證據格式定義在 `coach_evidence.py`；執行迴圈在
+`coach_runtime.py`。`gemini_session.py` 保留解析、每個 chat 的手牌 context、
+credential boundary、具體 tool executor、usage 與歷史紀錄。正常路徑不會在
+GPT 失敗時靜默改用 Gemini 寫教練答案；有 deterministic 教學卡就呈現安全
+fallback，缺 solver 證據則明確說無法驗證。
+
+Follow-up 的 deterministic boundary 另外鎖住四種容易被 LLM 混用的語義：
+exact combo 不可回退成 169 hand-class 平均；zero-reach combo 不得借用整體
+range 的 Fold／Call 比例；對手自己的 action-conditioned bet/raise range 不得與
+「面對 Hero 下注後的 response range」混用；實戰尺寸與 solver 近似 bucket
+不同時必須同時標示。Verifier 失敗會帶具體 repair guidance 重寫，仍失敗才顯示
+不含危險 range totals 的 deterministic fallback。
 
 ### GTOW session 與 Ledger 攝取
 
@@ -57,7 +73,10 @@ practice sessions / totals readback
 
 | 路徑 | 職責 |
 |---|---|
-| `src/gemini_session.py` | parse → solver tools → grounded coaching |
+| `src/gemini_session.py` | Gemini parse、chat state、credential/tool execution boundary |
+| `scripts/coach_evidence.py` | provider-neutral tool schema、編號證據、回答 contract 與 fact audit |
+| `scripts/coach_runtime.py` | GPT-5.6 evidence planning、bounded tool loop、verified history commit |
+| `scripts/coach_facts.py` | 精確 solver node → deterministic range／combo／blocker 教練事實 |
 | `src/telegram_bot/bot.py` | Telegram handlers 與 live/review/queue/plan UI |
 | `src/ingest_runner.py` | ingest request poller、進度、single-flight pipeline |
 | `scripts/analyze_hand.py` | 多街 solver 分析 orchestration |
@@ -142,8 +161,11 @@ incremental/full ingest
 |---|---|
 | `BOT_TOKEN` | Telegram bot token |
 | `GEMINI_API_KEY` | Gemini API key |
-| `GEMINI_MODEL` / `GEMINI_PARSE_MODEL` | coaching 與 hand parse 模型 |
+| `GEMINI_MODEL` / `GEMINI_PARSE_MODEL` | legacy rollback 與 hand parse 模型；正常 coaching 不使用 Gemini |
 | `GEMINI_LIVE_PARSE_MODEL` | `/live` lexical parser 模型 |
+| `OPENAI_API_KEY` | initial 與 follow-up GPT 教練；未設定時誠實降級，不切換 narrator |
+| `COACH_PROVIDER` / `OPENAI_COACH_MODEL` | 教練 provider 與模型（正常路徑為 OpenAI / `gpt-5.6-terra`）；`COACH_NARRATOR_PROVIDER` 只保留相容性 |
+| `OPENAI_COACH_MAX_TOOL_CALLS` / `OPENAI_COACH_MAX_EVIDENCE_ROUNDS` | 每輪 follow-up 的 tool-call 與依賴查詢上限 |
 | `SUPABASE_CONN` | PostgreSQL transaction-pooler DSN |
 | `SUPABASE_ACCESS_TOKEN` | Supabase CLI deploy token |
 | `SUPABASE_PROJECT_REF` | Supabase project ref |
