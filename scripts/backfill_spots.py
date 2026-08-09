@@ -6,7 +6,8 @@ spot_taxonomy.walk_spots, and UPDATEs each ledger_decisions row matched by
 (gtow_hand_id, street, decision_idx).
 
 Default = INCREMENTAL/UPGRADE: hands whose decisions lack the current leaf,
-parent-family or decision-depth contract (the daily/deploy job's case).
+parent-family, decision-depth, or node-level solution-honesty contract (the
+daily/deploy job's case).
 `--full` re-reads the whole archive after taxonomy semantics evolve. Raw stays
 untouched either way.
 """
@@ -35,13 +36,31 @@ INCREMENTAL_MISSING_SQL = """
 SELECT DISTINCT gtow_hand_id FROM ledger_decisions
 WHERE source='online' AND (
   spot_leaf IS NULL OR spot_parent IS NULL OR played_depth_bb IS NULL
+  OR (
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(approx_flags) AS flag
+      WHERE flag LIKE 'solution:%' OR flag LIKE 'warning:%'
+    )
+    AND NOT approx_flags ? 'node:solved_partial_hand'
+    AND NOT approx_flags ? 'node:no_solution'
+  )
 )
 """
 
 READINESS_GAP_SQL = """
 SELECT count(*) FROM ledger_decisions
-WHERE source='online' AND NOT excluded AND NOT discarded
-  AND (spot_leaf IS NULL OR spot_parent IS NULL OR played_depth_bb IS NULL)
+WHERE source='online' AND (
+  (NOT excluded AND NOT discarded
+   AND (spot_leaf IS NULL OR spot_parent IS NULL OR played_depth_bb IS NULL))
+  OR (
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(approx_flags) AS flag
+      WHERE flag LIKE 'solution:%' OR flag LIKE 'warning:%'
+    )
+    AND NOT approx_flags ? 'node:solved_partial_hand'
+    AND NOT approx_flags ? 'node:no_solution'
+  )
+)
 """
 
 UPDATE_SQL = """
@@ -50,7 +69,8 @@ UPDATE ledger_decisions SET
   hero_cat=$8, villain_cat=$9, ip_oop=$10, flop_seq=$11, turn_seq=$12,
   eff_stack=$13, depth_band=$14, played_depth_bb=$15, solver_depth_bb=$16,
   board_suit=$17, board_conn=$18, board_paired=$19,
-  discarded=$20, limp_origin=$21, confidence=$22, approx_flags=$23
+  discarded=$20, limp_origin=$21, confidence=$22, approx_flags=$23,
+  excluded=$24
 WHERE gtow_hand_id=$1 AND street=$2 AND decision_idx=$3
 """
 
@@ -67,6 +87,7 @@ def _row(s: dict, decision: dict):
         t.get("board_suit"), t.get("board_conn"), t.get("board_paired"),
         bool(s.get("discarded")), bool(s.get("limp_origin")),
         decision.get("confidence", 0.0), json.dumps(decision.get("approx_flags") or []),
+        bool(decision.get("excluded")),
     )
 
 

@@ -7,7 +7,7 @@ North Star §7 不變量 11（回饋延遲預算：session 復盤「能過夜不
 
   • 共幾手、平均 EV loss（單場、**不作趨勢判斷**）
   • EV loss 加總最多的 spot（→ 現在練 / 排入佇列）
-  • EV loss 最高的 8 個具體決策（→ 手牌 / Study 復盤 / 教練 / 排入佇列）
+  • EV loss 最高的 10 個具體決策（→ 手牌 / Study 復盤 / 教練 / 排入佇列）
 
 不變量：**只讀不改本週焦點 spot**（中圈穩定性 §3）。排入動作走既有 `drill_queue`
 （`kind='drill'`/`'review'`，`added_by='session'`），與週掃描產生同構的 rows。口徑沿用
@@ -34,7 +34,7 @@ from scorecard import spot_desc_zh  # noqa: E402
 from card_display import cards_to_emoji  # noqa: E402
 
 TOP_SPOTS = 2
-TOP_DECISIONS = 8
+TOP_DECISIONS = 10
 
 # ── session-scoped SQL ─────────────────────────────────────────────────────────
 # Membership by session_id (authoritative), honesty by queue_feed._HONEST on the

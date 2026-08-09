@@ -426,7 +426,8 @@ def test_distill_honesty_rules():
 
     det["game_analysis"]["warning_status"] = "SOMETHING_ODD"
     _, decs = distill_hand(lr, det)
-    assert_true(all(d["excluded"] for d in decs))
+    assert_true(not any(d["excluded"] for d in decs),
+                "a solved hero node survives a hand-level warning")
     assert_true(all(any(f.startswith("warning:") for f in d["approx_flags"]) for d in decs))
 
     det = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
@@ -437,7 +438,49 @@ def test_distill_honesty_rules():
 
     lr2 = copy.deepcopy(lr); lr2["solution_status"] = "NO_SOLUTION"
     _, decs = distill_hand(lr2, _load_fix("detail_eef0b07b.json"))
-    assert_true(all(d["excluded"] for d in decs))
+    assert_true(not any(d["excluded"] for d in decs),
+                "a solved hero node survives a hand-level no-solution status")
+    assert_true(all("solution:NO_SOLUTION" in d["approx_flags"] for d in decs))
+
+
+@test
+def test_distill_excludes_only_the_unsolved_hero_node_in_a_partial_hand():
+    """Hand-level NO_GTO_SOLUTION is compatible with partial, usable nodes.
+
+    Session statistics must keep hero nodes explicitly marked solved while
+    still failing closed for a target hero node whose own ``has_solution`` is
+    false.  This guards the BB 77 squeeze-jam regression from 2026-08-08.
+    """
+    import copy
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = copy.deepcopy(rows["eef0b07b-23b6-4fe0-bcc6-41d83629583c"])
+    detail = copy.deepcopy(_load_fix("detail_eef0b07b.json"))
+    lr["solution_status"] = "NO_GTO_SOLUTION"
+    detail["game_analysis"]["warning_status"] = "NO_GTO_SOLUTION"
+
+    _, solved = distill_hand(lr, detail)
+    assert_true(solved and not any(d["excluded"] for d in solved))
+    assert_true(all(d["confidence"] > 0 for d in solved),
+                "hand-level status alone must not zero node confidence")
+    assert_true(all("solution:NO_GTO_SOLUTION" in d["approx_flags"] for d in solved))
+    assert_true(all("warning:NO_GTO_SOLUTION" in d["approx_flags"] for d in solved))
+    assert_true(all("node:solved_partial_hand" in d["approx_flags"] for d in solved))
+
+    first_hero = next(
+        gp for gp in detail["game_analysis"]["game_points"]
+        if (gp.get("real_game_action") or {}).get("position") == lr["player_position"]
+        and any(a.get("selected") for a in
+                (gp.get("analysis_solved") or {}).get("available_actions", []))
+    )
+    first_hero["has_solution"] = False
+    _, partial = distill_hand(lr, detail)
+    assert_true(partial[0]["excluded"], "the unsolved target node must remain excluded")
+    assert_eq(partial[0]["confidence"], 0.0)
+    assert_in("node:no_solution", partial[0]["approx_flags"])
+    assert_not_in("node:solved_partial_hand", partial[0]["approx_flags"])
+    assert_true(not any(d["excluded"] for d in partial[1:]),
+                "an unsolved node must not poison later solved hero nodes")
 
 
 @test

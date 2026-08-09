@@ -70,7 +70,7 @@ def _sample(empty: bool = False) -> dict:
              "ev_loss": 1.0 + i / 10, "ref_hand_id": f"online-hand-{i}",
              "exact_url": f"https://app.gtowizard.com/{i}", "study_url": None,
              "drill_url": None, "enqueue_item": {}}
-            for i in range(4, 9)
+            for i in range(4, 11)
         ],
         "honesty": {"discarded_n": 6, "low_conf_n": 3},
         "empty": empty,
@@ -243,6 +243,8 @@ def test_session_review_compacts_preflop_history():
 
 @test
 def test_session_review_full_message():
+    assert_eq(sr.TOP_DECISIONS, 10)
+    assert_in("LIMIT 10", sr._TOP_DECISIONS_SQL)
     out = sr.render_tg(_sample())
     html = out["html"]
     # header + span + core numbers
@@ -255,7 +257,8 @@ def test_session_review_full_message():
     assert_in("EV Loss 最多的情境", html)
     assert_in("turn OOP 面對下注", html)
     assert_in("6.1 bb", html)
-    assert_in("最值得回看的 8 個決策", html)
+    assert_in("最值得回看的 10 個決策", html)
+    assert_in("🔟 A10♠ BTN 有效 20bb｜vsOpen", html)
     assert_in("Q☘️J☘️", html)
     assert_in("HJ 有效 30bb", html)
     assert_in("MP flat 後面對 squeeze", html)
@@ -298,7 +301,7 @@ def test_session_review_deliberate_enqueue_only():
     assert_true(not any("🎯 練" in t for t in labels),
                 "decision drill buttons make Telegram reply_markup too large")
     hand_btns = [b for b in _all_buttons(out["buttons"]) if "手牌" in b["text"]]
-    assert_true(hand_btns and all("/analyze/" in b["url"] or b["url"].endswith(("/a", "/b", "/4", "/5", "/6", "/7", "/8"))
+    assert_true(hand_btns and all("/analyze/" in b["url"] or b["url"].endswith(("/a", "/b", "/4", "/5", "/6", "/7", "/8", "/9", "/10"))
                                   for b in hand_btns),
                 "hand buttons must retain exact Analyzer hand links")
     review_btns = [b for b in _all_buttons(out["buttons"]) if "復盤" in b["text"]]
