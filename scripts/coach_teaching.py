@@ -1236,6 +1236,114 @@ def _category_sentence(decision: dict) -> str | None:
     return "；".join(parts)
 
 
+def build_decision_evidence(context: dict, spot: dict,
+                            solution: dict) -> dict | None:
+    """Build the full causal card for one exact cached Hero decision.
+
+    Unlike ``build_teaching_digest``, this does not rank or discard decisions.
+    Follow-up tools already resolved a precise node and need that node's range
+    structure, removal metrics, and causal gates.
+    """
+    hero_hand = _raw_hero_hand(context)
+    if not hero_hand or not solution:
+        return None
+    return _decision(context, spot, solution, hero_hand)
+
+
+def render_decision_evidence(decision: dict | None) -> list[str]:
+    """Render compact machine-grounded causal facts for a follow-up LLM."""
+    if not decision:
+        return []
+    lines = []
+    role = decision.get("hero_role") or {}
+    lines.append(
+        "  Hero range 角色："
+        f"{role.get('range_band', '未知區段')}的"
+        f"{role.get('made_hand_label', '未知牌型')}，"
+        f"{role.get('draw_label', '聽牌狀態未知')}"
+    )
+    drivers = decision.get("drivers") or {}
+    if drivers.get("primary"):
+        suffix = f"；次要機制：{drivers['secondary']}" if drivers.get("secondary") else ""
+        lines.append(f"  因果優先序：{drivers['primary']}{suffix}")
+
+    range_equity = decision.get("range_equity") or {}
+    if range_equity.get("use") != "omit":
+        hero_eq = range_equity.get("hero_equity")
+        villain_eq = range_equity.get("villain_equity")
+        numbers = ""
+        if hero_eq is not None and villain_eq is not None:
+            numbers = (
+                f"（{range_equity.get('hero')} {_pct(hero_eq)}% vs "
+                f"{range_equity.get('villain')} {_pct(villain_eq)}%）"
+            )
+        lines.append(
+            f"  Range equity gate={range_equity.get('use')}{numbers}："
+            f"{range_equity.get('interpretation')}"
+        )
+
+    structure = decision.get("range_structure") or {}
+    ownership = []
+    for key in ("nut_region", "strong_region"):
+        row = structure.get(key) or {}
+        if row.get("owner"):
+            ownership.append(
+                f"{row['owner']} 的{row.get('label')}較多"
+                f"（Hero {_pct(row.get('hero_share', 0.0))}% / "
+                f"Villain {_pct(row.get('villain_share', 0.0))}%）"
+            )
+    if ownership:
+        lines.append(
+            "  Range 強端 proxy：" + "；".join(ownership)
+            + "；90–100% 區域不是 literal nuts"
+        )
+
+    category_story = _category_sentence(decision)
+    if category_story:
+        lines.append(f"  可辨認強牌類別：{category_story}")
+    if decision.get("defense_price"):
+        lines.append(f"  Pot-odds gate：{decision['defense_price']['interpretation']}")
+    if decision.get("equity_denial"):
+        lines.append(f"  Equity denial：{decision['equity_denial']['interpretation']}")
+    if decision.get("size_choice"):
+        lines.append(f"  Exact-class sizing：{decision['size_choice']['interpretation']}")
+    if decision.get("size_structure"):
+        size = decision["size_structure"]
+        labels = "、".join(
+            row["label"] for row in size.get("large_size_main_categories", [])[:2]
+        )
+        category_note = f"；較大 size 主要是 {labels}" if labels else ""
+        lines.append(
+            f"  Size construction：{size['larger_size']} 比 {size['smaller_size']} 更 polar；"
+            f"{size['interpretation']}{category_note}"
+        )
+
+    blocker = decision.get("blocker")
+    if blocker:
+        lines.append(
+            "  GTOW removal metrics："
+            f"value removal {blocker['value_removal']:.2f}；"
+            f"trash removal {blocker['trash_removal']:.2f}；"
+            f"方向 {blocker['direction']}；{blocker['interpretation']}；"
+            f"同 hand class 花色敏感度 {blocker['same_class_suit_sensitivity']}"
+        )
+    card_effects = decision.get("opponent_card_effects")
+    if card_effects:
+        rendered = "、".join(
+            f"Villain 持 {row['card']} 時 Hero 該 action "
+            f"{'增加' if row['direction'] == 'increase' else '減少'} "
+            f"{abs(row['delta_pp']):.1f}pp"
+            for row in card_effects.get("largest_effects", [])[:2]
+        )
+        if rendered:
+            lines.append(
+                f"  Opponent-card conditional delta：{rendered}；"
+                "這不是 Hero 手牌 blocker"
+            )
+    lines.append(f"  適用邊界：{decision.get('scope')}")
+    return lines
+
+
 def render_prompt_block(digest: dict | None) -> str:
     """Render the digest as a compact contract for the coaching LLM."""
     if not digest:

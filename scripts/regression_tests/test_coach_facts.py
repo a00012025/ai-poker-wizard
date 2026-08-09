@@ -178,6 +178,9 @@ def test_initial_coaching_does_not_block_heuristic_combo_examples():
     from gemini_session import GeminiSessionManager as GSM
 
     manager = object.__new__(GSM)
+    # This unit test stubs the legacy narrator directly. Production defaults
+    # to OpenAI and must never silently fall back to this path.
+    manager.coach_narrator_provider = "gemini"
     draft = "Flop 上 JJ 很難讓比你好的牌（Kx、TT）棄牌，所以 check back 較好。"
 
     async def fake_chat_with_tools(self, chat_id, user_text, **kwargs):
@@ -280,6 +283,22 @@ def test_coach_facts_hero_specific_combo():
     assert_eq(cf._hero_hand(hc2), "AKs", "fall back to class when no combo")
     hc3 = {"hero_hand": "QQ"}
     assert_eq(cf._hero_hand(hc3), "QQ", "no raw hand -> ctx value")
+
+
+@test
+def test_coach_facts_why_action_labels_exact_combo_not_only_its_class():
+    """Suit-specific strategy evidence names the combo and its 169 class."""
+    import coach_facts as cf
+
+    _, hctx, _, _ = _load_coach_ctx()
+    raw_combo = (hctx.get("hand") or {}).get("hero_hand")
+    facts = cf.fetch_why_action(cf.Ctx(
+        question="為什麼這手要這樣打？", hand_context=hctx,
+    ))
+    assert_true(facts is not None)
+    if raw_combo and cf._RE_COMBO.fullmatch(raw_combo):
+        assert_in("（", facts.render(), "exact combo should also identify its class")
+        assert_not_in(f"  {cf.gf.normalize_hand_name(raw_combo)}：", facts.render())
 
 
 @test
@@ -1027,6 +1046,9 @@ def test_session_queues_grounded_range_chart():
                     "queued a real PNG")
         assert_in("📊", caption, "chart caption present")
         assert_in(actor, caption, "caption names the charted position")
+        mgr._try_coach_facts(5, "同一個 node 再查一次")
+        assert_eq(len(mgr.pending_images.get(5) or []), 1,
+                  "same actor/street/board chart is queued only once per reply")
     finally:
         cf.answer_followup_ex = orig
 
@@ -1276,3 +1298,89 @@ def test_image_parse_prompt_purple_does_not_auto_ft():
               "prompt still uses the possible_ft ask path")
     assert_not_in('設置 tournament_type: "icm", phase: "FT"', IMAGE_PARSE_PROMPT,
                   "prompt no longer auto-sets ICM/FT from purple felt")
+
+
+@test
+def test_coach_facts_exact_combo_strategy_beats_169_class_average():
+    """Suit-sensitive exact combo frequencies must not inherit the class average."""
+    import coach_facts as cf
+    import gto_formatter as gf
+
+    idx = gf.combo_index_for_hand("Ks3s")
+    call = [0.0] * 1326
+    raise_ = [0.0] * 1326
+    rng = [0.0] * 1326
+    eq = [0.0] * 1326
+    percentile = [-1.0] * 1326
+    call[idx], raise_[idx], rng[idx], eq[idx], percentile[idx] = 0.79, 0.21, 1.0, 0.45, 0.55
+    sol = {
+        "game": {"active_position": "BB"},
+        "players_info": [{
+            "player": {"position": "BB"}, "range": rng,
+            "hand_eqs": eq, "eq_percentile": percentile,
+            "simple_hand_counters": {"K3s": {
+                "actions_total_frequencies": {"C": 0.93, "R4.3": 0.07},
+                "hand_eq": 0.45,
+            }},
+        }],
+        "action_solutions": [
+            {"action": {"code": "C"}, "strategy": call},
+            {"action": {"code": "R4.3"}, "strategy": raise_},
+        ],
+    }
+    facts = cf._hero_combo_facts(sol, "BB", "Ks3s")
+    assert_eq(round(facts["actions"]["C"], 2), 0.79)
+    assert_eq(round(facts["actions"]["R4.3"], 2), 0.21)
+
+
+@test
+def test_coach_facts_same_street_selects_actual_later_allin_decision():
+    """A flop back-jam question must not read Hero's earlier cbet node."""
+    import coach_facts as cf
+
+    context = {
+        "hero_spots": [
+            {"street": "flop", "taken_code": "R1"},
+            {"street": "flop", "taken_code": "RAI"},
+        ],
+        "solutions": [{"node": "first"}, {"node": "second"}],
+    }
+    _, selected = cf._hero_spot_and_sol(cf.Ctx(
+        question="為什麼 flop 用 all-in？", hand_context=context,
+    ), "flop", prefer="first")
+    assert_eq(selected["node"], "second")
+    _, explicit = cf._hero_spot_and_sol(cf.Ctx(
+        question="flop strategy", hand_context=context, decision_index=1,
+    ), "flop")
+    assert_eq(explicit["node"], "first")
+    invalid_spot, invalid_sol = cf._hero_spot_and_sol(cf.Ctx(
+        question="flop strategy", hand_context=context, decision_index=3,
+    ), "flop")
+    assert_true(invalid_spot is None and invalid_sol is None,
+                "invalid explicit node identity must not fall back to another decision")
+
+
+@test
+def test_coach_facts_facing_bet_labels_raise_not_bet():
+    """R6.8 at a fold/call/raise node is 'raise to', never an opening bet."""
+    import coach_facts as cf
+
+    rendered = cf._fmt_actions(
+        {"R6.8": 0.54, "F": 0.42, "C": 0.02}, facing_bet=True,
+    )
+    assert_in("加注至6.8 54%", rendered)
+    assert_not_in("下注6.8", rendered)
+
+
+@test
+def test_query_gto_cached_decision_index_selects_nth_same_street_node():
+    """query_gto cache lookup exposes strict same-street decision identity."""
+    from gemini_session import GeminiSessionManager
+
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    context = {
+        "hero_spots": [{"street": "flop"}, {"street": "flop"}],
+        "solutions": [{"node": 1}, {"node": 2}],
+    }
+    assert_eq(manager._find_cached_solution(context, "flop", 2)["node"], 2)
+    assert_eq(manager._find_cached_spot(context, "flop", 2), {"street": "flop"})

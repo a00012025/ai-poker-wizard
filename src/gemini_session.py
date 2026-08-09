@@ -1,8 +1,8 @@
 # src/gemini_session.py
-"""Gemini-based session manager — direct API calls, no CLI subprocess.
+"""Poker session orchestration with Gemini parsing and GPT coaching.
 
-Flow: user message → parse hand (Flash) → analyze_hand_full() → coaching (Pro)
-Follow-ups: user message → parse (null) → Pro chat WITH query_gto tool → real data
+Flow: user message → Gemini parse → deterministic GTO analysis → GPT-5.6 coach
+Follow-ups: evidence plan → bounded tool calls → verified GPT-5.6 explanation
 """
 import asyncio
 import contextvars
@@ -63,6 +63,8 @@ from coach_teaching import (
     render_fallback as render_teaching_fallback,
     render_prompt_block as render_teaching_prompt_block,
 )
+from coach_evidence import COACH_FACTS_TOOL, tool_spec_from_declaration
+from coach_runtime import run_evidence_chat
 
 QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
     name="query_next_actions",
@@ -153,6 +155,13 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
                 type=types.Type.STRING,
                 enum=["preflop", "flop", "turn", "river"],
                 description="要查詢哪條街的策略",
+            ),
+            "decision_index": types.Schema(
+                type=types.Type.INTEGER,
+                description=(
+                    "同一條街 Hero 的第幾次決策（1-based）。例如 Hero check-raise 後再面對 "
+                    "3bet，後一個決策是 2。查 played line 時優先用此欄位避免抓到第一個 node。"
+                ),
             ),
             "position": types.Schema(
                 type=types.Type.STRING,
@@ -371,6 +380,25 @@ QUERY_LEDGER_HANDS_DECLARATION = types.FunctionDeclaration(
 )
 
 
+def _coach_tool_specs(db_enabled: bool) -> list:
+    """One provider-neutral registry for every coaching evidence tool."""
+    specs = [
+        COACH_FACTS_TOOL,
+        tool_spec_from_declaration(QUERY_NEXT_ACTIONS_DECLARATION),
+        tool_spec_from_declaration(QUERY_GTO_DECLARATION),
+        tool_spec_from_declaration(EVALUATE_HAND_DECLARATION),
+    ]
+    if db_enabled:
+        specs.extend([
+            tool_spec_from_declaration(LOOKUP_HAND_DECLARATION, requires_db=True),
+            tool_spec_from_declaration(GET_TRAINING_PLAN_DECLARATION, requires_db=True),
+            tool_spec_from_declaration(GET_PROGRESS_DECLARATION, requires_db=True),
+            tool_spec_from_declaration(QUERY_LEDGER_SUMMARY_DECLARATION, requires_db=True),
+            tool_spec_from_declaration(QUERY_LEDGER_HANDS_DECLARATION, requires_db=True),
+        ])
+    return specs
+
+
 class GeminiSessionManager:
     def __init__(self, db=None):
         api_key = os.getenv("GEMINI_API_KEY")
@@ -382,9 +410,13 @@ class GeminiSessionManager:
         self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
         self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest")
         openai_key = os.getenv("OPENAI_API_KEY")
-        default_narrator = "openai" if openai_key else "gemini"
+        # Missing OpenAI configuration must fail loudly/honestly; it must not
+        # silently select a different coaching model. Gemini coaching remains
+        # available only through an explicit rollback override.
+        default_narrator = "openai"
         self.coach_narrator_provider = os.getenv(
-            "COACH_NARRATOR_PROVIDER", default_narrator,
+            "COACH_PROVIDER",
+            os.getenv("COACH_NARRATOR_PROVIDER", default_narrator),
         ).strip().lower()
         self.coach_narrator_model = os.getenv(
             "OPENAI_COACH_MODEL", "gpt-5.6-terra",
@@ -395,11 +427,20 @@ class GeminiSessionManager:
         self.coach_narrator_max_output_tokens = int(os.getenv(
             "OPENAI_COACH_MAX_OUTPUT_TOKENS", "900",
         ))
+        self.coach_max_tool_calls = int(os.getenv(
+            "OPENAI_COACH_MAX_TOOL_CALLS", "4",
+        ))
+        self.coach_max_evidence_rounds = int(os.getenv(
+            "OPENAI_COACH_MAX_EVIDENCE_ROUNDS", "2",
+        ))
         self._openai_narrator_client = None
         if self.coach_narrator_provider == "openai" and openai_key:
             from openai import AsyncOpenAI
 
             self._openai_narrator_client = AsyncOpenAI(api_key=openai_key)
+        # Compatibility name while the parsing/session god-file is split.
+        # New coaching code should use this provider-neutral alias.
+        self._openai_coach_client = self._openai_narrator_client
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
@@ -623,10 +664,16 @@ class GeminiSessionManager:
             title = f"{position} {st}".strip()
             if board:
                 title += f" | {board}"
+            caption = f"📊 {title}"
+            if any(
+                existing_caption == caption
+                for _, existing_caption in self.pending_images.get(chat_id, [])
+            ):
+                return
             img = generate_range_grid(sol, position, title=title)
             if chat_id not in self.pending_images:
                 self.pending_images[chat_id] = []
-            self.pending_images[chat_id].append((img, f"📊 {title}"))
+            self.pending_images[chat_id].append((img, caption))
             self._logger.info(
                 f"[chat={chat_id}] queued grounded range chart ({title})")
         except Exception as e:
@@ -1453,7 +1500,7 @@ class GeminiSessionManager:
                 return result
 
         except asyncio.TimeoutError:
-            self._logger.error(f"[chat={chat_id}] Gemini API timeout")
+            self._logger.error(f"[chat={chat_id}] Model API timeout")
             await self._save_usage(chat_id, "error", self.model, usage_acc,
                                    int((time.time() - t0) * 1000))
             raise RuntimeError("Gemini API 回應超時，請稍後再試。")
@@ -2550,7 +2597,7 @@ class GeminiSessionManager:
                                  **kwargs) -> str:
         """Bound a complete follow-up, including every tool-call round.
 
-        Individual Gemini calls already time out, but a multi-round tool loop
+        Individual model calls already time out, but a multi-round tool loop
         could otherwise hold a bot handler for many minutes.  Cancellation
         propagates into the active async request so the Telegram error path can
         remove the stale status message and accept the next update.
@@ -2565,8 +2612,52 @@ class GeminiSessionManager:
                      user_id: int | None = None,
                      refresh_token: str | None = None,
                      usage_acc: dict | None = None) -> str:
-        """Chat with GTO tool access — always provides tools so model can query solver."""
-        self._logger.debug(f"[chat={chat_id}] Chat with tools (model={self.model}): {user_text[:300]}")
+        """Run a follow-up through the configured evidence-first coach."""
+        coach_client = getattr(
+            self, "_openai_coach_client",
+            getattr(self, "_openai_narrator_client", None),
+        )
+        if getattr(self, "coach_narrator_provider", "openai") == "openai":
+            if coach_client is not None:
+                self._logger.debug(
+                    "[chat=%s] Evidence-first follow-up (model=%s): %s",
+                    chat_id, self.coach_narrator_model, user_text[:300],
+                )
+                try:
+                    return await self._chat_with_openai_evidence(
+                        chat_id, user_text, on_status=on_status,
+                        user_id=user_id, refresh_token=refresh_token,
+                        usage_acc=usage_acc,
+                    )
+                except Exception as exc:
+                    self._logger.error(
+                        "[chat=%s] OpenAI evidence coach failed without unsafe "
+                        "model fallback: %s", chat_id, exc, exc_info=True,
+                    )
+                    return (
+                        "目前教練模型暫時無法完成查詢；我不會在沒有驗證資料時猜測 "
+                        "range、頻率或 EV，請稍後再試。"
+                    )
+            self._logger.error(
+                "[chat=%s] COACH_PROVIDER=openai but OpenAI client is unavailable",
+                chat_id,
+            )
+            return (
+                "目前未設定 GPT 教練模型；我不會改用另一個模型猜測 "
+                "range、頻率或 EV。"
+            )
+
+        if getattr(self, "coach_narrator_provider", "") != "gemini":
+            self._logger.error(
+                "[chat=%s] Unknown COACH_PROVIDER=%s",
+                chat_id, self.coach_narrator_provider,
+            )
+            return "教練模型設定無效；在設定修正前我不會猜測策略。"
+
+        self._logger.debug(
+            f"[chat={chat_id}] Legacy Gemini tool chat (model={self.model}): "
+            f"{user_text[:300]}"
+        )
         for attempt in range(3):
             try:
                 return await self._chat_with_tools(
@@ -2580,42 +2671,232 @@ class GeminiSessionManager:
                     f"[chat={chat_id}] Follow-up retry {attempt+1}/3: {e}")
                 await asyncio.sleep(2 * (attempt + 1))
 
-    async def _call_openai_narrator(self, prompt: str, system: str,
-                                    usage_acc: dict | None = None) -> str:
-        """Call the low-cost OpenAI narrator on an already grounded card."""
-        client = getattr(self, "_openai_narrator_client", None)
+    @staticmethod
+    def _content_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        parts = getattr(content, "parts", None) or []
+        return "\n".join(part.text for part in parts if getattr(part, "text", None))
+
+    def _append_accepted_history(self, chat_id: int, user_text: str, answer: str) -> None:
+        """Persist only verified user-visible turns, never drafts/tool chatter."""
+        if not hasattr(self, "histories"):
+            self.histories = {}
+        history = list(self.histories.get(chat_id, []))
+        history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
+        history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
+        self.histories[chat_id] = history[-20:]
+
+    def _history_for_evidence(self, chat_id: int) -> str:
+        rows = []
+        for content in self.histories.get(chat_id, [])[-10:]:
+            role = getattr(content, "role", "context")
+            value = self._content_text(content).strip()
+            if value:
+                rows.append(f"{role}: {value[:1800]}")
+        return "\n".join(rows) or "（沒有先前對話）"
+
+    def _build_compact_evidence_context(self, chat_id: int) -> str:
+        """Strict node identity without the old giant range/system prompt."""
+        ctx = self.hand_contexts.get(chat_id)
+        if not ctx:
+            return "目前沒有已分析手牌。"
+        hand = ctx.get("hand") or {}
+        hero = ctx.get("hero_position") or hand.get("hero_position") or "?"
+        raw_combo = hand.get("hero_hand") or ""
+        combo = (
+            raw_combo
+            if re.fullmatch(r"[2-9TJQKA][cdhs][2-9TJQKA][cdhs]", raw_combo, re.I)
+            else (ctx.get("hero_hand") or raw_combo)
+        )
+        depth_raw = ctx.get("depth")
+        if depth_raw is not None:
+            try:
+                depth = f"{float(depth_raw) - 0.125:g}bb"
+            except (TypeError, ValueError):
+                depth = str(depth_raw)
+        else:
+            depth = f"{hand.get('effective_bb', '?')}bb"
+        rows = [
+            f"hand_id={self.last_hand_ids.get(chat_id, 'unknown')}",
+            f"gametype={ctx.get('gametype') or hand.get('gametype') or 'MTTGeneral'}",
+            f"depth={depth}",
+            f"hero={hero}{(' ' + combo) if combo and not ctx.get('no_hero_hand') else ''}",
+            f"preflop={ctx.get('preflop_actions') or hand.get('preflop_actions') or ''}",
+        ]
+        states = ctx.get("street_states") or {}
+        final = ctx.get("final_actions") or {}
+        for street in ("flop", "turn", "river"):
+            state = states.get(street)
+            if not state:
+                continue
+            rows.append(
+                f"{street}: board={state.get('board', '')}; "
+                f"actions={final.get(f'{street}_actions', '')}"
+            )
+        street_counts: dict[str, int] = {}
+        for spot, solution in zip(
+                ctx.get("hero_spots") or [], ctx.get("solutions") or []):
+            if not solution:
+                continue
+            street = spot.get("street") or "unknown"
+            street_counts[street] = street_counts.get(street, 0) + 1
+            params = spot.get("params") or {}
+            node_actions = params.get(f"{street}_actions", "")
+            rows.append(
+                f"decision {street}#{street_counts[street]}: "
+                f"taken={spot.get('taken_code') or '?'}; "
+                f"description={spot.get('action_desc') or ''}; "
+                f"actions_before={node_actions}"
+            )
+        rows.append(
+            "node contract: 上述 depth/board/action line 必須完整一致；不同節點的 range 不可混用。"
+        )
+        return "\n".join(rows)
+
+    def _accumulate_openai_usage(self, usage_acc: dict | None, response: Any) -> None:
+        usage = getattr(response, "usage", None)
+        if usage_acc is None or usage is None:
+            return
+        details = getattr(usage, "output_tokens_details", None)
+        self._accumulate_usage(usage_acc, {
+            "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+            "thinking_tokens": getattr(details, "reasoning_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        })
+
+    async def _openai_response(self, *, usage_acc: dict | None = None, **kwargs):
+        client = getattr(
+            self, "_openai_coach_client",
+            getattr(self, "_openai_narrator_client", None),
+        )
         if client is None:
-            raise RuntimeError("OpenAI narrator is not configured")
+            raise RuntimeError("OpenAI coach is not configured")
         last_error = None
         for attempt in range(3):
             try:
                 response = await asyncio.wait_for(
-                    client.responses.create(
-                        model=self.coach_narrator_model,
-                        instructions=system,
-                        input=prompt,
-                        reasoning={"effort": self.coach_narrator_reasoning},
-                        text={"verbosity": "low"},
-                        max_output_tokens=self.coach_narrator_max_output_tokens,
-                    ),
-                    timeout=120,
+                    client.responses.create(**kwargs), timeout=120,
                 )
-                usage = getattr(response, "usage", None)
-                details = getattr(usage, "output_tokens_details", None)
-                if usage_acc is not None and usage is not None:
-                    self._accumulate_usage(usage_acc, {
-                        "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
-                        "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
-                        "thinking_tokens": getattr(details, "reasoning_tokens", 0) or 0,
-                        "total_tokens": getattr(usage, "total_tokens", 0) or 0,
-                    })
-                return response.output_text or ""
+                self._accumulate_openai_usage(usage_acc, response)
+                return response
             except Exception as exc:
                 last_error = exc
                 if attempt == 2:
                     break
                 await asyncio.sleep(2 * (attempt + 1))
-        raise last_error or RuntimeError("OpenAI narrator failed")
+        raise last_error or RuntimeError("OpenAI response failed")
+
+    def _execute_query_coach_facts(self, chat_id: int, user_text: str,
+                                   args: dict) -> str:
+        ctx = self.hand_contexts.get(chat_id)
+        if not ctx:
+            return "此對話沒有已分析手牌，無法定位 solver node。"
+        import coach_facts
+
+        facts = coach_facts.fetch_followup_facts(
+            coach_facts.Ctx(
+                question=user_text,
+                hand_context=ctx,
+                decision_index=args.get("decision_index"),
+            ),
+            str(args.get("intent") or ""),
+            street=args.get("street"),
+        )
+        if not facts:
+            return "這個問題在目前 action line 找不到可驗證的 solver 事實。"
+        self._queue_grounded_range_chart(chat_id, facts)
+        node_street = (facts.meta or {}).get("node_street")
+        if node_street:
+            ctx["_followup_node_street"] = node_street
+        return facts.render()
+
+    async def _execute_coach_tool(self, chat_id: int, user_text: str,
+                                  name: str, args: dict, *, on_status=None,
+                                  user_id: int | None = None,
+                                  refresh_token: str | None = None) -> str:
+        """Central execution boundary shared by every GPT coaching tool."""
+        async def _status(message: str):
+            if on_status:
+                result = on_status(message)
+                if asyncio.iscoroutine(result):
+                    await result
+
+        if name == "lookup_hand":
+            await _status("查詢手牌歷史...")
+            return await self._execute_lookup_hand(chat_id, args)
+        if name == "evaluate_hand":
+            await _status("判斷牌型...")
+            return await asyncio.to_thread(self._execute_evaluate_hand, chat_id, args)
+        if name in ("get_training_plan", "get_progress"):
+            await _status("查詢訓練數據...")
+            return await self._execute_leak_tool(chat_id, name, args, user_id)
+        if name in ("query_ledger_summary", "query_ledger_hands"):
+            await _status("查詢帳本...")
+            return await self._execute_ledger_tool(name, args)
+
+        street = args.get("street", "")
+        position = args.get("position", "")
+        desc = f"查詢 {position} {street}".strip() or "查詢 solver"
+        await _status(desc + "...")
+
+        def _run_solver_tool():
+            self._setup_user_token(user_id, refresh_token)
+            try:
+                if name == "query_coach_facts":
+                    return self._execute_query_coach_facts(chat_id, user_text, args)
+                if name == "query_next_actions":
+                    return self._execute_query_next_actions(chat_id, args)
+                if name == "query_gto":
+                    return self._execute_query_gto(chat_id, args)
+                return f"未知工具：{name}"
+            finally:
+                self._clear_user_token()
+
+        return await asyncio.to_thread(_run_solver_tool)
+
+    @staticmethod
+    def _tool_status(result: str) -> str:
+        lowered = (result or "").lower()
+        missing_markers = (
+            "找不到", "沒有 solver", "沒有已分析", "無法定位", "無法查詢",
+            "查詢失敗", "error", "no solution", "沒有可用資料",
+        )
+        return "missing" if any(marker in lowered for marker in missing_markers) else "ok"
+
+    async def _chat_with_openai_evidence(self, chat_id: int, user_text: str,
+                                         on_status=None,
+                                         user_id: int | None = None,
+                                         refresh_token: str | None = None,
+                                         usage_acc: dict | None = None) -> str:
+        """Compatibility boundary for the extracted GPT coaching runtime."""
+        return await run_evidence_chat(
+            self,
+            chat_id,
+            user_text,
+            on_status=on_status,
+            user_id=user_id,
+            refresh_token=refresh_token,
+            usage_acc=usage_acc,
+            request_id=request_id_var.get(),
+            tool_specs=_coach_tool_specs(bool(self.db)),
+        )
+
+
+    async def _call_openai_narrator(self, prompt: str, system: str,
+                                    usage_acc: dict | None = None) -> str:
+        """Call the low-cost OpenAI narrator on an already grounded card."""
+        response = await self._openai_response(
+            model=self.coach_narrator_model,
+            instructions=system,
+            input=prompt,
+            reasoning={"effort": self.coach_narrator_reasoning},
+            text={"verbosity": "low"},
+            max_output_tokens=self.coach_narrator_max_output_tokens,
+            usage_acc=usage_acc,
+        )
+        return response.output_text or ""
 
     async def _generate_initial_narrator(self, chat_id: int, prompt: str, *,
                                            digest: dict | None,
@@ -2625,11 +2906,18 @@ class GeminiSessionManager:
                                            usage_acc: dict | None = None,
                                            disable_tools: bool = False,
                                            system_override: str | None = None) -> str:
-        """Use OpenAI only for grounded prose; safely fall back to Gemini."""
-        if digest and getattr(self, "_openai_narrator_client", None) is not None:
+        """Use GPT for coaching; degrade to deterministic facts, not another LLM."""
+        coach_client = getattr(
+            self, "_openai_coach_client",
+            getattr(self, "_openai_narrator_client", None),
+        )
+        if (getattr(self, "coach_narrator_provider", "openai") == "openai"
+                and coach_client is not None):
             try:
                 result = await self._call_openai_narrator(
-                    prompt, system_override or INITIAL_COACH_SYSTEM, usage_acc,
+                    prompt,
+                    system_override or (INITIAL_COACH_SYSTEM if digest else COACH_SYSTEM),
+                    usage_acc,
                 )
                 if result.strip():
                     result = _normalize_terms(result)
@@ -2640,16 +2928,37 @@ class GeminiSessionManager:
                     return result
             except Exception as exc:
                 self._logger.warning(
-                    "[chat=%s] OpenAI narrator failed; falling back to Gemini: %s",
+                    "[chat=%s] OpenAI narrator failed; using deterministic fallback: %s",
                     chat_id, exc,
                 )
+            if digest:
+                try:
+                    return render_teaching_fallback(digest)
+                except Exception:
+                    return "已有 solver 事實卡，但教練模型暫時無法完成解釋。"
+            return (
+                "目前教練模型暫時無法完成解釋；已有 solver 數據仍會保留，"
+                "但我不會改用另一個模型猜測策略。"
+            )
+
+        if getattr(self, "coach_narrator_provider", "gemini") == "openai":
+            if digest:
+                try:
+                    return render_teaching_fallback(digest)
+                except Exception:
+                    return "已有 solver 事實卡，但教練模型目前未設定。"
+            return "目前未設定 GPT 教練模型，無法產生教練解釋。"
+
+        if getattr(self, "coach_narrator_provider", "") != "gemini":
+            return "教練模型設定無效；在設定修正前我不會猜測策略。"
+
+        # Explicit legacy mode only; this branch exists for controlled rollback.
         return await self._chat_with_tools(
             chat_id, prompt, on_status=on_status,
             user_id=user_id, refresh_token=refresh_token,
             usage_acc=usage_acc, force_tool_eligible=False,
             disable_tools=disable_tools, system_override=system_override,
         )
-
     async def _verified_initial_coaching(self, chat_id: int, coaching_prompt: str,
                                           context: dict, user_text: str, *,
                                           on_status=None, user_id: int | None = None,
@@ -2678,6 +2987,8 @@ class GeminiSessionManager:
                     disable_tools=disable_tools, system_override=narrator_system,
                 )
                 if not digest:
+                    self.histories[chat_id] = history_before_draft
+                    self._append_accepted_history(chat_id, user_text, draft)
                     return draft
                 audit = audit_teaching_draft(
                     draft,
@@ -2691,6 +3002,8 @@ class GeminiSessionManager:
                     source_texts=[user_text],
                 )
                 if audit.ok:
+                    self.histories[chat_id] = history_before_draft
+                    self._append_accepted_history(chat_id, user_text, draft)
                     return draft
                 self._logger.warning(
                     f"[chat={chat_id}] Initial coaching fact audit failed: "
@@ -2728,6 +3041,8 @@ class GeminiSessionManager:
                     ]
                     if original_followups and not repaired_followups:
                         repaired += "\n\n" + "\n".join(original_followups)
+                    self.histories[chat_id] = history_before_draft
+                    self._append_accepted_history(chat_id, user_text, repaired)
                     return repaired
                 self._logger.warning(
                     f"[chat={chat_id}] Repaired coaching fact audit failed: "
@@ -2740,11 +3055,8 @@ class GeminiSessionManager:
                 ][:3] or original_followups
                 if followups:
                     fallback += "\n\n" + "\n".join(followups)
-                history = self.histories.get(chat_id, [])
-                if history and getattr(history[-1], "role", None) == "model":
-                    history[-1] = types.Content(
-                        role="model", parts=[types.Part(text=fallback)])
-                    self.histories[chat_id] = history
+                self.histories[chat_id] = history_before_draft
+                self._append_accepted_history(chat_id, user_text, fallback)
                 return fallback
             except genai_errors.ServerError as e:
                 if attempt == 2:
@@ -3265,6 +3577,7 @@ class GeminiSessionManager:
                     return "錯誤：沒有手牌 context 且未提供 effective_bb + preflop_actions_override。請先發送手牌描述，或同時指定 effective_bb 和 preflop_actions_override。"
 
         street = args.get("street", "flop")
+        decision_index = args.get("decision_index")
         position = args.get("position")
         hand = args.get("hand")
         effective_bb = args.get("effective_bb")
@@ -3334,14 +3647,14 @@ class GeminiSessionManager:
         # actual params (not street_states, which is a start-of-street
         # snapshot with incomplete action strings).
         if has_override and not args.get("icm_phase"):
-            cached_spot = self._find_cached_spot(ctx, street)
+            cached_spot = self._find_cached_spot(ctx, street, decision_index)
             if cached_spot and self._overrides_match_played_line(
                 cached_spot.get("params", {}),
                 preflop_override, board_override,
                 flop_override, turn_override, river_override,
                 depth_override,
             ):
-                solution = self._find_cached_solution(ctx, street)
+                solution = self._find_cached_solution(ctx, street, decision_index)
                 if solution:
                     self._logger.debug(
                         f"[chat={chat_id}] Overrides match played line; using cached {street} solution"
@@ -3350,7 +3663,7 @@ class GeminiSessionManager:
 
         # Try cached solution first (no overrides)
         if not has_override:
-            solution = self._find_cached_solution(ctx, street)
+            solution = self._find_cached_solution(ctx, street, decision_index)
             if solution:
                 return self._format_solution(solution, position, hand)
 
@@ -3457,18 +3770,28 @@ class GeminiSessionManager:
 
         return result_text
 
-    def _find_cached_solution(self, ctx: dict, street: str) -> dict | None:
-        """Find a cached spot-solution for the given street."""
-        for spot, sol in zip(ctx["hero_spots"], ctx["solutions"]):
-            if spot["street"] == street and sol is not None:
-                return sol
+    def _find_cached_solution(self, ctx: dict, street: str,
+                              decision_index: int | None = None) -> dict | None:
+        """Find a cached solution for a street and optional nth Hero decision."""
+        matches = [
+            sol for spot, sol in zip(ctx["hero_spots"], ctx["solutions"])
+            if spot["street"] == street and sol is not None
+        ]
+        if matches:
+            index = max(1, int(decision_index or 1)) - 1
+            return matches[index] if index < len(matches) else None
         return None
 
-    def _find_cached_spot(self, ctx: dict, street: str) -> dict | None:
-        """Find the cached hero_spot for a given street (with solution)."""
-        for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
-            if spot.get("street") == street and sol is not None:
-                return spot
+    def _find_cached_spot(self, ctx: dict, street: str,
+                          decision_index: int | None = None) -> dict | None:
+        """Find a cached spot for a street and optional nth Hero decision."""
+        matches = [
+            spot for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", []))
+            if spot.get("street") == street and sol is not None
+        ]
+        if matches:
+            index = max(1, int(decision_index or 1)) - 1
+            return matches[index] if index < len(matches) else None
         return None
 
     @staticmethod

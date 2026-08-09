@@ -471,6 +471,7 @@ _TERM_REPLACEMENTS = (
     ("唬牌", "詐唬"),
 )
 _RE_CBET = re.compile(r"[cC]-[bB]et")
+_RE_SHORT_FLUSH_DRAW = re.compile(r"(?<![梅同])花聽牌")
 _CARD_CODE_BEFORE_EMOJI_RE = re.compile(
     r"(?P<rank>[2-9TJQKA])(?P<suit>[cdhs])(?:☘️?|♣️?|🔷️?|♦️?|♥️?|♠️?)"
 )
@@ -485,6 +486,7 @@ def _normalize_terms(text: str) -> str:
     for old, new in _TERM_REPLACEMENTS:
         text = text.replace(old, new)
     text = _RE_CBET.sub("cbet", text)
+    text = _RE_SHORT_FLUSH_DRAW.sub("同花聽牌", text)
     return _CARD_CODE_BEFORE_EMOJI_RE.sub(
         lambda match: match.group("rank") + _SUIT_EMOJI[match.group("suit")],
         text,

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import gto_formatter as gf
+from card_display import cards_to_emoji
 from gto_api import get_spot_solution
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class Ctx:
     hand_context: dict
     user_id: int | None = None
     refresh_token: str | None = None
+    decision_index: int | None = None
 
 
 @dataclass
@@ -331,6 +333,7 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
     cls = gf.normalize_hand_name(hero_hand) if hero_hand else None
     out: dict = {"class": cls}
     if idx is not None:
+        out["combo"] = hero_hand
         rng = pi.get("range") or []
         out["weight"] = rng[idx] if idx < len(rng) else None
         for k_src, k_dst in (("hand_eqs", "eq"), ("hand_eqrs", "eqr"),
@@ -338,6 +341,18 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
             arr = pi.get(k_src) or []
             if idx < len(arr):
                 out[k_dst] = arr[idx]
+        exact_actions = {}
+        for action_solution in sol.get("action_solutions") or []:
+            strategy = action_solution.get("strategy") or []
+            if idx >= len(strategy):
+                continue
+            frequency = _to_float(strategy[idx]) or 0.0
+            if frequency > 0.01:
+                code = (action_solution.get("action") or {}).get("code")
+                if code:
+                    exact_actions[code] = frequency
+        if exact_actions:
+            out["actions"] = exact_actions
     # Degenerate when the combo is essentially not in range here.
     w = out.get("weight")
     pctile = out.get("percentile")
@@ -349,10 +364,19 @@ def _hero_combo_facts(sol: dict, hero_pos: str, hero_hand: str) -> dict | None:
         out["percentile"] = None  # drop the -1 sentinel
     shc = (pi.get("simple_hand_counters") or {}).get(cls or "")
     if shc:
-        out["actions"] = {k: v for k, v in (shc.get("actions_total_frequencies") or {}).items()
-                          if v and v > 0.01}
+        # Exact 1326-combo strategy wins.  The 169-class counters average all
+        # suits and can materially disagree on flush-sensitive boards.
+        if not out.get("actions"):
+            out["actions"] = {
+                k: v for k, v in (shc.get("actions_total_frequencies") or {}).items()
+                if v and v > 0.01
+            }
         if out.get("eq") is None:
             out["eq"] = shc.get("hand_eq")
+    out["facing_bet"] = any(
+        (row.get("action") or {}).get("code") == "F"
+        for row in (sol.get("action_solutions") or [])
+    )
     return out
 
 
@@ -394,9 +418,29 @@ def _hero_spot_and_sol(ctx: Ctx, street: str | None, prefer: str = "last"):
     if not pairs:
         return None, None
     if street:
-        for sp, s in pairs:
-            if sp.get("street") == street:
-                return sp, s
+        street_pairs = [(sp, s) for sp, s in pairs if sp.get("street") == street]
+        if street_pairs:
+            if ctx.decision_index:
+                selected = max(1, int(ctx.decision_index)) - 1
+                if selected < len(street_pairs):
+                    return street_pairs[selected]
+                return None, None
+            question = (ctx.question or "").lower()
+            wanted = []
+            if any(token in question for token in ("all-in", "all in", "全下", "推進")):
+                wanted.append("RAI")
+            if any(token in question for token in ("fold", "棄牌", "弃牌")):
+                wanted.append("F")
+            if any(token in question for token in ("call", "跟注")):
+                wanted.append("C")
+            for action in wanted:
+                matching = [
+                    pair for pair in street_pairs
+                    if str(pair[0].get("taken_code") or "").upper() == action
+                ]
+                if matching:
+                    return matching[-1]
+            return street_pairs[0] if prefer == "first" else street_pairs[-1]
     post = [(sp, s) for sp, s in pairs if sp.get("street") in ("flop", "turn", "river")]
     if post and prefer == "first":
         return post[0]
@@ -413,7 +457,7 @@ def _question_board(ctx: Ctx) -> str:
 # ── category display (Chinese) ──
 _CAT_ZH = {
     "no_made_hand": "無對子", "king_high": "K高", "ace_high": "A高", "low_pair": "小對",
-    "third_pair": "三對位", "second_pair": "中對", "top_pair": "頂對", "over_pair": "超對",
+    "third_pair": "第三對", "second_pair": "中對", "top_pair": "頂對", "over_pair": "超對",
     "two_pair": "兩對", "set": "三條", "trips": "三條", "straight": "順子", "flush": "同花",
     "full_house": "葫蘆", "quads": "四條", "straight_flush": "同花順",
 }
@@ -423,7 +467,7 @@ def _cat_zh(name: str) -> str:
     return _CAT_ZH.get(name, name)
 
 
-def _fmt_actions(actions: dict) -> str:
+def _fmt_actions(actions: dict, *, facing_bet: bool = False) -> str:
     parts = []
     for code, fr in sorted(actions.items(), key=lambda kv: -kv[1]):
         if code == "X":
@@ -435,7 +479,7 @@ def _fmt_actions(actions: dict) -> str:
         elif code == "RAI":
             label = "全下"
         else:
-            label = f"下注{code[1:]}"
+            label = f"加注至{code[1:]}" if facing_bet else f"下注{code[1:]}"
         parts.append(f"{label} {_pct(fr)}%")
     return " | ".join(parts)
 
@@ -474,8 +518,9 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
     for c in cands:
         hf = _hero_combo_facts(sol, actor, c)
         if hf and (hf.get("eq") is not None or hf.get("actions")):
-            name = hf.get("class") or c
-            f = (shc.get(name, {}) or {}).get("total_frequency", 0.0) or 0.0
+            hand_class = hf.get("class") or c
+            name = c if _RE_COMBO.fullmatch(c or "") else hand_class
+            f = (shc.get(hand_class, {}) or {}).get("total_frequency", 0.0) or 0.0
             if best is None or f > best[2]:
                 best = (name, hf, f)
     return (best[0], best[1]) if best else (None, None)
@@ -483,7 +528,13 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
 
 def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
     facts.allowed_claims |= canonical_forms(name)
-    head = f"  {name}："
+    if _RE_COMBO.fullmatch(name or ""):
+        display_name = cards_to_emoji(name)
+        if hf.get("class"):
+            display_name += f"（{hf['class']}）"
+    else:
+        display_name = name
+    head = f"  {display_name}："
     # Skip the per-combo equity when the hand barely reaches this node
     # (off-strategy line) — the sentinel eq would be a misleading '0%'.
     if hf.get("eq") is not None and not hf.get("low_weight"):
@@ -496,8 +547,25 @@ def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
         facts.note = "你的實際打法偏離 solver 建議，此節點數據僅供參考"
     facts.lines.append(head)
     if hf.get("actions"):
-        facts.lines.append(f"      solver 動作：{_fmt_actions(hf['actions'])}")
+        facts.lines.append(
+            f"      solver 動作：{_fmt_actions(hf['actions'], facing_bet=hf.get('facing_bet', False))}"
+        )
         facts.numbers |= {_pct(v) for v in hf["actions"].values()}
+
+
+def _append_decision_evidence(facts: Facts, hand_context: dict,
+                              spot: dict | None, sol: dict | None) -> None:
+    """Attach the shared causal card after the exact node has been resolved."""
+    if not spot or not sol:
+        return
+    try:
+        from coach_teaching import build_decision_evidence, render_decision_evidence
+
+        decision = build_decision_evidence(hand_context, spot, sol)
+        facts.lines.extend(render_decision_evidence(decision))
+        facts.meta["causal_decision"] = decision
+    except Exception as exc:
+        logger.debug("coach_facts: causal decision evidence unavailable: %s", exc)
 
 
 # ── P0 fetchers ─────────────────────────────────────────────────────────────
@@ -534,6 +602,10 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
         _why_hand_lines(name, hf, facts)
     facts.meta = {"hero_hand": hero_hand, "board": board,
                   "hands": [n for n, _ in resolved]}
+    # This causal card is for Hero's exact combo only, not arbitrary named
+    # members in questions such as "why does A3 bet but Q9 check?".
+    if not named and actor == hero:
+        _append_decision_evidence(facts, ctx.hand_context, spot, sol)
     _attach_chart(facts, sol, actor)
     if spot and actor == hero:
         _attach_node(facts, spot.get("street"))
@@ -784,6 +856,14 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
         facts.numbers.add(_pct(fr))
         if bypot:
             facts.numbers.add(_pct(bypot))  # the size % is a legit number too
+    if hero_hand and actor:
+        exact = _hero_combo_facts(hsol, actor, hero_hand)
+        if exact and exact.get("actions"):
+            facts.lines.append(
+                f"  {hero_hand} 的 exact-combo 分配："
+                f"{_fmt_actions(exact['actions'], facing_bet=exact.get('facing_bet', False))}"
+            )
+            facts.numbers |= {_pct(value) for value in exact["actions"].values()}
     facts.meta = {"board": board, "rows": rows}
     _attach_chart(facts, hsol, actor)
     return facts
@@ -792,6 +872,8 @@ def _fetch_sizing_from(hsol: dict, hand_context: dict) -> Facts | None:
 def fetch_sizing(ctx: Ctx) -> Facts | None:
     spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
     facts = _fetch_sizing_from(sol, ctx.hand_context)
+    if facts:
+        _append_decision_evidence(facts, ctx.hand_context, spot, sol)
     if facts and spot:
         _attach_node(facts, spot.get("street"))
     return facts
@@ -1227,6 +1309,36 @@ def answer_followup_ex(ctx: Ctx) -> tuple[str | None, "Facts | None"]:
     logger.info(f"coach_facts: verifier fallback to template (intent={intent}, "
                 f"violations={v.violations})")
     return render_template(facts), facts
+
+
+def fetch_followup_facts(ctx: Ctx, intent: str, *, street: str | None = None) -> Facts | None:
+    """Fetch a deterministic fact card without invoking a classifier/narrator.
+
+    The provider-neutral evidence planner already selected ``intent``.  Keeping
+    this boundary free of any LLM call prevents the old Gemini Flash classifier
+    and narrator from leaking back into the GPT coaching path.  ``street`` is
+    appended to the question only when it is not already named, allowing the
+    existing node resolver to stay the single source of truth.
+    """
+    qt = _BY_INTENT.get(intent)
+    if qt is None:
+        return None
+    question = ctx.question or ""
+    if street and street.lower() not in question.lower():
+        question = f"{question}（指定 {street}）"
+    forced = Ctx(
+        question=question,
+        hand_context=ctx.hand_context,
+        user_id=ctx.user_id,
+        refresh_token=ctx.refresh_token,
+        decision_index=ctx.decision_index,
+    )
+    try:
+        facts = qt.fetch(forced)
+    except Exception as exc:
+        logger.warning("coach_facts: deterministic fetch(%s) failed: %s", intent, exc)
+        return None
+    return facts if facts and facts.lines else None
 
 
 def answer_followup(ctx: Ctx) -> str | None:

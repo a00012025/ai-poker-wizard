@@ -1778,6 +1778,9 @@ def _split_flow_session(fake_ctx, fake_hand):
     sess.db = None
     sess.model = "test-model"
     sess.parse_model = "test-parse"
+    # This helper deliberately stubs the legacy narrator. Production defaults
+    # to OpenAI and only enters this branch under an explicit rollback setting.
+    sess.coach_narrator_provider = "gemini"
 
     async def _fake_parse(chat_id, user_text, usage_acc=None):
         return fake_hand

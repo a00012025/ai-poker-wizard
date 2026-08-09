@@ -896,7 +896,7 @@ def test_session_initial_coaching_replaces_unsupported_draft():
 
 @test
 def test_session_initial_coaching_accepts_grounded_repair():
-    """Gemini session: one constrained rewrite preserves the LLM's narrator role."""
+    """Coach session: one constrained rewrite preserves the LLM narrator role."""
     import asyncio
     import logging
     import types as py_types
@@ -907,6 +907,9 @@ def test_session_initial_coaching_accepts_grounded_repair():
     GeminiSessionManager._initial_teaching_block(context)
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("coach-teaching-repair-test")
+    # This test supplies its own legacy narrator stub. OpenAI is the production
+    # default and is covered independently by the Responses API tests below.
+    manager.coach_narrator_provider = "gemini"
     manager.histories = {2: ["base-history"]}
     observed_histories = []
     drafts = iter([
@@ -917,10 +920,13 @@ def test_session_initial_coaching_accepts_grounded_repair():
             "FOLLOWUP: River 為什麼能下注？"
         ),
         (
-            "*核心判斷*\nRiver bet 正確。\n\n"
-            "*為什麼*\nHJ 有更多同花與 set；這手牌雖在 range 底端且 blocker 不利，"
-            "range 的強牌結構仍容許它 bluff。\n\n"
-            "*你要記得*\n先看 range 結構，再用 blocker 排序；只適用這個 node。"
+            "*核心判斷*\nRiver 的 bet 58% pot 是正確選擇。\n\n"
+            "*為什麼*\nRiver 時它是 range 底端的未成牌，沒有聽牌；"
+            "平均 range equity 無法選擇下注 size，應改看各 size 的 range construction；"
+            "HJ 的同花、set較多；blocker 對這個 bluff 不利，它不是支持下注的理由。\n\n"
+            "*你要記得*\n先找雙方誰擁有更多可辨認的強牌類別，"
+            "再用 blocker 排序 value 或 bluff 候選，而不是反過來編理由。"
+            "這條結論只適用目前的深度、牌面與 action line。"
         ),
     ])
 
@@ -933,7 +939,8 @@ def test_session_initial_coaching_accepts_grounded_repair():
     answer = asyncio.run(manager._verified_initial_coaching(
         2, "prompt", context, "H3818", disable_tools=True,
     ))
-    assert_in("range 的強牌結構仍容許它 bluff", answer)
+    assert_in("range 底端的未成牌", answer)
+    assert_in("blocker 對這個 bluff 不利", answer)
     assert_not_in("JT", answer)
     assert_eq(
         observed_histories,
@@ -945,7 +952,7 @@ def test_session_initial_coaching_accepts_grounded_repair():
 
 @test
 def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
-    """OpenAI narrates the distilled card; Gemini remains the safe fallback."""
+    """OpenAI narrates the distilled card without loading Gemini coach context."""
     import asyncio
     import logging
     import types as py_types
@@ -987,8 +994,8 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
 
 
 @test
-def test_session_grounded_initial_narrator_falls_back_to_gemini():
-    """An OpenAI outage must not break the existing initial coach flow."""
+def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
+    """An OpenAI outage degrades honestly instead of unaudited Gemini prose."""
     import asyncio
     import logging
     import types as py_types
@@ -1002,20 +1009,17 @@ def test_session_grounded_initial_narrator_falls_back_to_gemini():
     async def failing_openai(self, *args, **kwargs):
         raise RuntimeError("temporary OpenAI failure")
 
-    async def fallback_gemini(self, chat_id, prompt, **kwargs):
-        assert_eq(chat_id, 7)
-        assert_eq(prompt, "card")
-        assert_true(kwargs["disable_tools"])
-        assert_eq(kwargs["system_override"], INITIAL_COACH_SYSTEM)
-        return "gemini fallback"
+    async def forbidden_gemini(self, *args, **kwargs):
+        raise AssertionError("GPT coach must not silently switch narrator models")
 
     manager._call_openai_narrator = py_types.MethodType(failing_openai, manager)
-    manager._chat_with_tools = py_types.MethodType(fallback_gemini, manager)
+    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
     answer = asyncio.run(manager._generate_initial_narrator(
         7, "card", digest={"decisions": [{}]},
         disable_tools=True, system_override=INITIAL_COACH_SYSTEM,
     ))
-    assert_eq(answer, "gemini fallback")
+    assert_in("solver 事實卡", answer)
+    assert_not_in("gemini", answer.lower())
 
 
 @test
@@ -1204,6 +1208,63 @@ def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
 
 
 @test
+def test_followup_why_facts_include_guarded_removal_and_range_structure():
+    """The GPT sees blocker/range facts, while the final prompt can stay concise."""
+    import coach_facts as cf
+
+    context = _h3818_like_context()
+    facts = cf.fetch_followup_facts(
+        cf.Ctx(question="river 為什麼這手可以下注？", hand_context=context),
+        "why_action", street="river",
+    )
+    rendered = facts.render()
+    assert_in("GTOW removal metrics", rendered)
+    assert_in("value removal", rendered)
+    assert_in("trash removal", rendered)
+    assert_in("同 hand class 花色敏感度", rendered)
+    assert_in("可辨認強牌類別", rendered)
+    assert_in("HJ 的同花、set較多", rendered)
+
+
+@test
+def test_followup_decision_renderer_labels_top_equity_as_proxy_not_nuts():
+    """Advanced equity buckets quantify range tops without claiming literal nuts."""
+    import coach_teaching as ct
+
+    lines = ct.render_decision_evidence({
+        "hero_role": {}, "drivers": {}, "scope": "node only",
+        "range_structure": {
+            "nut_region": {
+                "owner": "HJ", "label": "90–100% equity 頂端區域",
+                "hero_share": 0.20, "villain_share": 0.10,
+            },
+            "strong_region": {},
+        },
+    })
+    rendered = "\n".join(lines)
+    assert_in("Range 強端 proxy", rendered)
+    assert_in("不是 literal nuts", rendered)
+
+
+@test
+def test_followup_why_facts_include_low_spr_equity_denial_guardrail():
+    """A vulnerable made-hand jam carries denial evidence, not a range-EQ shortcut."""
+    import coach_facts as cf
+
+    context = _low_spr_88_context()
+    facts = cf.fetch_followup_facts(
+        cf.Ctx(question="flop 為什麼這手要 all-in？", hand_context=context),
+        "why_action", street="flop",
+    )
+    rendered = facts.render()
+    assert_in("Equity denial", rendered)
+    assert_in("脆弱成牌", rendered)
+    assert_in("未成牌與聽牌", rendered)
+    assert_in("Range equity gate=prevents_bad_inference", rendered)
+    assert_in("range 劣勢不能直接翻譯成 fold", rendered)
+
+
+@test
 def test_coach_teaching_audit_rejects_unselected_street_commentary():
     """Raw solver text must not lure the narrator into grading another street."""
     import coach_teaching as ct
@@ -1322,3 +1383,487 @@ def test_coach_teaching_pure_preferred_action_is_not_called_mix():
         line for line in prompt.splitlines() if line.startswith("• 核心判定")
     )
     assert_not_in("mix 分支", core_line)
+
+
+@test
+def test_coach_tool_registry_translates_provider_neutral_schemas_for_openai():
+    """The GPT tool registry preserves every solver tool with JSON Schema types."""
+    from gemini_session import _coach_tool_specs
+
+    specs = {spec.name: spec for spec in _coach_tool_specs(False)}
+    assert_true("query_coach_facts" in specs)
+    assert_true("query_gto" in specs)
+    assert_true("query_next_actions" in specs)
+    assert_true("evaluate_hand" in specs)
+    tool = specs["query_gto"].as_openai_tool()
+    assert_eq(tool["type"], "function")
+    assert_eq(tool["parameters"]["type"], "object")
+    assert_eq(tool["parameters"]["properties"]["street"]["type"], "string")
+
+    db_specs = {spec.name for spec in _coach_tool_specs(True)}
+    assert_true({
+        "lookup_hand", "get_training_plan", "get_progress",
+        "query_ledger_summary", "query_ledger_hands",
+    }.issubset(db_specs), "GPT follow-ups must retain every ledger/session tool")
+
+
+@test
+def test_evidence_audit_rejects_invented_combo_number_and_category():
+    """Generic follow-up prose cannot invent range members, percentages or hand types."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_gto", {"street": "turn"},
+        "BTN turn bet range：頂對 40%；KQs check 80%",
+    )
+    audit = audit_evidence_answer(
+        "BTN 用 AA 下注 73%，因為它是 set。", bundle, ["E1.1"],
+        require_refs=True,
+    )
+    assert_true(not audit.ok)
+    joined = " | ".join(audit.violations)
+    assert_in("AA", joined)
+    assert_in("73%", joined)
+    assert_in("set", joined)
+
+
+@test
+def test_evidence_audit_rejects_unmeasured_board_texture_story():
+    """A visible board alone does not license wet/dry causal language."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_coach_facts", {}, "board=7h5c4c；A7s 下注 87%")
+    audit = audit_evidence_answer(
+        "這是濕潤牌面，所以 A7s 下注 87%。", bundle, ["E1.1"],
+        require_refs=True,
+    )
+    assert_true(not audit.ok)
+    assert_in("濕潤", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_number_when_no_numeric_fact_exists():
+    """An empty numeric whitelist does not mean arbitrary percentages are safe."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_coach_facts", {}, "此節點沒有可量化頻率")
+    audit = audit_evidence_answer(
+        "對手會棄牌 73%。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_in("73%", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_checks_action_sizes_even_without_bb_suffix():
+    """'Facing a 1.3 bet' is numeric strategy content even without a unit."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_coach_facts", {}, "solver 動作：下注1.5 80%")
+    audit = audit_evidence_answer(
+        "面對 1.3 的下注，這手跟注。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_in("action number", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_literal_nuts_from_top_equity_proxy():
+    """90-100% equity buckets cannot be rewritten as nuts or nut advantage."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {},
+        "HJ 的 90–100% equity 頂端區域較多；這不是 literal nuts",
+    )
+    audit = audit_evidence_answer(
+        "所以 HJ 有 nut advantage、這手是 nuts。", bundle, ["E1.1"],
+        require_refs=True,
+    )
+    assert_in("literal nuts", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_audit_rejects_blocker_target_joined_from_separate_facts():
+    """Removal direction plus a flush category cannot invent 'blocks flush'."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text(
+        "query_coach_facts", {},
+        "HJ 的同花、set較多\nGTOW removal metrics：blocker 方向 unfavorable",
+    )
+    audit = audit_evidence_answer(
+        "這手 blocks 同花，所以適合詐唬。", bundle, ["E1.1", "E1.2"],
+        require_refs=True,
+    )
+    assert_in("blocker target", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
+    """A failed narrator degrades to useful facts, not hand_id/gametype internals."""
+    from coach_evidence import EvidenceBundle, render_safe_fallback
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hand_id=H1\ngametype=MTTGeneral")
+    bundle.add_text("query_gto", {}, "BTN call 61%")
+    answer = render_safe_fallback(bundle)
+    assert_in("BTN call 61%", answer)
+    assert_not_in("hand_id", answer)
+
+
+@test
+def test_coach_term_normalizer_expands_flush_draw_shorthand_safely():
+    """花聽牌 becomes 同花聽牌 without corrupting 梅花聽牌."""
+    from coach_prompts import _normalize_terms
+
+    assert_eq(_normalize_terms("堅果花聽牌"), "堅果同花聽牌")
+    assert_eq(_normalize_terms("梅花聽牌"), "梅花聽牌")
+
+
+@test
+def test_evidence_audit_checks_emoji_board_suits():
+    """T♥ in evidence cannot silently become T♠ in Telegram prose."""
+    from coach_evidence import EvidenceBundle, audit_evidence_answer
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_gto", {}, "board=Th9c2c；9h2h 是兩對")
+    audit = audit_evidence_answer(
+        "9♥2♥ 在 T♠9♣2♣ 是兩對。", bundle, ["E1.1"], require_refs=True,
+    )
+    assert_true(not audit.ok)
+    assert_in("Ts", " | ".join(audit.violations))
+
+
+@test
+def test_evidence_display_formats_exact_cards_but_not_hand_classes():
+    """The user sees suit glyphs while A9s/QQ remain solver hand classes."""
+    from coach_evidence import display_exact_cards
+
+    answer = display_exact_cards("Hero Ad9d 在 Qs9c5d2c；class A9s，pair QQ")
+    assert_in("A🔷", answer)
+    assert_in("Q♠️9☘️5🔷2☘️", answer)
+    assert_in("A9s", answer)
+    assert_in("QQ", answer)
+
+
+def _evidence_manager(responses):
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager
+
+    class FakeResponses:
+        def __init__(self, queue):
+            self.queue = list(queue)
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if not self.queue:
+                raise AssertionError("unexpected OpenAI call")
+            return self.queue.pop(0)
+
+    api = FakeResponses(responses)
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("evidence-manager-test")
+    manager._openai_coach_client = py_types.SimpleNamespace(responses=api)
+    manager._openai_narrator_client = manager._openai_coach_client
+    manager.coach_narrator_provider = "openai"
+    manager.coach_narrator_model = "gpt-5.6-terra"
+    manager.coach_narrator_reasoning = "low"
+    manager.coach_narrator_max_output_tokens = 900
+    manager.coach_max_tool_calls = 4
+    manager.coach_max_evidence_rounds = 2
+    manager.histories = {}
+    manager.hand_contexts = {7: {
+        "hero_position": "HJ", "hero_hand": "QdJs", "depth": "50.125",
+        "preflop_actions": "F-F-F-R2.3-F-C-F-F",
+        "street_states": {"turn": {"board": "6hAc5d2c"}},
+        "final_actions": {"turn_actions": "R9-C"},
+    }}
+    manager.last_hand_ids = {7: "H3818"}
+    manager.pending_images = {}
+    manager.db = None
+    manager._accumulate_usage = lambda *args, **kwargs: None
+    return manager, api
+
+
+@test
+def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
+    """Opponent street bet-range answers are planned, grounded and narrated by Terra."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-1", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_coach_facts",
+            arguments=_json.dumps({"intent": "villain_range", "street": "turn"}),
+            call_id="call-1",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-2", usage=None, output_text="NO_TOOL", output=[],
+    )
+    final = py_types.SimpleNamespace(
+        id="answer-1", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\n對手 turn 的下注範圍以頂對為主（40%）。",
+            "fact_refs": ["E2.1"],
+            "needs_more_evidence": False,
+            "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, api = _evidence_manager([planner, after_tool, final])
+
+    async def fake_execute(*args, **kwargs):
+        return "對手 BTN 在 turn 的下注範圍：頂對 佔 40%"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "對手 turn 的下注範圍是什麼？",
+    ))
+    assert_in("頂對", answer)
+    assert_in("40%", answer)
+    assert_eq(len(api.calls), 3)
+    assert_eq(api.calls[0]["model"], "gpt-5.6-terra")
+    assert_eq(api.calls[1]["previous_response_id"], "plan-1")
+    assert_eq(api.calls[2]["text"]["format"]["type"], "json_schema")
+    assert_eq(len(manager.histories[7]), 2)
+    assert_in("對手 turn", manager._content_text(manager.histories[7][0]))
+    assert_in("頂對", manager._content_text(manager.histories[7][1]))
+
+
+@test
+def test_openai_followup_forces_solver_tool_when_planner_skips_strategy_query():
+    """A strategy question cannot reach final narration without a solver evidence call."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    skipped = py_types.SimpleNamespace(
+        id="plan-skip", usage=None, output_text="NO_TOOL", output=[],
+    )
+    forced = py_types.SimpleNamespace(
+        id="plan-forced", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_gto",
+            arguments=_json.dumps({"street": "turn", "position": "HJ"}),
+            call_id="forced-call",
+        )],
+    )
+    final = py_types.SimpleNamespace(
+        id="answer-forced", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\nHJ turn 主要下注（62%）。",
+            "fact_refs": ["E2.1"],
+            "needs_more_evidence": False,
+            "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, api = _evidence_manager([skipped, forced, final])
+
+    async def fake_execute(*args, **kwargs):
+        return "HJ turn 整體下注頻率 62%"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "HJ turn 應該用哪些牌下注？",
+    ))
+    assert_in("62%", answer)
+    assert_eq(api.calls[1]["tool_choice"], "required")
+
+
+@test
+def test_openai_followup_repairs_unsupported_range_claim_before_history():
+    """An invented combo is rejected; only the repaired answer enters conversation history."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-r", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_gto",
+            arguments=_json.dumps({"street": "turn", "position": "HJ"}),
+            call_id="call-r",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-r2", usage=None, output_text="NO_TOOL", output=[],
+    )
+    bad = py_types.SimpleNamespace(
+        id="bad", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "HJ 用 AA 下注 73%。", "fact_refs": ["E2.1"],
+            "needs_more_evidence": False, "missing_evidence": "",
+        }),
+    )
+    repaired = py_types.SimpleNamespace(
+        id="good", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\nHJ turn 整體下注 62%。",
+            "fact_refs": ["E2.1"],
+            "needs_more_evidence": False, "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, _ = _evidence_manager([planner, after_tool, bad, repaired])
+
+    async def fake_execute(*args, **kwargs):
+        return "HJ turn 整體下注頻率 62%"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "HJ turn 的下注範圍怎麼打？",
+    ))
+    assert_in("62%", answer)
+    assert_not_in("AA", answer)
+    history_text = manager._content_text(manager.histories[7][-1])
+    assert_not_in("73", history_text)
+
+
+@test
+def test_openai_followup_missing_solver_data_fails_honestly_without_narration():
+    """A failed solver tool stops before prose generation and never guesses a range."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-missing", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_gto",
+            arguments=_json.dumps({"street": "turn", "position": "HJ"}),
+            call_id="call-missing",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-missing-2", usage=None, output_text="NO_TOOL", output=[],
+    )
+    manager, api = _evidence_manager([planner, after_tool])
+
+    async def fake_execute(*args, **kwargs):
+        return "turn 沒有 solver 數據（無效 action line）"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "HJ turn 應該用哪些牌下注？",
+    ))
+    assert_in("沒有取得可驗證的 solver 資料", answer)
+    assert_in("不會", answer)
+    assert_eq(len(api.calls), 2, "missing evidence must skip the final narrator")
+    assert_eq(len(manager.histories[7]), 2)
+
+
+@test
+def test_openai_followup_next_actions_alone_cannot_support_recommendation():
+    """Action availability is not combo strategy evidence."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-next-only", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_next_actions",
+            arguments=_json.dumps({"street": "turn"}),
+            call_id="call-next-only",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-next-only-2", usage=None, output_text="NO_TOOL", output=[],
+    )
+    manager, api = _evidence_manager([planner, after_tool])
+
+    async def fake_execute(*args, **kwargs):
+        return "turn 可用動作：Check、Bet 3bb"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "HJ turn 應該用哪些牌下注？",
+    ))
+    assert_in("沒有取得可驗證的 solver 資料", answer)
+    assert_eq(len(api.calls), 2, "availability alone must skip final narration")
+
+
+@test
+def test_openai_followup_without_client_never_falls_back_to_gemini():
+    """COACH_PROVIDER=openai is an honest stop when its client is missing."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager
+
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("missing-openai-client-test")
+    manager.coach_narrator_provider = "openai"
+    manager._openai_coach_client = None
+    manager._openai_narrator_client = None
+
+    async def forbidden_gemini(self, *args, **kwargs):
+        raise AssertionError("missing GPT config must not invoke Gemini coaching")
+
+    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
+    answer = asyncio.run(manager._chat(7, "turn 怎麼打？"))
+    assert_in("未設定 GPT 教練模型", answer)
+    assert_in("不會改用另一個模型", answer)
+
+
+@test
+def test_openai_followup_can_chain_next_actions_into_strategy_query():
+    """A hypothetical line resolves an action code before querying its strategy."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    first = py_types.SimpleNamespace(
+        id="plan-next", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_next_actions",
+            arguments=_json.dumps({"street": "turn", "actions_so_far": "X"}),
+            call_id="call-next",
+        )],
+    )
+    second = py_types.SimpleNamespace(
+        id="plan-gto", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_gto",
+            arguments=_json.dumps({
+                "street": "turn", "position": "HJ",
+                "turn_actions_override": "X-R4.15",
+            }),
+            call_id="call-gto",
+        )],
+    )
+    final = py_types.SimpleNamespace(
+        id="answer-chain", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\n假設 check 後面對 4.15bb，HJ 主要 call（61%）。",
+            "fact_refs": ["E3.1"],
+            "needs_more_evidence": False,
+            "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, api = _evidence_manager([first, second, final])
+    called = []
+
+    async def fake_execute(_chat_id, _question, name, args, **kwargs):
+        called.append((name, args))
+        if name == "query_next_actions":
+            return "turn 可用動作：R4.15（下注 4.15bb）"
+        return "HJ 面對 4.15bb：call 61%"
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager._chat_with_openai_evidence(
+        7, "如果 turn check 後對手下注，我該怎麼打？",
+    ))
+    assert_in("call", answer)
+    assert_eq([name for name, _ in called], ["query_next_actions", "query_gto"])
+    assert_eq(api.calls[1]["previous_response_id"], "plan-next")
