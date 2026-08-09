@@ -1052,6 +1052,154 @@ def test_raw_paths_for_normalized_utc_still_use_gtow_local_month():
     assert_true(str(ld).endswith("data/gtow_raw/list/2026-07.jsonl.gz"))
 
 
+def _minimal_gtow_list_row(hand_id="known-h1", played_at="2026-07-22T19:35:19Z"):
+    return {
+        "hand_id": hand_id,
+        "played_at": played_at,
+        "player_position": "BB",
+        "total_players": 6,
+        "preflop_game_depth": 30.125,
+        "solution_status": "OK",
+        "total_ev_loss": 1.25,
+        "total_ev_loss_as_pot": 0.1,
+        "boards": [""],
+        "pot_type": "Preflop",
+        "hero_hand": "AsKd",
+        "actions_with_correctness_preflop": [
+            {"action_code": "F", "correctness": None},
+            {"action_code": "R2", "correctness": "CORRECT_MOVE"},
+        ],
+        "actions_with_correctness_flop": None,
+        "actions_with_correctness_turn": None,
+        "actions_with_correctness_river": None,
+    }
+
+
+@test
+def test_sweep_list_rehydrates_known_hand_missing_archive_without_db_duplicate():
+    """A DB-known hand seen again in GTOW list pages must repair its missing raw
+    list archive row, but remain a known hand and not get upserted as new."""
+    import asyncio
+    import gzip
+    import json
+    import tempfile
+    from pathlib import Path
+    import ledger_ingest as li
+
+    row = _minimal_gtow_list_row()
+
+    class FakeConn:
+        def __init__(self):
+            self.upserts = 0
+
+        async def fetch(self, sql):
+            assert_in("SELECT gtow_hand_id FROM ledger_hands", sql)
+            return [{"gtow_hand_id": row["hand_id"]}]
+
+        async def executemany(self, sql, vals):
+            self.upserts += len(vals)
+
+    def fake_list_hands(since_iso, offset=0, limit=None):
+        if offset:
+            return {"items": [], "total": 1}
+        return {"items": [row], "total": 1}
+
+    with tempfile.TemporaryDirectory() as td:
+        orig_raw = li.RAW
+        orig_list_hands = li.gapi.list_hands
+        li.RAW = Path(td) / "gtow_raw"
+        li.gapi.list_hands = fake_list_hands
+        conn = FakeConn()
+        try:
+            first = asyncio.run(li.sweep_list(conn, "2026-07-01T00:00:00.000Z"))
+            second = asyncio.run(li.sweep_list(conn, "2026-07-01T00:00:00.000Z"))
+            lp, _ = li.raw_paths(row["hand_id"], row["played_at"])
+        finally:
+            li.RAW = orig_raw
+            li.gapi.list_hands = orig_list_hands
+
+        with gzip.open(lp, "rt") as f:
+            archived = [json.loads(line) for line in f]
+
+    assert_eq(first, (0, 1), "DB-known hand is counted known, not new")
+    assert_eq(second, (0, 1), "second sweep remains known")
+    assert_eq(conn.upserts, 0, "known-hand archive repair must not insert duplicate DB rows")
+    assert_eq([r["hand_id"] for r in archived], [row["hand_id"]],
+              "archive row is rehydrated exactly once")
+
+
+@test
+def test_sweep_detail_does_not_raw_crash_when_monthly_list_archive_missing():
+    """Detail prep should tolerate a DB-known pending hand whose monthly raw
+    list gzip was lost; the ingest run must not die before detail progress."""
+    import asyncio
+    import tempfile
+    from datetime import datetime, timezone
+    from pathlib import Path
+    import ledger_ingest as li
+
+    class Tx:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+
+    row = _minimal_gtow_list_row(
+        hand_id="archive-lost-h1", played_at="2026-07-22T19:35:19Z")
+
+    class FakeConn:
+        def transaction(self):
+            return Tx()
+
+        async def fetch(self, sql, *args):
+            assert_in("FROM ledger_hands", sql)
+            return [{
+                "gtow_hand_id": row["hand_id"],
+                "played_at": datetime(2026, 7, 22, 11, 35, tzinfo=timezone.utc),
+            }]
+
+        async def execute(self, *args):
+            return "OK"
+
+        async def executemany(self, *args):
+            return "OK"
+
+    with tempfile.TemporaryDirectory() as td:
+        orig_raw = li.RAW
+        orig_fetch_details = li._fetch_details_concurrent
+        orig_list_hands = li.gapi.list_hands
+        li.RAW = Path(td) / "gtow_raw"
+
+        async def fake_fetch_details(hids, **kwargs):
+            return {hid: None for hid in hids}
+
+        repair_offsets = []
+
+        def fake_list_hands(since, until=None, offset=0, limit=None):
+            repair_offsets.append(offset)
+            if offset == 0:
+                return {"items": [{"hand_id": f"other-{i}"} for i in range(500)],
+                        "total": 501}
+            return {"items": [row], "total": 501}
+
+        li._fetch_details_concurrent = fake_fetch_details
+        li.gapi.list_hands = fake_list_hands
+        try:
+            result = asyncio.run(li.sweep_detail(FakeConn(), limit=None))
+            lp, _ = li.raw_paths(row["hand_id"], row["played_at"])
+            archive_repaired = lp.exists()
+        finally:
+            li.RAW = orig_raw
+            li._fetch_details_concurrent = orig_fetch_details
+            li.gapi.list_hands = orig_list_hands
+
+    assert_eq(result, (0, 0, 0, 0, 0),
+              "repaired hand with no detail remains retryable without crashing")
+    assert_true(archive_repaired, "missing raw list archive is repaired from GTOW list")
+    assert_eq(repair_offsets, [0, 500],
+              "targeted archive repair paginates when the hand is not on page one")
+
+
 # ── Phase 1 Ledger: session clustering ──
 
 @test

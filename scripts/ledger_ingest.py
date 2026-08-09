@@ -162,7 +162,8 @@ async def upsert_decisions(conn, decs: list[dict]):
 
 
 _LIST_BATCH = 500
-_LIST_PAGE_SIZE = max(1, int(os.getenv("GTOW_LIST_PAGE_SIZE", "100")))
+# GTOW rejects limits above 500. Use the maximum to minimize serial list calls.
+_LIST_PAGE_SIZE = max(1, min(500, int(os.getenv("GTOW_LIST_PAGE_SIZE", "500"))))
 
 # Detail-fetch concurrency. The rate-limit probe (2026-07-21) found GTOW never
 # 429s but soft-throttles via latency above ~10 req/s; detail latency (~0.8s)
@@ -250,6 +251,7 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
     batch: list[dict] = []
     pages = 0
     api_s = archive_write_s = db_write_s = 0.0
+    archived_ids_by_path: dict[Path, set[str]] = {}
     offset = 0
     while True:
         api_started = time.monotonic()
@@ -260,18 +262,29 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
         total = int(page.get("total", 0) or 0)
         if not items:
             break
+        archive_rows_by_path: dict[Path, list[dict]] = defaultdict(list)
         for row in items:
             scanned += 1
-            if row["hand_id"] in known_ids:
+            hid = row["hand_id"]
+            lp, _ = raw_paths(hid, row["played_at"])
+            archived_ids = archived_ids_by_path.get(lp)
+            if archived_ids is None:
+                archived_ids = set()
+                if lp.exists():
+                    with gzip.open(lp, "rt") as f:
+                        for line in f:
+                            archived = json.loads(line)
+                            if archived.get("hand_id"):
+                                archived_ids.add(archived["hand_id"])
+                archived_ids_by_path[lp] = archived_ids
+            if hid not in archived_ids:
+                archived_ids.add(hid)
+                archive_rows_by_path[lp].append(row)
+
+            if hid in known_ids:
                 known += 1
                 continue
-            known_ids.add(row["hand_id"])
-            lp, _ = raw_paths(row["hand_id"], row["played_at"])
-            lp.parent.mkdir(parents=True, exist_ok=True)
-            archive_started = time.monotonic()
-            with gzip.open(lp, "at") as f:
-                f.write(json.dumps(row) + "\n")
-            archive_write_s += time.monotonic() - archive_started
+            known_ids.add(hid)
             hand_row = distill_hand_row(row)
             hand_row["detail_status"] = "pending"
             batch.append(hand_row)
@@ -282,6 +295,13 @@ async def sweep_list(conn, since_iso: str) -> tuple[int, int]:
                 db_write_s += time.monotonic() - db_started
                 batch = []
                 print(f"  list write: {new} new...", flush=True)
+        archive_started = time.monotonic()
+        for lp, archive_rows in archive_rows_by_path.items():
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(lp, "at") as f:
+                for row in archive_rows:
+                    f.write(json.dumps(row) + "\n")
+        archive_write_s += time.monotonic() - archive_started
         offset += len(items)
         print(f"  list scan: {scanned}/{total} ({new} new)", flush=True)
         if offset >= total:
@@ -316,6 +336,48 @@ async def incremental_since(conn) -> str:
     return since
 
 
+async def _repair_missing_list_rows(rows) -> int:
+    """Recover raw list rows for pending DB hands after archive loss.
+
+    The list endpoint supports a narrow played-at range, so repair each missing
+    hand around its exact wall-clock timestamp instead of re-scanning all
+    history. This is primarily for a fresh/replaced host whose Supabase ledger
+    survived but whose local bind-mounted raw archive did not.
+    """
+    repaired = 0
+    for idx, r in enumerate(rows, start=1):
+        played_at = r["played_at"]
+        since = _gtow_wall_clock_iso(played_at - timedelta(seconds=1))
+        until = _gtow_wall_clock_iso(played_at + timedelta(seconds=1))
+        offset = 0
+        row = None
+        while True:
+            page = await asyncio.to_thread(
+                gapi.list_hands, since, until, offset, _LIST_PAGE_SIZE)
+            items = page.get("items", [])
+            row = next((item for item in items
+                        if item.get("hand_id") == r["gtow_hand_id"]), None)
+            if row is not None:
+                break
+            offset += len(items)
+            if not items or offset >= int(page.get("total", 0) or 0):
+                break
+        if row is None:
+            continue
+        lp, _ = raw_paths(row["hand_id"], row["played_at"])
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(lp, "at") as f:
+            f.write(json.dumps(row) + "\n")
+        repaired += 1
+        if idx % 10 == 0:
+            print(f"  archive repair sweep: {idx}/{len(rows)} ({repaired} repaired)",
+                  flush=True)
+    if rows:
+        print(f"  archive repair sweep: {len(rows)}/{len(rows)} ({repaired} repaired)",
+              flush=True)
+    return repaired
+
+
 async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = False
                        ) -> tuple[int, int, int, int, int]:
     started = time.monotonic()
@@ -326,7 +388,24 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
         "WHERE detail_status=$1 AND source='online' ORDER BY played_at", status)
     pending_query_s = time.monotonic() - pending_started
     load_started = time.monotonic()
-    list_rows = _load_list_rows(rows)
+    list_rows = _load_list_rows(rows, allow_missing=True)
+    missing_archive_rows = [r for r in rows if r["gtow_hand_id"] not in list_rows]
+    repaired_archive_rows = 0
+    if missing_archive_rows:
+        print(f"  detail prep: repairing {len(missing_archive_rows)} pending hands "
+              "missing raw list archive", flush=True)
+        repaired_archive_rows = await _repair_missing_list_rows(missing_archive_rows)
+        list_rows = _load_list_rows(rows, allow_missing=True)
+    missing_archive_hids = [r["gtow_hand_id"] for r in rows
+                            if r["gtow_hand_id"] not in list_rows]
+    if missing_archive_hids:
+        print(
+            "  detail prep: skipped "
+            f"{len(missing_archive_hids)} pending hands missing raw list archive "
+            "after targeted repair (left pending)",
+            flush=True,
+        )
+        rows = [r for r in rows if r["gtow_hand_id"] in list_rows]
     load_list_rows_s = time.monotonic() - load_started
     fetched = ndec = skipped_nodata = skipped_zeroloss = skipped_invalid = 0
     reconstruct_fallback = 0
@@ -480,6 +559,8 @@ async def sweep_detail(conn, limit: int | None, *, backfill_skipped: bool = Fals
           needs_detail=total_detail, fetched=fetched,
           skipped_nodata=skipped_nodata, skipped_zeroloss=skipped_zeroloss,
           skipped_invalid=skipped_invalid,
+          repaired_archive_rows=repaired_archive_rows,
+          skipped_missing_archive=len(missing_archive_hids),
           reconstruct_fallback=reconstruct_fallback, decisions=ndec)
     return fetched, ndec, skipped_zeroloss, reconstruct_fallback, skipped_invalid
 
@@ -493,7 +574,7 @@ def _find_list_row(list_path: Path, hand_id: str) -> dict:
     raise RuntimeError(f"list row for {hand_id} not in {list_path}")
 
 
-def _load_list_rows(rows) -> dict[str, dict]:
+def _load_list_rows(rows, *, allow_missing: bool = False) -> dict[str, dict]:
     """Load all list archive rows needed by a detail pass.
 
     The old path called _find_list_row() per pending hand, reopening and
@@ -509,6 +590,8 @@ def _load_list_rows(rows) -> dict[str, dict]:
 
     found: dict[str, dict] = {}
     for list_path, wanted in wanted_by_path.items():
+        if allow_missing and not list_path.exists():
+            continue
         with gzip.open(list_path, "rt") as f:
             for line in f:
                 row = json.loads(line)
@@ -519,7 +602,7 @@ def _load_list_rows(rows) -> dict[str, dict]:
                         break
 
     missing = [r["gtow_hand_id"] for r in rows if r["gtow_hand_id"] not in found]
-    if missing:
+    if missing and not allow_missing:
         raise RuntimeError(
             f"list rows missing from raw archive: {', '.join(missing[:5])}"
             + ("..." if len(missing) > 5 else "")
