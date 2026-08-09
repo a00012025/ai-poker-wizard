@@ -1485,8 +1485,9 @@ class GeminiSessionManager:
                     )
                 else:
                     coaching_instruction = (
-                        "逐街 GTO summary 已由系統另外顯示。教練段只解釋 deterministic "
-                        "教學骨架列出的焦點，不得評論骨架未選中的街；若用戶另問假設情境，"
+                        "逐街 GTO summary 已由系統另外顯示。教練段仍要依 deterministic "
+                        "教學骨架順序逐點帶過：每個正確決策附一個簡短理由，錯誤或反直覺"
+                        "焦點才深入解釋；若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
                 followup_instruction = (
@@ -1725,8 +1726,9 @@ class GeminiSessionManager:
                 )
             else:
                 img_coaching_instruction = (
-                    "逐街 GTO summary 已由系統另外顯示。教練段只解釋 deterministic "
-                    "教學骨架列出的焦點，不得評論骨架未選中的街。"
+                    "逐街 GTO summary 已由系統另外顯示。教練段仍要依 deterministic "
+                    "教學骨架順序逐點帶過：每個正確決策附一個簡短理由，錯誤或反直覺"
+                    "焦點才深入解釋。"
                 )
             teaching_block = self._initial_teaching_block(context)
             solver_prompt_data = (

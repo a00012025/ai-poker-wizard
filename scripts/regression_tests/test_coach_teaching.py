@@ -230,6 +230,202 @@ def _low_spr_88_context():
     }
 
 
+def _h3840_showdown_value_context():
+    """Synthetic H3840 turn: bottom pair still leads a verified draw region."""
+    import gto_formatter as gf
+
+    hero_hand = "Kc2c"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    hero_range = _arrays()
+    hero_range[hero_idx] = 1.0
+    villain_range = _arrays()
+    made = [-1] * 1326
+    draws = [-1] * 1326
+    made[hero_idx] = 0
+    draws[hero_idx] = 0
+
+    villain_combos = (
+        ("Qh8s", 1, 0), ("Qd7s", 1, 0), ("Qs6h", 1, 0),
+        ("Qd5s", 1, 0), ("JhTs", 0, 1), ("JdTc", 0, 1),
+        ("8d7c", 0, 1), ("6d5c", 0, 2), ("Ad3s", 0, 0),
+        ("9h2d", 2, 0),
+    )
+    for combo, made_index, draw_index in villain_combos:
+        idx = gf.combo_index_for_hand(combo)
+        villain_range[idx] = 1.0
+        made[idx] = made_index
+        draws[idx] = draw_index
+
+    percentiles = _arrays(-1.0)
+    equities = _arrays()
+    percentiles[hero_idx] = 0.50
+    equities[hero_idx] = 0.407
+
+    def action(code, total_frequency, hero_frequency, ev):
+        strategy = _arrays()
+        evs = _arrays(-9.0)
+        strategy[hero_idx] = hero_frequency
+        evs[hero_idx] = ev
+        return {
+            "action": {"code": code, "allin": code == "RAI"},
+            "total_frequency": total_frequency,
+            "strategy": strategy,
+            "evs": evs,
+        }
+
+    solution = {
+        "game": {
+            "active_position": "BB", "board": "9dQc4h2s", "pot": "9.15",
+            "pot_odds": "0.318",
+            "players": [
+                {"position": "SB", "relative_postflop_position": "OOP",
+                 "current_stack": "12.4", "is_folded": False},
+                {"position": "BB", "relative_postflop_position": "IP",
+                 "current_stack": "12.4", "is_folded": False},
+            ],
+        },
+        "action_solutions": [
+            action("F", 0.35, 0.005, 0.0),
+            action("C", 0.60, 0.946, 0.242),
+            action("RAI", 0.05, 0.049, 0.230),
+        ],
+        "players_info": [
+            {
+                "player": {"position": "BB"}, "range": hero_range,
+                "eq_percentile": percentiles, "hand_eqs": equities,
+                "total_eq": 0.428,
+                "hand_categories": [{"name": "low_pair", "index": 0,
+                                     "total_frequency": 1.0}],
+                "draw_categories": [{"name": "no_draw", "index": 0,
+                                     "total_frequency": 1.0}],
+            },
+            {
+                "player": {"position": "SB"}, "range": villain_range,
+                "total_eq": 0.572,
+                "hand_categories": [
+                    {"name": "no_made_hand", "index": 0, "total_frequency": 0.5},
+                    {"name": "top_pair", "index": 1, "total_frequency": 0.4},
+                    {"name": "two_pair", "index": 2, "total_frequency": 0.1},
+                ],
+                "draw_categories": [
+                    {"name": "no_draw", "index": 0, "total_frequency": 0.6},
+                    {"name": "gutshot", "index": 1, "total_frequency": 0.3},
+                    {"name": "oesd", "index": 2, "total_frequency": 0.1},
+                ],
+            },
+        ],
+        "hand_categories_range": made,
+        "draw_categories_range": draws,
+        "blocker_rate": _arrays(-1.0),
+        "unblocker_rate": _arrays(-1.0),
+    }
+    return {
+        "hand": {"hero_hand": hero_hand},
+        "hero_hand": "K2s", "hero_position": "BB",
+        "preflop_actions": "F-F-F-F-F-C-X",
+        "hero_spots": [{
+            "street": "turn", "taken_code": "F", "solver_hero_pos": "BB",
+            "params": {"preflop_actions": "F-F-F-F-F-C-X"},
+        }],
+        "solutions": [solution], "validation": {},
+    }
+
+
+def _h3841_mistake_focus_context():
+    """Synthetic H3841: a correct flop plus the missed turn draw shove."""
+    import gto_formatter as gf
+
+    hero_hand = "Qc3c"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    villain_idx = gf.combo_index_for_hand("AhKd")
+
+    def solution(board, action_specs, equity, pot):
+        hero_range = _arrays()
+        villain_range = _arrays()
+        hero_range[hero_idx] = 1.0
+        villain_range[villain_idx] = 1.0
+        percentiles = _arrays(-1.0)
+        equities = _arrays()
+        percentiles[hero_idx] = 0.45
+        equities[hero_idx] = equity
+        made = [0] * 1326
+        draws = [0] * 1326
+        draws[hero_idx] = 1 if len(board) == 8 else 0
+
+        def action(code, ratio, total_frequency, hero_frequency, ev):
+            strategy = _arrays()
+            evs = _arrays(-9.0)
+            strategy[hero_idx] = hero_frequency
+            evs[hero_idx] = ev
+            return {
+                "action": {
+                    "code": code, "allin": code == "RAI",
+                    "betsize_by_pot": ratio,
+                },
+                "total_frequency": total_frequency,
+                "strategy": strategy, "evs": evs,
+            }
+
+        return {
+            "game": {
+                "active_position": "BB", "board": board, "pot": str(pot),
+                "players": [
+                    {"position": "UTG+1", "relative_postflop_position": "IP",
+                     "current_stack": "13", "is_folded": False},
+                    {"position": "BB", "relative_postflop_position": "OOP",
+                     "current_stack": "13", "is_folded": False},
+                ],
+            },
+            "action_solutions": [action(*spec) for spec in action_specs],
+            "players_info": [
+                {
+                    "player": {"position": "BB"}, "range": hero_range,
+                    "eq_percentile": percentiles, "hand_eqs": equities,
+                    "total_eq": 0.40,
+                    "hand_categories": [{"name": "no_made_hand", "index": 0,
+                                         "total_frequency": 1.0}],
+                    "draw_categories": [
+                        {"name": "no_draw", "index": 0, "total_frequency": 0.5},
+                        {"name": "flush_draw", "index": 1, "total_frequency": 0.5},
+                    ],
+                },
+                {
+                    "player": {"position": "UTG+1"}, "range": villain_range,
+                    "total_eq": 0.60,
+                    "hand_categories": [{"name": "ace_high", "index": 0,
+                                         "total_frequency": 1.0}],
+                    "draw_categories": [{"name": "no_draw", "index": 0,
+                                         "total_frequency": 1.0}],
+                },
+            ],
+            "hand_categories_range": made,
+            "draw_categories_range": draws,
+            "blocker_rate": _arrays(-1.0),
+            "unblocker_rate": _arrays(-1.0),
+        }
+
+    flop = solution("Tc5h8h", [("X", None, 1.0, 1.0, 0.14)], 0.184, 4.0)
+    turn = solution(
+        "Tc5h8hJc",
+        [("F", None, 0.0, 0.0, 0.0), ("C", None, 0.001, 0.001, 1.588),
+         ("R4.8", 0.33, 0.20, 0.20, 1.795),
+         ("RAI", 1.45, 0.799, 0.799, 1.799)],
+        0.284, 7.30,
+    )
+    return {
+        "hand": {"hero_hand": hero_hand},
+        "hero_hand": "Q3s", "hero_position": "BB",
+        "preflop_actions": "F-R2-F-F-F-F-F-C",
+        "hero_spots": [
+            {"street": "flop", "taken_code": "X", "solver_hero_pos": "BB",
+             "params": {"preflop_actions": "F-R2-F-F-F-F-F-C"}},
+            {"street": "turn", "taken_code": "C", "solver_hero_pos": "BB",
+             "params": {"preflop_actions": "F-R2-F-F-F-F-F-C"}},
+        ],
+        "solutions": [flop, turn], "validation": {},
+    }
+
+
 def _value_size_context():
     """Synthetic river node where every reachable 44 uses the all-in bucket."""
     import gto_formatter as gf
@@ -483,8 +679,8 @@ def test_coach_teaching_real_fixture_builds_human_range_story():
 
 
 @test
-def test_coach_teaching_h3835_covers_every_hero_decision_without_overexplaining():
-    """H3835: five decisions are reviewed; only two remain deep-teaching focus."""
+def test_coach_teaching_h3835_reviews_each_street_with_a_concise_reason():
+    """H3835: every street gets a reason; only one remains the deep focus."""
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_h3835_multi_decision_context())
@@ -494,20 +690,25 @@ def test_coach_teaching_h3835_covers_every_hero_decision_without_overexplaining(
         [row["coverage_label"] for row in digest["all_decisions"]],
         ["Preflop", "Flop ①", "Flop ②", "Turn", "River"],
     )
-    assert_true(len(digest["decisions"]) <= 2, "deep explanations must stay selective")
+    assert_eq(len(digest["decisions"]), 1, "deep explanations must stay selective")
 
     prompt = ct.render_prompt_block(digest)
     for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
         assert_in(label, prompt)
-    assert_in("不得省略打對的決策", prompt)
+    assert_in("每一點都要附上一個簡短理由", prompt)
+    assert_in("不能只改寫成『正確選擇』", prompt)
 
     fallback = ct.render_fallback(digest)
     fallback_core = fallback.split("*為什麼*", 1)[0]
-    for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
-        assert_eq(fallback_core.count(label), 1, f"{label} must appear exactly once")
-    assert_true(ct.audit_draft(fallback, digest).ok)
+    for decision in digest["all_decisions"]:
+        label = decision["coverage_label"]
+        assert_eq(fallback_core.count(label), 1)
+        line = next(row for row in fallback_core.splitlines() if label in row)
+        assert_in("；", line, f"{label} needs a concise grounded reason")
+    fallback_audit = ct.audit_draft(fallback, digest)
+    assert_true(fallback_audit.ok, str(fallback_audit.violations))
 
-    narrator = (
+    redundant_narrator = (
         "*核心判斷*\n"
         "• Preflop：call 正確，solver 幾乎純用。\n"
         "• Flop ①：check 正確，solver 幾乎純用。\n"
@@ -520,17 +721,71 @@ def test_coach_teaching_h3835_covers_every_hero_decision_without_overexplaining(
         "*你要記得*\n"
         "把頻率偏好和 EV 錯誤分開；只適用目前 node。"
     )
-    narrator_audit = ct.audit_draft(narrator, digest)
-    assert_true(narrator_audit.ok, str(narrator_audit.violations))
+    audit = ct.audit_draft(redundant_narrator, digest)
+    assert_in("missing concise reason D1", audit.violations)
+    assert_in("missing concise reason D4", audit.violations)
 
-    river_only = (
-        "*核心判斷*\n• River：all-in 是 solver 保留的 mix。\n\n"
-        "*為什麼*\n這個 combo 主要 check。\n\n"
-        "*你要記得*\n只適用目前 node。"
+
+@test
+def test_coach_teaching_h3841_focuses_on_mistake_and_explains_equity_source():
+    """H3841: the missed turn shove, not a correct flop, owns the explanation."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3841_mistake_focus_context())
+    assert_true(digest is not None)
+    assert_eq([row["coverage_label"] for row in digest["decisions"]], ["Turn"])
+    decision = digest["decisions"][0]
+    assert_eq(decision["preferred_action"]["code"], "RAI")
+    assert_eq(decision["hero_role"]["made_hand"], "no_made_hand")
+    assert_in("同花聽牌", decision["hero_role"]["draw_summary"])
+    assert_in("卡順聽牌", decision["hero_role"]["draw_summary"])
+    assert_true(decision.get("draw_aggression") is not None)
+    assert_eq(
+        decision["causal_mechanisms"][0]["id"],
+        "draw_equity_aggressive_allocation",
     )
-    audit = ct.audit_draft(river_only, digest)
-    assert_in("missing decision coverage D1", audit.violations)
-    assert_in("missing decision coverage D4", audit.violations)
+
+    prompt = ct.render_prompt_block(digest)
+    assert_in("Equity 來源", prompt)
+    assert_in("同花聽牌", prompt)
+    assert_in("卡順聽牌", prompt)
+    assert_in("目前仍是未成牌", prompt)
+    assert_in("raise/all-in", prompt)
+    assert_not_in("只需用來支持整體計畫", prompt)
+    assert_not_in("不必列原始數字", prompt)
+
+    fallback = ct.render_fallback(digest)
+    why = fallback.split("*為什麼*", 1)[1].split("*你要記得*", 1)[0]
+    assert_in("同花聽牌", why)
+    assert_in("卡順聽牌", why)
+    assert_in("未成牌", why)
+    assert_in("all-in", why)
+    assert_not_in("Flop", why)
+    fallback_audit = ct.audit_draft(fallback, digest)
+    assert_true(fallback_audit.ok, str(fallback_audit.violations))
+
+
+@test
+def test_coach_teaching_h3840_explains_showdown_value_against_draws():
+    """H3840: bottom pair calls because it still leads verified unmade draws."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3840_showdown_value_context())
+    assert_true(digest is not None)
+    decision = digest["decisions"][0]
+    showdown = decision.get("showdown_value")
+    assert_true(showdown is not None)
+    assert_true(showdown["unpaired_draw_share"] >= 0.30)
+    assert_in("卡順聽牌", showdown["draw_labels"])
+    assert_in("兩頭順子聽牌", showdown["draw_labels"])
+    assert_eq(decision["causal_mechanisms"][0]["id"], "made_hand_showdown_buffer")
+
+    fallback = ct.render_fallback(digest)
+    assert_in("仍領先", fallback)
+    assert_in("未成牌", fallback)
+    assert_in("順", fallback)
+    assert_in("不需要領先整個下注 range", fallback)
+    assert_true(ct.audit_draft(fallback, digest).ok)
 
 
 @test
@@ -1048,7 +1303,7 @@ def test_coach_teaching_audit_allows_explanation_but_rejects_invented_nuts():
 
     long_draft = good.replace(
         "先看強牌結構",
-        "先看強牌結構，" + "不要逐項重述 solver 資料，" * 20,
+        "先看強牌結構，" + "不要逐項重述 solver 資料，" * 30,
     )
     long_audit = ct.audit_draft(long_draft, digest)
     assert_in("response too long", long_audit.violations)
@@ -1102,14 +1357,23 @@ def test_coach_teaching_keeps_low_reach_node_with_caveat():
     assert_in("少量到達", digest["decisions"][0]["scope"])
 
     missing_caveat = (
-        "*核心判斷*\nRiver bet 正確。\n\n"
+        "*核心判斷*\n• River：bet 正確。\n\n"
         "*為什麼*\nHJ 有更多同花與 set，這手牌是 range 底端 bluff。\n\n"
         "*你要記得*\n只適用這個 node。"
     )
     audit = ct.audit_draft(missing_caveat, digest)
     assert_in("missing low-reach caveat", audit.violations)
-    with_caveat = missing_caveat.replace("只適用", "這是前街低頻線後的條件式結論，只適用")
-    assert_true(ct.audit_draft(with_caveat, digest).ok)
+    with_caveat = missing_caveat.replace(
+        "River：bet 正確", "River：bet 正確（這個 combo 只少量到達此節點）",
+    )
+    caveat_audit = ct.audit_draft(with_caveat, digest)
+    assert_true(caveat_audit.ok, str(caveat_audit.violations))
+
+    fallback = ct.render_fallback(digest)
+    core = fallback.split("*為什麼*", 1)[0]
+    lesson = fallback.split("*你要記得*", 1)[1]
+    assert_in("少量到達", core)
+    assert_not_in("River 是前街低頻線", lesson)
 
 
 @test

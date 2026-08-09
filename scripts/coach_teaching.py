@@ -45,6 +45,7 @@ _DRAW_ZH = {
     "no_draw": "沒有聽牌",
     "onecard_bdfd": "單張後門同花潛力",
     "twocards_bdfd": "雙張後門同花潛力",
+    "backdoor_flush_draw": "後門同花潛力",
     "gutshot": "卡順聽牌",
     "oesd": "兩頭順子聽牌",
     "flush_draw": "同花聽牌",
@@ -84,6 +85,9 @@ _VALUE_MADE_HANDS = {
     "full_house", "quads", "straight_flush",
 }
 _UNPAIRED_CATEGORIES = {"no_made_hand", "king_high", "ace_high"}
+_LIVE_DRAW_CATEGORIES = {
+    "gutshot", "oesd", "flush_draw", "nut_flush_draw", "combo_draw",
+}
 _EXACT_MADE_TERMS = {
     "low_pair": ("小對", "小對子", "low pair"),
     "third_pair": ("第三對", "third pair"),
@@ -462,6 +466,11 @@ def _off_tree_decision(context: dict, spot: dict, solution: dict,
 
 def _decision_verdict(decision: dict) -> str:
     """Render one compact, deterministic verdict for the narrator contract."""
+    def scoped(verdict: str) -> str:
+        if decision.get("confidence") == "medium":
+            return verdict + "（這個 combo 只少量到達此節點）"
+        return verdict
+
     actual = decision.get("actual_action")
     if decision.get("off_tree"):
         label = (actual or {}).get("label") or "實戰動作"
@@ -472,21 +481,58 @@ def _decision_verdict(decision: dict) -> str:
     preferred = decision["preferred_action"]
     loss = decision.get("ev_loss_pot") or 0.0
     if not actual:
-        return f"solver 最偏好 {preferred['label']}"
+        return scoped(f"solver 最偏好 {preferred['label']}")
     if loss >= 0.003:
-        return f"{actual['label']} 有實質 EV 損失，應偏向 {preferred['label']}"
+        return scoped(f"{actual['label']} 有實質 EV 損失，應偏向 {preferred['label']}")
     if actual.get("code") == preferred.get("code"):
         purity = "幾乎純用" if preferred.get("frequency", 0.0) >= 0.97 else "最常用"
-        return f"{actual['label']} 正確，solver {purity}這個動作"
+        return scoped(f"{actual['label']} 正確，solver {purity}這個動作")
     if actual.get("frequency", 0.0) >= 0.01:
-        return (
+        return scoped(
             f"{actual['label']} 是 solver 保留的 mix，"
             f"但主要動作是 {preferred['label']}"
         )
-    return (
+    return scoped(
         f"{actual['label']} 的 EV 影響很小，但不在可採信的 solver mix，"
         f"應偏向 {preferred['label']}"
     )
+
+
+def _decision_brief_reason(decision: dict) -> str:
+    """One grounded reason for the sequential street-by-street review."""
+    if decision.get("off_tree"):
+        return "這個 exact combo 在 solver 中 0% 到達，缺少可比較的 action EV"
+    if decision.get("street") == "preflop":
+        preferred = decision.get("preferred_action") or {}
+        purity = "幾乎純用" if preferred.get("frequency", 0.0) >= 0.97 else "以此動作為主"
+        return f"這個 hand class 在目前 preflop node {purity} {preferred.get('label', '該動作')}"
+    if decision.get("draw_aggression"):
+        story = decision["draw_aggression"]
+        return (
+            f"目前仍是未成牌，equity 來自{'與'.join(story['draw_labels'])}，"
+            "solver 把它分配到 raise/all-in 而非被動 call"
+        )
+    if decision.get("showdown_value"):
+        story = decision["showdown_value"]
+        return (
+            f"{story['made_hand_label']}仍領先對手下注 range 中的未成牌聽牌，"
+            "配合價格不應 fold"
+        )
+    if decision.get("equity_denial"):
+        return decision["equity_denial"]["interpretation"].split("。", 1)[0]
+    if decision.get("mix_strategy"):
+        return decision["mix_strategy"]["interpretation"].split("；", 1)[0]
+    role = decision.get("hero_role") or {}
+    plan = decision.get("range_plan") or {}
+    if plan.get("strength") in {"very_strong", "strong"}:
+        return (
+            f"{plan.get('text')}，而這手是{role.get('range_band')}的"
+            f"{role.get('made_hand_label')}、{role.get('draw_summary', role.get('draw_label'))}"
+        )
+    contract = decision.get("action_contract") or {}
+    if contract.get("summary"):
+        return contract["summary"]
+    return "exact combo 的 solver action 與目前牌力角色一致"
 
 
 def _label_all_decisions(decisions: list[dict]) -> None:
@@ -509,6 +555,7 @@ def _label_all_decisions(decisions: list[dict]) -> None:
         decision["decision_id"] = f"D{index}"
         decision["coverage_label"] = street_names[street] + suffix
         decision["coverage_verdict"] = _decision_verdict(decision)
+        decision["coverage_reason"] = _decision_brief_reason(decision)
 
 
 def _best_in_mix_action(actions: list[dict]) -> dict:
@@ -698,8 +745,8 @@ def _range_equity_story(hero: str, villain: str, hero_pi: dict, villain_pi: dict
     elif check >= 0.95 and gap <= -0.04:
         use = "supports_plan"
         interpretation = (
-            f"{hero} 的 range equity 劣勢與近乎全 range check 同方向；"
-            "只需用來支持整體計畫，不必列原始數字"
+            f"{hero} 的 range equity 落後，而 solver 同時採近乎全 range check；"
+            "這只描述整體策略方向，不決定單一 combo 的動作"
         )
     elif aggression >= 0.75 and gap >= 0.04:
         use = "supports_plan"
@@ -746,6 +793,131 @@ def _defense_price_story(node: dict, combo_equity: float | None,
         "interpretation": (
             "這個 combo 的 raw equity 明顯高於面對此 size 的直接 pot odds，"
             "而且 solver 讓它高頻繼續；下注價格與防守門檻比平均 range equity 更直接"
+        ),
+    }
+
+
+def _verified_live_draws(hand_truth: dict | None) -> list[str]:
+    """Return every poker-rules draw that can improve on the next card."""
+    return [
+        draw for draw in (hand_truth or {}).get("draws") or []
+        if draw in _LIVE_DRAW_CATEGORIES
+    ]
+
+
+def _draw_aggression_story(made_category: str | None,
+                           hand_truth: dict | None,
+                           combo_equity: float | None,
+                           preferred: dict,
+                           action_contract: dict) -> dict | None:
+    """Explain where an unmade aggressive draw gets its equity.
+
+    The current node proves the exact combo's raw equity and action
+    allocation.  It does not expose Villain's response to the raise, so fold
+    pressure may be described qualitatively but never assigned a percentage.
+    """
+    live_draws = _verified_live_draws(hand_truth)
+    has_multiple_sources = (
+        len(live_draws) >= 2 or "combo_draw" in live_draws
+    )
+    frequencies = action_contract.get("frequencies") or {}
+    aggressive_frequency = sum(
+        frequency for code, frequency in frequencies.items()
+        if (code or "").startswith("R")
+    )
+    call_frequency = frequencies.get("C", 0.0)
+    if (
+        made_category not in _UNPAIRED_CATEGORIES
+        or not has_multiple_sources
+        or combo_equity is None
+        or not (preferred.get("code") or "").startswith("R")
+        or aggressive_frequency < 0.90
+        or call_frequency > 0.05
+    ):
+        return None
+    draw_labels = [_DRAW_ZH.get(draw, draw) for draw in live_draws]
+    return {
+        "live_draws": live_draws,
+        "draw_labels": draw_labels,
+        "draw_summary": "＋".join(draw_labels),
+        "combo_equity": combo_equity,
+        "aggressive_frequency": aggressive_frequency,
+        "call_frequency": call_frequency,
+        "preferred_label": preferred["label"],
+        "interpretation": (
+            f"Hero 仍是未成牌，改善 equity 來自{'與'.join(draw_labels)}。"
+            f"Solver 幾乎不 call，而把它分到 raise/all-in、以 {preferred['label']} 為主；"
+            "這是有改善 equity 的半詐唬。聽牌讓被跟注後仍能改善，加注則施加"
+            "棄牌壓力，但目前資料不能量化 fold equity"
+        ),
+    }
+
+
+def _villain_unpaired_story(solution: dict, villain_pi: dict) -> dict | None:
+    """Join Villain's made/draw category arrays at the current solved node."""
+    made_indices = solution.get("hand_categories_range") or []
+    draw_indices = solution.get("draw_categories_range") or []
+    villain_range = villain_pi.get("range") or []
+    made_names = {
+        row.get("index"): _normalize_category(row.get("name"))
+        for row in villain_pi.get("hand_categories") or []
+    }
+    draw_names = {
+        row.get("index"): row.get("name")
+        for row in villain_pi.get("draw_categories") or []
+    }
+    total = sum(_float(weight) for weight in villain_range)
+    if total <= 0:
+        return None
+    draw_mass = 0.0
+    air_mass = 0.0
+    live_draws: set[str] = set()
+    for index, raw_weight in enumerate(villain_range):
+        weight = _float(raw_weight)
+        if (
+            weight <= 0 or index >= len(made_indices)
+            or index >= len(draw_indices)
+        ):
+            continue
+        made = made_names.get(made_indices[index])
+        draw = draw_names.get(draw_indices[index])
+        if made not in _UNPAIRED_CATEGORIES:
+            continue
+        if draw in _LIVE_DRAW_CATEGORIES:
+            draw_mass += weight
+            live_draws.add(draw)
+        elif draw == "no_draw":
+            air_mass += weight
+    return {
+        "unpaired_draw_share": draw_mass / total,
+        "unpaired_air_share": air_mass / total,
+        "live_draws": sorted(live_draws),
+    }
+
+
+def _showdown_value_story(solution: dict, villain: str, villain_pi: dict,
+                           made_category: str | None,
+                           defense_price: dict | None) -> dict | None:
+    """Show when a made hand still beats a meaningful unpaired draw region."""
+    if made_category not in _VULNERABLE_MADE_HANDS or not defense_price:
+        return None
+    unpaired = _villain_unpaired_story(solution, villain_pi)
+    if not unpaired or unpaired["unpaired_draw_share"] < 0.10:
+        return None
+    draw_labels = [
+        _DRAW_ZH.get(draw, draw) for draw in unpaired["live_draws"]
+    ]
+    made_label = _MADE_ZH.get(made_category, made_category)
+    draw_text = "、".join(draw_labels)
+    return {
+        **unpaired,
+        "villain": villain,
+        "made_hand_label": made_label,
+        "draw_labels": draw_labels,
+        "interpretation": (
+            f"Hero 的{made_label}目前仍領先 {villain} 下注 range 中的一批未成牌，"
+            f"包括{draw_text}，所以仍有攤牌價值。配合下注價格，Hero 不需要領先"
+            "整個下注 range 也能繼續；這只支持不 fold，不能單靠它區分 call 與 raise"
         ),
     }
 
@@ -1197,6 +1369,10 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
             if candidate in truth_draws:
                 draw_category = candidate
                 break
+    live_draws = _verified_live_draws(hand_truth)
+    draw_summary = "＋".join(
+        _DRAW_ZH.get(draw, draw) for draw in live_draws
+    ) or _DRAW_ZH.get(draw_category, draw_category or "聽牌狀態未知")
     percentiles = hero_pi.get("eq_percentile") or []
     percentile = _float(percentiles[combo_idx], -1.0) if combo_idx < len(percentiles) else -1.0
     band = _range_band(percentile if percentile >= 0 else None)
@@ -1227,6 +1403,12 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     defense_price = _defense_price_story(
         node_context, combo_equity, actual, preferred, action_contract,
     )
+    showdown_value = _showdown_value_story(
+        solution, villain, villain_pi, made_category, defense_price,
+    )
+    draw_aggression = _draw_aggression_story(
+        made_category, hand_truth, combo_equity, preferred, action_contract,
+    )
     equity_denial = _equity_denial_story(
         solution, villain_pi, node_context, made_category, preferred,
     )
@@ -1246,6 +1428,8 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
             "made_hand_label": _MADE_ZH.get(made_category, made_category or "未知牌型"),
             "draw": draw_category,
             "draw_label": _DRAW_ZH.get(draw_category, draw_category or "聽牌狀態未知"),
+            "live_draws": live_draws,
+            "draw_summary": draw_summary,
             "combo_equity": combo_equity,
             "deterministic_hand": hand_truth,
         },
@@ -1261,6 +1445,8 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "range_equity": range_equity,
         "range_structure": range_structure,
         "defense_price": defense_price,
+        "showdown_value": showdown_value,
+        "draw_aggression": draw_aggression,
         "equity_denial": equity_denial,
         "range_evidence": evidence,
         "size_structure": size_structure,
@@ -1298,7 +1484,10 @@ def _teaching_score(decision: dict) -> float:
         score += 1.5
     if decision.get("blocker") and decision["blocker"]["direction"] != "neutral":
         score += 1.0
-    if decision.get("equity_denial") or decision.get("defense_price"):
+    if (
+        decision.get("equity_denial") or decision.get("defense_price")
+        or decision.get("showdown_value") or decision.get("draw_aggression")
+    ):
         score += 1.5
     if (decision.get("range_equity") or {}).get("use") != "omit":
         score += 0.5
@@ -1337,14 +1526,11 @@ def build_teaching_digest(context: dict) -> dict | None:
         row for row in postflop_decisions
         if (row.get("ev_loss_pot") or 0.0) >= 0.003
     ]
-    selected = []
-    if deviations:
-        selected.append(max(deviations, key=lambda row: row.get("ev_loss_pot") or 0.0))
-    remaining = [row for row in postflop_decisions if row not in selected]
-    if remaining:
-        best_teaching = max(remaining, key=_teaching_score)
-        if not selected or _teaching_score(best_teaching) >= 2.0:
-            selected.append(best_teaching)
+    selected = sorted(
+        deviations,
+        key=lambda row: row.get("ev_loss_pot") or 0.0,
+        reverse=True,
+    )[:2]
     if not selected and postflop_decisions:
         selected = [max(postflop_decisions, key=_teaching_score)]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
@@ -1353,12 +1539,29 @@ def build_teaching_digest(context: dict) -> dict | None:
     allowed_percentages = set()
     allowed_bb = set()
     for row in all_decisions:
+        role = row.get("hero_role") or {}
+        if role.get("made_hand"):
+            allowed_categories.add(role["made_hand"])
+        all_live_draws = set(role.get("live_draws") or [])
+        if role.get("draw") in {"flush_draw", "nut_flush_draw"} or all_live_draws.intersection(
+            {"flush_draw", "nut_flush_draw", "combo_draw"}
+        ):
+            allowed_categories.add("flush_draw")
+        if role.get("draw") in {"onecard_bdfd", "twocards_bdfd", "backdoor_flush_draw"}:
+            allowed_categories.add("backdoor_flush")
+        if role.get("draw") in {"gutshot", "oesd"} or all_live_draws.intersection(
+            {"gutshot", "oesd", "combo_draw"}
+        ):
+            allowed_categories.add("straight_draw")
         for action_key in ("actual_action", "preferred_action", "best_action_by_ev"):
             action = row.get(action_key)
             if action:
                 allowed_percentages.add(round(100 * action["frequency"], 1))
                 if action["pot_ratio"] >= 0:
                     allowed_percentages.add(round(100 * action["pot_ratio"], 1))
+        for action in row.get("available_actions") or []:
+            if action.get("frequency", 0.0) >= 0.005 and action.get("pot_ratio", -1.0) >= 0:
+                allowed_percentages.add(round(100 * action["pot_ratio"], 1))
         if row.get("ev_loss_bb") is not None:
             allowed_bb.add(round(row["ev_loss_bb"], 3))
         if row.get("ev_loss_pot") is not None:
@@ -1367,12 +1570,23 @@ def build_teaching_digest(context: dict) -> dict | None:
         role = row["hero_role"]
         if role.get("made_hand"):
             allowed_categories.add(role["made_hand"])
-        if role.get("draw") in {"flush_draw", "nut_flush_draw"}:
+        live_draws = set(role.get("live_draws") or [])
+        if role.get("draw") in {"flush_draw", "nut_flush_draw"} or live_draws.intersection(
+            {"flush_draw", "nut_flush_draw", "combo_draw"}
+        ):
             allowed_categories.add("flush_draw")
         if role.get("draw") in {"onecard_bdfd", "twocards_bdfd"}:
             allowed_categories.add("backdoor_flush")
-        if role.get("draw") in {"gutshot", "oesd"}:
+        if role.get("draw") in {"gutshot", "oesd"} or live_draws.intersection(
+            {"gutshot", "oesd", "combo_draw"}
+        ):
             allowed_categories.add("straight_draw")
+        showdown = row.get("showdown_value") or {}
+        for draw in showdown.get("live_draws") or []:
+            if draw in {"flush_draw", "nut_flush_draw", "combo_draw"}:
+                allowed_categories.add("flush_draw")
+            if draw in {"gutshot", "oesd", "combo_draw"}:
+                allowed_categories.add("straight_draw")
         for evidence in row["range_evidence"]:
             allowed_categories.add(evidence["category"])
             allowed_percentages |= {
@@ -1575,15 +1789,16 @@ def render_prompt_block(digest: dict | None) -> str:
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
         "",
-        "【逐點判定｜核心判斷必須依序涵蓋每一點】",
+        "【逐點教練｜核心判斷必須依序涵蓋每一點】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
         lines.append(
-            f"• {decision['decision_id']}｜{decision['coverage_label']}："
-            f"{decision['coverage_verdict']}。"
+            f"• {decision['coverage_label']}："
+            f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
     lines.extend([
-        "• 上述每點只需一句；非焦點不得自行補因果，exact combo mix 本身就是足夠理由。",
+        "• 上述每點只需一句，但每一點都要附上一個簡短理由；不能只改寫成『正確選擇』。",
+        "• 非焦點只能使用上方提供的簡短理由，不得自行補因果；exact combo mix 本身就是足夠理由。",
         "• off-tree 節點必須照寫『無法判定對錯』，並把學習焦點指回最後一個可評分節點；不得改判為正確或錯誤。",
         "",
         "【深講焦點｜只在 *為什麼* 展開】",
@@ -1622,7 +1837,7 @@ def render_prompt_block(digest: dict | None) -> str:
             f"焦點 {index}｜{decision['street'].capitalize()} {decision['board']}",
             f"• 核心判定：{verdict}；solver 最常用 {preferred['label']}（約 {_pct(preferred['frequency'])}%）。",
             f"• Actor lock：{decision['node_context']['actor_lock']}；不可交換位置、preflop role 或 IP/OOP。",
-            f"• Hero 角色：{role['range_band']}的{role['made_hand_label']}，{role['draw_label']}。",
+            f"• Hero 角色：{role['range_band']}的{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}。",
             f"• Exact combo action：{decision['action_contract']['summary']}。",
             f"• 主要機制：{decision['drivers']['primary']}。",
             f"• 已觀測 range plan：{decision['range_plan']['text']}。",
@@ -1658,6 +1873,12 @@ def render_prompt_block(digest: dict | None) -> str:
             )
         if decision.get("defense_price"):
             lines.append(f"• Price/defense：{decision['defense_price']['interpretation']}。")
+        if decision.get("showdown_value"):
+            lines.append(f"• Showdown value：{decision['showdown_value']['interpretation']}。")
+        if decision.get("draw_aggression"):
+            lines.append(
+                f"• Equity 來源／進攻分配：{decision['draw_aggression']['interpretation']}。"
+            )
         if decision.get("equity_denial"):
             lines.append(f"• Equity denial：{decision['equity_denial']['interpretation']}。")
         if decision.get("mix_strategy"):
@@ -1707,12 +1928,14 @@ def render_prompt_block(digest: dict | None) -> str:
         "【輸出契約】",
         "只輸出三段：*核心判斷*、*為什麼*、*你要記得*。",
         "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
-        "*核心判斷* 必須按 D1、D2…順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用逐點判定提供的原樣標籤；只有一個 Flop 決策時就寫 Flop，不得自行加 ①。",
-        "每個 bullet 只寫『Hero 動作如何＋solver 偏好』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
-        "逐點判定可評價所有 D# 的正誤或 mix；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
+        "*核心判斷* 必須按逐點教練的順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用上方提供的原樣標籤；只有一個 Flop 決策時就寫 Flop，不得自行加 ①。",
+        "每個 bullet 依序寫『Hero 動作如何＋一個簡短、已提供的理由』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
+        "正確決策不能只寫『正確選擇』；分號後要說明是 range plan、牌力／聽牌角色、價格、mix 或 exact-combo allocation 的哪一項支持它。",
+        "逐點教練可評價所有決策的正誤或 mix，並各給一個簡短理由；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
         "若沒有深講焦點，*為什麼* 只說 exact combo strategy 已足以判定，不補一般牌理。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
+        "若逐點教練寫明『這個 combo 只少量到達此節點』，必須在同一個核心 bullet 原樣保留；不得移到別街或只放在結尾。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
@@ -1722,10 +1945,11 @@ def render_prompt_block(digest: dict | None) -> str:
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
         "只有骨架明示 Equity denial 時，才能談低 SPR、脆弱成牌與拒絕便宜 realization；不得虛構對手精確 fold equity。",
         "Pot odds／raw equity 只能支持『繼續而非 fold』，不能單獨用來選 call、raise 或 all-in。",
+        "只有骨架明示 Equity 來源／進攻分配時，才能把未成牌稱為半詐唬；必須先說 equity 來自哪些已驗證聽牌，再說 exact combo 被分到 raise/all-in。",
         "只有骨架明示 Exact-class sizing 時，才能說同 hand class 被分配到某個 size；這不等於整體 range 更極化。",
         "Blocker 只能沿用骨架給的方向；不可自行聲稱 Hero 阻擋某個具體 combo、順子、同花或 nuts。",
         "Opponent-card conditional delta 是『Villain 持該牌時 Hero 策略如何變』；不得倒轉成 Hero 持牌造成的 blocker 故事。",
-        "不得把脆弱成牌稱為半詐唬，也不要自行加入乾濕、連接性、驚悚牌等未驗證的 board texture。",
+        "不得把脆弱成牌稱為半詐唬；沒有 Equity 來源／進攻分配事實時也不得自行使用半詐唬。不要加入乾濕、連接性、驚悚牌等未驗證的 board texture。",
         "強牌類別差距只能說『誰的同花／set／兩對等更多』；不可擴寫成整體 range 或牌面必然有利／不利。",
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
@@ -1769,21 +1993,26 @@ def render_fallback(digest: dict) -> str:
             )
         return f"應偏向 {preferred['label']}"
 
-    core_parts = [
-        f"• {decision['coverage_label']}：{_core(decision)}"
-        for decision in coverage
-    ]
+    core_parts = []
+    for decision in coverage:
+        verdict = _core(decision)
+        if decision.get("confidence") == "medium":
+            verdict += "（這個 combo 只少量到達此節點）"
+        core_parts.append(
+            f"• {decision['coverage_label']}：{verdict}；{decision['coverage_reason']}"
+        )
     reasons = []
     for decision in focus:
         role = decision["hero_role"]
-        pieces = [
-            f"{decision['street'].capitalize()} 時它是 {role['range_band']}的"
-            f"{role['made_hand_label']}，{role['draw_label']}"
-        ]
-        if decision.get("equity_denial"):
+        pieces = []
+        if decision.get("draw_aggression"):
+            pieces.append(decision["draw_aggression"]["interpretation"])
+        elif decision.get("equity_denial"):
             pieces.append(decision["equity_denial"]["interpretation"])
         elif decision.get("mix_strategy"):
             pieces.append(decision["mix_strategy"]["interpretation"])
+        elif decision.get("showdown_value"):
+            pieces.append(decision["showdown_value"]["interpretation"])
         elif decision.get("defense_price"):
             pieces.append(decision["defense_price"]["interpretation"])
         elif decision.get("size_choice"):
@@ -1795,6 +2024,11 @@ def render_fallback(digest: dict) -> str:
             )
         elif (decision.get("range_equity") or {}).get("use") != "omit":
             pieces.append(decision["range_equity"]["interpretation"])
+        if not pieces:
+            pieces.append(
+                f"{decision['street'].capitalize()} 時它是 {role['range_band']}的"
+                f"{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}"
+            )
         category_story = _category_sentence(decision)
         if category_story:
             pieces.append(category_story)
@@ -1812,7 +2046,13 @@ def render_fallback(digest: dict) -> str:
         blocker = decision.get("blocker")
         if blocker and blocker["direction"] != "neutral":
             pieces.append(blocker["interpretation"])
-        elif not category_story:
+        elif (
+            not category_story
+            and not any(decision.get(key) for key in (
+                "draw_aggression", "equity_denial", "mix_strategy",
+                "showdown_value", "defense_price", "size_choice",
+            ))
+        ):
             pieces.append(decision["range_plan"]["text"])
         reasons.append("；".join(pieces) + "。")
 
@@ -1851,7 +2091,9 @@ def render_fallback(digest: dict) -> str:
 
     lesson = {
         "低 SPR 下的 equity denial 與脆弱成牌保護": "低 SPR 面對大注時，脆弱成牌可能用 jam 向未成牌與聽牌收取 realization 代價；不要只看平均 range equity。",
+        "聽牌 equity 來源與進攻分配": "面對打光決策，先問目前是價值牌還是未成牌；若是未成牌，要說清楚 equity 來自哪些聽牌，再看 solver 把它分配到 call 還是 raise/all-in。",
         "exact combo 的 mixed strategy 分配": "solver 明確保留的 mix 分支都不是錯誤；把頻率偏好和 EV 損失分開學，並且只在同一個 node 套用。",
+        "成牌對未成牌的攤牌價值與防守價格": "面對下注時，小對不必領先整個下注 range；只要仍領先其中的未成牌與聽牌，再配合價格，就可能足以繼續。",
         "下注價格、整體防守門檻與 Hero 在自身 range 的位置": "range 劣勢不等於 fold；先比較下注價格與防守門檻，再看 exact combo 在自身 range 的位置。",
         "價值 hand class 的 size allocation": "價值牌的 size 要看 solver 把這個 hand class 分配到哪個下注 bucket；平均 range equity 不能替你選 size。",
         "整體 range strategy": "當 solver 在同一節點採近乎全 range 的計畫時，先服從 range-level strategy，再談單一 combo 的微調。",
@@ -1889,14 +2131,11 @@ def render_fallback(digest: dict) -> str:
             "價值牌先看同類手牌被分到哪個 size；只有比較過各 size 的實際 "
             "range construction，才能判斷較大 size 是否同時含更多強牌與 bluff。"
         )
-    reach_note = ""
-    if any(decision.get("confidence") == "medium" for decision in coverage):
-        reach_note = "River 是前街低頻線後的條件式結論。"
     core_text = "\n".join(core_parts)
     return (
         f"*核心判斷*\n{core_text}\n\n"
         f"*為什麼*\n{' '.join(reasons)}\n\n"
-        f"*你要記得*\n{lesson}{reach_note}這條結論只適用目前的深度、牌面與 action line。"
+        f"*你要記得*\n{lesson}這條結論只適用目前的深度、牌面與 action line。"
     )
 
 
@@ -2353,21 +2592,45 @@ def _audit_selected_streets(body: str, digest: dict) -> list[str]:
 
 
 def _audit_decision_coverage(body: str, digest: dict) -> list[str]:
-    """Every solved Hero decision must appear in the core review exactly once."""
+    """Every decision appears once; multi-street reviews must add a reason."""
     core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
     violations = []
-    for decision in _covered_decisions(digest):
+    covered = _covered_decisions(digest)
+    require_reasons = len(covered) >= 3
+    for decision in covered:
         label = decision.get("coverage_label")
+        label_pattern = (
+            rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]*[：:]"
+            if len(covered) > 1
+            else rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])"
+        )
         label_count = (
             len(re.findall(
-                rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
+                label_pattern,
                 core,
-                re.I,
+                re.I | re.M,
             ))
             if label else 0
         )
         if label and label_count != 1:
             violations.append(f"missing decision coverage {decision.get('decision_id', label)}")
+        line = next(
+            (
+                row for row in core.splitlines()
+                if label and re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
+                    row,
+                    re.I,
+                )
+            ),
+            "",
+        )
+        if require_reasons and line:
+            reason = re.split(r"[；;]", line, maxsplit=1)
+            if len(reason) < 2 or len(re.sub(r"\s+", "", reason[1])) < 6:
+                violations.append(
+                    f"missing concise reason {decision.get('decision_id', label)}"
+                )
         if label and not re.search(r"[①②③④⑤⑥]", label):
             if re.search(
                 rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]+[①②③④⑤⑥][ \t]*[：:]",
@@ -2746,8 +3009,22 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         if supported_sprs and not any(abs(claimed - value) <= 0.10 for value in supported_sprs):
             violations.append(f"SPR mismatch {match.group(1)}")
 
-    if re.search(r"(?:半詐唬|semi[- ]?bluff)", lowered, re.I):
+    supports_draw_aggression = any(
+        row.get("draw_aggression") for row in digest["decisions"]
+    )
+    if (
+        re.search(r"(?:半詐唬|semi[- ]?bluff)", lowered, re.I)
+        and not supports_draw_aggression
+    ):
         violations.append("unsupported semi-bluff label")
+    if supports_draw_aggression and not re.search(
+        r"(?:equity|勝率)[^。；\n]{0,16}(?:來源|來自|改善)|"
+        r"(?:改善牌|補成)[^。；\n]{0,16}(?:同花|順子)|"
+        r"(?:同花聽牌|花聽)[^。；\n]{0,24}(?:卡順|順子聽牌)",
+        body,
+        re.I,
+    ):
+        violations.append("missing draw-equity source")
 
     supports_range_direction = any(
         (row.get("range_equity") or {}).get("use") == "supports_plan"
@@ -2782,14 +3059,21 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         violations.append("contradictory value-bluff label")
     for sentence in re.split(r"[。！？\n]", body):
         sentence_lower = sentence.lower()
+        transition_sentence = re.sub(
+            r"(?:改善|補成)[^。；\n]{0,8}(?:equity|勝率|牌|來源)|"
+            r"(?:equity|勝率)[^。；\n]{0,8}(?:改善|來源)",
+            "",
+            sentence_lower,
+            flags=re.I,
+        )
         names_a_street = re.search(
-            r"(?:flop|turn|river|翻牌|轉牌|河牌)", sentence_lower,
+            r"(?:flop|turn|river|翻牌|轉牌|河牌)", transition_sentence,
         )
         claims_transition = re.search(
             r"(?:幫助|增強|提升|改善|削弱|改變|help|improv|strengthen|weaken|shift)",
-            sentence_lower,
+            transition_sentence,
         )
-        names_range = "range" in sentence_lower or "範圍" in sentence
+        names_range = "range" in transition_sentence or "範圍" in transition_sentence
         if names_a_street and claims_transition and names_range:
             violations.append("unsupported range-transition claim")
             break
@@ -2823,7 +3107,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     required_headers = ("*核心判斷*", "*為什麼*", "*你要記得*")
     if any(header not in body for header in required_headers):
         violations.append("missing teaching structure")
-    response_limit = min(720, 360 + max(0, len(_covered_decisions(digest)) - 2) * 80)
+    response_limit = min(760, 420 + max(0, len(_covered_decisions(digest)) - 2) * 80)
     if len(re.sub(r"\s+", "", body)) > response_limit:
         violations.append("response too long")
     if any(row.get("confidence") == "medium" for row in _covered_decisions(digest)):
