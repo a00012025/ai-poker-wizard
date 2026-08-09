@@ -95,18 +95,28 @@ LIMIT {TOP_SPOTS}
 """
 
 _TOP_DECISIONS_SQL = f"""
-SELECT gtow_hand_id ref_hand_id, street, decision_idx, spot_leaf, spot_category,
-       hero_cat, villain_cat, ip_oop, position hero_pos, ev_loss_bb, approx_flags,
-       played_at, taken_code, best_code, correctness, pot_type, eff_stack, gametype,
-       played_depth_bb, solver_depth_bb,
+WITH top_decisions AS (
+  SELECT *
+  FROM ledger_decisions
+  WHERE {qf._HONEST} AND ev_loss_bb >= {LOSSY_MIN_BB} AND {_IN_SESSION}
+  ORDER BY ev_loss_bb DESC, played_at DESC
+  LIMIT {TOP_DECISIONS}
+)
+SELECT d.gtow_hand_id ref_hand_id, d.street, d.decision_idx,
+       d.spot_leaf, d.spot_category, d.hero_cat, d.villain_cat, d.ip_oop,
+       coalesce(nullif(h.position, ''), d.position) hero_pos,
+       d.ev_loss_bb, d.approx_flags,
+       d.played_at, d.taken_code, d.best_code, d.correctness, d.pot_type,
+       d.eff_stack, d.gametype, d.played_depth_bb, d.solver_depth_bb,
+       h.hero_hand, h.boards, h.raw_path, h.preflop_depth_bb,
        jsonb_build_array(jsonb_build_object(
-           'hand_id', gtow_hand_id, 'street', street,
-           'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
-           'taken_code', taken_code, 'best_code', best_code, 'src', source)) source_hands
-FROM ledger_decisions
-WHERE {qf._HONEST} AND ev_loss_bb >= {LOSSY_MIN_BB} AND {_IN_SESSION}
-ORDER BY ev_loss_bb DESC, played_at DESC
-LIMIT {TOP_DECISIONS}
+           'hand_id', d.gtow_hand_id, 'street', d.street,
+           'decision_idx', d.decision_idx, 'ev_loss_bb', d.ev_loss_bb,
+           'taken_code', d.taken_code, 'best_code', d.best_code,
+           'src', d.source)) source_hands
+FROM top_decisions d
+JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
+ORDER BY d.ev_loss_bb DESC, d.played_at DESC
 """
 
 _HAND_META_SQL = ("SELECT hero_hand, boards, raw_path, position, preflop_depth_bb "
@@ -209,17 +219,9 @@ async def _decision_items(conn, session_id: int,
     out = []
     for r in rows:
         row = dict(r)
-        meta = await conn.fetchrow(_HAND_META_SQL, row["ref_hand_id"])
-        if meta:
-            row["hero_hand"] = meta["hero_hand"]
-            row["boards"] = meta["boards"]
-            row["raw_path"] = meta["raw_path"]
-            row["hero_pos"] = meta["position"] or row.get("hero_pos")
-            row["preflop_depth_bb"] = meta["preflop_depth_bb"]
         entries = qf._as_list(row["source_hands"])
         hand_urls = qf.gtow_analyze_hands_urls([row["ref_hand_id"]])
         exact_url = hand_urls[0][0] if hand_urls else None
-        drill_url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
         action_ctx = decision_action_context(row)
         is_real_hu = bool(action_ctx.get("is_real_hu"))
         row["max_ev"] = row.get("ev_loss_bb")
@@ -240,7 +242,10 @@ async def _decision_items(conn, session_id: int,
             "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
             "exact_url": exact_url,
             "study_url": study_url,
-            "drill_url": drill_url,
+            # Decision rows expose Analyze/Study review links. Their queue item
+            # also persists the exact Analyze URL, so building a separate
+            # Trainer URL here was dead work (and an N+1 DB/API path).
+            "drill_url": None,
             "enqueue_item": {
                 "kind": "review", "added_by": "session", "source": "online",
                 "ref_hand_id": row["ref_hand_id"], "spot_leaf": row.get("spot_leaf"),
@@ -565,10 +570,22 @@ def decision_mark(i: int) -> str:
 
 async def compute(conn, session: dict, user_id: int | None = None) -> dict:
     sid = session["id"]
-    ov = await conn.fetchrow(_OVERVIEW_SQL, sid)
-    hon = await conn.fetchrow(_HONESTY_SQL, sid)
-    spots = await _spot_items(conn, sid)
-    decisions = await _decision_items(conn, sid, user_id=user_id)
+    if hasattr(conn, "acquire"):
+        # Telegram/runtime callers pass an asyncpg Pool. These four read-only
+        # branches are independent, so let the pool overlap their network
+        # round-trips and local URL construction. The CLI passes one Connection,
+        # which cannot execute concurrent operations and stays sequential.
+        ov, hon, spots, decisions = await asyncio.gather(
+            conn.fetchrow(_OVERVIEW_SQL, sid),
+            conn.fetchrow(_HONESTY_SQL, sid),
+            _spot_items(conn, sid),
+            _decision_items(conn, sid, user_id=user_id),
+        )
+    else:
+        ov = await conn.fetchrow(_OVERVIEW_SQL, sid)
+        hon = await conn.fetchrow(_HONESTY_SQL, sid)
+        spots = await _spot_items(conn, sid)
+        decisions = await _decision_items(conn, sid, user_id=user_id)
     return {
         "session_id": sid,
         "started_at": session["started_at"],
