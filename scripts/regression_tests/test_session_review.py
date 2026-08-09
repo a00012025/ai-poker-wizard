@@ -579,6 +579,124 @@ def test_session_review_decision_enqueue_persists_review_url_as_drill_url():
 
 
 @test
+def test_session_review_top_decisions_use_one_joined_query_without_dead_drill_work():
+    """Top-N rendering must not issue metadata/source N+1 queries.
+
+    Hand metadata is joined into the ranked query, and decision rows only need
+    Analyze/Study links; their queue payload already stores the Analyze URL.
+    """
+    calls = []
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            calls.append((sql, args))
+            return [{
+                "ref_hand_id": "hand-1", "street": "preflop", "decision_idx": 0,
+                "spot_leaf": "BB_vsRaiseCall_OOP", "spot_category": "vsOpen",
+                "hero_cat": "BB", "villain_cat": "BTN", "ip_oop": "OOP",
+                "hero_pos": "BB", "ev_loss_bb": 0.419, "approx_flags": [],
+                "played_at": datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+                "taken_code": "AI", "best_code": "C", "correctness": "BLUNDER",
+                "pot_type": "Preflop", "eff_stack": "15_25", "gametype": "MTTGeneral",
+                "played_depth_bb": 20.0, "solver_depth_bb": 20.0,
+                "hero_hand": "7d7c", "boards": "", "raw_path": "detail.json.gz",
+                "preflop_depth_bb": 20.0,
+                "source_hands": [{"hand_id": "hand-1", "street": "preflop",
+                                  "decision_idx": 0, "ev_loss_bb": 0.419,
+                                  "taken_code": "AI", "best_code": "C",
+                                  "src": "online"}],
+            }]
+
+        async def fetchrow(self, *_args):
+            raise AssertionError("top decisions must not issue per-row fetchrow queries")
+
+    async def dead_drill_builder(*_args, **_kwargs):
+        raise AssertionError("decision Trainer URL is unused and must not be built")
+
+    old_drill = sr.qf.queue_drill_url_from_sources
+    old_urls = sr.qf.gtow_analyze_hands_urls
+    old_label = sr.qf.review_label
+    old_action = sr.decision_action_context
+    old_study = sr._decision_study_url
+    try:
+        sr.qf.queue_drill_url_from_sources = dead_drill_builder
+        sr.qf.gtow_analyze_hands_urls = lambda _ids: [("https://example/analyze", [])]
+        sr.qf.review_label = lambda _row: "review"
+        sr.decision_action_context = lambda _row: {
+            "action_line": "All-in→應Call", "street_lines": [], "is_real_hu": False}
+        sr._decision_study_url = lambda _row, _user_id=None: "https://example/study"
+        out = asyncio.run(sr._decision_items(Conn(), 42, user_id=7))
+    finally:
+        sr.qf.queue_drill_url_from_sources = old_drill
+        sr.qf.gtow_analyze_hands_urls = old_urls
+        sr.qf.review_label = old_label
+        sr.decision_action_context = old_action
+        sr._decision_study_url = old_study
+
+    assert_eq(len(calls), 1)
+    assert_eq(calls[0][1], (42,))
+    assert_in("JOIN ledger_hands h", calls[0][0])
+    assert_in("h.hero_hand", calls[0][0])
+    assert_eq(out[0]["combo"], "7🔷7☘️")
+    assert_eq(out[0]["drill_url"], None)
+    assert_eq(out[0]["enqueue_item"]["drill_url"], "https://example/analyze")
+
+
+@test
+def test_session_review_session_membership_index_migration_exists():
+    migration = (sr.ROOT / "supabase/migrations" /
+                 "20260809130000_ledger_hands_session_index.sql").read_text()
+    assert_in("idx_ledger_hands_session", migration)
+    assert_in("ledger_hands(session_id)", migration)
+
+
+@test
+def test_session_review_parallelizes_independent_reads_for_runtime_pool():
+    """The Telegram path passes a pool, so independent summary branches overlap."""
+    started = 0
+    all_started = asyncio.Event()
+
+    async def rendezvous(result):
+        nonlocal started
+        started += 1
+        if started == 4:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=0.5)
+        return result
+
+    class Pool:
+        acquire = object()  # asyncpg Pool marker used by compute()
+
+        async def fetchrow(self, sql, *_args):
+            if "discarded_n" in sql:
+                return await rendezvous({"discarded_n": 0, "low_conf_n": 0})
+            return await rendezvous({"n": 1, "per100": 0.0, "total_bb": 0.0,
+                                     "n_lossy": 0})
+
+    async def spots(_conn, _sid):
+        return await rendezvous([])
+
+    async def decisions(_conn, _sid, user_id=None):
+        assert_eq(user_id, 7)
+        return await rendezvous([])
+
+    old_spots, old_decisions = sr._spot_items, sr._decision_items
+    sr._spot_items, sr._decision_items = spots, decisions
+    try:
+        data = asyncio.run(sr.compute(Pool(), {
+            "id": 42,
+            "started_at": datetime(2026, 8, 8, tzinfo=timezone.utc),
+            "ended_at": datetime(2026, 8, 8, 1, tzinfo=timezone.utc),
+            "hands_count": 1,
+        }, user_id=7))
+    finally:
+        sr._spot_items, sr._decision_items = old_spots, old_decisions
+
+    assert_eq(started, 4)
+    assert_eq(data["n_decisions"], 1)
+
+
+@test
 def test_session_review_auto_send_skips_clean_session():
     """Sync auto-append fires only when there's something to review (§7-11 依從):
     non-empty → push, clean/empty → stay silent (manual /review still works)."""
