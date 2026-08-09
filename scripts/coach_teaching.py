@@ -314,6 +314,118 @@ def _exact_actions(solution: dict, combo_idx: int) -> list[dict]:
     return rows
 
 
+def _preflop_decision(context: dict, spot: dict, solution: dict,
+                      hero_hand: str) -> dict | None:
+    """Build the exact-combo verdict needed to cover one preflop decision.
+
+    Preflop uses the 169 hand-class arrays, so it cannot share the richer
+    postflop causal card.  It still carries the same action/mix/EV contract,
+    which is enough for a concise, deterministic review line.
+    """
+    if spot.get("street") != "preflop":
+        return None
+    hero = spot.get("solver_hero_pos") or context.get("hero_position")
+    players = _players(solution)
+    hero_pi = players.get(hero)
+    if not hero_pi or (solution.get("game") or {}).get("active_position") != hero:
+        return None
+    player_range = hero_pi.get("range") or []
+    if len(player_range) != 169:
+        return None
+    from hh_deviation_check import HAND_TO_169
+
+    combo_idx = HAND_TO_169.get(gf.normalize_hand_name(hero_hand))
+    if combo_idx is None or _float(player_range[combo_idx]) <= 0:
+        return None
+    actions = _exact_actions(solution, combo_idx)
+    if not actions:
+        return None
+    actual_code = spot.get("taken_code")
+    if not actual_code:
+        full_line = (
+            context.get("preflop_actions")
+            or (context.get("hand") or {}).get("preflop_actions")
+            or ""
+        )
+        prefix = (spot.get("params") or {}).get("preflop_actions") or ""
+        full_tokens = [token for token in str(full_line).split("-") if token]
+        prefix_tokens = [token for token in str(prefix).split("-") if token]
+        if len(prefix_tokens) < len(full_tokens):
+            actual_code = full_tokens[len(prefix_tokens)]
+    actual = next((row for row in actions if row["code"] == actual_code), None)
+    best = (
+        actual
+        if actual and actual.get("frequency", 0.0) >= 0.01
+        else _best_in_mix_action(actions)
+    )
+    preferred = max(actions, key=lambda row: row["frequency"])
+    ev_loss = max(0.0, best["ev_bb"] - actual["ev_bb"]) if actual else 0.0
+    pot = _float((solution.get("game") or {}).get("pot"))
+    range_plan = _range_plan(solution)
+    return {
+        "street": "preflop",
+        "board": "",
+        "hero": hero,
+        "villain": None,
+        "hero_hand": hero_hand,
+        "actual_action": actual,
+        "preferred_action": preferred,
+        "best_action_by_ev": best,
+        "available_actions": actions,
+        "ev_loss_bb": ev_loss,
+        "ev_loss_pot": ev_loss / pot if pot > 0 else None,
+        "range_plan": range_plan,
+        "action_contract": _action_contract(actions, range_plan),
+        "confidence": "high",
+        "scope": "只適用於這個深度與 preflop action line",
+    }
+
+
+def _decision_verdict(decision: dict) -> str:
+    """Render one compact, deterministic verdict for the narrator contract."""
+    actual = decision.get("actual_action")
+    preferred = decision["preferred_action"]
+    loss = decision.get("ev_loss_pot") or 0.0
+    if not actual:
+        return f"solver 最偏好 {preferred['label']}"
+    if loss >= 0.003:
+        return f"{actual['label']} 有實質 EV 損失，應偏向 {preferred['label']}"
+    if actual.get("code") == preferred.get("code"):
+        purity = "幾乎純用" if preferred.get("frequency", 0.0) >= 0.97 else "最常用"
+        return f"{actual['label']} 正確，solver {purity}這個動作"
+    if actual.get("frequency", 0.0) >= 0.01:
+        return (
+            f"{actual['label']} 是 solver 保留的 mix，"
+            f"但主要動作是 {preferred['label']}"
+        )
+    return (
+        f"{actual['label']} 的 EV 影響很小，但不在可採信的 solver mix，"
+        f"應偏向 {preferred['label']}"
+    )
+
+
+def _label_all_decisions(decisions: list[dict]) -> None:
+    """Assign stable labels that distinguish multiple decisions on one street."""
+    street_names = {
+        "preflop": "Preflop", "flop": "Flop", "turn": "Turn", "river": "River",
+    }
+    totals: dict[str, int] = {}
+    seen: dict[str, int] = {}
+    for decision in decisions:
+        street = decision["street"]
+        totals[street] = totals.get(street, 0) + 1
+    circled = {1: "①", 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥"}
+    for index, decision in enumerate(decisions, 1):
+        street = decision["street"]
+        seen[street] = seen.get(street, 0) + 1
+        suffix = ""
+        if totals[street] > 1:
+            suffix = " " + circled.get(seen[street], str(seen[street]))
+        decision["decision_id"] = f"D{index}"
+        decision["coverage_label"] = street_names[street] + suffix
+        decision["coverage_verdict"] = _decision_verdict(decision)
+
+
 def _best_in_mix_action(actions: list[dict]) -> dict:
     """Use the same 1% in-mix EV basis as the canonical deviation grader."""
     from hh_deviation_check import _best_in_mix
@@ -1109,38 +1221,61 @@ def _teaching_score(decision: dict) -> float:
 
 
 def build_teaching_digest(context: dict) -> dict | None:
-    """Build a small, solver-grounded digest for at most two postflop decisions."""
+    """Cover every solved Hero decision and select at most two to teach deeply."""
     if context.get("no_hero_hand"):
         return None
     hero_hand = _raw_hero_hand(context)
     if not hero_hand:
         return None
-    decisions = []
+    all_decisions = []
+    postflop_decisions = []
     for spot, solution in zip(context.get("hero_spots") or [], context.get("solutions") or []):
         if not solution:
             continue
-        item = _decision(context, spot, solution, hero_hand)
+        item = (
+            _preflop_decision(context, spot, solution, hero_hand)
+            if spot.get("street") == "preflop"
+            else _decision(context, spot, solution, hero_hand)
+        )
         if item:
-            decisions.append(item)
-    if not decisions:
+            all_decisions.append(item)
+            if item["street"] != "preflop":
+                postflop_decisions.append(item)
+    if not all_decisions:
         return None
 
-    deviations = [row for row in decisions if (row.get("ev_loss_pot") or 0.0) >= 0.003]
+    _label_all_decisions(all_decisions)
+
+    deviations = [
+        row for row in postflop_decisions
+        if (row.get("ev_loss_pot") or 0.0) >= 0.003
+    ]
     selected = []
     if deviations:
         selected.append(max(deviations, key=lambda row: row.get("ev_loss_pot") or 0.0))
-    remaining = [row for row in decisions if row not in selected]
+    remaining = [row for row in postflop_decisions if row not in selected]
     if remaining:
         best_teaching = max(remaining, key=_teaching_score)
         if not selected or _teaching_score(best_teaching) >= 2.0:
             selected.append(best_teaching)
-    if not selected:
-        selected = [max(decisions, key=_teaching_score)]
+    if not selected and postflop_decisions:
+        selected = [max(postflop_decisions, key=_teaching_score)]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
 
     allowed_categories = set()
     allowed_percentages = set()
     allowed_bb = set()
+    for row in all_decisions:
+        for action_key in ("actual_action", "preferred_action", "best_action_by_ev"):
+            action = row.get(action_key)
+            if action:
+                allowed_percentages.add(round(100 * action["frequency"], 1))
+                if action["pot_ratio"] >= 0:
+                    allowed_percentages.add(round(100 * action["pot_ratio"], 1))
+        if row.get("ev_loss_bb") is not None:
+            allowed_bb.add(round(row["ev_loss_bb"], 3))
+        if row.get("ev_loss_pot") is not None:
+            allowed_percentages.add(round(100 * row["ev_loss_pot"], 1))
     for row in selected:
         role = row["hero_role"]
         if role.get("made_hand"):
@@ -1210,11 +1345,12 @@ def build_teaching_digest(context: dict) -> dict | None:
         caveats.append("不同街使用的 solver depth bucket 不完全一致")
     digest_confidence = (
         "medium"
-        if caveats or any(row.get("confidence") == "medium" for row in selected)
+        if caveats or any(row.get("confidence") == "medium" for row in all_decisions)
         else "high"
     )
     return {
         "confidence": digest_confidence,
+        "all_decisions": all_decisions,
         "decisions": selected[:2],
         "allowed_categories": sorted(allowed_categories),
         "allowed_percentages": sorted(allowed_percentages),
@@ -1351,7 +1487,19 @@ def render_prompt_block(digest: dict | None) -> str:
     lines = [
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
+        "",
+        "【逐點判定｜核心判斷必須依序涵蓋每一點】",
     ]
+    for decision in digest.get("all_decisions") or digest["decisions"]:
+        lines.append(
+            f"• {decision['decision_id']}｜{decision['coverage_label']}："
+            f"{decision['coverage_verdict']}。"
+        )
+    lines.extend([
+        "• 上述每點只需一句；非焦點不得自行補因果，exact combo mix 本身就是足夠理由。",
+        "",
+        "【深講焦點｜只在 *為什麼* 展開】",
+    ])
     for index, decision in enumerate(digest["decisions"], 1):
         role = decision["hero_role"]
         actual = decision.get("actual_action")
@@ -1466,13 +1614,15 @@ def render_prompt_block(digest: dict | None) -> str:
     lines.extend([
         "",
         "【輸出契約】",
-        "只輸出三段：*核心判斷*、*為什麼*、*你要記得*；每段最多兩句，全文約 180–300 字。",
+        "只輸出三段：*核心判斷*、*為什麼*、*你要記得*。",
         "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
-        "GTO street summary 會由系統另外顯示；禁止再加 Preflop／Flop／Turn／River 逐街複述。",
-        "只可評價骨架列出的焦點街；即使其他街出現在用戶描述或 solver summary，也不得自行判定其正誤、嚴重度或原因。",
+        "*核心判斷* 必須按 D1、D2…順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用骨架提供的 Preflop／Flop ①／Turn 等原樣標籤。",
+        "每個 bullet 只寫『Hero 動作如何＋solver 偏好』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
+        "逐點判定可評價所有 D# 的正誤或 mix；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
+        "若沒有深講焦點，*為什麼* 只說 exact combo strategy 已足以判定，不補一般牌理。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
-        "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；最多引用 3 個真正有教學價值的數字。",
+        "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "*為什麼*只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
@@ -1488,7 +1638,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
-        "*你要記得*給一條可帶走的 heuristic，並保留 exact-node 邊界，避免泛化成所有相似牌面。",
+        "*為什麼*最多三句，只解釋深講焦點；*你要記得*只給一條可帶走的 heuristic，並保留 exact-node 邊界。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
@@ -1496,30 +1646,37 @@ def render_prompt_block(digest: dict | None) -> str:
 
 def render_fallback(digest: dict) -> str:
     """Deterministic three-section answer used when the prose audit fails."""
-    primary = digest["decisions"][0]
+    coverage = digest.get("all_decisions") or digest["decisions"]
+    focus = digest["decisions"]
+    primary = focus[0] if focus else coverage[0]
 
     def _core(decision: dict) -> str:
         actual = decision.get("actual_action")
         preferred = decision["preferred_action"]
         loss = decision.get("ev_loss_pot") or 0.0
-        street = decision["street"].capitalize()
         if actual and loss >= 0.003:
             severity = "小漏洞" if loss < 0.03 else ("明顯失誤" if loss < 0.10 else "嚴重錯誤")
-            return f"{street} 的 {actual['label']} 是{severity}，應偏向 {preferred['label']}"
+            return f"{actual['label']} 是{severity}，應偏向 {preferred['label']}"
         if actual:
             if actual.get("code") == preferred.get("code"):
-                return f"{street} 的 {actual['label']} 是正確選擇"
+                return f"{actual['label']} 是正確選擇"
             if actual.get("frequency", 0.0) < 0.01:
                 return (
-                    f"{street} 的 {actual['label']} EV 影響很小，"
+                    f"{actual['label']} EV 影響很小，"
                     f"但不在可採信的 solver mix，應偏向 {preferred['label']}"
                 )
-            return f"{street} 的 {actual['label']} 沒有實質 EV 損失"
-        return f"{street} 應偏向 {preferred['label']}"
+            return (
+                f"{actual['label']} 沒有實質 EV 損失，是 solver 保留的 mix，"
+                f"主要仍是 {preferred['label']}"
+            )
+        return f"應偏向 {preferred['label']}"
 
-    core_parts = [_core(decision) for decision in digest["decisions"]]
+    core_parts = [
+        f"• {decision['coverage_label']}：{_core(decision)}"
+        for decision in coverage
+    ]
     reasons = []
-    for decision in digest["decisions"]:
+    for decision in focus:
         role = decision["hero_role"]
         pieces = [
             f"{decision['street'].capitalize()} 時它是 {role['range_band']}的"
@@ -1564,8 +1721,8 @@ def render_fallback(digest: dict) -> str:
     # The common two-street teaching shape (bad bluff candidate on one street,
     # range-created bluff capacity on the next) reads better as one causal
     # contrast than as two repeated blocker sentences.
-    if len(digest["decisions"]) == 2:
-        first, second = digest["decisions"]
+    if len(focus) == 2:
+        first, second = focus
         second_categories = _category_sentence(second)
         first_blocker = first.get("blocker")
         second_blocker = second.get("blocker")
@@ -1582,6 +1739,11 @@ def render_fallback(digest: dict) -> str:
                     "；這手牌的 blocker 仍不利，所以正確下注並不是靠 blocker。", "。"
                 )
             reasons = [contrast]
+    if not reasons:
+        reasons = [
+            "這手只有 preflop 決策；exact hand class 的 solver action 分配"
+            "已足以判定，不需要另外補一般牌理。"
+        ]
 
     lesson = {
         "低 SPR 下的 equity denial 與脆弱成牌保護": "低 SPR 面對大注時，脆弱成牌可能用 jam 向未成牌與聽牌收取 realization 代價；不要只看平均 range equity。",
@@ -1592,11 +1754,11 @@ def render_fallback(digest: dict) -> str:
         "整體防守結構與 Hero 在自身 range 的位置": "range 劣勢不代表每個邊緣 combo 都要 fold；先看整體防守寬度，再看這手牌在自身 range 的位置。",
         "雙方強牌結構": "先找雙方誰擁有更多可辨認的強牌類別，再結合 exact combo 的角色與 EV 判斷行動。",
     }.get(
-        primary["drivers"]["primary"],
+        (primary.get("drivers") or {}).get("primary"),
         "先判斷這手牌在自身 range 的角色與 EV，再服從這個 node 的 solver action。",
     )
     if (
-        primary["drivers"]["primary"] == "雙方強牌結構"
+        (primary.get("drivers") or {}).get("primary") == "雙方強牌結構"
         and any(
             (row.get("blocker") or {}).get("direction") not in {None, "neutral"}
             for row in digest["decisions"]
@@ -1604,25 +1766,26 @@ def render_fallback(digest: dict) -> str:
     ):
         lesson = "先找雙方誰擁有更多可辨認的強牌類別，再用 blocker 排序 value 或 bluff 候選，而不是反過來編理由。"
     if (
-        len(digest["decisions"]) > 1
-        and any(row.get("decision_type") == "bluff" for row in digest["decisions"])
-        and _category_sentence(digest["decisions"][1])
+        len(focus) > 1
+        and any(row.get("decision_type") == "bluff" for row in focus)
+        and _category_sentence(focus[1])
     ):
         lesson = "先看雙方強牌結構決定 range 能否容納 bluff，再用 combo 角色、EV 與 blocker 排序候選牌。"
     if any(
         row.get("decision_type") == "value"
         and (row.get("size_choice") or row.get("size_structure"))
-        for row in digest["decisions"]
+        for row in focus
     ):
         lesson = (
             "價值牌先看同類手牌被分到哪個 size；只有比較過各 size 的實際 "
             "range construction，才能判斷較大 size 是否同時含更多強牌與 bluff。"
         )
     reach_note = ""
-    if any(decision.get("confidence") == "medium" for decision in digest["decisions"]):
+    if any(decision.get("confidence") == "medium" for decision in coverage):
         reach_note = "River 是前街低頻線後的條件式結論。"
+    core_text = "\n".join(core_parts)
     return (
-        f"*核心判斷*\n{'；'.join(core_parts)}。\n\n"
+        f"*核心判斷*\n{core_text}\n\n"
         f"*為什麼*\n{' '.join(reasons)}\n\n"
         f"*你要記得*\n{lesson}{reach_note}這條結論只適用目前的深度、牌面與 action line。"
     )
@@ -1632,6 +1795,11 @@ def render_fallback(digest: dict) -> str:
 class AuditResult:
     ok: bool
     violations: list[str] = field(default_factory=list)
+
+
+def _covered_decisions(digest: dict) -> list[dict]:
+    """Every decision that must receive a verdict, including preflop."""
+    return digest.get("all_decisions") or digest.get("decisions") or []
 
 
 def _body_without_followups(text: str) -> str:
@@ -1696,12 +1864,12 @@ def _normalized_cards(text: str) -> list[tuple[int, int, str]]:
 def _audit_exact_combos(body: str, digest: dict) -> list[str]:
     allowed = {
         frozenset((row["hero_hand"][:2], row["hero_hand"][2:4]))
-        for row in digest["decisions"]
+        for row in _covered_decisions(digest)
         if len(row.get("hero_hand") or "") == 4
     }
     board_cards = {
         card
-        for row in digest["decisions"]
+        for row in _covered_decisions(digest)
         for _, _, card in _normalized_cards(row.get("board") or "")
     }
     violations = []
@@ -1908,17 +2076,18 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
                 level_prefix,
                 re.I,
             )) or bool(re.search(r"(?:範圍|range)", level_suffix, re.I))
-            candidates = digest["decisions"]
+            candidates = _covered_decisions(digest)
             street_matches = [
                 match for match in re.finditer(
-                    r"(flop|turn|river|翻牌|轉牌|河牌)", sentence, re.I,
+                    r"(preflop|翻牌前|flop|turn|river|翻牌|轉牌|河牌)", sentence, re.I,
                 )
                 if match.start() <= number.start()
             ]
             street_match = street_matches[-1] if street_matches else None
             if street_match:
                 street = {
-                    "翻牌": "flop", "轉牌": "turn", "河牌": "river",
+                    "翻牌前": "preflop", "翻牌": "flop",
+                    "轉牌": "turn", "河牌": "river",
                 }.get(street_match.group(1).lower(), street_match.group(1).lower())
                 candidates = [row for row in candidates if row["street"] == street]
             size_matches = [
@@ -1928,6 +2097,9 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
                     re.I,
                 )
                 if number.start() - match.end() <= 40
+                and _nearest_action_family(
+                    sentence, match.start(), match.end(),
+                ) == family
             ]
             size_ratio = float(size_matches[-1].group(1)) / 100 if size_matches else None
             claimed = float(number.group(1)) / 100
@@ -2060,18 +2232,30 @@ def _mentioned_streets(body: str) -> set[str]:
 
 
 def _audit_selected_streets(body: str, digest: dict) -> list[str]:
-    """The narrator may explain only nodes selected by the deterministic card."""
-    selected = {row.get("street") for row in digest.get("decisions") or []}
+    """The narrator may issue verdicts only for solved, covered streets."""
+    selected = {row.get("street") for row in _covered_decisions(digest)}
     return [
         f"unsupported street {street}"
         for street in sorted(_mentioned_streets(body) - selected)
     ]
 
 
+def _audit_decision_coverage(body: str, digest: dict) -> list[str]:
+    """Every solved Hero decision must appear in the core review exactly once."""
+    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
+    violations = []
+    for decision in _covered_decisions(digest):
+        label = decision.get("coverage_label")
+        if label and len(re.findall(re.escape(label), core, re.I)) != 1:
+            violations.append(f"missing decision coverage {decision.get('decision_id', label)}")
+    return violations
+
+
 def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
     """Prevent frequency preferences from being rewritten as EV mistakes."""
     violations = []
     street_terms = {
+        "preflop": r"(?:preflop|翻牌前)",
         "flop": r"(?:flop|翻牌)",
         "turn": r"(?:turn|轉牌)",
         "river": r"(?:river|河牌)",
@@ -2082,7 +2266,7 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
         re.I,
     )
     negation = re.compile(
-        r"(?:不是|並非|不算|沒有|無)[^。；\n]{0,10}"
+        r"(?:不是|並非|不算|不等於|沒有|無)[^。；\n]{0,10}"
         r"(?:錯誤|失誤|漏洞|EV\s*(?:loss|損失))",
         re.I,
     )
@@ -2108,7 +2292,7 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
     for sentence in re.split(r"[。！？\n]", body or ""):
         if not sentence.strip():
             continue
-        for decision in digest.get("decisions") or []:
+        for decision in _covered_decisions(digest):
             street = decision.get("street")
             if not street or not re.search(street_terms[street], sentence, re.I):
                 continue
@@ -2119,8 +2303,8 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
                 violations.append(f"verdict mismatch {street}:in-mix-called-error")
             if has_material_loss and positive.search(sentence):
                 violations.append(f"verdict mismatch {street}:loss-called-correct")
-    if len(digest.get("decisions") or []) == 1:
-        decision = digest["decisions"][0]
+    if len(_covered_decisions(digest)) == 1:
+        decision = _covered_decisions(digest)[0]
         street = decision["street"]
         has_material_loss = (decision.get("ev_loss_pot") or 0.0) >= 0.003
         for sentence in core_sentences:
@@ -2136,7 +2320,7 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
 def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
     """An off-mix action may be cheap in EV without becoming a solver branch."""
     violations = []
-    for decision in digest.get("decisions") or []:
+    for decision in _covered_decisions(digest):
         actual = decision.get("actual_action") or {}
         if actual.get("frequency", 0.0) >= 0.01:
             continue
@@ -2244,12 +2428,14 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     try:
         import coach_facts
 
+        covered = _covered_decisions(digest)
+        anchor = (digest.get("decisions") or covered)[0]
         facts = coach_facts.initial_verdict_facts(
             list(source_texts or []) + [render_prompt_block(digest)],
-            {"hand": {"hero_hand": digest["decisions"][0]["hero_hand"]},
-             "hero_hand": digest["decisions"][0]["hero_hand"]},
+            {"hand": {"hero_hand": anchor["hero_hand"]},
+             "hero_hand": anchor["hero_hand"]},
         )
-        board = digest["decisions"][0].get("board") or ""
+        board = anchor.get("board") or ""
         verdict = coach_facts.verify_claims(body, facts, board)
         violations.extend(f"unsupported combo {token}" for token in verdict.violations)
     except Exception:
@@ -2262,6 +2448,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
+    violations.extend(_audit_decision_coverage(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
     violations.extend(_audit_range_structure_causality(body, digest))
@@ -2446,7 +2633,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
 
     allowed_positions = {
         position
-        for row in digest["decisions"]
+        for row in _covered_decisions(digest)
         for position in (row.get("hero"), row.get("villain"))
         if position
     }
@@ -2465,16 +2652,23 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     required_headers = ("*核心判斷*", "*為什麼*", "*你要記得*")
     if any(header not in body for header in required_headers):
         violations.append("missing teaching structure")
-    if len(re.sub(r"\s+", "", body)) > 360:
+    response_limit = min(720, 360 + max(0, len(_covered_decisions(digest)) - 2) * 80)
+    if len(re.sub(r"\s+", "", body)) > response_limit:
         violations.append("response too long")
-    if any(row.get("confidence") == "medium" for row in digest["decisions"]):
+    if any(row.get("confidence") == "medium" for row in _covered_decisions(digest)):
         if not re.search(r"低頻|少量到達|條件式|rare|low[- ]frequency", lowered, re.I):
             violations.append("missing low-reach caveat")
 
     numeric_claims = re.findall(
         r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(%|％|bb)", body, re.I,
     )
-    if len(numeric_claims) > 3:
+    frequency_claims = re.findall(
+        r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(?:%|％)(?!\s*(?:pot|底池))",
+        body,
+        re.I,
+    )
+    bb_claims = re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*bb", body, re.I)
+    if len(frequency_claims) + len(bb_claims) > 3:
         violations.append("too many numeric claims")
     allowed_percentages = list(digest.get("allowed_percentages") or [])
     allowed_bb = list(digest.get("allowed_bb") or [])
