@@ -2444,6 +2444,78 @@ def test_queue_url_changes_invalidate_bound_drill_settings_hash():
 
 
 @test
+def test_trainer_refresh_merges_pending_scope_collision():
+    """A legacy all-depth row that rebuilds to an occupied band is retired
+    without losing its distinct source decisions or aborting the weekly run."""
+    import asyncio
+    import queue_feed as qf
+
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeConn:
+        def __init__(self):
+            self.execs = []
+
+        async def fetch(self, _sql, *_args):
+            return [{
+                "id": 144, "spot_leaf": "MP_vs3bet_vMP_OOP",
+                "status": "pending", "drill_url": "old-wide",
+                "depth_scope": "all",
+                "source_hands": [{"hand_id": "h1", "street": "preflop",
+                                  "decision_idx": 1, "ev_loss_bb": 1.0,
+                                  "src": "online"}],
+            }]
+
+        async def fetchrow(self, _sql, *_args):
+            return {
+                "id": 137,
+                "source_hands": [
+                    {"hand_id": "h1", "street": "preflop",
+                     "decision_idx": 1, "ev_loss_bb": 1.0, "src": "online"},
+                    {"hand_id": "h2", "street": "preflop",
+                     "decision_idx": 1, "ev_loss_bb": 2.0, "src": "online"},
+                ],
+            }
+
+        def transaction(self):
+            return Transaction()
+
+        async def execute(self, sql, *args):
+            self.execs.append((sql, args))
+
+    async def fake_normalize(_conn, entries):
+        return entries
+
+    async def fake_rebuild(_conn, _entries):
+        return ("https://trainer?depth_list="
+                "10.125%2C12.125%2C14.125%2C17.125%2C20.125")
+
+    old_normalize = qf.normalize_source_entries
+    old_rebuild = qf.queue_drill_url_from_sources
+    qf.normalize_source_entries = fake_normalize
+    qf.queue_drill_url_from_sources = fake_rebuild
+    try:
+        conn = FakeConn()
+        tally = asyncio.run(qf.refresh_trainer_links(conn))
+    finally:
+        qf.normalize_source_entries = old_normalize
+        qf.queue_drill_url_from_sources = old_rebuild
+
+    assert_eq(tally, {"checked": 1, "updated": 1, "unresolved": 0})
+    assert_eq(len(conn.execs), 2)
+    assert_in("clear_reason='scope_dedupe'", conn.execs[0][0])
+    assert_eq(conn.execs[0][1], (144,))
+    assert_eq(conn.execs[1][1][0], 137)
+    assert_eq(conn.execs[1][1][2], 2)
+    assert_eq(conn.execs[1][1][3], 3.0)
+
+
+@test
 def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
     """Live detail buttons must analyze ledger_hands.parsed_json directly.
 
