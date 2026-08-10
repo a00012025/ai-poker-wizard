@@ -2980,6 +2980,16 @@ def test_queue_detail_rebuilds_missing_drill_url_from_sources():
     assert_in("source_hands", src)
     assert_in("queue_drill_url_from_sources", src)
     assert_in("UPDATE drill_queue SET drill_url=$2", src)
+    assert_in("apply_trainer_defaults", src)
+    assert_in("gtow_settings_hash=NULL", src)
+    assert_in("gtow_drill_id=NULL", src)
+    assert_in("gtow_drill_name=NULL", src)
+    assert_in("gtow_drill_synced_at=NULL", src)
+    assert_in("gtow_training_started_at=NULL", src)
+    assert_in("gtow_baseline_totals=NULL", src)
+    assert_true(src.index("apply_trainer_defaults")
+                < src.index("fingerprint = settings_hash"),
+                "persisted MTT solution filter must be upgraded before hashing")
     assert_true(src.index("queue_drill_url_from_sources")
                 < src.index("這個項目目前沒有可精確重建"),
                 "rebuild must happen before the no-url error")
@@ -4067,7 +4077,7 @@ def test_hierarchical_sql_uses_parent_and_confidence_gate():
     import inspect
     from spot_leaderboard import hierarchical_leaderboard
     src = inspect.getsource(hierarchical_leaderboard)
-    assert_in('band_sql(since), row["representative_leaf"]', src)
+    assert_in('band_sql(since, source), row["representative_leaf"]', src)
     assert_in('"prescription_bands"', src)
 
 

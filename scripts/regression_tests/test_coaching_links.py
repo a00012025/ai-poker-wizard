@@ -1299,12 +1299,14 @@ def test_build_url_open_raise():
     assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
     assert_eq(qs["fh_trainer_learning_mode"], ["on"])
     assert_eq(qs["fh_trainer_session"], ["100"])
+    assert_eq(qs["gmff_variant"], ["with_limps"])
 
 
 @test
 def test_apply_trainer_defaults_upgrades_existing_url():
     from gtow_trainer_url import apply_trainer_defaults
-    old = ("https://app.gtowizard.com/practice/trainer?fh_actions=RFI"
+    old = ("https://app.gtowizard.com/practice/trainer?gametype=MTTGeneral"
+           "&fh_actions=RFI"
            "&fh_trainer_game_speed=normal&fh_trainer_mode=stop_after_action")
     qs = parse_qs(urlparse(apply_trainer_defaults(old)).query)
     assert_eq(qs["fh_actions"], ["RFI"])
@@ -1312,8 +1314,30 @@ def test_apply_trainer_defaults_upgrades_existing_url():
     assert_eq(qs["fh_trainer_learning_mode"], ["on"])
     assert_eq(qs["fh_trainer_session"], ["100"])
     assert_eq(qs["fh_trainer_mode"], ["stop_end_of_hand"])
+    assert_eq(qs["gmff_variant"], ["with_limps"])
     non_trainer = "https://app.gtowizard.com/solutions?gametype=MTTGeneral"
     assert_eq(apply_trainer_defaults(non_trainer), non_trainer)
+
+
+@test
+def test_mtt_trainer_urls_replace_no_limp_filter_but_cash_does_not_get_one():
+    from gtow_trainer_url import apply_trainer_defaults, build_drill_url
+
+    stale = ("https://app.gtowizard.com/practice/trainer?gametype=MTTGeneral"
+             "&fh_actions=RFI&fh_hero=SB&gmff_variant=no_limps")
+    upgraded = parse_qs(urlparse(apply_trainer_defaults(stale)).query)
+    assert_eq(upgraded["fh_hero"], ["SB"])
+    assert_eq(upgraded["gmff_variant"], ["with_limps"])
+
+    other_mtt = parse_qs(urlparse(build_drill_url(
+        "vsOpen", "preflop", 20, ["BB"], opponent_positions=["BTN"],
+        gametype="MTTGeneral")).query)
+    assert_eq(other_mtt["gmff_variant"], ["with_limps"])
+
+    cash = parse_qs(urlparse(build_drill_url(
+        "RFI", "preflop", 100, ["SB"], gametype="Cash6m50zGeneral"
+    )).query)
+    assert_true("gmff_variant" not in cash)
 
 
 @test

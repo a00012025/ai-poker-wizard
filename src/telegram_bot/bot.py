@@ -89,7 +89,9 @@ def _queue_payload(rows, *, page: int = 0,
                                  "url": anchor})
             if r["drill_url"]:
                 text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
-                row_btns.append({"text": text, "url": r["drill_url"]})
+                from gtow_trainer_url import apply_trainer_defaults
+                row_btns.append({"text": text,
+                                 "url": apply_trainer_defaults(r["drill_url"])})
             actions = [
                 {"text": f"📚 {i} 來源", "callback_data": f"qsrc:{r['id']}"},
                 {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}:{page}"},
@@ -2095,6 +2097,22 @@ class PokerWizardBot:
                             "這個項目目前沒有可精確重建的 GTOW Trainer 連結。",
                             None, new_message=new_message)
                         return
+                    # Upgrade persisted pre-filter URLs before matching the
+                    # GTOW Drill.  In particular, all MTT URLs now pin
+                    # gmff_variant=with_limps.  Reset the old binding and
+                    # attempt window so no-limp results cannot count toward
+                    # the new prescription.
+                    from gtow_trainer_url import apply_trainer_defaults
+                    upgraded_url = apply_trainer_defaults(item["drill_url"])
+                    if upgraded_url != item["drill_url"]:
+                        item = await conn.fetchrow(
+                            "UPDATE drill_queue SET drill_url=$2, "
+                            "gtow_drill_id=NULL, gtow_drill_name=NULL, "
+                            "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                            "gtow_training_started_at=NULL, "
+                            "gtow_baseline_totals=NULL, last_added=NOW() "
+                            "WHERE id=$1 RETURNING *",
+                            queue_id, upgraded_url)
                     fingerprint = settings_hash(
                         settings_from_trainer_url(item["drill_url"]))
                     # Serialize ensure/create across different queue rows that

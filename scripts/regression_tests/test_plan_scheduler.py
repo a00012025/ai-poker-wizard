@@ -354,9 +354,10 @@ def test_repeat_note_names_the_reason_it_came_back():
     from scorecard import repeat_note
 
     assert_eq(repeat_note({"surfaced_count": 0}), "")
-    assert_in("又漏了", repeat_note({"surfaced_count": 1, "bucket": "relapse"}))
+    assert_in("這週又出現", repeat_note({"surfaced_count": 1, "bucket": "relapse"}))
     assert_in("第 3 次", repeat_note({"surfaced_count": 2, "bucket": "backlog"}))
-    assert_in("舊帳輪替", repeat_note({"surfaced_count": 1, "bucket": "backlog"}))
+    assert_in("之前排過但還沒完成",
+              repeat_note({"surfaced_count": 1, "bucket": "backlog"}))
 
 
 @test
@@ -373,12 +374,98 @@ def test_ordered_queue_groups_online_before_live_for_text_and_buttons():
               "n_sources": 1, "total_ev_loss_bb": 0.2, "surfaced_count": 0},
              {"id": 8, "kind": "drill", "track": "online", "label": "online spot",
               "spot_leaf": "o", "drill_url": "https://x/practice/trainer?b=1",
-              "n_sources": 4, "total_ev_loss_bb": 4.5, "surfaced_count": 0},
+              "n_sources": 4, "total_ev_loss_bb": 4.5,
+              "week_n_sources": 1, "week_total_ev_loss_bb": 0.7,
+              "week_analyze_url": "https://app.gtowizard.com/analyze?hand_id__in=h1",
+              "surfaced_count": 0},
          ]}
     assert_eq([q["id"] for q in ordered_queue(d)], [8, 9])
-    flat = [b for row in weekly_tg_payload("2026-W31", d)["buttons"] for b in row]
+    payload = weekly_tg_payload("2026-W31", d)
+    flat = [b for row in payload["buttons"] for b in row]
     assert_true(any(b.get("callback_data") == "qdet:8:0:plan" and "1" in b["text"]
                     for b in flat), "item 1 must be the online row")
+    assert_true(any(b.get("url", "").endswith("hand_id__in=h1") for b in flat))
+    assert_in("來自本週 1 手", payload["html"])
+    assert_in("EV 損失合計 0.7 bb", payload["html"])
+    assert_not_in("EV 損失合計 4.5 bb", payload["html"])
+
+
+@test
+def test_weekly_focus_reserves_one_live_seat_without_mixing_sources():
+    from scorecard import weekly_focus_candidates
+
+    online = [{"row": {"diagnosis_key": "online-1", "total_ev": 1.0}},
+              {"row": {"diagnosis_key": "online-2", "total_ev": 0.8}}]
+    live = [{"row": {"diagnosis_key": "live-1", "total_ev": 0.2}}]
+    picked = weekly_focus_candidates(online, live)
+    assert_eq([item["row"]["diagnosis_key"] for item in picked],
+              ["live-1", "online-1"])
+    assert_eq([item["source"] for item in picked], ["live", "online"])
+    assert_eq([item["row"]["diagnosis_key"]
+               for item in weekly_focus_candidates(online, [])],
+              ["online-1", "online-2"])
+    assert_eq([item["row"]["diagnosis_key"]
+               for item in weekly_focus_candidates(
+                   online, [{"row": {"diagnosis_key": "noise",
+                                      "total_ev": 0.01}}])],
+              ["online-1", "online-2"])
+
+
+@test
+def test_weekly_build_keeps_sparse_live_leafs_eligible_for_focus():
+    """Older live rows can lack spot_parent; the focus scan must still see
+    their exact action-line leaf instead of silently dropping the hand."""
+    import inspect
+    from scorecard import build
+
+    src = inspect.getsource(build)
+    assert_in('lb.leaderboard(', src)
+    assert_in('source="live"', src)
+
+
+@test
+def test_weekly_slate_excludes_reviews_from_before_this_week():
+    import asyncio
+    from datetime import datetime, timezone
+    import plan_scheduler
+    from scorecard import fetch_drill_queue
+
+    rows = [
+        {"id": 1, "kind": "drill", "spot_leaf": "fresh-line",
+         "spot_category": "turn", "source": "online", "surfaced_count": 0,
+         "total_ev_loss_bb": 2.0, "source_hands": []},
+        {"id": 2, "kind": "review", "spot_leaf": "old-line",
+         "spot_category": "river", "source": "online", "surfaced_count": 0,
+         "total_ev_loss_bb": 9.0, "ref_hand_id": "old-hand", "source_hands": []},
+    ]
+
+    class Conn:
+        async def fetch(self, sql, *_args):
+            if "FROM ledger_decisions" in sql:
+                return [{"hand_id": "fresh-hand", "street": "turn",
+                         "decision_idx": 1, "ev_loss_bb": 0.6}]
+            return rows
+
+        async def fetchval(self, sql, *_args):
+            return 0 if "FROM ledger_hands" in sql else 2
+
+    old_annotate = plan_scheduler.annotate_rows
+
+    async def fake_annotate(_conn, values):
+        return [dict(value, track="online", new_evidence_n=0) for value in values]
+
+    plan_scheduler.annotate_rows = fake_annotate
+    try:
+        result = asyncio.run(fetch_drill_queue(
+            Conn(), since=datetime(2026, 8, 3, tzinfo=timezone.utc)))
+    finally:
+        plan_scheduler.annotate_rows = old_annotate
+    assert_eq([row["id"] for row in result["picked"]], [1])
+    assert_eq(result["picked"][0]["week_n_sources"], 1)
+    assert_eq(result["picked"][0]["week_total_ev_loss_bb"], 0.6)
+    from urllib.parse import unquote
+    analyze_url = unquote(result["picked"][0]["week_analyze_url"])
+    assert_in('"hand_id__in":["fresh-hand"]', analyze_url)
 
 
 @test

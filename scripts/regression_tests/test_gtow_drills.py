@@ -61,6 +61,22 @@ def test_repo_trainer_urls_pin_the_gtow_injected_169_group_default():
                           opponent_positions=["SB"], depths=[20, 25])
     settings = settings_from_trainer_url(url)
     assert_eq(len(settings["fh_groups"].split(",")), 169)
+    assert_eq(settings["gmff_variant"], "with_limps")
+
+
+@test
+def test_mtt_limp_variant_is_part_of_drill_identity():
+    from gtow_drill_service import settings_from_trainer_url, settings_hash
+    from gtow_trainer_url import apply_trainer_defaults
+
+    no_limp_url = _trainer_url(gmff_variant="no_limps", fh_actions="RFI",
+                               fh_hero="SB")
+    with_limp_url = apply_trainer_defaults(no_limp_url)
+    no_limp = settings_from_trainer_url(no_limp_url)
+    with_limp = settings_from_trainer_url(with_limp_url)
+    assert_eq(no_limp["gmff_variant"], "no_limps")
+    assert_eq(with_limp["gmff_variant"], "with_limps")
+    assert_true(settings_hash(no_limp) != settings_hash(with_limp))
 
 
 @test
