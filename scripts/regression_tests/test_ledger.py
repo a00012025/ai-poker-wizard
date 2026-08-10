@@ -1384,7 +1384,9 @@ def test_training_plan_focus_and_readback():
     assert_true("北極星" not in msg and "迴圈" not in msg)   # no jargon
     assert_in("chipEV", msg)                                 # honesty caveat
     assert_in("limp", msg)
-    assert_in("本週練習", msg)                                # practice slate section
+    assert_in("本週建議", msg)                                # one merged action slate
+    assert_not_in("最該補的洞", msg)
+    assert_not_in("本週練習：", msg)
     assert_in("平均 EV 損失", msg)
     assert_in("統計口徑", msg)
     assert_true("保守估計" not in msg)
@@ -1403,26 +1405,25 @@ def test_training_plan_focus_and_readback():
     assert_true(all(len(t) <= 14 for t in texts), "weekly buttons stay compact")
     callbacks = [b["callback_data"] for r in payload["buttons"] for b in r
                  if b.get("callback_data")]
-    assert_in("qdet:91:0:plan", callbacks)
-    assert_in("qsrc:91", callbacks)
+    assert_not_in("qdet:91:0:plan", callbacks)  # focus is no longer duplicated
+    assert_not_in("qsrc:91", callbacks)
     assert_in("qdet:1:0:plan", callbacks)
     assert_true(any(c.startswith("qsrc:") for c in callbacks))  # source hands menu
 
-    # A persisted weekly review link may predate the solution-family filter.
-    # Render-time normalization prevents the plan from reopening no-limp MTT.
+    # A review action opens the exact Solution Study node without rewriting it
+    # as a Trainer prescription.
     data["drill_queue"] = [{
         "id": 3, "kind": "review", "spot_leaf": "SB_RFI",
         "spot_category": "RFI", "label": "SB RFI review",
-        "drill_url": ("https://app.gtowizard.com/practice/trainer?"
-                      "gametype=MTTGeneral&fh_actions=RFI&fh_hero=SB&"
-                      "gmff_variant=no_limps"),
+        "drill_url": "https://app.gtowizard.com/solutions?node=sb-rfi",
         "n_sources": 1, "total_ev_loss_bb": 1.0, "status": "pending",
     }]
     review_payload = weekly_tg_payload("2026-W28", data)
     review_urls = [b["url"] for row in review_payload["buttons"] for b in row
-                   if b.get("url") and "/practice/trainer" in b["url"]]
-    assert_true(any("gmff_variant=with_limps" in url for url in review_urls))
-    assert_true(all("gmff_variant=no_limps" not in url for url in review_urls))
+                   if b.get("url") and "/solutions" in b["url"]]
+    assert_eq(review_urls, ["https://app.gtowizard.com/solutions?node=sb-rfi"])
+    review_texts = [b["text"] for row in review_payload["buttons"] for b in row]
+    assert_true(any(text.startswith("🔍 解法") for text in review_texts))
 
 
 @test
@@ -1566,17 +1567,27 @@ def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
                "total": 101, "depth_snap_n": 0, "low_confidence_n": 0}
     data = compute_training_plan("2026-W29", [], [spot], [], None, honesty)
     assert_eq(data["focus"][0]["action_bias"]["label"], "棄牌過多")
+    data["drill_queue"] = [{
+        "id": 1, "kind": "drill", "track": "online",
+        "spot_leaf": row["spot_leaf"], "spot_category": row["spot_category"],
+        "label": "Hero HJ 對 SB、處於 IP，被 3bet",
+        "n_sources": 10, "total_ev_loss_bb": 12.69,
+        "bias_direction": "overfold", "bias_n": 10,
+        "bias_ev_loss_bb": 12.69,
+    }]
     msg = weekly_tg_html("2026-W29", data)
     html = render_html(data)
-    for rendered in (msg, html):
-        assert_in("明顯傾向：棄牌過多", rendered)
-        assert_in("10 手，EV 損失合計 12.69 bb", rendered)
-        assert_true("方向混合" not in rendered)
+    assert_in("明顯傾向：棄牌過多", msg)
+    assert_in("10 手，共損失 12.69bb", msg)
+    assert_in("明顯傾向：棄牌過多", html)
+    assert_in("10 手，EV 損失合計 12.69 bb", html)
+    assert_true("方向混合" not in msg + html)
     assert_in("Hero HJ 對 SB、處於 IP，被 3bet｜棄牌過多", html)
 
     no_bias = dict(row)
     no_bias.pop("action_bias")
     quiet = compute_training_plan("2026-W29", [], [{**spot, "row": no_bias}], [], None, honesty)
+    quiet["drill_queue"] = []
     quiet_rendered = weekly_tg_html("2026-W29", quiet) + render_html(quiet)
     assert_true("明顯傾向" not in quiet_rendered and "方向混合" not in quiet_rendered)
 
@@ -1610,7 +1621,7 @@ def test_weekly_scorecard_progress_is_sample_aware_without_one_week_verdicts():
 
 
 @test
-def test_weekly_scorecard_other_ev_nodes_are_bulleted_with_samples():
+def test_weekly_scorecard_does_not_duplicate_unprescribed_ev_nodes():
     from scorecard import weekly_tg_html
 
     row = {"spot_leaf": "BB_vs3bet", "spot_category": "vs3bet",
@@ -1621,9 +1632,8 @@ def test_weekly_scorecard_other_ev_nodes_are_bulleted_with_samples():
         "focus": [], "leaderboard": [row], "drill_queue": [], "readback": [],
         "honesty": {},
     })
-    assert_in("<b>其他 EV 損失節點：</b>\n•", msg)
-    assert_in("14.8 bb/100（本週出現 44 次；棄牌過多）", msg)
-    assert_true("、" not in msg)
+    assert_not_in("其他 EV 損失節點", msg)
+    assert_not_in("BB_vs3bet", msg)
 
 
 @test

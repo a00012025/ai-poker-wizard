@@ -361,9 +361,9 @@ def test_repeat_note_names_the_reason_it_came_back():
 
 
 @test
-def test_ordered_queue_groups_online_before_live_for_text_and_buttons():
-    """The message numbers items by position, so both renderers must walk the
-    same order or button '🎯 練習 2' would point at a different item."""
+def test_ordered_queue_ranks_the_merged_plan_by_current_ev_loss():
+    """The one recommendation list is globally EV ordered after the scheduler
+    has already protected two of five seats for selective live evidence."""
     from scorecard import ordered_queue, weekly_tg_payload
 
     d = {"per100": 1.0, "delta": 0.0, "weekly_series": [], "focus": [],
@@ -385,9 +385,63 @@ def test_ordered_queue_groups_online_before_live_for_text_and_buttons():
     assert_true(any(b.get("callback_data") == "qdet:8:0:plan" and "1" in b["text"]
                     for b in flat), "item 1 must be the online row")
     assert_true(any(b.get("url", "").endswith("hand_id__in=h1") for b in flat))
-    assert_in("來自本週 1 手", payload["html"])
+    assert_in("1 手", payload["html"])
     assert_in("EV 損失合計 0.7 bb", payload["html"])
     assert_not_in("EV 損失合計 4.5 bb", payload["html"])
+    assert_in("本週建議", payload["html"])
+    assert_not_in("最該補的洞", payload["html"])
+    assert_not_in("本週練習：", payload["html"])
+
+
+@test
+def test_ordered_queue_does_not_group_a_lower_ev_online_item_ahead_of_live():
+    from scorecard import ordered_queue
+
+    rows = [
+        {"id": 1, "track": "online", "total_ev_loss_bb": 0.4},
+        {"id": 2, "track": "live", "total_ev_loss_bb": 2.1},
+        {"id": 3, "track": "online", "week_total_ev_loss_bb": 1.2,
+         "total_ev_loss_bb": 9.0},
+    ]
+    assert_eq([q["id"] for q in ordered_queue({"drill_queue": rows})],
+              [2, 3, 1])
+
+
+@test
+def test_ordered_queue_merges_legacy_focus_without_duplicate_spots():
+    from scorecard import ordered_queue
+
+    data = {
+        "focus": [
+            {"queue_id": 91, "source": "live", "spot_leaf": "live-focus",
+             "spot_category": "turn", "desc": "live focus", "n": 1,
+             "per100": 180.0, "shrunk_per100": 180.0, "samples": []},
+            {"queue_id": 92, "source": "online", "spot_leaf": "same-spot",
+             "spot_category": "flop", "desc": "duplicate", "n": 30,
+             "per100": 10.0, "shrunk_per100": 5.0, "samples": []},
+        ],
+        "drill_queue": [
+            {"id": 7, "kind": "drill", "track": "online",
+             "spot_leaf": "same-spot", "total_ev_loss_bb": 2.0},
+        ],
+    }
+    rows = ordered_queue(data)
+    assert_eq([q["id"] for q in rows], [7, 91])
+    assert_eq([q["spot_leaf"] for q in rows].count("same-spot"), 1)
+
+
+@test
+def test_merged_recommendations_keep_two_live_seats_before_global_ev_display():
+    from scorecard import ordered_queue
+
+    online = [{"id": i, "track": "online", "spot_leaf": f"o{i}",
+               "total_ev_loss_bb": float(10 - i)} for i in range(1, 6)]
+    live = [{"id": 10 + i, "track": "live", "spot_leaf": f"l{i}",
+             "total_ev_loss_bb": 0.2 - i * 0.01} for i in range(2)]
+    rows = ordered_queue({"drill_queue": online + live})
+    assert_eq(len(rows), 5)
+    assert_eq(sum(q["track"] == "live" for q in rows), 2)
+    assert_eq([q["id"] for q in rows[:3]], [1, 2, 3])
 
 
 @test
