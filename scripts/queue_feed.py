@@ -982,7 +982,8 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
     """Semantically rebuild persisted links from their ledger source decisions."""
     status = "" if include_all else "AND status IN ('pending', 'prescribed')"
     rows = await conn.fetch(
-        f"SELECT id, drill_url, source_hands, depth_scope FROM drill_queue "
+        f"SELECT id, spot_leaf, status, drill_url, source_hands, depth_scope "
+        f"FROM drill_queue "
         f"WHERE kind='drill' "
         f"{status} ORDER BY id")
     tally = {"checked": len(rows), "updated": 0, "unresolved": 0}
@@ -996,6 +997,38 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
             tally["unresolved"] += 1
         if (rebuilt != row["drill_url"] or normalized != entries
                 or rebuilt_scope != row["depth_scope"]):
+            collision = None
+            if row["status"] == "pending" and rebuilt_scope != row["depth_scope"]:
+                collision = await conn.fetchrow(
+                    "SELECT id, source_hands FROM drill_queue "
+                    "WHERE id<>$1 AND spot_leaf=$2 AND depth_scope=$3 "
+                    "AND kind='drill' AND status='pending' ORDER BY id LIMIT 1",
+                    row["id"], row["spot_leaf"], rebuilt_scope)
+            if collision:
+                # A legacy/wide-depth row can normalize into a band that
+                # already has a pending row.  Preserve all provenance on the
+                # existing canonical row and retire the duplicate before its
+                # depth update can violate idx_drill_queue_pending_leaf.
+                merged = dedupe_entries(
+                    _as_list(collision["source_hands"]) + normalized)
+                total = round(sum(
+                    float(entry.get("ev_loss_bb") or 0.0) for entry in merged
+                ), 4)
+                async with conn.transaction():
+                    await conn.execute(
+                        "UPDATE drill_queue SET status='cleared', "
+                        "cleared_at=NOW(), clear_reason='scope_dedupe' "
+                        "WHERE id=$1 AND status='pending'",
+                        row["id"])
+                    await conn.execute(
+                        "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                        "n_sources=$3, total_ev_loss_bb=$4, drill_url=$5, "
+                        "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL "
+                        "WHERE id=$1",
+                        collision["id"], json.dumps(merged), len(merged),
+                        total, rebuilt)
+                tally["updated"] += 1
+                continue
             await conn.execute(
                 "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb, "
                 "depth_scope=$4, gtow_settings_hash=NULL, "
