@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scripts"))
 import spot_leaderboard as lb
-from plan_scheduler import QUEUE_SLOTS
+from plan_scheduler import QUEUE_SLOTS, TRACK_SLOTS
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")
@@ -389,17 +389,95 @@ def render_html(d: dict) -> str:
 
 
 TRACK_ZH = {"online": "🖥 線上", "live": "🎲 線下"}
-_TRACK_ORDER = {"online": 0, "live": 1}
+
+
+def recommendation_ev(q: dict) -> float:
+    """Current-window EV loss used by both recommendation text and buttons."""
+    value = q.get("week_total_ev_loss_bb")
+    if value is None:
+        value = q.get("total_ev_loss_bb")
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _focus_recommendation(focus: dict) -> dict | None:
+    """Normalize an older scorecard focus row into the unified action list.
+
+    Newly generated scorecards already put focus prescriptions through the
+    queue scheduler. This adapter keeps the latest persisted pre-migration
+    scorecard usable until the next weekly run, while dedupe below prevents a
+    focus from appearing twice once both shapes are present.
+    """
+    qid = focus.get("queue_id")
+    if qid is None:
+        return None
+    n = int(focus.get("n") or 0)
+    avg = float(focus.get("per100") or 0.0) / 100
+    shrunk = float(focus.get("shrunk_per100", focus.get("per100") or 0.0)) / 100
+    samples = focus.get("samples") or []
+    hand_ids = [s.get("gtow_hand_id") for s in samples if s.get("gtow_hand_id")]
+    bias = focus.get("action_bias") or {}
+    return {
+        "id": int(qid), "kind": "drill",
+        "track": focus.get("source", "online"),
+        "spot_leaf": focus.get("spot_leaf"),
+        "spot_category": focus.get("spot_category"),
+        "label": focus.get("desc") or focus.get("spot_leaf") or "?",
+        "drill_url": focus.get("drill_url"),
+        "n_sources": n,
+        "total_ev_loss_bb": avg * n,
+        "priority_ev_loss_bb": shrunk * n,
+        "week_analyze_url": (exact_analyze_url(hand_ids)
+                             if focus.get("source", "online") == "online"
+                             else None),
+        "bias_direction": bias.get("direction"),
+        "bias_n": bias.get("n"),
+        "bias_ev_loss_bb": bias.get("ev_loss_bb"),
+        "surfaced_count": 0,
+    }
+
+
+def _priority_ev(q: dict) -> float:
+    value = q.get("priority_ev_loss_bb")
+    return recommendation_ev(q) if value is None else float(value or 0.0)
 
 
 def ordered_queue(d: dict) -> list[dict]:
-    """The slate in display order: online seats first, then the live seats.
+    """One recommendation list, highest current-window EV loss first.
 
-    The message text and the button rows MUST walk the same list — the button
-    labels carry the item's position number.
+    Sample reliability and live priority are admission policy, not a hidden
+    display multiplier: online family candidates are shrinkage-ranked and the
+    scheduler reserves two of five seats for live evidence. Once admitted,
+    every item is shown by the actual EV loss the player can inspect.
     """
-    dq = d.get("drill_queue") or []
-    return sorted(dq, key=lambda q: _TRACK_ORDER.get(q.get("track", "online"), 0))
+    candidates = [dict(q) for q in (d.get("drill_queue") or [])]
+    seen_ids = {int(q["id"]) for q in candidates if q.get("id") is not None}
+    seen_spots = {q.get("spot_leaf") for q in candidates if q.get("spot_leaf")}
+    for focus in d.get("focus") or []:
+        item = _focus_recommendation(focus)
+        if not item or item["id"] in seen_ids or item.get("spot_leaf") in seen_spots:
+            continue
+        candidates.append(item)
+        seen_ids.add(item["id"])
+        if item.get("spot_leaf"):
+            seen_spots.add(item["spot_leaf"])
+
+    rank = lambda q: (-_priority_ev(q),
+                      0 if q.get("track") == "live" else 1,
+                      int(q.get("id") or 0))
+    if len(candidates) > QUEUE_SLOTS:
+        picked = []
+        for track in ("online", "live"):
+            rows = sorted((q for q in candidates if q.get("track", "online") == track),
+                          key=rank)
+            picked.extend(rows[:TRACK_SLOTS[track]])
+        chosen = {id(q) for q in picked}
+        remainder = sorted((q for q in candidates if id(q) not in chosen), key=rank)
+        picked.extend(remainder[:QUEUE_SLOTS - len(picked)])
+        candidates = picked[:QUEUE_SLOTS]
+    return sorted(candidates, key=rank)
 
 
 def repeat_note(q: dict) -> str:
@@ -454,33 +532,13 @@ def weekly_tg_html(week: str, d: dict) -> str:
         L.append(f"這週尚無符合統計口徑的線上手牌（<b>0 手</b>）；"
                  f"上週共 {previous_hands} 手。")
 
-    focus = d.get("focus", [])
-    if focus:
-        L.append("")
-        L.append("<b>最該補的洞（優先順序已考慮樣本數）：</b>")
-        for i, f in enumerate(focus, 1):
-            band = ""
-            if f.get("restrict"):
-                band = f"（{_BAND_WEAK_ZH.get(f['restrict'], f['restrict'] + ' 特別弱')}）"
-            frag = "（⚠️ 部分下注尺寸不在 GTOW 標準樹上，先保守看）" if f.get("fragile") else ""
-            source = "線下" if f.get("source") == "live" else "線上"
-            L.append(f"{i}. [{source}] {escape(f['desc'])} — 平均 EV 損失 "
-                     f"{f['per100']:.1f} bb/100（本週出現 {f['n']} 次）{band}{frag}")
-            bias = f.get("action_bias")
-            if bias:
-                L.append(f"   明顯傾向：{escape(bias['label'])}（{bias['n']} 手，"
-                         f"EV 損失合計 {bias['ev_loss_bb']:.2f} bb）")
-
     dq = ordered_queue(d)
     if dq:
         L.append("")
-        L.append("<b>📥 本週練習：</b>")
-        shown_track = None
+        L.append("<b>📌 本週建議（EV 優先）：</b>")
         for qi, q in enumerate(dq, 1):
             track = q.get("track", "online")
-            if track != shown_track:
-                shown_track = track
-                L.append(f"<i>{TRACK_ZH.get(track, track)}</i>")
+            source = "線下" if track == "live" else "線上"
             if q.get("kind") == "review":
                 lbl = q.get("label") or q.get("spot_leaf") or "?"
             else:
@@ -489,11 +547,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
             note = repeat_note(q)
             if q.get("kind") == "review":
                 # label already reads「復盤 M/D … −Xbb」
-                L.append(f"{qi}. 🔍 {escape(lbl)}{note}")
+                L.append(f"{qi}. 🔍 [復盤·{source}] {escape(lbl)}{note}")
             else:
                 ev = q.get("week_total_ev_loss_bb", q.get("total_ev_loss_bb")) or 0
                 n_sources = q.get("week_n_sources", q.get("n_sources", 1))
-                L.append(f"{qi}. 🎯 {escape(lbl)} — 來自本週 {n_sources} 手，"
+                L.append(f"{qi}. 🎯 [訓練·{source}] {escape(lbl)} — {n_sources} 手，"
                          f"EV 損失合計 {ev:.1f} bb{note}")
                 from spot_naming import telegram_bias_summary
                 bias = telegram_bias_summary(q)
@@ -504,16 +562,6 @@ def weekly_tg_html(week: str, d: dict) -> str:
         L.append("")
         L.append(f"本週沒有更多新的漏洞 — 這是好消息。佇列裡還有 {remaining} 項"
                  "沒完成的舊處方，想加練用 /queue。")
-
-    focus_leafs = {f["spot_leaf"] for f in focus}
-    others = [r for r in d.get("leaderboard", []) if r["spot_leaf"] not in focus_leafs][:3]
-    if others:
-        L.append("")
-        L.append("<b>其他 EV 損失節點：</b>")
-        for r in others:
-            bias = f"；{r['action_bias']['label']}" if r.get("action_bias") else ""
-            L.append(f"• {escape(spot_desc_zh(r))} — 平均 EV 損失 "
-                     f"{r['avg_ev'] * 100:.1f} bb/100（本週出現 {r['n']} 次{escape(bias)}）")
 
     readback = d.get("readback") or []
     visible_readback = [r for r in readback if readback_signal(r)]
@@ -527,11 +575,11 @@ def weekly_tg_html(week: str, d: dict) -> str:
         L.append("  這是提早回饋，仍需更多實戰樣本確認是否真的學會。")
 
     L.append("")
-    L.append("🎯 <b>本週目標</b>：完成以上焦點 spot 的練習與復盤。")
+    L.append("🎯 <b>本週目標</b>：完成以上訓練與復盤建議。")
 
     L.append("")
-    L.append("⚠️ <b>統計口徑</b>：整體指標與其他節點只算高信心線上決策；"
-             "焦點另看本週高信心線下牌，但不和線上混算。翻牌後採 chipEV 評分，"
+    L.append("⚠️ <b>統計口徑</b>：整體指標與線上排序只算高信心線上決策；"
+             "線下牌保留較高訓練權重，但不和線上混算。翻牌後採 chipEV 評分，"
              "翻牌前涉及 limp 的決策不納入。")
     return "\n".join(L)
 
@@ -539,26 +587,13 @@ def weekly_tg_html(week: str, d: dict) -> str:
 def weekly_tg_payload(week: str, d: dict) -> dict:
     """Weekly TG message + inline buttons: {"html": str, "buttons": rows}.
 
-    Buttons: 🎯 focus-spot details, then the practice-queue quota. Drill
-    callbacks use the existing detail/provisioning flow and carry ``plan`` so
-    the weekly message stays immutable. Every queue item exposes 📚 exact
+    Buttons follow the one EV-ordered recommendation list. Drill callbacks use
+    the existing detail/provisioning flow and carry ``plan`` so the weekly
+    message stays immutable. Every queue item exposes 📚 exact
     source hands (qsrc); review items additionally carry 🔗 復盤 + ✔ 完成
     (qcl) + ➕ 加練 (qex) (§7/§6.2).
     """
     buttons: list[list[dict]] = []
-    for i, f in enumerate(d.get("focus", []), 1):
-        if f.get("queue_id") is not None:
-            row = [{"text": f"🎯 練焦點 {i}",
-                    "callback_data": f"qdet:{f['queue_id']}:0:plan"}]
-            hand_ids = [s.get("gtow_hand_id") for s in (f.get("samples") or [])
-                        if s.get("gtow_hand_id")]
-            if f.get("source", "online") == "online" and hand_ids:
-                row.append({"text": f"🃏 手牌 {i}",
-                            "url": exact_analyze_url(hand_ids)})
-            else:
-                row.append({"text": f"🃏 手牌 {i}",
-                            "callback_data": f"qsrc:{f['queue_id']}"})
-            buttons.append(row)
     for qi, q in enumerate(ordered_queue(d), 1):
         qid = q.get("id")
         if q.get("kind") == "review":
@@ -575,13 +610,13 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
                 row.append({"text": f"↩ {qi} {(anchor_street or '上游').title()}",
                             "url": anchor})
             if q.get("drill_url"):
-                text = f"💥 {qi} 損失" if anchor else f"🔗 復盤 {qi}"
-                from gtow_trainer_url import apply_trainer_defaults
+                is_solution = "/solutions" in str(q["drill_url"])
+                text = f"🔍 解法 {qi}" if is_solution else f"🃏 原手 {qi}"
                 row.append({"text": text,
-                            "url": apply_trainer_defaults(q["drill_url"])})
+                            "url": q["drill_url"]})
             actions: list[dict] = []
             if qid is not None:
-                actions.append({"text": f"📚 來源 {qi}", "callback_data": f"qsrc:{qid}"})
+                actions.append({"text": f"🃏 原手 {qi}", "callback_data": f"qsrc:{qid}"})
                 actions.append({"text": f"✔ 完成 {qi}",
                                 "callback_data": f"qcl:{qid}:0:completed:plan"})
                 actions.append({"text": f"➕ 加練 {qi}", "callback_data": f"qex:{qid}"})
@@ -595,13 +630,13 @@ def weekly_tg_payload(week: str, d: dict) -> dict:
         else:
             row = []
             if qid is not None:
-                row.append({"text": f"🎯 練習 {qi}",
+                row.append({"text": f"🎯 練 {qi}",
                             "callback_data": f"qdet:{qid}:0:plan"})
                 if q.get("week_analyze_url"):
-                    row.append({"text": f"🃏 手牌 {qi}",
+                    row.append({"text": f"🃏 看手 {qi}",
                                 "url": q["week_analyze_url"]})
                 else:
-                    row.append({"text": f"📚 來源 {qi}",
+                    row.append({"text": f"🃏 看手 {qi}",
                                 "callback_data": f"qsrc:{qid}"})
             if row:
                 buttons.append(row)
@@ -930,9 +965,16 @@ async def build(conn, window_label, prev_focus, min_n=50, top=8,
     data["focus_excluded"] = sorted(focus_exclude or ())
     focus_queue_ids = (await bind_focus_queue_items(conn, data["focus"])
                        if provision_focus else [])
-    data["focus_queue_ids"] = focus_queue_ids
-    slate = await fetch_drill_queue(conn, focus_queue_ids, since=since)
+    # Focus is a diagnosis input, not a second user-facing list. Its queue rows
+    # compete in the same five-seat slate as reviews and existing drills.
+    slate = await fetch_drill_queue(conn, since=since)
     data["drill_queue"] = slate["picked"]
+    selected_ids = {int(q["id"]) for q in slate["picked"]}
+    if provision_focus:
+        data["focus"] = [f for f in data["focus"]
+                         if int(f.get("queue_id") or -1) in selected_ids]
+        focus_queue_ids = [qid for qid in focus_queue_ids if qid in selected_ids]
+    data["focus_queue_ids"] = focus_queue_ids
     data["queue_backlog_total"] = slate["backlog_total"]
     return data
 

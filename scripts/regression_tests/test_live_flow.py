@@ -3246,6 +3246,7 @@ def test_scorecard_queue_quota_and_weekly_scan():
                 "GTOW auto-close must run before the queue re-scan")
     fdq = inspect.getsource(sc.fetch_drill_queue)
     assert_in("select_weekly_slate", fdq)
+    assert_in("fetch_drill_queue(conn, since=since)", inspect.getsource(sc.build))
     assert_in("mark_surfaced", src)
     import queue_feed as qf
     qsrc = inspect.getsource(qf.scan_online)
@@ -3255,7 +3256,7 @@ def test_scorecard_queue_quota_and_weekly_scan():
 
 @test
 def test_weekly_payload_review_buttons():
-    """Weekly buttons: review items ride 🔗 復盤 (URL) + ✔ 完成 (qcl) + ➕ 加練
+    """Weekly buttons: review items ride 🔍 解法 (Solution URL) + ✔ 完成 (qcl) + ➕ 加練
     (qex) callbacks; drill items open the detail/provisioning menu."""
     from scorecard import weekly_tg_payload
     d = {"per100": 3.0, "delta": 0.0, "weekly_series": [], "focus": [],
@@ -3266,8 +3267,8 @@ def test_weekly_payload_review_buttons():
               "n_sources": 3, "total_ev_loss_bb": 1.2, "status": "pending"},
              {"id": 12, "kind": "review", "label": "復盤 6/1 河牌面對下注 −22.7bb",
               "spot_leaf": "y", "ref_hand_id": "abc",
-              "drill_url": "https://app.gtowizard.com/analyze/v4/hands/table?f=1",
-              "review_anchor_url": "https://app.gtowizard.com/solutions?flop=1",
+              "drill_url": "https://app.gtowizard.com/solutions?node=worst",
+              "review_anchor_url": "https://app.gtowizard.com/solutions?node=flop",
               "review_anchor_street": "flop",
               "total_ev_loss_bb": 22.7, "status": "pending"},
          ]}
@@ -3280,12 +3281,12 @@ def test_weekly_payload_review_buttons():
     assert_true(any("🎯" in b["text"] and b.get("callback_data") == "qdet:11:0:plan"
                     for b in flat))
     assert_true(all(len(b["text"]) <= 14 for b in flat))
-    assert_true(any("損失" in b["text"] and b.get("url", "").endswith("f=1") for b in flat))
-    assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("flop=1") for b in flat))
-    # practice section header + both kinds rendered in the text, under the
-    # track heading the two-track slate groups them by
-    assert_in("本週練習", payload["html"])
-    assert_in("🖥 線上", payload["html"])
+    assert_true(any("解法" in b["text"] and b.get("url", "").endswith("node=worst")
+                    for b in flat))
+    assert_true(any("Flop" in b["text"] and b.get("url", "").endswith("node=flop")
+                    for b in flat))
+    # Both recommendation kinds share one EV-ordered section.
+    assert_in("本週建議", payload["html"])
     assert_in("🔍", payload["html"])
     assert_in("🎯", payload["html"])
 
