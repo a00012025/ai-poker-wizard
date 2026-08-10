@@ -349,6 +349,14 @@ def test_drill_depth_name_migration_updates_db_names():
 
 
 @test
+def test_scope_dedupe_clear_reason_is_allowed_by_database_contract():
+    sql = (REPO_ROOT / "supabase/migrations" /
+           "20260810233500_drill_queue_scope_dedupe_reason.sql").read_text()
+    assert_in("drill_queue_clear_reason_check", sql)
+    assert_in("'scope_dedupe'", sql)
+
+
+@test
 def test_gtow_drill_ensure_creates_preset_name_without_apw_prefix():
     import gtow_drill_service as svc
     calls = []
