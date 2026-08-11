@@ -1532,7 +1532,14 @@ def build_teaching_digest(context: dict) -> dict | None:
         reverse=True,
     )[:2]
     if not selected and postflop_decisions:
-        selected = [max(postflop_decisions, key=_teaching_score)]
+        # With no EV mistake, give the narrator two evidence-rich candidates.
+        # It may teach either one or connect them into a cross-street strategy
+        # story; the first solver card already handles exhaustive coverage.
+        selected = sorted(
+            postflop_decisions,
+            key=_teaching_score,
+            reverse=True,
+        )[:2]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
 
     allowed_categories = set()
@@ -1789,7 +1796,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
         "",
-        "【逐點教練｜核心判斷必須依序涵蓋每一點】",
+        "【全手背景事實｜供選焦點，不要逐點重述】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
         lines.append(
@@ -1797,11 +1804,11 @@ def render_prompt_block(digest: dict | None) -> str:
             f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
     lines.extend([
-        "• 上述每點只需一句，但每一點都要附上一個簡短理由；不能只改寫成『正確選擇』。",
-        "• 非焦點只能使用上方提供的簡短理由，不得自行補因果；exact combo mix 本身就是足夠理由。",
-        "• off-tree 節點必須照寫『無法判定對錯』，並把學習焦點指回最後一個可評分節點；不得改判為正確或錯誤。",
+        "• 這些是第一則 solver 卡片已呈現的背景；第二則訊息不必逐一提到，也不要改寫成另一張 action table。",
+        "• 可以用其中一點交代整手總評，再把篇幅留給下方 1–2 個教學焦點。",
+        "• 若選到 off-tree 節點，只能說缺少 exact-combo solver 對照、無法判定對錯；不得自行補策略理由。",
         "",
-        "【深講焦點｜只在 *為什麼* 展開】",
+        "【教練候選焦點｜從中挑最有價值的 1–2 個自然展開】",
     ])
     for index, decision in enumerate(digest["decisions"], 1):
         role = decision["hero_role"]
@@ -1926,20 +1933,19 @@ def render_prompt_block(digest: dict | None) -> str:
     lines.extend([
         "",
         "【輸出契約】",
-        "只輸出三段：*核心判斷*、*為什麼*、*你要記得*。",
-        "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
-        "*核心判斷* 必須按逐點教練的順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用上方提供的原樣標籤；只有一個 Flop 決策時就寫 Flop，不得自行加 ①。",
-        "每個 bullet 依序寫『Hero 動作如何＋一個簡短、已提供的理由』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
-        "正確決策不能只寫『正確選擇』；分號後要說明是 range plan、牌力／聽牌角色、價格、mix 或 exact-combo allocation 的哪一項支持它。",
-        "逐點教練可評價所有決策的正誤或 mix，並各給一個簡短理由；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
+        "第二則訊息一定要有內容，即使全手打對也要提供一個具體、牌局相關的策略觀察。",
+        "先用一句話總評整手，再挑 1–2 個最有教學價值的焦點；格式與段落由你決定，不必使用固定標題。",
+        "不要逐點重述第一則 solver 卡片，不必逐一提到背景事實中的每個決策，也不要逐街稱讚。",
+        "有實質 EV 錯誤時優先解釋最昂貴或最早的根本偏差；沒有錯誤時，解釋最有意思的 mix、牌力角色、尺寸或跨街策略節奏。",
+        "只能從教練候選焦點提供的 range、牌型、blocker 與因果材料展開；背景事實只用來維持整手總評正確。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
-        "若沒有深講焦點，*為什麼* 只說 exact combo strategy 已足以判定，不補一般牌理。",
+        "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
-        "若逐點教練寫明『這個 combo 只少量到達此節點』，必須在同一個核心 bullet 原樣保留；不得移到別街或只放在結尾。",
+        "若你選擇討論『這個 combo 只少量到達此節點』的焦點，必須保留低到達率 caveat。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
-        "*為什麼*只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
+        "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
@@ -1954,53 +1960,17 @@ def render_prompt_block(digest: dict | None) -> str:
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
-        "*為什麼*最多三句，只解釋深講焦點；*你要記得*只給一條可帶走的 heuristic，並保留 exact-node 邊界。",
+        "正文以 2–5 個短段落為原則；不要硬塞通用 heuristic，也不要固定用 exact-node 邊界收尾。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
 
 
 def render_fallback(digest: dict) -> str:
-    """Deterministic three-section answer used when the prose audit fails."""
+    """Selective natural-language safety net used when both LLM drafts fail."""
     coverage = digest.get("all_decisions") or digest["decisions"]
     focus = digest["decisions"]
     primary = focus[0] if focus else coverage[0]
-
-    def _core(decision: dict) -> str:
-        actual = decision.get("actual_action")
-        if decision.get("off_tree"):
-            label = (actual or {}).get("label") or "實戰動作"
-            return (
-                f"{label} 屬 off-tree，這個 combo 0% 到達此節點，"
-                "沒有 solver 對照，無法判定對錯"
-            )
-        preferred = decision["preferred_action"]
-        loss = decision.get("ev_loss_pot") or 0.0
-        if actual and loss >= 0.003:
-            severity = "小漏洞" if loss < 0.03 else ("明顯失誤" if loss < 0.10 else "嚴重錯誤")
-            return f"{actual['label']} 是{severity}，應偏向 {preferred['label']}"
-        if actual:
-            if actual.get("code") == preferred.get("code"):
-                return f"{actual['label']} 是正確選擇"
-            if actual.get("frequency", 0.0) < 0.01:
-                return (
-                    f"{actual['label']} EV 影響很小，"
-                    f"但不在可採信的 solver mix，應偏向 {preferred['label']}"
-                )
-            return (
-                f"{actual['label']} 沒有實質 EV 損失，是 solver 保留的 mix，"
-                f"主要仍是 {preferred['label']}"
-            )
-        return f"應偏向 {preferred['label']}"
-
-    core_parts = []
-    for decision in coverage:
-        verdict = _core(decision)
-        if decision.get("confidence") == "medium":
-            verdict += "（這個 combo 只少量到達此節點）"
-        core_parts.append(
-            f"• {decision['coverage_label']}：{verdict}；{decision['coverage_reason']}"
-        )
     reasons = []
     for decision in focus:
         role = decision["hero_role"]
@@ -2089,54 +2059,40 @@ def render_fallback(digest: dict) -> str:
                 "已足以判定，不需要另外補一般牌理。"
             ]
 
-    lesson = {
-        "低 SPR 下的 equity denial 與脆弱成牌保護": "低 SPR 面對大注時，脆弱成牌可能用 jam 向未成牌與聽牌收取 realization 代價；不要只看平均 range equity。",
-        "聽牌 equity 來源與進攻分配": "面對打光決策，先問目前是價值牌還是未成牌；若是未成牌，要說清楚 equity 來自哪些聽牌，再看 solver 把它分配到 call 還是 raise/all-in。",
-        "exact combo 的 mixed strategy 分配": "solver 明確保留的 mix 分支都不是錯誤；把頻率偏好和 EV 損失分開學，並且只在同一個 node 套用。",
-        "成牌對未成牌的攤牌價值與防守價格": "面對下注時，小對不必領先整個下注 range；只要仍領先其中的未成牌與聽牌，再配合價格，就可能足以繼續。",
-        "下注價格、整體防守門檻與 Hero 在自身 range 的位置": "range 劣勢不等於 fold；先比較下注價格與防守門檻，再看 exact combo 在自身 range 的位置。",
-        "價值 hand class 的 size allocation": "價值牌的 size 要看 solver 把這個 hand class 分配到哪個下注 bucket；平均 range equity 不能替你選 size。",
-        "整體 range strategy": "當 solver 在同一節點採近乎全 range 的計畫時，先服從 range-level strategy，再談單一 combo 的微調。",
-        "整體防守結構與 Hero 在自身 range 的位置": "range 劣勢不代表每個邊緣 combo 都要 fold；先看整體防守寬度，再看這手牌在自身 range 的位置。",
-        "雙方強牌結構": "先找雙方誰擁有更多可辨認的強牌類別，再結合 exact combo 的角色與 EV 判斷行動。",
-    }.get(
-        (primary.get("drivers") or {}).get("primary"),
-        "先判斷這手牌在自身 range 的角色與 EV，再服從這個 node 的 solver action。",
-    )
+    off_tree = [row for row in coverage if row.get("off_tree")]
     if primary.get("off_tree"):
-        lesson = (
-            "off-tree 節點不判定對錯；先回到最後一個可評分節點，"
-            "確認是哪個動作讓 exact combo 離開 solver 路徑。"
+        summary = (
+            f"{primary['coverage_label']} 的實戰動作屬 off-tree，"
+            "沒有 exact-combo solver 對照，無法判定對錯。"
         )
-    if (
-        (primary.get("drivers") or {}).get("primary") == "雙方強牌結構"
-        and any(
-            (row.get("blocker") or {}).get("direction") not in {None, "neutral"}
-            for row in digest["decisions"]
+    elif len(coverage) == 1 and coverage[0]["street"] == "preflop":
+        summary = (
+            f"這手只有 preflop 決策：{primary['coverage_verdict']}；"
+            f"{primary['coverage_reason']}。"
+        )
+    elif (
+        (primary.get("ev_loss_pot") or 0.0) >= 0.003
+        or (
+            primary.get("actual_action")
+            and primary["actual_action"].get("frequency", 0.0) < 0.01
         )
     ):
-        lesson = "先找雙方誰擁有更多可辨認的強牌類別，再用 blocker 排序 value 或 bluff 候選，而不是反過來編理由。"
-    if (
-        len(focus) > 1
-        and any(row.get("decision_type") == "bluff" for row in focus)
-        and _category_sentence(focus[1])
-    ):
-        lesson = "先看雙方強牌結構決定 range 能否容納 bluff，再用 combo 角色、EV 與 blocker 排序候選牌。"
-    if any(
-        row.get("decision_type") == "value"
-        and (row.get("size_choice") or row.get("size_structure"))
-        for row in focus
-    ):
-        lesson = (
-            "價值牌先看同類手牌被分到哪個 size；只有比較過各 size 的實際 "
-            "range construction，才能判斷較大 size 是否同時含更多強牌與 bluff。"
+        summary = (
+            f"整手最需要修正的是 {primary['coverage_label']}："
+            f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
         )
-    core_text = "\n".join(core_parts)
-    return (
-        f"*核心判斷*\n{core_text}\n\n"
-        f"*為什麼*\n{' '.join(reasons)}\n\n"
-        f"*你要記得*\n{lesson}這條結論只適用目前的深度、牌面與 action line。"
-    )
+    else:
+        summary = (
+            f"整手沒有實質 EV 損失；最值得看的在 {primary['coverage_label']}："
+            f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
+        )
+        if off_tree:
+            first = off_tree[0]
+            summary += (
+                f" {first['coverage_label']} 的實戰動作屬 off-tree，"
+                "沒有 exact-combo solver 對照，無法判定對錯。"
+            )
+    return summary + "\n\n" + " ".join(reasons)
 
 
 @dataclass
@@ -2152,12 +2108,9 @@ def _covered_decisions(digest: dict) -> list[dict]:
 
 def _body_without_followups(text: str) -> str:
     kept = []
-    seen_takeaway = False
     followup_block = False
     for line in (text or "").splitlines():
         stripped = line.strip()
-        if "你要記得" in stripped:
-            seen_takeaway = True
         if re.match(
             r"^(?:[*#_\s-]*follow[ -]?up|[*#_\s-]*你可以問|[*#_\s-]*提問建議)",
             stripped,
@@ -2168,8 +2121,7 @@ def _body_without_followups(text: str) -> str:
         if followup_block or re.match(r"^FOLLOWUP\s*[:：]", stripped, re.I):
             continue
         if (
-            seen_takeaway
-            and re.match(r"^(?:[•*+-]|\d+[.)、])\s*", stripped)
+            re.match(r"^(?:[•*+-]|\d+[.)、])\s*", stripped)
             and ("？" in stripped or "?" in stripped)
         ):
             continue
@@ -2591,89 +2543,50 @@ def _audit_selected_streets(body: str, digest: dict) -> list[str]:
     ]
 
 
-def _audit_decision_coverage(body: str, digest: dict) -> list[str]:
-    """Every decision appears once; multi-street reviews must add a reason."""
-    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
-    violations = []
-    covered = _covered_decisions(digest)
-    require_reasons = len(covered) >= 3
-    for decision in covered:
-        label = decision.get("coverage_label")
-        label_pattern = (
-            rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]*[：:]"
-            if len(covered) > 1
-            else rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])"
-        )
-        label_count = (
-            len(re.findall(
-                label_pattern,
-                core,
-                re.I | re.M,
-            ))
-            if label else 0
-        )
-        if label and label_count != 1:
-            violations.append(f"missing decision coverage {decision.get('decision_id', label)}")
-        line = next(
-            (
-                row for row in core.splitlines()
-                if label and re.search(
-                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
-                    row,
-                    re.I,
-                )
-            ),
-            "",
-        )
-        if require_reasons and line:
-            reason = re.split(r"[；;]", line, maxsplit=1)
-            if len(reason) < 2 or len(re.sub(r"\s+", "", reason[1])) < 6:
-                violations.append(
-                    f"missing concise reason {decision.get('decision_id', label)}"
-                )
-        if label and not re.search(r"[①②③④⑤⑥]", label):
-            if re.search(
-                rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]+[①②③④⑤⑥][ \t]*[：:]",
-                core,
-                re.I | re.M,
-            ):
-                violations.append(
-                    f"decision label mismatch {decision.get('decision_id', label)}"
-                )
-    return violations
-
-
 def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
-    """An unreachable exact combo must stay explicitly ungraded."""
-    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
+    """An unreachable exact combo must stay ungraded in freeform prose."""
     violations = []
+    street_terms = {
+        "preflop": r"(?:preflop|翻牌前)",
+        "flop": r"(?:flop|翻牌)",
+        "turn": r"(?:turn|轉牌)",
+        "river": r"(?:river|河牌)",
+    }
+    verdict_terms = re.compile(
+        r"(?:正確|錯誤|失誤|漏洞|打對|打錯|可接受|合理|"
+        r"EV\s*(?:loss|損失)|solver\s*(?:保留|支持)|mix\s*分支)",
+        re.I,
+    )
+    ungraded_terms = re.compile(
+        r"off[- ]?tree|0\s*%[^。；\n]{0,12}到達|"
+        r"(?:沒有|無)[^。；\n]{0,12}solver[^。；\n]{0,12}對照|"
+        r"無法[^。；\n]{0,12}判定|不能[^。；\n]{0,12}判定",
+        re.I,
+    )
     for decision in _covered_decisions(digest):
         if not decision.get("off_tree"):
             continue
-        label = decision.get("coverage_label") or ""
-        line = next(
-            (
-                row for row in core.splitlines()
-                if label and re.search(
-                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
-                    row,
-                    re.I,
-                )
-            ),
-            "",
+        actual = decision.get("actual_action") or {}
+        family = _action_family(
+            actual.get("code") or "", decision["range_plan"]["facing_bet"],
         )
-        if not line:
-            continue
-        if not re.search(
-            r"off[- ]?tree|0\s*%[^。；\n]{0,12}到達|"
-            r"(?:沒有|無)[^。；\n]{0,12}solver[^。；\n]{0,12}對照|"
-            r"無法[^。；\n]{0,12}判定",
-            line,
-            re.I,
-        ):
-            violations.append(f"off-tree decision graded {decision.get('street')}")
-        if re.search(r"(?:正確|錯誤|失誤|漏洞|EV\s*(?:loss|損失))", line, re.I):
-            violations.append(f"off-tree decision graded {decision.get('street')}")
+        action_pattern = _ACTION_TEXT_PATTERNS.get(family)
+        same_street_count = sum(
+            row.get("street") == decision.get("street")
+            for row in _covered_decisions(digest)
+        )
+        for sentence in re.split(r"[。！？\n]", body or ""):
+            if not re.search(street_terms[decision["street"]], sentence, re.I):
+                continue
+            if (
+                same_street_count > 1
+                and action_pattern
+                and not re.search(action_pattern, sentence, re.I)
+            ):
+                continue
+            if verdict_terms.search(sentence) and not ungraded_terms.search(sentence):
+                violations.append(f"off-tree decision graded {decision.get('street')}")
+                break
     return violations
 
 
@@ -2881,7 +2794,9 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
-    violations.extend(_audit_decision_coverage(body, digest))
+    # The deterministic card already covers every decision.  The narrator is a
+    # selective teaching layer, so omission is intentional; facts it chooses to
+    # mention are still audited below.
     violations.extend(_audit_off_tree_verdicts(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
@@ -3104,13 +3019,34 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     for position in sorted(normalized_positions - allowed_positions):
         violations.append(f"unsupported position {position}")
 
-    required_headers = ("*核心判斷*", "*為什麼*", "*你要記得*")
-    if any(header not in body for header in required_headers):
-        violations.append("missing teaching structure")
-    response_limit = min(760, 420 + max(0, len(_covered_decisions(digest)) - 2) * 80)
-    if len(re.sub(r"\s+", "", body)) > response_limit:
+    compact_length = len(re.sub(r"\s+", "", body))
+    if compact_length < 20:
+        violations.append("coaching response too short")
+    grounded_terms = re.compile(
+        r"(?:"
+        r"check|bet|call|fold|raise|all[- ]?in|"
+        r"過牌|下注|跟注|棄牌|加注|全下|"
+        r"同花|順子|兩對|頂對|超對|set|三條|葫蘆|四條|"
+        r"未成牌|高牌|小對|中對|底對|聽牌|blocker|阻斷|"
+        r"SPR|底池賠率|防守門檻|realization|equity denial|"
+        r"range[^。；\n]{0,16}(?:頂端|底端|偏上|偏下|equity[^。；\n]{0,8}(?:優勢|劣勢|領先|落後))"
+        r")",
+        re.I,
+    )
+    if compact_length >= 20 and not grounded_terms.search(body):
+        violations.append("missing grounded teaching content")
+    response_limit = min(900, 520 + max(0, len(_covered_decisions(digest)) - 2) * 80)
+    if compact_length > response_limit:
         violations.append("response too long")
-    if any(row.get("confidence") == "medium" for row in _covered_decisions(digest)):
+    medium_decisions = [
+        row for row in _covered_decisions(digest)
+        if row.get("confidence") == "medium"
+    ]
+    mentioned_streets = _mentioned_streets(body)
+    discusses_medium = (
+        len(_covered_decisions(digest)) == 1 and bool(medium_decisions)
+    ) or any(row.get("street") in mentioned_streets for row in medium_decisions)
+    if discusses_medium:
         if not re.search(r"低頻|少量到達|條件式|rare|low[- ]frequency", lowered, re.I):
             violations.append("missing low-reach caveat")
 

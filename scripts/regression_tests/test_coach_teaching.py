@@ -675,12 +675,13 @@ def test_coach_teaching_real_fixture_builds_human_range_story():
     prompt = ct.render_prompt_block(digest)
     assert_in("主要機制", prompt)
     assert_in("已觀測 range plan", prompt)
-    assert_in("*核心判斷*、*為什麼*、*你要記得*", prompt)
+    assert_in("第二則訊息一定要有內容", prompt)
+    assert_in("不要逐點重述", prompt)
 
 
 @test
-def test_coach_teaching_h3835_reviews_each_street_with_a_concise_reason():
-    """H3835: every street gets a reason; only one remains the deep focus."""
+def test_coach_teaching_h3835_allows_selective_freeform_coaching():
+    """H3835: narrator may focus on the useful idea instead of replaying every street."""
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_h3835_multi_decision_context())
@@ -690,40 +691,48 @@ def test_coach_teaching_h3835_reviews_each_street_with_a_concise_reason():
         [row["coverage_label"] for row in digest["all_decisions"]],
         ["Preflop", "Flop ①", "Flop ②", "Turn", "River"],
     )
-    assert_eq(len(digest["decisions"]), 1, "deep explanations must stay selective")
+    assert_eq(len(digest["decisions"]), 2, "correct hands may offer two teaching candidates")
 
     prompt = ct.render_prompt_block(digest)
     for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
         assert_in(label, prompt)
-    assert_in("每一點都要附上一個簡短理由", prompt)
-    assert_in("不能只改寫成『正確選擇』", prompt)
+    assert_in("背景事實", prompt)
+    assert_in("不必逐一提到", prompt)
 
     fallback = ct.render_fallback(digest)
-    fallback_core = fallback.split("*為什麼*", 1)[0]
-    for decision in digest["all_decisions"]:
-        label = decision["coverage_label"]
-        assert_eq(fallback_core.count(label), 1)
-        line = next(row for row in fallback_core.splitlines() if label in row)
-        assert_in("；", line, f"{label} needs a concise grounded reason")
+    assert_in(digest["decisions"][0]["coverage_label"], fallback)
+    assert_true(
+        sum(row["coverage_label"] in fallback for row in digest["all_decisions"]) <= 2,
+        "safety fallback should select a focus, not replay every solver-card row",
+    )
+    assert_not_in("*核心判斷*", fallback)
     fallback_audit = ct.audit_draft(fallback, digest)
     assert_true(fallback_audit.ok, str(fallback_audit.violations))
 
-    redundant_narrator = (
-        "*核心判斷*\n"
-        "• Preflop：call 正確，solver 幾乎純用。\n"
-        "• Flop ①：check 正確，solver 幾乎純用。\n"
-        "• Flop ②：raise 36% pot 是 solver 保留的 mix，主要仍是 call。\n"
-        "• Turn：bet 49% pot 正確，是主要動作。\n"
-        "• River：all-in 是 solver 保留的 mix，主要仍是 check。\n\n"
-        "*為什麼*\n"
-        "River 這個 combo 在 check、bet 11% pot、all-in 間混合，"
-        "check 約 94% 為偏好；低頻 all-in 不等於錯誤。\n\n"
-        "*你要記得*\n"
-        "把頻率偏好和 EV 錯誤分開；只適用目前 node。"
+    selective_narrator = (
+        "整手沒有實質 EV 損失，真正值得看的在 River。"
+        "這個 combo 雖然最常 check，但 all-in 也是 solver 保留的 mix；"
+        "Hero 選擇主動打光，不需要因為它頻率較低而修正。"
     )
-    audit = ct.audit_draft(redundant_narrator, digest)
-    assert_in("missing concise reason D1", audit.violations)
-    assert_in("missing concise reason D4", audit.violations)
+    audit = ct.audit_draft(selective_narrator, digest)
+    assert_true(audit.ok, str(audit.violations))
+
+    empty_audit = ct.audit_draft("", digest)
+    assert_in("coaching response too short", empty_audit.violations)
+
+    generic_audit = ct.audit_draft(
+        "這手整體可以。重點是保持耐心，照著計畫執行，不要被結果影響。",
+        digest,
+    )
+    assert_in("missing grounded teaching content", generic_audit.violations)
+    for poker_flavored_filler in (
+        "這手整體可以。重點是保持 GTO 紀律，照著 solver 計畫執行，不要被結果影響。",
+        "這手整體可以。重點是 preflop 到 river 都保持紀律，不要被結果影響。",
+    ):
+        assert_in(
+            "missing grounded teaching content",
+            ct.audit_draft(poker_flavored_filler, digest).violations,
+        )
 
 
 @test
@@ -755,12 +764,11 @@ def test_coach_teaching_h3841_focuses_on_mistake_and_explains_equity_source():
     assert_not_in("不必列原始數字", prompt)
 
     fallback = ct.render_fallback(digest)
-    why = fallback.split("*為什麼*", 1)[1].split("*你要記得*", 1)[0]
-    assert_in("同花聽牌", why)
-    assert_in("卡順聽牌", why)
-    assert_in("未成牌", why)
-    assert_in("all-in", why)
-    assert_not_in("Flop", why)
+    assert_in("同花聽牌", fallback)
+    assert_in("卡順聽牌", fallback)
+    assert_in("未成牌", fallback)
+    assert_in("all-in", fallback)
+    assert_not_in("Flop", fallback)
     fallback_audit = ct.audit_draft(fallback, digest)
     assert_true(fallback_audit.ok, str(fallback_audit.violations))
 
@@ -808,15 +816,19 @@ def test_coach_teaching_keeps_off_tree_hero_decision_visible_and_neutral():
     assert_in("無法判定對錯", turn["coverage_verdict"])
 
     fallback = ct.render_fallback(digest)
-    assert_in("• Turn：", fallback)
+    assert_in("Turn", fallback)
     assert_in("off-tree", fallback)
     assert_in("無法判定對錯", fallback)
     assert_true(ct.audit_draft(fallback, digest).ok)
 
+    freeform_misgrade = "轉牌 all-in 正確，整手打得很好；river 的混合策略也可以接受。"
+    misgrade_audit = ct.audit_draft(freeform_misgrade, digest)
+    assert_in("off-tree decision graded turn", misgrade_audit.violations)
+
 
 @test
-def test_coach_teaching_flop_coverage_does_not_match_inside_preflop():
-    """A single Flop label must be counted as its own bullet, not Preflop."""
+def test_coach_teaching_freeform_does_not_require_solver_card_labels():
+    """Freeform coaching may omit numbered labels already shown on the solver card."""
     import coach_teaching as ct
 
     context = _h3835_multi_decision_context()
@@ -824,14 +836,12 @@ def test_coach_teaching_flop_coverage_does_not_match_inside_preflop():
     context["hero_spots"] = [context["hero_spots"][index] for index in keep]
     context["solutions"] = [context["solutions"][index] for index in keep]
     digest = ct.build_teaching_digest(context)
-    fallback = ct.render_fallback(digest)
-    audit = ct.audit_draft(fallback, digest)
-    assert_true(audit.ok, str(audit.violations))
-    mislabeled = fallback.replace("• Flop：", "• Flop ①：")
-    assert_in(
-        "decision label mismatch D2",
-        ct.audit_draft(mislabeled, digest).violations,
+    answer = (
+        "整手沒有實質 EV 損失，最有意思的是 flop 的混合策略。"
+        "Hero 的 raise 是 solver 保留的 mix，因此不需要為了頻率較低而修正。"
     )
+    audit = ct.audit_draft(answer, digest)
+    assert_true(audit.ok, str(audit.violations))
 
 
 @test
@@ -1229,28 +1239,22 @@ def test_coach_teaching_audit_rejects_unqueried_board_and_response_stories():
 
     digest = ct.build_teaching_digest(_value_size_context())
     base = ct.render_fallback(digest)
-    invented_texture = base.replace("*你要記得*", "低張連接且轉牌成對。\n\n*你要記得*")
+    invented_texture = base + "\n\n這是低張連接且轉牌成對。"
     assert_in(
         "unsupported board-texture claim",
         ct.audit_draft(invented_texture, digest).violations,
     )
-    invented_response = base.replace(
-        "*你要記得*", "對手有足夠強牌可以跟注。\n\n*你要記得*",
-    )
+    invented_response = base + "\n\n對手有足夠強牌可以跟注。"
     assert_in(
         "unsupported opponent-response claim",
         ct.audit_draft(invented_response, digest).violations,
     )
-    invented_fold_equity = base.replace(
-        "*你要記得*", "這個詐唬成功率很低。\n\n*你要記得*",
-    )
+    invented_fold_equity = base + "\n\n這個詐唬成功率很低。"
     assert_in(
         "unsupported opponent-response claim",
         ct.audit_draft(invented_fold_equity, digest).violations,
     )
-    invented_advantage = base.replace(
-        "*你要記得*", "這個牌面結構對 CO 更有利。\n\n*你要記得*",
-    )
+    invented_advantage = base + "\n\n這個牌面結構對 CO 更有利。"
     assert_in(
         "unsupported broad range-advantage claim",
         ct.audit_draft(invented_advantage, digest).violations,
@@ -1322,14 +1326,14 @@ def test_coach_teaching_audit_allows_explanation_but_rejects_invented_nuts():
 
 @test
 def test_coach_teaching_fallback_is_short_and_teachable():
-    """Audit fallback: three teaching sections, no raw percentile/removal dump."""
+    """Audit fallback: selective natural coaching, no raw internal dump."""
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_h3818_like_context())
     answer = ct.render_fallback(digest)
-    assert_in("*核心判斷*", answer)
-    assert_in("*為什麼*", answer)
-    assert_in("*你要記得*", answer)
+    assert_in("最值得看的在 River", answer)
+    assert_not_in("*核心判斷*", answer)
+    assert_not_in("*你要記得*", answer)
     assert_in("同花", answer)
     assert_not_in("percentile", answer)
     assert_not_in("removal", answer)
@@ -1370,10 +1374,8 @@ def test_coach_teaching_keeps_low_reach_node_with_caveat():
     assert_true(caveat_audit.ok, str(caveat_audit.violations))
 
     fallback = ct.render_fallback(digest)
-    core = fallback.split("*為什麼*", 1)[0]
-    lesson = fallback.split("*你要記得*", 1)[1]
-    assert_in("少量到達", core)
-    assert_not_in("River 是前街低頻線", lesson)
+    assert_in("少量到達", fallback)
+    assert_not_in("River 是前街低頻線", fallback)
 
 
 @test
@@ -1400,6 +1402,7 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     GeminiSessionManager._initial_teaching_block(context)
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("coach-teaching-test")
+    manager.coach_narrator_provider = "gemini"
     manager.histories = {}
     observed_systems = []
 
@@ -1415,12 +1418,48 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     answer = asyncio.run(manager._verified_initial_coaching(
         1, "prompt", context, "H3818", disable_tools=True,
     ))
-    assert_in("*核心判斷*", answer)
-    assert_in("*你要記得*", answer)
+    assert_true(len(answer.strip()) >= 20, "second coaching message must survive repair")
     assert_not_in("JT", answer)
     assert_not_in("nuts", answer)
     assert_true(all(observed_systems), "initial narrator must use compact system override")
     assert_true(all("Deterministic 教學骨架" in item for item in observed_systems))
+
+
+@test
+def test_session_initial_coaching_accepts_selective_natural_first_draft():
+    """Happy path keeps one grounded insight instead of replaying the solver card."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager
+
+    context = _h3835_multi_decision_context()
+    GeminiSessionManager._initial_teaching_block(context)
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("coach-natural-first-draft-test")
+    manager.coach_narrator_provider = "gemini"
+    manager.histories = {}
+    calls = []
+    draft = (
+        "整手沒有實質 EV 損失，真正值得看的是 river。"
+        "這個 combo 雖然最常 check，但 all-in 也是 solver 保留的 mix；"
+        "主動打光不需要因為頻率較低而修正。"
+    )
+
+    async def fake_chat(self, chat_id, prompt, **kwargs):
+        calls.append(prompt)
+        return draft
+
+    manager._chat_with_tools = py_types.MethodType(fake_chat, manager)
+    answer = asyncio.run(manager._verified_initial_coaching(
+        3, "prompt", context, "H3835", disable_tools=True,
+    ))
+    assert_eq(answer, draft)
+    assert_eq(len(calls), 1, "a valid natural draft must not enter repair/fallback")
+    assert_not_in("*核心判斷*", answer)
+    assert_not_in("Preflop", answer)
+    assert_not_in("Flop ①", answer)
 
 
 @test
@@ -1800,8 +1839,9 @@ def test_coach_teaching_audit_rejects_unselected_street_commentary():
 
     digest = ct.build_teaching_digest(_low_spr_88_context())
     answer = ct.render_fallback(digest).replace(
-        "*為什麼*\n",
-        "*為什麼*\nPreflop call 雖然低頻，也是小錯。",
+        "\n\n",
+        "\n\nPreflop call 雖然低頻，也是小錯。",
+        1,
     )
     assert_in("unsupported street preflop", ct.audit_draft(answer, digest).violations)
 
@@ -1820,10 +1860,7 @@ def test_coach_teaching_audit_rejects_in_mix_action_called_error():
     rows[1]["strategy"][idx], rows[1]["evs"][idx] = 0.02, -4.0
     rows[2]["strategy"][idx], rows[2]["evs"][idx] = 0.56, 8.0
     digest = ct.build_teaching_digest(context)
-    answer = ct.render_fallback(digest).replace(
-        "• Flop：fold 沒有實質 EV 損失，是 solver 保留的 mix，主要仍是 all-in",
-        "• Flop：fold 是小錯誤",
-    )
+    answer = "Flop fold 是小錯誤；這個 combo 應該改用 all-in。"
     assert_in(
         "verdict mismatch flop:in-mix-called-error",
         ct.audit_draft(answer, digest).violations,
@@ -1873,8 +1910,9 @@ def test_coach_teaching_low_ev_offmix_action_stays_offmix():
         ct.audit_draft(invented_mix, digest).violations,
     )
     unrelated_fold = fallback.replace(
-        "*為什麼*\n",
-        "*為什麼*\n這手第二對不該 fold。",
+        "\n\n",
+        "\n\n這手第二對不該 fold。",
+        1,
     )
     assert_not_in(
         "verdict mismatch flop:in-mix-called-error",
@@ -1888,10 +1926,7 @@ def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_low_spr_88_context())
-    answer = ct.render_fallback(digest).replace(
-        "• Flop：fold 是明顯失誤，應偏向 all-in",
-        "• Flop：這裡 fold 沒有實質 EV 損失",
-    )
+    answer = "Flop 這裡 fold 沒有實質 EV 損失；低 SPR 下仍可繼續。"
     assert_in(
         "verdict mismatch flop:loss-called-correct",
         ct.audit_draft(answer, digest).violations,

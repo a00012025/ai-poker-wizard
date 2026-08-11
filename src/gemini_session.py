@@ -1485,9 +1485,9 @@ class GeminiSessionManager:
                     )
                 else:
                     coaching_instruction = (
-                        "逐街 GTO summary 已由系統另外顯示。教練段仍要依 deterministic "
-                        "教學骨架順序逐點帶過：每個正確決策附一個簡短理由，錯誤或反直覺"
-                        "焦點才深入解釋；若用戶另問假設情境，"
+                        "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
+                        "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
+                        "策略重點自然解釋。若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
                 followup_instruction = (
@@ -1726,9 +1726,9 @@ class GeminiSessionManager:
                 )
             else:
                 img_coaching_instruction = (
-                    "逐街 GTO summary 已由系統另外顯示。教練段仍要依 deterministic "
-                    "教學骨架順序逐點帶過：每個正確決策附一個簡短理由，錯誤或反直覺"
-                    "焦點才深入解釋。"
+                    "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
+                    "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
+                    "策略重點自然解釋。"
                 )
             teaching_block = self._initial_teaching_block(context)
             solver_prompt_data = (
@@ -3040,10 +3040,10 @@ class GeminiSessionManager:
         """Generate and fact-audit the initial coaching verdict.
 
         The audit is scoped to the deterministic teaching skeleton.  It leaves
-        wording and causal explanation to the LLM, while rejecting unsupported
-        combo lists, hand categories, blocker targets, nuts claims, and invented
-        polarization.  A failed draft degrades to a deterministic three-section
-        coach answer rather than showing an internal warning to the user.
+        focus, wording, and causal explanation to the LLM, while rejecting
+        unsupported combo lists, hand categories, blocker targets, nuts claims,
+        and invented polarization.  The deterministic answer is only the final
+        safety net after both a natural draft and a constrained rewrite fail.
         """
         digest = context.get("_teaching_digest") or build_teaching_digest(context)
         narrator_system = INITIAL_COACH_SYSTEM if digest else None
@@ -3088,8 +3088,10 @@ class GeminiSessionManager:
                 repair_prompt = (
                     "上一版教練回覆引用了 deterministic 骨架未支持的事實："
                     f"{', '.join(audit.violations)}。請完全重寫，不要辯解或提及審核。\n\n"
-                    "只可使用下列骨架中的因果材料；保留自然解釋空間，但必須涵蓋每個焦點，"
-                    "不得從一般牌理補出未列出的聽牌、blocker target、牌型、combo 或數字。\n\n"
+                    "保留原本最有教學價值的焦點與自然語氣，只移除或改寫沒有證據的主張。"
+                    "不要改成逐街清單或固定三段模板；也不要重述第一則 solver 卡片。"
+                    "只可使用下列骨架中的因果材料，不得從一般牌理補出未列出的聽牌、"
+                    "blocker target、牌型、combo 或數字。\n\n"
                     f"{render_teaching_prompt_block(digest)}"
                 )
                 # The rejected prose must not become context for its own
