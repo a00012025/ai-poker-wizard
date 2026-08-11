@@ -725,6 +725,14 @@ def test_coach_teaching_h3835_allows_selective_freeform_coaching():
         digest,
     )
     assert_in("missing grounded teaching content", generic_audit.violations)
+    for poker_flavored_filler in (
+        "這手整體可以。重點是保持 GTO 紀律，照著 solver 計畫執行，不要被結果影響。",
+        "這手整體可以。重點是 preflop 到 river 都保持紀律，不要被結果影響。",
+    ):
+        assert_in(
+            "missing grounded teaching content",
+            ct.audit_draft(poker_flavored_filler, digest).violations,
+        )
 
 
 @test
@@ -1415,6 +1423,43 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     assert_not_in("nuts", answer)
     assert_true(all(observed_systems), "initial narrator must use compact system override")
     assert_true(all("Deterministic 教學骨架" in item for item in observed_systems))
+
+
+@test
+def test_session_initial_coaching_accepts_selective_natural_first_draft():
+    """Happy path keeps one grounded insight instead of replaying the solver card."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    from gemini_session import GeminiSessionManager
+
+    context = _h3835_multi_decision_context()
+    GeminiSessionManager._initial_teaching_block(context)
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("coach-natural-first-draft-test")
+    manager.coach_narrator_provider = "gemini"
+    manager.histories = {}
+    calls = []
+    draft = (
+        "整手沒有實質 EV 損失，真正值得看的是 river。"
+        "這個 combo 雖然最常 check，但 all-in 也是 solver 保留的 mix；"
+        "主動打光不需要因為頻率較低而修正。"
+    )
+
+    async def fake_chat(self, chat_id, prompt, **kwargs):
+        calls.append(prompt)
+        return draft
+
+    manager._chat_with_tools = py_types.MethodType(fake_chat, manager)
+    answer = asyncio.run(manager._verified_initial_coaching(
+        3, "prompt", context, "H3835", disable_tools=True,
+    ))
+    assert_eq(answer, draft)
+    assert_eq(len(calls), 1, "a valid natural draft must not enter repair/fallback")
+    assert_not_in("*核心判斷*", answer)
+    assert_not_in("Preflop", answer)
+    assert_not_in("Flop ①", answer)
 
 
 @test

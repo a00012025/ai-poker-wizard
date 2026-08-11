@@ -3023,12 +3023,14 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     if compact_length < 20:
         violations.append("coaching response too short")
     grounded_terms = re.compile(
-        r"(?:preflop|flop|turn|river|翻牌前|翻牌|轉牌|河牌|"
-        r"GTO|solver|EV|range|equity|SPR|"
+        r"(?:"
         r"check|bet|call|fold|raise|all[- ]?in|"
         r"過牌|下注|跟注|棄牌|加注|全下|"
         r"同花|順子|兩對|頂對|超對|set|三條|葫蘆|四條|"
-        r"未成牌|高牌|小對|中對|底對|聽牌|blocker|阻斷)",
+        r"未成牌|高牌|小對|中對|底對|聽牌|blocker|阻斷|"
+        r"SPR|底池賠率|防守門檻|realization|equity denial|"
+        r"range[^。；\n]{0,16}(?:頂端|底端|偏上|偏下|equity[^。；\n]{0,8}(?:優勢|劣勢|領先|落後))"
+        r")",
         re.I,
     )
     if compact_length >= 20 and not grounded_terms.search(body):
