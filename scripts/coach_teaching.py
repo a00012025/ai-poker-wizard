@@ -1532,7 +1532,14 @@ def build_teaching_digest(context: dict) -> dict | None:
         reverse=True,
     )[:2]
     if not selected and postflop_decisions:
-        selected = [max(postflop_decisions, key=_teaching_score)]
+        # With no EV mistake, give the narrator two evidence-rich candidates.
+        # It may teach either one or connect them into a cross-street strategy
+        # story; the first solver card already handles exhaustive coverage.
+        selected = sorted(
+            postflop_decisions,
+            key=_teaching_score,
+            reverse=True,
+        )[:2]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
 
     allowed_categories = set()
@@ -1789,7 +1796,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
         "",
-        "【逐點教練｜核心判斷必須依序涵蓋每一點】",
+        "【全手背景事實｜供選焦點，不要逐點重述】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
         lines.append(
@@ -1797,11 +1804,11 @@ def render_prompt_block(digest: dict | None) -> str:
             f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
     lines.extend([
-        "• 上述每點只需一句，但每一點都要附上一個簡短理由；不能只改寫成『正確選擇』。",
-        "• 非焦點只能使用上方提供的簡短理由，不得自行補因果；exact combo mix 本身就是足夠理由。",
-        "• off-tree 節點必須照寫『無法判定對錯』，並把學習焦點指回最後一個可評分節點；不得改判為正確或錯誤。",
+        "• 這些是第一則 solver 卡片已呈現的背景；第二則訊息不必逐一提到，也不要改寫成另一張 action table。",
+        "• 可以用其中一點交代整手總評，再把篇幅留給下方 1–2 個教學焦點。",
+        "• 若選到 off-tree 節點，只能說缺少 exact-combo solver 對照、無法判定對錯；不得自行補策略理由。",
         "",
-        "【深講焦點｜只在 *為什麼* 展開】",
+        "【教練候選焦點｜從中挑最有價值的 1–2 個自然展開】",
     ])
     for index, decision in enumerate(digest["decisions"], 1):
         role = decision["hero_role"]
@@ -1926,20 +1933,19 @@ def render_prompt_block(digest: dict | None) -> str:
     lines.extend([
         "",
         "【輸出契約】",
-        "只輸出三段：*核心判斷*、*為什麼*、*你要記得*。",
-        "第一個字必須是 *核心判斷* 的星號；不要輸出 solver 校正、近似解、寒暄或其他前言。",
-        "*核心判斷* 必須按逐點教練的順序，每個決策恰好一個 bullet；每行用 `•` 開頭（不用 `-`），並使用上方提供的原樣標籤；只有一個 Flop 決策時就寫 Flop，不得自行加 ①。",
-        "每個 bullet 依序寫『Hero 動作如何＋一個簡短、已提供的理由』，通常一句；不得省略打對的決策，也不要抄完整 action table。",
-        "正確決策不能只寫『正確選擇』；分號後要說明是 range plan、牌力／聽牌角色、價格、mix 或 exact-combo allocation 的哪一項支持它。",
-        "逐點教練可評價所有決策的正誤或 mix，並各給一個簡短理由；只有深講焦點可以在 *為什麼* 展開 range、牌型、blocker 或因果機制。",
+        "第二則訊息一定要有內容，即使全手打對也要提供一個具體、牌局相關的策略觀察。",
+        "先用一句話總評整手，再挑 1–2 個最有教學價值的焦點；格式與段落由你決定，不必使用固定標題。",
+        "不要逐點重述第一則 solver 卡片，不必逐一提到背景事實中的每個決策，也不要逐街稱讚。",
+        "有實質 EV 錯誤時優先解釋最昂貴或最早的根本偏差；沒有錯誤時，解釋最有意思的 mix、牌力角色、尺寸或跨街策略節奏。",
+        "只能從教練候選焦點提供的 range、牌型、blocker 與因果材料展開；背景事實只用來維持整手總評正確。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
-        "若沒有深講焦點，*為什麼* 只說 exact combo strategy 已足以判定，不補一般牌理。",
+        "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
-        "若逐點教練寫明『這個 combo 只少量到達此節點』，必須在同一個核心 bullet 原樣保留；不得移到別街或只放在結尾。",
+        "若你選擇討論『這個 combo 只少量到達此節點』的焦點，必須保留低到達率 caveat。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
-        "*為什麼*只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
+        "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
@@ -1954,7 +1960,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
-        "*為什麼*最多三句，只解釋深講焦點；*你要記得*只給一條可帶走的 heuristic，並保留 exact-node 邊界。",
+        "正文以 2–5 個短段落為原則；不要硬塞通用 heuristic，也不要固定用 exact-node 邊界收尾。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
@@ -2591,58 +2597,6 @@ def _audit_selected_streets(body: str, digest: dict) -> list[str]:
     ]
 
 
-def _audit_decision_coverage(body: str, digest: dict) -> list[str]:
-    """Every decision appears once; multi-street reviews must add a reason."""
-    core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
-    violations = []
-    covered = _covered_decisions(digest)
-    require_reasons = len(covered) >= 3
-    for decision in covered:
-        label = decision.get("coverage_label")
-        label_pattern = (
-            rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]*[：:]"
-            if len(covered) > 1
-            else rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])"
-        )
-        label_count = (
-            len(re.findall(
-                label_pattern,
-                core,
-                re.I | re.M,
-            ))
-            if label else 0
-        )
-        if label and label_count != 1:
-            violations.append(f"missing decision coverage {decision.get('decision_id', label)}")
-        line = next(
-            (
-                row for row in core.splitlines()
-                if label and re.search(
-                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])",
-                    row,
-                    re.I,
-                )
-            ),
-            "",
-        )
-        if require_reasons and line:
-            reason = re.split(r"[；;]", line, maxsplit=1)
-            if len(reason) < 2 or len(re.sub(r"\s+", "", reason[1])) < 6:
-                violations.append(
-                    f"missing concise reason {decision.get('decision_id', label)}"
-                )
-        if label and not re.search(r"[①②③④⑤⑥]", label):
-            if re.search(
-                rf"^[ \t]*•[ \t]*{re.escape(label)}[ \t]+[①②③④⑤⑥][ \t]*[：:]",
-                core,
-                re.I | re.M,
-            ):
-                violations.append(
-                    f"decision label mismatch {decision.get('decision_id', label)}"
-                )
-    return violations
-
-
 def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
     """An unreachable exact combo must stay explicitly ungraded."""
     core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
@@ -2881,7 +2835,9 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
-    violations.extend(_audit_decision_coverage(body, digest))
+    # The deterministic card already covers every decision.  The narrator is a
+    # selective teaching layer, so omission is intentional; facts it chooses to
+    # mention are still audited below.
     violations.extend(_audit_off_tree_verdicts(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
@@ -3104,13 +3060,21 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     for position in sorted(normalized_positions - allowed_positions):
         violations.append(f"unsupported position {position}")
 
-    required_headers = ("*核心判斷*", "*為什麼*", "*你要記得*")
-    if any(header not in body for header in required_headers):
-        violations.append("missing teaching structure")
-    response_limit = min(760, 420 + max(0, len(_covered_decisions(digest)) - 2) * 80)
-    if len(re.sub(r"\s+", "", body)) > response_limit:
+    compact_length = len(re.sub(r"\s+", "", body))
+    if compact_length < 20:
+        violations.append("coaching response too short")
+    response_limit = min(900, 520 + max(0, len(_covered_decisions(digest)) - 2) * 80)
+    if compact_length > response_limit:
         violations.append("response too long")
-    if any(row.get("confidence") == "medium" for row in _covered_decisions(digest)):
+    medium_decisions = [
+        row for row in _covered_decisions(digest)
+        if row.get("confidence") == "medium"
+    ]
+    mentioned_streets = _mentioned_streets(body)
+    discusses_medium = (
+        len(_covered_decisions(digest)) == 1 and bool(medium_decisions)
+    ) or any(row.get("street") in mentioned_streets for row in medium_decisions)
+    if discusses_medium:
         if not re.search(r"低頻|少量到達|條件式|rare|low[- ]frequency", lowered, re.I):
             violations.append("missing low-reach caveat")
 
