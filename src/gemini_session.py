@@ -1302,6 +1302,7 @@ class GeminiSessionManager:
                     try:
                         from analyze_hand import analyze_hand_full
                         context = analyze_hand_full(hand_json)
+                        self._prepare_initial_teaching_digest(context)
                     finally:
                         self._clear_user_token()
                     gto_data = context["text"]
@@ -1386,6 +1387,7 @@ class GeminiSessionManager:
                 try:
                     from analyze_hand import analyze_hand_full
                     context = analyze_hand_full(hand_json)
+                    self._prepare_initial_teaching_digest(context)
                 finally:
                     self._clear_user_token()
                 gto_data = context["text"]
@@ -1649,6 +1651,7 @@ class GeminiSessionManager:
             try:
                 from analyze_hand import analyze_hand_full
                 context = analyze_hand_full(hand_json)
+                self._prepare_initial_teaching_digest(context)
             finally:
                 self._clear_user_token()
             gto_data = context["text"]
@@ -3140,10 +3143,31 @@ class GeminiSessionManager:
                 await asyncio.sleep(2 * (attempt + 1))
 
     @staticmethod
+    def _prepare_initial_teaching_digest(context: dict) -> dict | None:
+        """Fetch selected response nodes while the per-user token is active."""
+        try:
+            def _response_loader(params: dict):
+                from gto_api import get_spot_solution
+
+                return get_spot_solution(**params)
+
+            digest = context.get("_teaching_digest") or build_teaching_digest(
+                context, response_loader=_response_loader,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Teaching response evidence unavailable: %s", exc
+            )
+            return None
+        if digest:
+            context["_teaching_digest"] = digest
+        return digest
+
+    @staticmethod
     def _initial_teaching_block(context: dict) -> str:
         """Cache and render the deterministic coaching card for this hand."""
         try:
-            digest = build_teaching_digest(context)
+            digest = context.get("_teaching_digest") or build_teaching_digest(context)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Teaching digest unavailable; using legacy coaching prompt: %s", exc

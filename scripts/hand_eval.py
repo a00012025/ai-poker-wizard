@@ -9,6 +9,8 @@ Usage:
     # → {"made_hand": "two_pair", "made_hand_label": "兩對 (T, 8)", ...}
 """
 
+from itertools import combinations
+
 # ── Card parsing ──
 
 _RANK_CHARS = "23456789TJQKA"
@@ -67,6 +69,63 @@ def _parse_hole_cards(hand: str) -> list[tuple[int, str]]:
 def _is_specific(hole_cards: list[tuple[int, str]]) -> bool:
     """Check if hole cards have specific suits (not generic)."""
     return all(s != '?' for _, s in hole_cards)
+
+
+def _five_card_rank_key(cards: tuple[tuple[int, str], ...]) -> tuple[int, ...]:
+    """Return a standard comparable poker rank for exactly five cards."""
+    from collections import Counter
+
+    ranks = [rank for rank, _ in cards]
+    counts = Counter(ranks)
+    grouped = sorted(
+        ((count, rank) for rank, count in counts.items()), reverse=True,
+    )
+    flush = len({suit for _, suit in cards}) == 1
+    straight_top = _find_straight(ranks)
+    if flush and straight_top is not None:
+        return (8, straight_top)
+    if grouped[0][0] == 4:
+        quad = grouped[0][1]
+        kicker = max(rank for rank in ranks if rank != quad)
+        return (7, quad, kicker)
+    trips = sorted((rank for rank, count in counts.items() if count == 3), reverse=True)
+    pairs = sorted((rank for rank, count in counts.items() if count == 2), reverse=True)
+    if trips and pairs:
+        return (6, trips[0], pairs[0])
+    if flush:
+        return (5, *sorted(ranks, reverse=True))
+    if straight_top is not None:
+        return (4, straight_top)
+    if trips:
+        kickers = sorted((rank for rank in ranks if rank != trips[0]), reverse=True)
+        return (3, trips[0], *kickers)
+    if len(pairs) >= 2:
+        high_pair, low_pair = pairs[:2]
+        kicker = max(rank for rank in ranks if rank not in {high_pair, low_pair})
+        return (2, high_pair, low_pair, kicker)
+    if pairs:
+        kickers = sorted((rank for rank in ranks if rank != pairs[0]), reverse=True)
+        return (1, pairs[0], *kickers)
+    return (0, *sorted(ranks, reverse=True))
+
+
+def showdown_rank_key(hole_cards: str, board: str) -> tuple[int, ...]:
+    """Comparable current-street hand strength for an exact two-card combo.
+
+    Flop and turn nodes contain five or six known cards, so this evaluates the
+    best currently made five-card hand without projecting future runouts.  It
+    is used by coaching evidence to distinguish, for example, KK (currently
+    ahead of QJ on A-T-9-Q) from JJ (currently behind) even though GTOW groups
+    both inside broad pair categories.
+    """
+    hole = _parse_hole_cards(hole_cards)
+    board_cards = _parse_cards(board)
+    if not _is_specific(hole) or any(suit == "?" for _, suit in board_cards):
+        raise ValueError("showdown_rank_key requires exact suits")
+    cards = hole + board_cards
+    if len(cards) < 5:
+        raise ValueError("showdown_rank_key requires at least a flop")
+    return max(_five_card_rank_key(combo) for combo in combinations(cards, 5))
 
 
 # ── Made hand evaluation ──

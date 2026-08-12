@@ -8,6 +8,7 @@ LLM may explain this card, but it must not invent a different range story.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -61,6 +62,21 @@ _POLAR_VALUE = {
     "straight_flush", "quads", "full_house", "flush", "straight", "set", "trips",
 }
 _POLAR_AIR = {"no_made_hand", "king_high", "ace_high"}
+
+# Action-range morphology is intentionally based on the solved action bucket,
+# not a fixed slogan such as "big bet = nuts or air".  Two pair+ forms the
+# durable value core; one-pair hands sit in the merge/bridge region; weak pairs
+# and unpaired hands may supply the low-equity end of a polar construction.
+_ACTION_VALUE_CORE = {
+    "straight_flush", "quads", "full_house", "flush", "straight",
+    "set", "trips", "two_pair",
+}
+_ACTION_MIDDLE = {
+    "overpair", "top_pair", "second_pair", "third_pair",
+}
+_ACTION_WEAK = {
+    "low_pair", "underpair", "no_made_hand", "king_high", "ace_high",
+}
 
 _CATEGORY_TERMS = {
     "flush": ("同花", "flush"),
@@ -520,6 +536,10 @@ def _decision_brief_reason(decision: dict) -> str:
         )
     if decision.get("equity_denial"):
         return decision["equity_denial"]["interpretation"].split("。", 1)[0]
+    if decision.get("check_story"):
+        return decision["check_story"]["interpretation"].split("；", 1)[0]
+    if decision.get("aggression_job"):
+        return decision["aggression_job"]["interpretation"].split("；", 1)[0]
     if decision.get("mix_strategy"):
         return decision["mix_strategy"]["interpretation"].split("；", 1)[0]
     role = decision.get("hero_role") or {}
@@ -1039,6 +1059,615 @@ def _action_composition(player_info: dict, code: str) -> dict[str, float]:
     return {name: mass / total for name, mass in masses.items()}
 
 
+def _representative_classes_for_action(
+    player_info: dict, code: str, *, limit: int = 8,
+) -> list[dict]:
+    rows = []
+    for hand_class, counter in (player_info.get("simple_hand_counters") or {}).items():
+        mass = _float((counter.get("actions_total_combos") or {}).get(code))
+        if mass <= 0:
+            continue
+        rows.append({"hand_class": hand_class, "mass": mass})
+    rows.sort(key=lambda row: -row["mass"])
+    total = sum(row["mass"] for row in rows)
+    for row in rows:
+        row["share"] = row["mass"] / total if total else 0.0
+    return rows[:limit]
+
+
+def _action_range_profile(
+    solution: dict, player_info: dict, code: str | None,
+) -> dict | None:
+    """Describe the solved range that takes one aggressive action.
+
+    The shape is a statement about the action bucket at this exact node.  It
+    never assumes that a size is polar merely because it is large.
+    """
+    if not code or not code.startswith("R"):
+        return None
+    action_solution = next(
+        (
+            row for row in (solution.get("action_solutions") or [])
+            if (row.get("action") or {}).get("code") == code
+        ),
+        None,
+    )
+    if not action_solution:
+        return None
+    composition = _action_composition(player_info, code)
+    if not composition:
+        return None
+    value_share = sum(composition.get(name, 0.0) for name in _ACTION_VALUE_CORE)
+    middle_share = sum(composition.get(name, 0.0) for name in _ACTION_MIDDLE)
+    weak_share = sum(composition.get(name, 0.0) for name in _ACTION_WEAK)
+    accounted = value_share + middle_share + weak_share
+    middle_share += max(0.0, 1.0 - accounted)
+    if value_share >= 0.35 and weak_share >= 0.12 and middle_share <= 0.30:
+        shape = "polar"
+        shape_label = "明顯偏極化"
+        value_threshold = "兩對以上為主"
+        interpretation = (
+            "此 action range 的重量集中在兩對以上的價值核心與弱端，"
+            "中段成牌較少；可說『兩對以上為主的價值端，加上弱端詐唬』，"
+            "但不能簡化成 literal nuts-or-air"
+        )
+    elif middle_share >= 0.35:
+        shape = "merged"
+        shape_label = "merged／線性"
+        if composition.get("top_pair", 0.0) >= 0.10:
+            value_threshold = "頂對以上為主要價值端"
+        elif composition.get("second_pair", 0.0) >= 0.10:
+            value_threshold = "第二對以上也進入薄價值端"
+        else:
+            value_threshold = "價值端與中段牌力混合"
+        interpretation = (
+            "此 action range 含有大量一對類中段牌力，不是只由強牌與空氣組成"
+        )
+    else:
+        shape = "mixed"
+        shape_label = "混合結構"
+        value_threshold = "沒有單一清楚門檻"
+        interpretation = "此 action range 同時含強端、中段與弱端，沒有足夠證據貼純極化標籤"
+    ordered = sorted(composition.items(), key=lambda item: -item[1])
+    return {
+        "action_code": code,
+        "action_label": _action_label(
+            action_solution,
+            any(
+                (row.get("action") or {}).get("code") in {"F", "C"}
+                for row in (solution.get("action_solutions") or [])
+            ),
+        ),
+        "shape": shape,
+        "shape_label": shape_label,
+        "value_threshold": value_threshold,
+        "value_core_share": value_share,
+        "middle_share": middle_share,
+        "weak_share": weak_share,
+        "main_categories": [
+            {
+                "category": name,
+                "label": _MADE_ZH.get(name, name),
+                "share": share,
+            }
+            for name, share in ordered[:6]
+        ],
+        "value_categories": [
+            _MADE_ZH.get(name, name)
+            for name, share in ordered if name in _ACTION_VALUE_CORE and share >= 0.01
+        ],
+        "middle_categories": [
+            _MADE_ZH.get(name, name)
+            for name, share in ordered if name in _ACTION_MIDDLE and share >= 0.01
+        ],
+        "weak_categories": [
+            _MADE_ZH.get(name, name)
+            for name, share in ordered if name in _ACTION_WEAK and share >= 0.01
+        ],
+        "representative_classes": _representative_classes_for_action(
+            player_info, code,
+        ),
+        "interpretation": interpretation,
+    }
+
+
+def _range_strength_targets(
+    solution: dict, player_info: dict, hero_hand: str,
+) -> dict | None:
+    """Locate Hero's current made hand against Villain's reachable range."""
+    try:
+        from hand_eval import showdown_rank_key
+
+        board = (solution.get("game") or {}).get("board") or ""
+        hero_key = showdown_rank_key(hero_hand, board)
+    except (ImportError, TypeError, ValueError, IndexError):
+        return None
+    range_arr = player_info.get("range") or []
+    if len(range_arr) != len(gf._COMBO_INDEX):
+        return None
+    board_cards = gf._get_board_cards(board)
+    hero_cards = {hero_hand[:2], hero_hand[2:]}
+    category_indices = solution.get("hand_categories_range") or []
+    category_names = {
+        row.get("index"): _normalize_category(row.get("name"))
+        for row in (player_info.get("hand_categories") or [])
+    }
+    buckets = {"ahead_of": {}, "behind": {}, "ties": {}}
+    classes = {"ahead_of": {}, "behind": {}, "ties": {}}
+    totals = {key: 0.0 for key in buckets}
+    for idx, (c1, c2) in enumerate(gf._COMBO_INDEX):
+        weight = _float(range_arr[idx])
+        if (
+            weight <= 1e-9 or c1 in board_cards or c2 in board_cards
+            or c1 in hero_cards or c2 in hero_cards
+        ):
+            continue
+        try:
+            villain_key = showdown_rank_key(c1 + c2, board)
+        except ValueError:
+            continue
+        target = "ahead_of" if hero_key > villain_key else ("behind" if hero_key < villain_key else "ties")
+        category = (
+            category_names.get(category_indices[idx])
+            if idx < len(category_indices) else None
+        ) or "unknown"
+        hand_class = gf._combo_to_hand_name(c1, c2)
+        buckets[target][category] = buckets[target].get(category, 0.0) + weight
+        classes[target][hand_class] = classes[target].get(hand_class, 0.0) + weight
+        totals[target] += weight
+    total = sum(totals.values())
+    if total <= 0:
+        return None
+
+    def summarize(target: str) -> dict:
+        return {
+            "share": totals[target] / total,
+            "categories": [
+                {"category": name, "label": _MADE_ZH.get(name, name), "mass": mass}
+                for name, mass in sorted(
+                    buckets[target].items(), key=lambda item: -item[1],
+                )[:4]
+            ],
+            "classes": [
+                {"hand_class": name, "mass": mass}
+                for name, mass in sorted(
+                    classes[target].items(), key=lambda item: -item[1],
+                )[:5]
+            ],
+        }
+
+    return {target: summarize(target) for target in buckets}
+
+
+def _response_action_family(code: str) -> str:
+    if code == "F":
+        return "fold"
+    if code in {"C", "X"}:
+        return "continue"
+    if code.startswith("R"):
+        return "raise"
+    return "other"
+
+
+def _opponent_response_profile(
+    response_solution: dict, hero_hand: str,
+) -> dict | None:
+    """Classify the opponent's solved response into value/bluff/protection targets."""
+    actor = (response_solution.get("game") or {}).get("active_position")
+    actor_pi = _players(response_solution).get(actor)
+    board = (response_solution.get("game") or {}).get("board") or ""
+    if not actor_pi:
+        return None
+    try:
+        from hand_eval import showdown_rank_key
+
+        hero_key = showdown_rank_key(hero_hand, board)
+    except (ImportError, TypeError, ValueError, IndexError):
+        return None
+    range_arr = actor_pi.get("range") or []
+    if len(range_arr) != len(gf._COMBO_INDEX):
+        return None
+    category_indices = response_solution.get("hand_categories_range") or []
+    category_names = {
+        row.get("index"): _normalize_category(row.get("name"))
+        for row in (actor_pi.get("hand_categories") or [])
+    }
+    draw_indices = response_solution.get("draw_categories_range") or []
+    draw_names = {
+        row.get("index"): row.get("name")
+        for row in (actor_pi.get("draw_categories") or [])
+    }
+    action_rows = [
+        row for row in (response_solution.get("action_solutions") or [])
+        if (row.get("action") or {}).get("code")
+    ]
+    if not action_rows:
+        return None
+    overall = {"fold": 0.0, "continue": 0.0, "raise": 0.0}
+    for row in action_rows:
+        family = _response_action_family((row.get("action") or {}).get("code") or "")
+        if family in overall:
+            overall[family] += _float(row.get("total_frequency"))
+
+    target_names = (
+        "continues_worse", "folds_better", "continues_better",
+        "folds_worse_with_equity", "folds_worse", "ties",
+    )
+    targets = {
+        name: {"mass": 0.0, "categories": {}, "classes": {}, "draws": {}}
+        for name in target_names
+    }
+    indifferent = {
+        "mass": 0.0, "categories": {}, "classes": {}, "action_families": {},
+    }
+    board_cards = gf._get_board_cards(board)
+    hero_cards = {hero_hand[:2], hero_hand[2:]}
+    for idx, (c1, c2) in enumerate(gf._COMBO_INDEX):
+        weight = _float(range_arr[idx])
+        if (
+            weight <= 1e-9 or c1 in board_cards or c2 in board_cards
+            or c1 in hero_cards or c2 in hero_cards
+        ):
+            continue
+        try:
+            villain_key = showdown_rank_key(c1 + c2, board)
+        except ValueError:
+            continue
+        comparison = "worse" if villain_key < hero_key else ("better" if villain_key > hero_key else "tie")
+        category = (
+            category_names.get(category_indices[idx])
+            if idx < len(category_indices) else None
+        ) or "unknown"
+        draw = draw_names.get(draw_indices[idx]) if idx < len(draw_indices) else None
+        hand_class = gf._combo_to_hand_name(c1, c2)
+        family_frequencies: dict[str, float] = {}
+        for action_row in action_rows:
+            code = (action_row.get("action") or {}).get("code") or ""
+            strategies = action_row.get("strategy") or []
+            frequency = _float(strategies[idx]) if idx < len(strategies) else 0.0
+            family = _response_action_family(code)
+            if family in {"fold", "continue", "raise"}:
+                family_frequencies[family] = family_frequencies.get(family, 0.0) + frequency
+        meaningful_families = [
+            frequency for frequency in family_frequencies.values()
+            if frequency >= 0.10
+        ]
+        if len(meaningful_families) >= 2 and max(meaningful_families) <= 0.90:
+            indifferent["mass"] += weight
+            indifferent["categories"][category] = (
+                indifferent["categories"].get(category, 0.0) + weight
+            )
+            indifferent["classes"][hand_class] = (
+                indifferent["classes"].get(hand_class, 0.0) + weight
+            )
+            for family, frequency in family_frequencies.items():
+                indifferent["action_families"][family] = (
+                    indifferent["action_families"].get(family, 0.0)
+                    + weight * frequency
+                )
+        for action_row in action_rows:
+            code = (action_row.get("action") or {}).get("code") or ""
+            strategies = action_row.get("strategy") or []
+            frequency = _float(strategies[idx]) if idx < len(strategies) else 0.0
+            mass = weight * frequency
+            if mass <= 1e-9:
+                continue
+            family = _response_action_family(code)
+            if comparison == "tie":
+                target = "ties"
+            elif family == "fold" and comparison == "better":
+                target = "folds_better"
+            elif (
+                family == "fold" and comparison == "worse" and len(board) < 10
+                and (
+                    (draw and draw != "no_draw")
+                    or category in _UNPAIRED_CATEGORIES
+                )
+            ):
+                target = "folds_worse_with_equity"
+            elif family == "fold":
+                target = "folds_worse"
+            elif comparison == "worse":
+                target = "continues_worse"
+            else:
+                target = "continues_better"
+            bucket = targets[target]
+            bucket["mass"] += mass
+            bucket["categories"][category] = bucket["categories"].get(category, 0.0) + mass
+            bucket["classes"][hand_class] = bucket["classes"].get(hand_class, 0.0) + mass
+            if draw and draw != "no_draw":
+                bucket["draws"][draw] = bucket["draws"].get(draw, 0.0) + mass
+
+    total_mass = sum(bucket["mass"] for bucket in targets.values())
+    if total_mass <= 0:
+        return None
+    for bucket in targets.values():
+        bucket["share"] = bucket["mass"] / total_mass
+        bucket["categories"] = [
+            {"category": name, "label": _MADE_ZH.get(name, name), "mass": mass}
+            for name, mass in sorted(
+                bucket["categories"].items(), key=lambda item: -item[1],
+            )[:4]
+        ]
+        bucket["classes"] = [
+            {"hand_class": name, "mass": mass}
+            for name, mass in sorted(
+                bucket["classes"].items(), key=lambda item: -item[1],
+            )[:5]
+        ]
+        bucket["draws"] = [
+            {"draw": name, "label": _DRAW_ZH.get(name, name), "mass": mass}
+            for name, mass in sorted(
+                bucket["draws"].items(), key=lambda item: -item[1],
+            )[:3]
+        ]
+    indifferent["share"] = indifferent["mass"] / total_mass
+    indifferent["categories"] = [
+        {"category": name, "label": _MADE_ZH.get(name, name), "mass": mass}
+        for name, mass in sorted(
+            indifferent["categories"].items(), key=lambda item: -item[1],
+        )[:4]
+    ]
+    indifferent["classes"] = [
+        {"hand_class": name, "mass": mass}
+        for name, mass in sorted(
+            indifferent["classes"].items(), key=lambda item: -item[1],
+        )[:5]
+    ]
+    if indifferent["mass"] > 0:
+        indifferent["action_families"] = {
+            family: mass / indifferent["mass"]
+            for family, mass in indifferent["action_families"].items()
+        }
+    return {
+        "actor": actor,
+        "board": board,
+        "overall": overall,
+        "targets": targets,
+        "indifferent": indifferent,
+        "scope": (
+            "只描述對手在這個 exact action 後的 solved response；"
+            "價值、詐唬與 protection 目標均由目前已成牌比較和實際 fold/continue bucket 推得"
+        ),
+    }
+
+
+def _aggressive_branch_action(
+    actions: list[dict], actual: dict | None, preferred: dict,
+) -> dict | None:
+    """Choose the action whose job should be explained.
+
+    Explain the real bet/raise when Hero took one.  When Hero checked, explain
+    the solver's main aggressive alternative so the check can be contrasted
+    against an actual value/bluff/protection branch rather than generic prose.
+    """
+    if actual and (actual.get("code") or "").startswith("R"):
+        return actual
+    if (preferred.get("code") or "").startswith("R"):
+        return preferred
+    aggressive = [row for row in actions if (row.get("code") or "").startswith("R")]
+    return max(aggressive, key=lambda row: row.get("frequency", 0.0), default=None)
+
+
+def _target_names(bucket: dict | None, *, limit: int = 3) -> list[str]:
+    if not bucket:
+        return []
+    floor = _float(bucket.get("mass")) * 0.05
+    classes = [
+        row["hand_class"] for row in bucket.get("classes") or []
+        if _float(row.get("mass")) >= floor
+    ]
+    if classes:
+        return classes[:limit]
+    return [row["label"] for row in (bucket.get("categories") or [])[:limit]]
+
+
+def _target_phrase(bucket: dict | None, *, limit: int = 4) -> str:
+    if not bucket:
+        return ""
+    floor = _float(bucket.get("mass")) * 0.05
+    categories = [
+        row["label"] for row in bucket.get("categories") or []
+        if _float(row.get("mass")) >= floor
+    ][:3]
+    classes = [
+        row["hand_class"] for row in bucket.get("classes") or []
+        if _float(row.get("mass")) >= floor
+    ][:limit]
+    if categories and classes:
+        return f"{'、'.join(categories)}（如 {'、'.join(classes)}）"
+    return "、".join(categories or classes)
+
+
+def _aggression_job_story(decision: dict) -> dict | None:
+    profile = decision.get("opponent_response_profile") or {}
+    targets = profile.get("targets") or {}
+    if not profile:
+        return None
+    value_targets = _target_names(targets.get("continues_worse"))
+    bluff_targets = _target_names(targets.get("folds_better"))
+    protection_targets = _target_names(targets.get("folds_worse_with_equity"))
+    better_continues = _target_names(targets.get("continues_better"))
+    indifferent = profile.get("indifferent") or {}
+    indifferent_targets = (
+        _target_names(indifferent, limit=4)
+        if _float(indifferent.get("share")) >= 0.03 else []
+    )
+    role = decision.get("hero_role") or {}
+    made = role.get("made_hand")
+    live_draws = role.get("live_draws") or []
+    is_unmade_draw = made in _UNPAIRED_CATEGORIES and bool(live_draws)
+    if is_unmade_draw:
+        # A draw occasionally being called by an even weaker draw is not the
+        # useful meaning of "value bet".  Its main job is fold pressure plus
+        # retained improvement equity when stronger hands continue.
+        value_targets = []
+    jobs = []
+    if value_targets:
+        jobs.append("value")
+    if bluff_targets:
+        jobs.append("bluff")
+    if protection_targets:
+        jobs.append("protection")
+    if is_unmade_draw:
+        combo_job = "semi_bluff"
+    elif len(jobs) >= 2 or (value_targets and live_draws):
+        combo_job = "hybrid"
+    elif jobs:
+        combo_job = jobs[0]
+    else:
+        combo_job = "range_construction"
+    pieces = []
+    if value_targets:
+        pieces.append(
+            f"較差的{_target_phrase(targets.get('continues_worse'))}仍會繼續，"
+            "形成 value 來源"
+        )
+    if bluff_targets:
+        pieces.append(
+            f"較好的{_target_phrase(targets.get('folds_better'))}會棄牌，"
+            "形成詐唬收益"
+        )
+    if protection_targets:
+        pieces.append(
+            f"目前較差但仍有改善 equity 的"
+            f"{_target_phrase(targets.get('folds_worse_with_equity'))}會棄牌，"
+            "形成 protection／equity denial"
+        )
+    if better_continues:
+        pieces.append(
+            f"更強的{_target_phrase(targets.get('continues_better'))}仍會繼續，"
+            "不能把此動作當純 value"
+        )
+    if is_unmade_draw:
+        pieces.append(
+            f"被跟注時仍靠{role.get('draw_summary')}保留改善 equity，"
+            "所以這是半詐唬而不是薄 value"
+        )
+    if indifferent_targets:
+        families = [
+            {"fold": "fold", "continue": "call/continue", "raise": "raise/all-in"}.get(
+                family, family,
+            )
+            for family, frequency in (indifferent.get("action_families") or {}).items()
+            if frequency >= 0.10
+        ]
+        pieces.append(
+            f"同時把{_target_phrase(indifferent)}推進"
+            f"{'／'.join(families)}混合的 indifferent 邊界，"
+            "讓這部分 range 面臨最接近無差異的困難決策"
+        )
+    return {
+        "combo_job": combo_job,
+        "is_alternative": not decision.get("aggressive_branch_is_actual"),
+        "value_targets": value_targets,
+        "bluff_targets": bluff_targets,
+        "protection_targets": protection_targets,
+        "better_continues": better_continues,
+        "indifferent_targets": indifferent_targets,
+        "interpretation": "；".join(pieces),
+        "scope": profile.get("scope"),
+    }
+
+
+def _check_story(decision: dict) -> dict | None:
+    actual = decision.get("actual_action") or {}
+    if actual.get("code") != "X":
+        return None
+    strength = decision.get("relative_strength") or {}
+    ahead = _target_names(strength.get("ahead_of"))
+    behind = _target_names(strength.get("behind"))
+    role = decision.get("hero_role") or {}
+    node = decision.get("node_context") or {}
+    branch_job = decision.get("aggression_job") or {}
+    reasons = []
+    if ahead or behind:
+        relation = []
+        if ahead:
+            relation.append(f"目前領先{'、'.join(ahead)}")
+        if behind:
+            relation.append(f"落後{'、'.join(behind)}")
+        reasons.append(
+            f"Hero 位於{role.get('range_band')}，" + "、但".join(relation)
+        )
+    if role.get("live_draws") and node.get("hero_relative_position") == "IP":
+        reasons.append(
+            f"IP 過牌可免費保留{role.get('draw_summary')}到下一張牌的 realization"
+        )
+    response = decision.get("opponent_response_profile") or {}
+    raise_frequency = (response.get("overall") or {}).get("raise", 0.0)
+    if raise_frequency >= 0.10:
+        reasons.append("避免把中段牌力立即放進會遭遇大量 raise／all-in 的分支")
+    if branch_job.get("interpretation"):
+        reasons.append(
+            f"若改走 {decision['action_range_profile']['action_label']}，其工作是："
+            f"{branch_job['interpretation']}"
+        )
+    if not reasons:
+        return None
+    check_comp = decision.get("check_range_composition") or {}
+    protected = sum(
+        check_comp.get(name, 0.0)
+        for name in _ACTION_VALUE_CORE | {"overpair", "top_pair"}
+    )
+    return {
+        "ahead_of": ahead,
+        "behind": behind,
+        "free_card": bool(
+            role.get("live_draws") and node.get("hero_relative_position") == "IP"
+        ),
+        "alternative_action": (decision.get("action_range_profile") or {}).get("action_label"),
+        "alternative_job": branch_job,
+        "check_strong_share": protected,
+        "interpretation": "；".join(reasons),
+    }
+
+
+def _response_params(decision: dict) -> tuple[str, dict] | None:
+    branch = decision.get("aggressive_branch") or {}
+    code = branch.get("code") or ""
+    street = decision.get("street")
+    key = {
+        "flop": "flop_actions", "turn": "turn_actions", "river": "river_actions",
+    }.get(street)
+    params = dict(decision.get("_spot_params") or {})
+    if not code.startswith("R") or not key or not params:
+        return None
+    params[key] = "-".join(filter(None, (params.get(key, ""), code)))
+    return f"{street}:{code}", params
+
+
+def _enrich_action_job(
+    decision: dict, context: dict, *, response_loader=None,
+) -> None:
+    response_request = _response_params(decision)
+    if not response_request:
+        return
+    cache_key, params = response_request
+    injected = context.get("_coach_response_solutions") or {}
+    response_solution = injected.get(cache_key)
+    if response_solution is None and response_loader:
+        try:
+            response_solution = response_loader(params)
+        except Exception as exc:  # evidence enrichment must fail closed
+            logging.getLogger(__name__).warning(
+                "Coach response-node enrichment failed for %s: %s", cache_key, exc,
+            )
+    if not response_solution:
+        return
+    decision["opponent_response_profile"] = _opponent_response_profile(
+        response_solution, decision["hero_hand"],
+    )
+    decision["aggression_job"] = _aggression_job_story(decision)
+    decision["check_story"] = _check_story(decision)
+    mechanisms = select_causal_mechanisms(decision)
+    decision["causal_mechanisms"] = mechanisms
+    decision["drivers"] = {
+        "primary": mechanisms[0]["title"],
+        "secondary": mechanisms[1]["title"] if len(mechanisms) > 1 else None,
+    }
+
+
 def _size_structure(solution: dict, player_info: dict) -> dict | None:
     bets = []
     for row in (solution.get("action_solutions") or []):
@@ -1416,6 +2045,17 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         solution, hero_pi, hero_hand, made_category, actual, preferred,
     )
     mix_strategy = _mix_strategy_story(actions, actual, preferred, ev_loss)
+    aggressive_branch = _aggressive_branch_action(actions, actual, preferred)
+    aggressive_branch_is_actual = bool(
+        actual and aggressive_branch
+        and actual.get("code") == aggressive_branch.get("code")
+    )
+    action_range_profile = _action_range_profile(
+        solution, hero_pi, (aggressive_branch or {}).get("code"),
+    )
+    relative_strength = _range_strength_targets(
+        solution, villain_pi, hero_hand,
+    )
     decision = {
         "street": street,
         "board": board,
@@ -1452,8 +2092,17 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "size_structure": size_structure,
         "size_choice": size_choice,
         "mix_strategy": mix_strategy,
+        "aggressive_branch": aggressive_branch,
+        "aggressive_branch_is_actual": aggressive_branch_is_actual,
+        "action_range_profile": action_range_profile,
+        "relative_strength": relative_strength,
+        "check_range_composition": _action_composition(hero_pi, "X"),
+        "opponent_response_profile": None,
+        "aggression_job": None,
+        "check_story": None,
         "blocker": blocker,
         "opponent_card_effects": opponent_card_effects,
+        "_spot_params": dict(spot.get("params") or {}),
         "confidence": "medium" if reach_weight < 0.005 else "high",
         "scope": (
             "這個 combo 因前街低頻線只少量到達此節點；結論只適用於目前深度、牌面與 action line"
@@ -1491,10 +2140,12 @@ def _teaching_score(decision: dict) -> float:
         score += 1.5
     if (decision.get("range_equity") or {}).get("use") != "omit":
         score += 0.5
+    if decision.get("action_range_profile"):
+        score += 1.0
     return score
 
 
-def build_teaching_digest(context: dict) -> dict | None:
+def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None:
     """Cover every solved Hero decision and select at most two to teach deeply."""
     if context.get("no_hero_hand"):
         return None
@@ -1520,8 +2171,6 @@ def build_teaching_digest(context: dict) -> dict | None:
     if not all_decisions:
         return None
 
-    _label_all_decisions(all_decisions)
-
     deviations = [
         row for row in postflop_decisions
         if (row.get("ev_loss_pot") or 0.0) >= 0.003
@@ -1541,6 +2190,13 @@ def build_teaching_digest(context: dict) -> dict | None:
             reverse=True,
         )[:2]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
+
+    # Successor nodes are fetched only for the 1–2 selected teaching focuses.
+    # Existing unit callers remain pure unless they inject cached nodes or a
+    # loader; production analysis supplies a per-user authenticated loader.
+    for row in selected:
+        _enrich_action_job(row, context, response_loader=response_loader)
+    _label_all_decisions(all_decisions)
 
     allowed_categories = set()
     allowed_percentages = set()
@@ -1644,6 +2300,15 @@ def build_teaching_digest(context: dict) -> dict | None:
                 match = re.search(r"\d+(?:\.\d+)?", row["size_structure"][key])
                 if match:
                     allowed_percentages.add(float(match.group()))
+        action_profile = row.get("action_range_profile") or {}
+        for item in action_profile.get("main_categories") or []:
+            allowed_categories.add(item["category"])
+        response = row.get("opponent_response_profile") or {}
+        for bucket in (response.get("targets") or {}).values():
+            for item in bucket.get("categories") or []:
+                allowed_categories.add(item["category"])
+        for frequency in (response.get("overall") or {}).values():
+            allowed_percentages.add(round(100 * frequency, 1))
 
     caveats = []
     validation_warning = (context.get("validation") or {}).get("user_warning")
@@ -1761,6 +2426,18 @@ def render_decision_evidence(decision: dict | None) -> list[str]:
             f"  Size construction：{size['larger_size']} 比 {size['smaller_size']} 更 polar；"
             f"{size['interpretation']}{category_note}"
         )
+    if decision.get("action_range_profile"):
+        profile = decision["action_range_profile"]
+        lines.append(
+            f"  Action range：{profile['action_label']} 是 {profile['shape_label']}；"
+            f"{profile['interpretation']}"
+        )
+    if decision.get("aggression_job"):
+        lines.append(
+            f"  Action job：{decision['aggression_job']['interpretation']}"
+        )
+    if decision.get("check_story"):
+        lines.append(f"  Check job：{decision['check_story']['interpretation']}")
 
     blocker = decision.get("blocker")
     if blocker:
@@ -1849,6 +2526,48 @@ def render_prompt_block(digest: dict | None) -> str:
             f"• 主要機制：{decision['drivers']['primary']}。",
             f"• 已觀測 range plan：{decision['range_plan']['text']}。",
         ])
+        action_profile = decision.get("action_range_profile") or {}
+        if action_profile:
+            branch_kind = (
+                "實戰進攻分支"
+                if decision.get("aggressive_branch_is_actual")
+                else "solver 的進攻替代分支"
+            )
+            main = "、".join(
+                f"{row['label']} {_pct(row['share'])}%"
+                for row in action_profile.get("main_categories") or []
+            )
+            classes = "、".join(
+                row["hand_class"]
+                for row in (action_profile.get("representative_classes") or [])[:6]
+            )
+            lines.append(
+                f"• Action range morphology（{branch_kind} {action_profile['action_label']}）："
+                f"{action_profile['shape_label']}；{action_profile['interpretation']}；"
+                f"價值門檻={action_profile['value_threshold']}；"
+                f"主要牌型={main or '資料不足'}；代表 hand classes={classes or '資料不足'}。"
+            )
+        response = decision.get("opponent_response_profile") or {}
+        if response:
+            overall = response.get("overall") or {}
+            lines.append(
+                "• Opponent solved response："
+                f"fold {_pct(overall.get('fold', 0.0))}% / "
+                f"continue {_pct(overall.get('continue', 0.0))}% / "
+                f"raise/all-in {_pct(overall.get('raise', 0.0))}%；"
+                f"{response.get('scope')}。"
+            )
+        if decision.get("aggression_job"):
+            job = decision["aggression_job"]
+            lines.append(
+                f"• Exact combo action job（"
+                f"{'替代分支；' if job.get('is_alternative') else ''}{job['combo_job']}）："
+                f"{job['interpretation']}。"
+            )
+        if decision.get("check_story"):
+            lines.append(
+                f"• Check job：{decision['check_story']['interpretation']}。"
+            )
         for mechanism in decision.get("causal_mechanisms") or []:
             forbidden = "、".join(mechanism["forbidden_inferences"])
             lines.append(
@@ -1946,19 +2665,25 @@ def render_prompt_block(digest: dict | None) -> str:
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
+        "每個進攻焦點先講 action range 是 merged、polar 或 mixed，再講 exact combo 在其中負責什麼；不可只說它是低頻／高頻 mix。",
+        "下注或加注的理由必須依 Opponent solved response 分開：較差牌繼續=value、較好牌棄掉=bluff、目前較差但有改善 equity 的牌棄掉=protection／equity denial；同時命中多項時稱 hybrid。",
+        "不能只交代 action range 形狀：Exact combo action job 中 value／bluff／protection 哪些欄位非空，就至少各點名一個骨架提供的主要 target；check 的替代進攻分支也遵守此規則。",
+        "若 Exact combo action job 列出 indifferent 邊界，可說該 size 把哪些牌推入 fold／call／raise 的混合困難決策；沒有 combo-level 顯著混合時不得自行使用 indifferent。",
+        "若 Action range morphology 寫明偏極化，可說『兩對以上為主的價值端＋弱端詐唬』並列出骨架提供的組成；不得縮寫成 literal nuts-or-air。",
+        "過牌焦點必須交代 Hero 在自身 range 的位置、目前領先／落後的主要範圍，以及保留 equity realization 或避開反擊的作用；再用替代進攻分支說明沒有選 bet/raise 犧牲了什麼。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
-        "只有骨架明示 Equity denial 時，才能談低 SPR、脆弱成牌與拒絕便宜 realization；不得虛構對手精確 fold equity。",
+        "只有骨架明示 Equity denial 或 Exact combo action job 的 protection target 時，才能談拒絕對手 equity；低 SPR／脆弱成牌仍只限 Equity denial 欄位。",
         "Pot odds／raw equity 只能支持『繼續而非 fold』，不能單獨用來選 call、raise 或 all-in。",
-        "只有骨架明示 Equity 來源／進攻分配時，才能把未成牌稱為半詐唬；必須先說 equity 來自哪些已驗證聽牌，再說 exact combo 被分到 raise/all-in。",
+        "只有骨架明示 Equity 來源／進攻分配，或 Exact combo action job=semi_bluff 時，才能把未成牌稱為半詐唬；必須同時說明已驗證聽牌是被跟注後的改善 equity 來源。",
         "只有骨架明示 Exact-class sizing 時，才能說同 hand class 被分配到某個 size；這不等於整體 range 更極化。",
         "Blocker 只能沿用骨架給的方向；不可自行聲稱 Hero 阻擋某個具體 combo、順子、同花或 nuts。",
         "Opponent-card conditional delta 是『Villain 持該牌時 Hero 策略如何變』；不得倒轉成 Hero 持牌造成的 blocker 故事。",
-        "不得把脆弱成牌稱為半詐唬；沒有 Equity 來源／進攻分配事實時也不得自行使用半詐唬。不要加入乾濕、連接性、驚悚牌等未驗證的 board texture。",
+        "不得把沒有 live draw 的脆弱成牌稱為半詐唬；沒有 Equity 來源／進攻分配或 action job=semi_bluff 事實時也不得自行使用半詐唬。不要加入乾濕、連接性、驚悚牌等未驗證的 board texture。",
         "強牌類別差距只能說『誰的同花／set／兩對等更多』；不可擴寫成整體 range 或牌面必然有利／不利。",
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
-        "沒有 opponent response facts；禁止聲稱對手一定會 call/fold、為了誘導詐唬、或為了保護 check range。",
+        "只有 Opponent solved response 提供的 hand classes／牌型與 action bucket 可以拿來說對手會 call/fold/raise；不得擴寫未列出的牌或誘導故事。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
         "正文以 2–5 個短段落為原則；不要硬塞通用 heuristic，也不要固定用 exact-node 邊界收尾。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
@@ -1975,7 +2700,57 @@ def render_fallback(digest: dict) -> str:
     for decision in focus:
         role = decision["hero_role"]
         pieces = []
-        if decision.get("draw_aggression"):
+        if decision.get("check_story"):
+            check = decision["check_story"]
+            relation = []
+            if check.get("ahead_of"):
+                relation.append("領先 " + "、".join(check["ahead_of"][:2]))
+            if check.get("behind"):
+                relation.append("落後 " + "、".join(check["behind"][:2]))
+            pieces.append(
+                f"{decision['street'].capitalize()} 過牌的理由是：{decision['hero_hand']} 位於"
+                f" {role['range_band']}，{'、'.join(relation)}；"
+                f"IP 可以免費保留{role.get('draw_summary')}的 realization"
+            )
+            job = decision.get("aggression_job") or {}
+            profile = decision.get("action_range_profile") or {}
+            targets = []
+            if job.get("value_targets"):
+                targets.append("向 " + "、".join(job["value_targets"][:2]) + " 取 value")
+            if job.get("bluff_targets"):
+                targets.append("逼 " + "、".join(job["bluff_targets"][:2]) + " 棄牌")
+            if job.get("protection_targets"):
+                targets.append("拒絕 " + "、".join(job["protection_targets"][:2]) + " 的 equity")
+            pieces.append(
+                f"相對地，{profile.get('action_label')} 是{profile.get('shape_label')}，"
+                + "、".join(targets)
+            )
+        elif decision.get("aggression_job"):
+            profile = decision.get("action_range_profile") or {}
+            job = decision["aggression_job"]
+            targets = []
+            if job.get("value_targets"):
+                targets.append("向 " + "、".join(job["value_targets"][:2]) + " 取 value")
+            if job.get("bluff_targets"):
+                targets.append("逼 " + "、".join(job["bluff_targets"][:3]) + " 棄牌")
+            if job.get("protection_targets"):
+                targets.append("拒絕 " + "、".join(job["protection_targets"][:2]) + " 的 equity")
+            pieces.append(
+                f"{decision['street'].capitalize()} 的 "
+                f"{profile.get('action_label', '這個進攻動作')} 採用 "
+                f"{profile.get('shape_label', '已驗證的 range 結構')}；"
+                + "、".join(targets)
+            )
+            if job.get("combo_job") == "semi_bluff":
+                pieces.append(
+                    f"{decision['hero_hand']} 被跟注後仍靠{role.get('draw_summary')}改善，屬半詐唬"
+                )
+            if job.get("indifferent_targets"):
+                pieces.append(
+                    "同時把 " + "、".join(job["indifferent_targets"][:2])
+                    + " 推入 indifferent 決策"
+                )
+        elif decision.get("draw_aggression"):
             pieces.append(decision["draw_aggression"]["interpretation"])
         elif decision.get("equity_denial"):
             pieces.append(decision["equity_denial"]["interpretation"])
@@ -2000,7 +2775,9 @@ def render_fallback(digest: dict) -> str:
                 f"{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}"
             )
         category_story = _category_sentence(decision)
-        if category_story:
+        if category_story and not (
+            decision.get("check_story") or decision.get("aggression_job")
+        ):
             pieces.append(category_story)
         size = decision.get("size_structure")
         if size and decision.get("decision_type") == "value":
@@ -2014,12 +2791,16 @@ def render_fallback(digest: dict) -> str:
             else:
                 pieces.append(size["interpretation"])
         blocker = decision.get("blocker")
-        if blocker and blocker["direction"] != "neutral":
+        if (
+            blocker and blocker["direction"] != "neutral"
+            and not (decision.get("check_story") or decision.get("aggression_job"))
+        ):
             pieces.append(blocker["interpretation"])
         elif (
             not category_story
             and not any(decision.get(key) for key in (
-                "draw_aggression", "equity_denial", "mix_strategy",
+                "check_story", "aggression_job", "draw_aggression",
+                "equity_denial", "mix_strategy",
                 "showdown_value", "defense_price", "size_choice",
             ))
         ):
@@ -2082,17 +2863,18 @@ def render_fallback(digest: dict) -> str:
             f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
         )
     else:
-        summary = (
-            f"整手沒有實質 EV 損失；最值得看的在 {primary['coverage_label']}："
-            f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
+        focus_verdicts = "；".join(
+            f"{row['coverage_label']} {row['coverage_verdict']}"
+            for row in focus
         )
+        summary = f"整手沒有實質 EV 損失；{focus_verdicts}。"
         if off_tree:
             first = off_tree[0]
             summary += (
                 f" {first['coverage_label']} 的實戰動作屬 off-tree，"
                 "沒有 exact-combo solver 對照，無法判定對錯。"
             )
-    return summary + "\n\n" + " ".join(reasons)
+    return summary + "\n\n" + "\n\n".join(reasons)
 
 
 @dataclass
@@ -2848,7 +3630,11 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     ):
         violations.append("unsupported range-equity explanation")
 
-    supports_equity_denial = any(row.get("equity_denial") for row in digest["decisions"])
+    supports_equity_denial = any(
+        row.get("equity_denial")
+        or (row.get("aggression_job") or {}).get("protection_targets")
+        for row in digest["decisions"]
+    )
     if not supports_equity_denial and re.search(
         r"(?:equity denial|deny\s+equity|拒絕[^。；\n]{0,20}(?:equity|勝率|實現)|"
         r"(?:未成牌|聽牌)[^。；\n]{0,24}(?:免費|便宜)[^。；\n]{0,12}(?:realization|看到|實現))",
@@ -2878,16 +3664,24 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     ):
         violations.append("unsupported exact-class sizing claim")
 
-    if re.search(
+    induced_claim = re.search(
         r"(?:誘導|引誘)[^。；\n]{0,20}(?:詐唬|bluff)|"
         r"(?:保護|平衡)[^。；\n]{0,20}(?:check|過牌)[^。；\n]{0,12}(?:range|範圍)|"
-        r"(?:用來|為了|透過)[^。；\n]{0,16}(?:平衡|保護)[^。；\n]{0,16}(?:整體)?(?:策略|range|範圍)|"
-        r"(?:控制底池|pot control)",
+        r"(?:用來|為了|透過)[^。；\n]{0,16}(?:平衡|保護)[^。；\n]{0,16}(?:整體)?(?:策略|range|範圍)",
         body,
         re.I,
-    ):
+    )
+    supports_check_story = any(row.get("check_story") for row in digest["decisions"])
+    unsupported_pot_control = bool(
+        re.search(r"(?:控制底池|pot control)", body, re.I)
+        and not supports_check_story
+    )
+    if induced_claim or unsupported_pot_control:
         violations.append("unsupported induced-action explanation")
-    if re.search(
+    supports_response = any(
+        row.get("opponent_response_profile") for row in digest["decisions"]
+    )
+    if not supports_response and re.search(
         r"(?:check|過牌)\s*[-/]?\s*(?:fold|call|raise|棄牌|跟注|加注)",
         body,
         re.I,
@@ -2906,6 +3700,14 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     ):
         violations.append("unsupported opponent-response claim")
+    supports_indifferent = any(
+        (row.get("aggression_job") or {}).get("indifferent_targets")
+        for row in digest["decisions"]
+    )
+    if not supports_indifferent and re.search(
+        r"indifferent|無差異|困難決策", body, re.I,
+    ):
+        violations.append("unsupported indifferent-response claim")
 
     supported_sprs = [
         row["equity_denial"]["effective_spr"]
@@ -2925,14 +3727,19 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
             violations.append(f"SPR mismatch {match.group(1)}")
 
     supports_draw_aggression = any(
-        row.get("draw_aggression") for row in digest["decisions"]
+        row.get("draw_aggression")
+        or (row.get("aggression_job") or {}).get("combo_job") == "semi_bluff"
+        for row in digest["decisions"]
     )
     if (
         re.search(r"(?:半詐唬|semi[- ]?bluff)", lowered, re.I)
         and not supports_draw_aggression
     ):
         violations.append("unsupported semi-bluff label")
-    if supports_draw_aggression and not re.search(
+    requires_draw_source = any(
+        row.get("draw_aggression") for row in digest["decisions"]
+    )
+    if requires_draw_source and not re.search(
         r"(?:equity|勝率)[^。；\n]{0,16}(?:來源|來自|改善)|"
         r"(?:改善牌|補成)[^。；\n]{0,16}(?:同花|順子)|"
         r"(?:同花聽牌|花聽)[^。；\n]{0,24}(?:卡順|順子聽牌)",
@@ -2959,13 +3766,27 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     ):
         violations.append("unsupported broad range-advantage claim")
 
-    supports_polar = any(
-        row.get("size_structure")
-        and row.get("drivers", {}).get("secondary") == "不同 bet size 的 range construction"
+    polar_streets = {
+        row.get("street")
         for row in digest["decisions"]
-    )
-    if not supports_polar and ("極化" in body or "polarized" in lowered or "polarization" in lowered):
-        violations.append("unsupported polarization claim")
+        if (
+            row.get("size_structure")
+            and row.get("drivers", {}).get("secondary") == "不同 bet size 的 range construction"
+        ) or (row.get("action_range_profile") or {}).get("shape") == "polar"
+    }
+    for sentence in re.split(r"[。！？\n]", body):
+        if not re.search(r"極化|polarized|polarization", sentence, re.I):
+            continue
+        named = {
+            street for alias, street in _STREET_ALIASES.items()
+            if re.search(re.escape(alias), sentence, re.I)
+        }
+        if not named:
+            mentioned_anywhere = _mentioned_streets(body)
+            if len(mentioned_anywhere) == 1:
+                named = mentioned_anywhere
+        if not polar_streets or (named and not named.intersection(polar_streets)):
+            violations.append("unsupported polarization claim")
     if re.search(
         r"價值(?:下注)?式?詐唬|\bvalue[- ]?bet(?:ting)?[- ]?bluff\b",
         lowered,
