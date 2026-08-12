@@ -408,6 +408,72 @@ def test_online_session_coach_callback_is_registered_and_routed():
 
 
 @test
+def test_online_session_coach_acks_before_cache_rebuild_and_survives_expired_ack():
+    """A cold-cache review rebuild can outlive Telegram's callback window.
+
+    The coach path must ACK before resolve/compute, and an already-expired ACK
+    must not abort the slower chat-message flow that follows.
+    """
+    from telegram.error import BadRequest
+    from telegram_bot.bot import PokerWizardBot
+
+    class StopAfterRebuild(Exception):
+        pass
+
+    session = {
+        "id": 42,
+        "started_at": datetime(2026, 8, 11, 13, 12, tzinfo=timezone.utc),
+        "ended_at": datetime(2026, 8, 11, 17, 29, tzinfo=timezone.utc),
+    }
+    stable_key = sr.session_callback_key(session)
+    events = []
+
+    async def fake_resolve(_conn, key):
+        events.append("resolve")
+        assert_eq(key, stable_key)
+        return session
+
+    async def fake_compute(_conn, resolved, user_id=None):
+        events.append("compute")
+        assert_eq(resolved, session)
+        assert_eq(user_id, 556028753)
+        raise StopAfterRebuild
+
+    class Query:
+        data = f"src2:{stable_key}:0"
+
+        async def answer(self, text=None, **_kwargs):
+            events.append("answer")
+            raise BadRequest(
+                "Query is too old and response timeout expired or query id is invalid")
+
+    bot = object.__new__(PokerWizardBot)
+    bot.admin_chat_id = 556028753
+    bot.db = SimpleNamespace(pool=object())
+    bot.log = logging.getLogger("test-session-coach-expired-ack")
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    update = SimpleNamespace(
+        callback_query=Query(),
+        effective_user=SimpleNamespace(id=556028753),
+        effective_chat=SimpleNamespace(id=99),
+    )
+
+    old_resolve, old_compute = sr.resolve_session_key, sr.compute
+    sr.resolve_session_key, sr.compute = fake_resolve, fake_compute
+    try:
+        try:
+            asyncio.run(bot.handle_live_button(update, context))
+        except StopAfterRebuild:
+            pass
+        else:
+            raise AssertionError("cold-cache rebuild sentinel was not reached")
+    finally:
+        sr.resolve_session_key, sr.compute = old_resolve, old_compute
+
+    assert_eq(events, ["answer", "resolve", "compute"])
+
+
+@test
 def test_recent_online_sessions_are_newest_first_and_bounded():
     class Conn:
         async def fetch(self, sql, *args):
