@@ -3546,14 +3546,13 @@ def _run_analysis(hand: dict) -> dict:
                         and ev_negligible
                         and gto_top_freq >= 0.80
                     ):
-                        if ev_detail.get("taken_in_mix"):
-                            note = "屬頻率/mix 偏好,非錯誤"
-                        else:
-                            note = "不在可採信 mix,但 EV 影響小"
                         compact.append(
                             f"→ Hero {hero_action_short} ✅"
-                            f"（GTO 多為 {gto_top_label} {gto_top_freq * 100:.0f}%,"
-                            f"{note}）"
+                            + _compact_negligible_frequency_note(
+                                gto_top_label,
+                                gto_top_freq,
+                                taken_in_mix=ev_detail.get("taken_in_mix", False),
+                            )
                         )
                     else:
                         compact.append(f"→ Hero {hero_action_short} ✅{sizing_hint}")
@@ -3590,6 +3589,17 @@ def _run_analysis(hand: dict) -> dict:
 def analyze_hand(hand: dict) -> str:
     """Run full multi-street analysis and return natural language summary."""
     return _run_analysis(hand)["text"]
+
+
+def _compact_negligible_frequency_note(
+    gto_top_label: str, gto_top_freq: float, *, taken_in_mix: bool,
+) -> str:
+    """Explain a negligible high-frequency deviation without audit jargon."""
+    if taken_in_mix:
+        note = "但此動作也在 mix 內"
+    else:
+        note = "不在可採信 mix，但 EV 影響小"
+    return f"（GTO 主要 {gto_top_label} {gto_top_freq * 100:.0f}%，{note}）"
 
 
 def analyze_hand_full(hand: dict) -> dict:

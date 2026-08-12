@@ -15,7 +15,7 @@ GTO: Call 95%
 ─── Turn: 4♥️ ───
 🎯 兩對 (K, Q)
 GTO: Bet 16.55（50% pot） 88% / Check 11%
-→ Hero check ✅（GTO 多為 bet 50% pot 88%,屬頻率/mix 偏好,非錯誤）
+→ Hero check ✅（GTO 主要 bet 50% pot 88%，但此動作也在 mix 內）
 
 ─── River: 4☘️ ───
 🎯 兩對 (K, Q)

@@ -686,6 +686,19 @@ def test_preflop_continuation_spot_for_facing_4bet_call():
 
 
 @test
+def test_compact_in_mix_note_is_concise():
+    """A low-frequency supported action needs one clear clause, not audit jargon."""
+    from analyze_hand import _compact_negligible_frequency_note
+
+    note = _compact_negligible_frequency_note(
+        "check", 0.98, taken_in_mix=True,
+    )
+    assert_eq(note, "（GTO 主要 check 98%，但此動作也在 mix 內）")
+    assert_not_in("頻率/mix 偏好", note)
+    assert_not_in("非錯誤", note)
+
+
+@test
 def test_preflop_pending_facing_allin_uses_allin_effective_depth():
     """H3428: initial-round AI action reopens a visible 20bb facing-all-in node."""
     from analyze_hand import analyze_hand_full
