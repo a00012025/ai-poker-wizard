@@ -347,21 +347,44 @@ def test_session_review_callback_key_survives_session_id_rebuild():
 
 
 @test
-def test_online_session_coach_uses_grounded_solver_context():
+def test_online_session_coach_uses_enriched_verified_teaching_path():
+    """The review Coach button must use the same grounded initial-coach path
+    as normal hand analysis, including response-node enrichment while the
+    per-user GTOW token is still bound.
+    """
     from telegram_bot.bot import PokerWizardBot
     import analyze_hand
 
     captured = {}
+    worker_threads = []
 
     class SessionManager:
         def __init__(self):
             self.hand_contexts = {}
             self.pending_images = {}
 
-        async def _chat_with_tools(self, chat_id, prompt, **kwargs):
+        @staticmethod
+        def _prepare_initial_teaching_digest(context):
+            worker_threads.append(threading.get_ident())
+            captured["prepared_context"] = context
+            context["_teaching_digest"] = {"enriched": True}
+            return context["_teaching_digest"]
+
+        @staticmethod
+        def _initial_teaching_block(context):
+            captured["teaching_context"] = context
+            return "ENRICHED TEACHING BLOCK"
+
+        async def _verified_initial_coaching(
+                self, chat_id, prompt, context, user_text, **kwargs):
             captured["prompt"] = prompt
+            captured["verified_context"] = context
+            captured["user_text"] = user_text
             captured["kwargs"] = kwargs
             return "教練文字\nFOLLOWUP: 為什麼？"
+
+        async def _chat_with_tools(self, *_args, **_kwargs):
+            raise AssertionError("online session coach bypassed verified teaching")
 
         @staticmethod
         def _extract_followups(_response):
@@ -370,7 +393,6 @@ def test_online_session_coach_uses_grounded_solver_context():
     bot = PokerWizardBot.__new__(PokerWizardBot)
     bot.session_manager = SessionManager()
     main_thread = threading.get_ident()
-    worker_threads = []
     bot._setup_user_token = lambda *_args: worker_threads.append(threading.get_ident())
     bot._clear_user_token = lambda: worker_threads.append(threading.get_ident())
     old_analyze = analyze_hand.analyze_hand_full
@@ -391,10 +413,31 @@ def test_online_session_coach_uses_grounded_solver_context():
 
     assert_in("教練文字", result)
     assert_in("已驗證 solver 事實", captured["prompt"])
+    assert_in("ENRICHED TEACHING BLOCK", captured["prompt"])
     assert_in("不要重新解析或改寫動作", captured["prompt"])
+    assert_eq(captured["prepared_context"], captured["verified_context"])
+    assert_eq(captured["verified_context"]["_teaching_digest"], {"enriched": True})
+    assert_in("online-hand-1", captured["user_text"])
     assert_eq(bot.session_manager.hand_contexts[10]["followup_questions"], ["為什麼？"])
     assert_true(worker_threads and all(tid != main_thread for tid in worker_threads),
-                "token binding and solver analysis must stay off the event-loop thread")
+                "token binding, solver analysis, and evidence enrichment must stay "
+                "off the event-loop thread")
+
+
+@test
+def test_every_bot_initial_coach_entry_uses_shared_verified_boundary():
+    """HH, live-detail and session-review buttons cannot drift to legacy chat."""
+    from telegram_bot.bot import PokerWizardBot
+
+    for name in (
+        "_analyze_hh_hand",
+        "_analyze_live_parsed_hand",
+        "_analyze_online_parsed_hand",
+    ):
+        source = inspect.getsource(getattr(PokerWizardBot, name))
+        assert_in("_build_grounded_coach_context", source, name)
+        assert_in("_verified_grounded_coaching", source, name)
+        assert_not_in("_chat_with_tools", source, name)
 
 
 @test

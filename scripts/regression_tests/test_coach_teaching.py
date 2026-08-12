@@ -1918,6 +1918,31 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
 
 
 @test
+def test_initial_coach_followups_are_constrained_to_pipeline_answerability():
+    """Generated buttons must carry the inputs the hypothetical resolver needs."""
+    from gemini_session import INITIAL_COACH_SYSTEM
+
+    assert_in("最多前進一街", INITIAL_COACH_SYSTEM)
+    assert_in("下一張 exact card", INITIAL_COACH_SYSTEM)
+    assert_in("對手 actor", INITIAL_COACH_SYSTEM)
+    assert_in("不可問「什麼情況選某個 mix 分支」", INITIAL_COACH_SYSTEM)
+
+
+@test
+def test_text_image_and_ft_initial_coaches_share_followup_contract():
+    """FT switching must not drift from normal text/image coach buttons."""
+    import inspect
+    from gemini_session import GeminiSessionManager
+
+    chat_source = inspect.getsource(GeminiSessionManager.send_message)
+    image_source = inspect.getsource(GeminiSessionManager.send_image_message)
+    assert_true(chat_source.count("FOLLOWUP_REQUEST") >= 2,
+                "text and FT-switch paths must share one contract")
+    assert_in("FOLLOWUP_REQUEST", image_source,
+              "image path must share the same contract")
+
+
+@test
 def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
     """An OpenAI outage degrades honestly instead of unaudited Gemini prose."""
     import asyncio
@@ -3087,8 +3112,8 @@ def test_openai_followup_missing_solver_data_fails_honestly_without_narration():
 
 
 @test
-def test_openai_followup_next_actions_alone_cannot_support_recommendation():
-    """Action availability is not combo strategy evidence."""
+def test_openai_followup_next_actions_is_completed_by_hypothetical_strategy():
+    """Discovery-only output must be followed by exact strategy evidence."""
     import asyncio
     import json as _json
     import types as py_types
@@ -3104,17 +3129,34 @@ def test_openai_followup_next_actions_alone_cannot_support_recommendation():
     after_tool = py_types.SimpleNamespace(
         id="plan-next-only-2", usage=None, output_text="NO_TOOL", output=[],
     )
-    manager, api = _evidence_manager([planner, after_tool])
+    final = py_types.SimpleNamespace(
+        id="answer-next-completed", usage=None, output=[],
+        output_text=_json.dumps({
+            "answer": "*核心判斷*\n最近 solver 分支下，7♦7♣ 棄牌 100%。",
+            "fact_refs": ["E3.1"],
+            "needs_more_evidence": False,
+            "missing_evidence": "",
+        }, ensure_ascii=False),
+    )
+    manager, api = _evidence_manager([planner, after_tool, final])
+    manager.hand_contexts[7]["hand"] = {"hero_hand": "7d7c"}
+    called = []
 
-    async def fake_execute(*args, **kwargs):
-        return "turn 可用動作：Check、Bet 3bb"
+    async def fake_execute(_chat_id, _question, name, args, **kwargs):
+        called.append((name, args))
+        if name == "query_next_actions":
+            return "turn 可用動作：Check、Bet 25% pot、All-in 70% pot"
+        return ("50% pot 不在樹中，映射 70% pot all-in\n"
+                "7d7c：equity 25%\n      solver 動作：棄牌 100%")
 
     manager._execute_coach_tool = fake_execute
     answer = asyncio.run(manager._chat_with_openai_evidence(
-        7, "HJ turn 應該用哪些牌下注？",
+        7, "如果我跟注 flop，turn 8h 對手下注半池，77 怎麼打？",
     ))
-    assert_in("沒有取得可驗證的 solver 資料", answer)
-    assert_eq(len(api.calls), 2, "availability alone must skip final narration")
+    assert_in("棄牌 100%", answer)
+    assert_eq([name for name, _ in called],
+              ["query_next_actions", "query_coach_facts"])
+    assert_eq(len(api.calls), 3)
 
 
 @test

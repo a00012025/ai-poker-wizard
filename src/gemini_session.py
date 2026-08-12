@@ -52,7 +52,7 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from coach_prompts import (  # noqa: F401 — re-exported for existing importers
     PARSE_PROMPT, IMAGE_PARSE_PROMPT, HERO_HAND_ONLY_PROMPT, COACH_SYSTEM,
-    INITIAL_COACH_SYSTEM,
+    FOLLOWUP_REQUEST, INITIAL_COACH_SYSTEM,
     _TERM_REPLACEMENTS, _normalize_terms, _GROUNDING_PATTERNS,
     _needs_solver_grounding,
 )
@@ -63,7 +63,11 @@ from coach_teaching import (
     render_fallback as render_teaching_fallback,
     render_prompt_block as render_teaching_prompt_block,
 )
-from coach_evidence import COACH_FACTS_TOOL, tool_spec_from_declaration
+from coach_evidence import (
+    COACH_FACTS_TOOL,
+    normalize_emoji_cards,
+    tool_spec_from_declaration,
+)
 from coach_runtime import run_evidence_chat
 
 QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
@@ -1314,7 +1318,7 @@ class GeminiSessionManager:
                         f"用戶要求切換到 ICM 決賽桌模式重新分析。\n\n"
                         f"GTO Solver 數據（ICM 模式）：\n{gto_data}\n\n"
                         f"請分析 hero 在 ICM 決賽桌下的最佳策略，並與之前的 Chip EV 分析做比較。\n\n"
-                        f"{teaching_block}"
+                        f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
                     )
                     result = await self._verified_initial_coaching(
                         chat_id, coaching_prompt, context, user_text,
@@ -1492,14 +1496,6 @@ class GeminiSessionManager:
                         "策略重點自然解釋。若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
-                followup_instruction = (
-                    "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
-                    "FOLLOWUP: 問題一\n"
-                    "FOLLOWUP: 問題二\n"
-                    "FOLLOWUP: 問題三\n"
-                    "問題要具體、跟這手牌相關、能用 GTO solver 回答。例如「BB 在 turn 的 check-raise 範圍是什麼？」"
-                    "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
-                )
                 teaching_block = self._initial_teaching_block(context)
                 solver_prompt_data = (
                     "逐街 solver 結果已由系統顯示；本段以 deterministic 教學骨架為唯一教練事實。"
@@ -1508,7 +1504,7 @@ class GeminiSessionManager:
                 coaching_prompt = (
                     f"用戶描述：\n{user_text}\n\n"
                     f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
-                    f"{coaching_instruction}\n\n{teaching_block}{followup_instruction}"
+                    f"{coaching_instruction}\n\n{teaching_block}\n\n{FOLLOWUP_REQUEST}"
                 )
                 # Verified generation (retries transient 503/500 internally;
                 # routes the verdict through the coach_facts claim verifier)
@@ -1743,13 +1739,7 @@ class GeminiSessionManager:
                 f"用戶留言：{user_q}\n\n"
                 f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
                 f"{img_coaching_instruction}\n\n"
-                f"{teaching_block}"
-                "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
-                "FOLLOWUP: 問題一\n"
-                "FOLLOWUP: 問題二\n"
-                "FOLLOWUP: 問題三\n"
-                "問題要具體、跟這手牌相關、能用 GTO solver 回答。例如「BB 在 turn 的 check-raise 範圍是什麼？」"
-                "「如果 flop 用 33% pot 下注會怎樣？」「對手 3-bet 的話 KQo 應該怎麼打？」"
+                f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
             )
             # Verified generation (retries transient 503/500 internally;
             # routes the verdict through the coach_facts claim verifier)
@@ -4241,10 +4231,61 @@ class GeminiSessionManager:
         return "\n".join(lines)
 
     @staticmethod
+    def _followup_is_pipeline_answerable(question: str) -> bool:
+        """Reject generated buttons whose required solver inputs are absent."""
+        q = question or ""
+        ql = q.lower()
+        action_terms = re.findall(
+            r"call|fold|check|bet|raise|all[- ]?in|跟注|棄牌|弃牌|過牌|过牌|"
+            r"下注|加注|全下",
+            ql,
+        )
+        if (any(term in q for term in ("什麼情況", "什么情况", "何時", "何时"))
+                and ("mix" in ql or "混合" in q or len(set(action_terms)) >= 2)):
+            return False
+
+        hypothetical = re.search(r"如果|假設|假如|what\s*if|\bif\b", q, re.I)
+        future_street = any(
+            token in ql for token in ("turn", "river", "轉牌", "转牌", "河牌")
+        )
+        if not hypothetical or not future_street:
+            return True
+
+        normalized = normalize_emoji_cards(q)
+        has_exact_card = bool(re.search(
+            r"(?:turn|river|轉牌|转牌|河牌)[^，,。；;]{0,18}"
+            r"(?<![A-Za-z0-9])[2-9TJQKA][cdhs](?![A-Za-z0-9])",
+            normalized,
+            re.I,
+        ))
+        has_hero_action = bool(re.search(
+            r"(?:我|hero|i\b)[^，,。；;]{0,18}"
+            r"(?:跟注|call|過牌|过牌|check)",
+            ql,
+            re.I,
+        ))
+        has_actor_bet = bool(re.search(
+            r"\b(?:utg(?:\+?[12])?|lj|hj|co|btn|sb|bb)\b"
+            r"[^，,。；;]{0,18}(?:下注|加注|bet|raise|all[- ]?in|全下)",
+            ql,
+            re.I,
+        ))
+        has_size = bool(
+            re.search(r"\d{1,3}\s*%|\d+(?:\.\d+)?\s*bb", ql, re.I)
+            or any(token in q for token in (
+                "四分之一", "三分之一", "半池", "半個底池", "半个底池",
+                "三分之二", "四分之三", "滿池", "满池", "全池", "超池",
+            ))
+            or bool(re.search(r"all[- ]?in|全下", ql, re.I))
+        )
+        return all((has_exact_card, has_hero_action, has_actor_bet, has_size))
+
+    @staticmethod
     def _extract_followups(text: str) -> tuple[str, list[str]]:
         """Strip FOLLOWUP: lines from response, return (clean_text, questions)."""
         followups: list[str] = []
         clean_lines: list[str] = []
+        matched_followup = False
         followup_re = re.compile(
             r"^\s*(?:[-*•]\s*)?(?:\d+[.)]\s*)?(?:\*\*)?"
             r"FOLLOW[\s_-]*UP(?:\*\*)?\s*[:：](?:\*\*)?\s*(.+?)\s*$",
@@ -4254,12 +4295,13 @@ class GeminiSessionManager:
             stripped = line.strip()
             m = followup_re.match(stripped)
             if m:
+                matched_followup = True
                 q = m.group(1).strip()
-                if q:
+                if q and GeminiSessionManager._followup_is_pipeline_answerable(q):
                     followups.append(q)
             else:
                 clean_lines.append(line)
-        if followups:
+        if matched_followup:
             return "\n".join(clean_lines).rstrip(), followups
         return text, []
 

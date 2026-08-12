@@ -21,7 +21,12 @@ from typing import Callable
 
 import gto_formatter as gf
 from card_display import cards_to_emoji
-from gto_api import get_spot_solution
+from coach_evidence import normalize_emoji_cards
+from gto_api import (
+    find_closest_action_by_pot_fraction,
+    get_next_actions,
+    get_spot_solution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1111,7 +1116,164 @@ def _fetch_hypothetical_size_from(hsol: dict, hand_context: dict,
     return f
 
 
+_STREET_PREDECESSOR = {"turn": "flop", "river": "turn"}
+_STREET_ACTION_KEY = {
+    "flop": "flop_actions", "turn": "turn_actions", "river": "river_actions",
+}
+
+
+def _future_card_from_question(question: str, excluded_cards: str) -> str | None:
+    """Return the one exact runout card named by a hypothetical question."""
+    normalized = normalize_emoji_cards(question or "")
+    blocked = {
+        excluded_cards[i:i + 2].lower()
+        for i in range(0, len(excluded_cards or ""), 2)
+    }
+    cards = re.findall(r"(?<![A-Za-z0-9])([2-9TJQKA][cdhs])(?![A-Za-z0-9])",
+                       normalized, re.I)
+    for card in reversed(cards):
+        card = card[0].upper() + card[1].lower()
+        if card.lower() not in blocked:
+            return card
+    return None
+
+
+def _hypothetical_previous_hero_action(question: str, previous_sol: dict) -> str | None:
+    """Resolve only an explicitly stated Hero continuation; never invent one."""
+    q = (question or "").lower()
+    requested = None
+    if re.search(r"(?:我|hero|i\b)[^，,。；;]{0,18}(?:跟注|call)", q, re.I):
+        requested = "C"
+    elif re.search(r"(?:我|hero|i\b)[^，,。；;]{0,18}(?:過牌|过牌|check)", q, re.I):
+        requested = "X"
+    if not requested:
+        return None
+    available = {
+        str((row.get("action") or {}).get("code") or "").upper()
+        for row in (previous_sol.get("action_solutions") or [])
+    }
+    return requested if requested in available else None
+
+
+def _fetch_future_street_facing_bet(ctx: Ctx) -> Facts | None:
+    """Resolve a one-street hypothetical through discovery into strategy.
+
+    Example: Hero folded flop in the played hand, then asks "if I called and
+    turn were 8h, BB bet half pot, what should 7d7c do?".  The cached flop Hero
+    node is extended with the explicit call, the runout is appended, GTOW's
+    available turn sizes are discovered, and the closest real branch is then
+    queried for Hero's exact-combo strategy.
+    """
+    target_street = _street_from_question(ctx.question)
+    previous_street = _STREET_PREDECESSOR.get(target_street or "")
+    if not previous_street:
+        return None
+    previous_spot, previous_sol = _hero_spot_and_sol(ctx, previous_street)
+    if not previous_spot or not previous_sol:
+        return None
+
+    previous_key = _STREET_ACTION_KEY[previous_street]
+    target_key = _STREET_ACTION_KEY[target_street]
+    previous_action = _hypothetical_previous_hero_action(ctx.question, previous_sol)
+    target_ratio = _hero_bet_pot_ratio_from_question(ctx.question)
+    current_board = str((previous_spot.get("params") or {}).get("board") or
+                        (previous_sol.get("game") or {}).get("board") or "")
+    hero_hand = _hero_hand(ctx.hand_context) or ""
+    exact_hero = hero_hand if _RE_COMBO.fullmatch(hero_hand) else ""
+    future_card = _future_card_from_question(
+        ctx.question, current_board + exact_hero)
+    if not previous_action or target_ratio is None or not future_card:
+        return None
+
+    accepted = {
+        "gametype", "depth", "stacks", "preflop_actions", "board",
+        "flop_actions", "turn_actions", "river_actions",
+    }
+    params = {
+        key: value for key, value in (previous_spot.get("params") or {}).items()
+        if key in accepted
+    }
+    params["board"] = current_board + future_card
+    prior = str(params.get(previous_key) or "")
+    params[previous_key] = f"{prior}-{previous_action}".lstrip("-")
+    params[target_key] = ""
+    if target_street == "turn":
+        params["river_actions"] = ""
+
+    try:
+        next_response = get_next_actions(**params)
+    except Exception as exc:
+        logger.warning("coach_facts: hypothetical next-actions failed: %s", exc)
+        return None
+    available = ((next_response or {}).get("next_actions") or {}).get(
+        "available_actions", [])
+    aggressive = [
+        row for row in available
+        if str((row.get("action") or {}).get("code") or "").startswith("R")
+        and (row.get("action") or {}).get("betsize_by_pot") not in (None, "")
+    ]
+    if not aggressive:
+        return None
+    chosen_code = find_closest_action_by_pot_fraction(aggressive, target_ratio)
+    chosen = next(
+        (row.get("action") or {} for row in aggressive
+         if (row.get("action") or {}).get("code") == chosen_code),
+        None,
+    )
+    chosen_ratio = _to_float((chosen or {}).get("betsize_by_pot"))
+    if chosen_ratio is None or abs(chosen_ratio - target_ratio) > 0.25:
+        return None
+
+    solution_params = dict(params)
+    solution_params[target_key] = chosen_code
+    try:
+        solution = get_spot_solution(**solution_params)
+    except Exception as exc:
+        logger.warning("coach_facts: hypothetical strategy fetch failed: %s", exc)
+        return None
+    hero = ctx.hand_context.get("hero_position")
+    if not solution or _acting_position(solution) != hero or not hero_hand:
+        return None
+    hand_facts = _hero_combo_facts(solution, hero, hero_hand)
+    if not hand_facts or not hand_facts.get("actions"):
+        return None
+
+    requested_pct, chosen_pct = _pct(target_ratio), _pct(chosen_ratio)
+    allin = bool((chosen or {}).get("allin")) or chosen_code == "RAI"
+    chosen_label = f"{chosen_pct}% pot" + (" all-in" if allin else "")
+    facts = Facts(
+        intent="hypothetical",
+        title=f"假設線：{target_street} {cards_to_emoji(params['board'])}",
+        lines=[
+            f"  Hero 在 {previous_street} 明確改為"
+            f"{'跟注' if previous_action == 'C' else '過牌'}後，對手要求的 "
+            f"{requested_pct}% pot 不在 solver 樹中；最接近分支是 "
+            f"{chosen_label}（{chosen_code}）。",
+            "  以下 exact-combo 策略只代表這個最接近的 solver 分支，"
+            "不是精確的樹外尺寸。",
+        ],
+        note=f"樹外 {requested_pct}% pot 已映射到 {chosen_label}",
+    )
+    facts.allowed_claims |= canonical_forms(hero_hand)
+    facts.numbers |= {requested_pct, chosen_pct}
+    _why_hand_lines(hero_hand, hand_facts, facts)
+    facts.meta = {
+        "hero_hand": hero_hand,
+        "board": params["board"],
+        "node_street": target_street,
+        "requested_pot_pct": requested_pct,
+        "mapped_pot_pct": chosen_pct,
+        "mapped_action": chosen_code,
+        "params": solution_params,
+    }
+    _attach_chart(facts, solution, hero)
+    return facts
+
+
 def fetch_hypothetical(ctx: Ctx) -> Facts | None:
+    future = _fetch_future_street_facing_bet(ctx)
+    if future:
+        return future
     spot, sol = _hero_spot_and_sol(ctx, _street_from_question(ctx.question))
     if not sol:
         return None

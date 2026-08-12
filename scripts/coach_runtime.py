@@ -125,11 +125,14 @@ async def run_evidence_chat(
             if getattr(item, "type", None) == "function_call"
         ]
         if not calls:
-            if (grounding_required and tools_called == 0
+            has_strategy_evidence = any(
+                item.source in {"query_coach_facts", "query_gto"}
+                and item.status == "ok"
+                for item in bundle.items
+            )
+            if (grounding_required and not has_strategy_evidence
                     and round_index + 1 < session.coach_max_evidence_rounds):
-                grounded_names = {
-                    "query_coach_facts", "query_gto", "query_next_actions",
-                }
+                grounded_names = {"query_coach_facts", "query_gto"}
                 forced_tools = [
                     spec.as_openai_tool() for spec in specs
                     if spec.name in grounded_names
@@ -138,8 +141,10 @@ async def run_evidence_chat(
                     model=session.coach_narrator_model,
                     instructions=PLANNER_SYSTEM,
                     input=planner_input + (
-                        "\n\n這是 solver 策略問題；上一輪沒有查資料。"
-                        "本輪必須選一個工具，不得直接回答。"
+                        "\n\n這是 solver 策略問題，但目前仍沒有 range／"
+                        "exact-combo 策略證據。query_next_actions 只可發現"
+                        "動作代碼，不能支持策略結論；本輪必須呼叫 "
+                        "query_coach_facts 或 query_gto，不得直接回答。"
                     ),
                     tools=forced_tools,
                     tool_choice="required",
@@ -260,6 +265,71 @@ async def run_evidence_chat(
         if item.source in {"query_coach_facts", "query_gto"}
         and item.status == "ok"
     ]
+    # ``query_next_actions`` only discovers legal action codes/sizes; it does
+    # not contain a range or exact-combo strategy.  A generated one-street
+    # hypothetical commonly needs that discovery first.  If the planner stops
+    # there, deterministically resolve the full hypothetical fact card instead
+    # of returning a false no-data answer or narrating availability as strategy.
+    hypothetical = bool(re.search(r"(如果|假設|假如|what\s*if|\bif\b)", user_text, re.I))
+    has_fact_tool = any(spec.name == "query_coach_facts" for spec in specs)
+    if (grounding_required and hypothetical and not solver_items and has_fact_tool
+            and tools_called < session.coach_max_tool_calls):
+        street = next(
+            (name for name, words in (
+                ("river", ("river", "河牌")),
+                ("turn", ("turn", "轉牌", "转牌")),
+                ("flop", ("flop", "翻牌")),
+            ) if any(word in user_text.lower() for word in words)),
+            None,
+        )
+        args = {"intent": "hypothetical"}
+        if street:
+            args["street"] = street
+        signature = f"query_coach_facts:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+        if signature not in seen_calls:
+            seen_calls.add(signature)
+            started = time.time()
+            try:
+                result = await session._execute_coach_tool(
+                    chat_id, user_text, "query_coach_facts", args,
+                    on_status=on_status, user_id=user_id,
+                    refresh_token=refresh_token,
+                )
+                status = session._tool_status(result)
+            except Exception as exc:
+                session._logger.warning(
+                    "[chat=%s] Deterministic hypothetical fetch failed: %s",
+                    chat_id, exc,
+                )
+                result = f"工具查詢失敗：{exc}"
+                status = "error"
+            elapsed = time.time() - started
+            tools_called += 1
+            bundle.add_text(
+                "query_coach_facts", args, result, status=status,
+                provenance="deterministic_runtime",
+            )
+            if session.db:
+                try:
+                    asyncio.create_task(session.db.save_tool_call(
+                        chat_id=chat_id,
+                        request_id=request_id,
+                        hand_id=session.last_hand_ids.get(chat_id),
+                        tool_name="query_coach_facts",
+                        tool_args=args,
+                        tool_result=result,
+                        latency_ms=int(elapsed * 1000),
+                    ))
+                except Exception as exc:
+                    session._logger.debug(
+                        "[chat=%s] save_tool_call dispatch failed: %s",
+                        chat_id, exc,
+                    )
+        solver_items = [
+            item for item in bundle.items
+            if item.source in {"query_coach_facts", "query_gto"}
+            and item.status == "ok"
+        ]
     if grounding_required and not solver_items:
         answer = (
             "目前這個 action line 沒有取得可驗證的 solver 資料；"
