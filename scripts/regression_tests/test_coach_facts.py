@@ -727,6 +727,97 @@ def test_coach_facts_hypothetical():
 
 
 @test
+def test_coach_facts_future_turn_hypothetical_discovers_size_then_exact_strategy():
+    """A generated one-street hypothetical must reach exact-combo strategy.
+
+    Regression: the planner only called query_next_actions for "flop call,
+    turn 8h, BB half-pot" and then the coach returned no-data.  The grounded
+    resolver now extends the cached flop node, maps the off-tree half-pot bet
+    to the nearest real branch, and queries 7d7c at that Hero decision.
+    """
+    import coach_facts as cf
+    import gto_formatter as gf
+
+    hero_hand = "7d7c"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    flop_solution = {
+        "game": {"active_position": "BTN", "board": "Qd9h3s"},
+        "action_solutions": [
+            {"action": {"code": "F"}, "strategy": [0.0] * 1326},
+            {"action": {"code": "C"}, "strategy": [0.0] * 1326},
+        ],
+        "players_info": [],
+    }
+    turn_solution = {
+        "game": {"active_position": "BTN", "board": "Qd9h3s8h"},
+        "players_info": [{
+            "player": {"position": "BTN"},
+            "range": [1.0] * 1326,
+            "hand_eqs": [0.25] * 1326,
+            "eq_percentile": [0.20] * 1326,
+            "simple_hand_counters": {},
+        }],
+        "action_solutions": [
+            {"action": {"code": "F"}, "strategy": [0.0] * 1326},
+            {"action": {"code": "C"}, "strategy": [0.0] * 1326},
+        ],
+    }
+    turn_solution["action_solutions"][0]["strategy"][hero_idx] = 1.0
+    context = {
+        "hero_position": "BTN",
+        "hero_hand": hero_hand,
+        "hand": {"hero_hand": hero_hand},
+        "hero_spots": [{
+            "street": "flop",
+            "taken_code": "F",
+            "params": {
+                "gametype": "MTTGeneral", "depth": 50.125, "stacks": "",
+                "preflop_actions": "F-F-F-F-F-R2.3-F-R9.8-C",
+                "board": "Qd9h3s", "flop_actions": "R10.55",
+                "turn_actions": "", "river_actions": "",
+            },
+        }],
+        "solutions": [flop_solution],
+    }
+    captured = {}
+
+    def fake_next(**params):
+        captured["next"] = params
+        return {"next_actions": {"available_actions": [
+            {"action": {"code": "X"}},
+            {"action": {"code": "R4.2", "betsize_by_pot": 0.10}},
+            {"action": {"code": "R10.55", "betsize_by_pot": 0.25}},
+            {"action": {"code": "RAI", "betsize_by_pot": 0.70,
+                        "allin": True}},
+        ]}}
+
+    def fake_solution(**params):
+        captured["solution"] = params
+        return turn_solution
+
+    old_next, old_solution = cf.get_next_actions, cf.get_spot_solution
+    cf.get_next_actions, cf.get_spot_solution = fake_next, fake_solution
+    try:
+        facts = cf.fetch_hypothetical(cf.Ctx(
+            question="如果我跟注了 flop，轉牌來一張 8♥️，BB 繼續下注半池，"
+                     "7♦7♣ 該如何應對？",
+            hand_context=context,
+        ))
+    finally:
+        cf.get_next_actions, cf.get_spot_solution = old_next, old_solution
+
+    assert_true(facts is not None, "future-street hypothetical must resolve")
+    assert_eq(captured["next"]["board"], "Qd9h3s8h")
+    assert_eq(captured["next"]["flop_actions"], "R10.55-C")
+    assert_eq(captured["solution"]["turn_actions"], "RAI")
+    rendered = facts.render()
+    assert_in("50% pot 不在 solver 樹中", rendered)
+    assert_in("70% pot all-in", rendered)
+    assert_in("7🔷7☘️", rendered)
+    assert_in("棄牌 100%", rendered)
+
+
+@test
 def test_coach_facts_node_url():
     """coach_facts P1: node_url parses GTO Wizard link params."""
     import coach_facts as cf

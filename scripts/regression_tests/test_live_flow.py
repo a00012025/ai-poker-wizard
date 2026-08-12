@@ -2565,9 +2565,21 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
             self.pending_images = {42: [b"stale"]}
             self.prompt = None
 
-        async def _chat_with_tools(self, chat_id, prompt, **kwargs):
+        @staticmethod
+        def _prepare_initial_teaching_digest(context):
+            context["_teaching_digest"] = {"verified": True}
+
+        @staticmethod
+        def _initial_teaching_block(_context):
+            return "ENRICHED TEACHING BLOCK"
+
+        async def _verified_initial_coaching(
+                self, chat_id, prompt, context, user_text, **kwargs):
             self.prompt = prompt
             return "Js8h river bet 偏離。\nFOLLOWUP: BB river bluff 範圍是什麼？"
+
+        async def _chat_with_tools(self, *args, **kwargs):
+            raise AssertionError("live detail bypassed verified initial coach")
 
         _extract_followups = staticmethod(GeminiSession._extract_followups)
 
@@ -2596,6 +2608,7 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
               "solver analysis must receive persisted parsed_json hero hand")
     assert_eq(calls[0]["preflop_actions"], "F-F-F-F-F-F-C-X")
     assert_in("Hero BB J♠️8♥️", bot.session_manager.prompt)
+    assert_in("ENRICHED TEACHING BLOCK", bot.session_manager.prompt)
     assert_true("AA" not in bot.session_manager.prompt,
                 "live detail prompt must not contain a reparse-drifted AA hand")
     assert_true("FOLLOWUP" not in response,

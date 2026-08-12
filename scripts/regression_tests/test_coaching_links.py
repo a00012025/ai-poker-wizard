@@ -850,7 +850,7 @@ def test_extract_followups_strips_from_text():
     text = (
         "*Preflop*\n好的分析\n\n"
         "FOLLOWUP: Turn 上對手的範圍是什麼？\n"
-        "FOLLOWUP: 如果河牌是空白牌怎麼打？\n"
+        "FOLLOWUP: 如果我在 turn 跟注，河牌來 K♣，BB 下注半池，該怎麼打？\n"
         "FOLLOWUP: 這手牌的 EV 如何？"
     )
     clean, followups = GeminiSession._extract_followups(text)
@@ -873,6 +873,32 @@ def test_extract_followups_strips_from_text():
     clean3, followups3 = GeminiSession._extract_followups(text3)
     assert_eq(clean3, text3, "text without followups unchanged")
     assert_eq(len(followups3), 0, "no followups extracted")
+
+
+@test
+def test_extract_followups_drops_unanswerable_generated_buttons():
+    """Underspecified future lines and false-premise mix questions stay hidden."""
+    from gemini_session import GeminiSessionManager as GeminiSession
+
+    text = (
+        "分析內容\n"
+        "FOLLOWUP: 如果河牌是空白牌怎麼打？\n"
+        "FOLLOWUP: 77 為什麼混合 call/all-in，什麼情況選 all-in？\n"
+        "FOLLOWUP: BB 在 flop 的下注範圍有哪些？"
+    )
+    clean, followups = GeminiSession._extract_followups(text)
+    assert_eq(followups, ["BB 在 flop 的下注範圍有哪些？"])
+    assert_not_in("FOLLOWUP", clean)
+
+    all_bad = (
+        "分析內容\n"
+        "FOLLOWUP: 如果河牌是空白牌怎麼打？\n"
+        "FOLLOWUP: 77 混合 call/all-in，什麼情況選 all-in？"
+    )
+    clean_bad, followups_bad = GeminiSession._extract_followups(all_bad)
+    assert_eq(followups_bad, [])
+    assert_eq(clean_bad, "分析內容",
+              "rejected markers must never leak into visible coach text")
 
 
 def _followup_bot_stub(contexts):
@@ -905,7 +931,7 @@ def test_finalize_followups_recovers_leaked_lines():
     response = (
         "JJ 在這裡用來抓詐唬，66 用來詐唬。\n\n"
         "FOLLOWUP: BB 在 flop 面對這個 all-in 的跟注範圍是什麼？\n"
-        "FOLLOWUP: 如果 Hero 在 flop 只是跟注，turn 9s 會如何遊戲？\n"
+        "FOLLOWUP: 如果 Hero 在 flop 跟注，turn 9s，BB 下注半池，該怎麼打？\n"
         "FOLLOWUP: 為什麼像 KJs 這種頂對，跟注頻率遠高於 all-in？"
     )
     clean, markup = bot._finalize_followups(5, response)

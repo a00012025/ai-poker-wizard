@@ -28,6 +28,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
 from card_display import cards_to_emoji
+from coach_prompts import FOLLOWUP_REQUEST
 
 # Upload analysis timeout (seconds)
 ANALYSIS_TIMEOUT = 1800
@@ -886,6 +887,61 @@ class PokerWizardBot:
                 return
             await _show_err(f"❌ {str(e)}")
 
+    async def _build_grounded_coach_context(self, chat_id: int, user_id: int,
+                                             refresh_token: str,
+                                             hand_json: dict) -> dict:
+        """Analyze and enrich one hand while its per-user token is bound.
+
+        Every initial-coach surface must use this boundary.  Response-node
+        enrichment is solver I/O too, so it belongs inside the same worker
+        thread and credential scope as ``analyze_hand_full``.
+        """
+        def analyze_with_user_token():
+            self._setup_user_token(user_id, refresh_token)
+            try:
+                from analyze_hand import analyze_hand_full
+
+                context = analyze_hand_full(hand_json)
+                self.session_manager._prepare_initial_teaching_digest(context)
+                return context
+            finally:
+                self._clear_user_token()
+
+        context = await asyncio.to_thread(analyze_with_user_token)
+        self.session_manager.hand_contexts[chat_id] = context
+        pending_images = getattr(self.session_manager, "pending_images", None)
+        if isinstance(pending_images, dict):
+            pending_images.pop(chat_id, None)
+        return context
+
+    async def _verified_grounded_coaching(
+            self, chat_id: int, user_id: int, refresh_token: str,
+            context: dict, hand_desc: str, user_text: str,
+            source_instruction: str, on_status=None) -> str:
+        """Narrate one analyzed hand through the shared verified coach path."""
+        teaching_block = self.session_manager._initial_teaching_block(context)
+        solver_prompt_data = (
+            "逐街 solver 結果已另行顯示；以下 deterministic 教學骨架是本段唯一事實來源。"
+            if teaching_block else context.get("text", "")
+        )
+        prompt = (
+            f"{source_instruction}\n\n"
+            f"手牌摘要：\n{hand_desc}\n\n"
+            f"用戶要求：\n{user_text}\n\n"
+            f"已驗證 solver 事實：\n{solver_prompt_data}\n\n"
+            "逐街 summary 已由系統顯示；請總評整手，並從教學骨架挑 1–2 個"
+            "最有價值的 range／action 邏輯自然解釋，不要重新解析或改寫動作。\n\n"
+            f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
+        )
+        response = await self.session_manager._verified_initial_coaching(
+            chat_id, prompt, context, user_text,
+            on_status=on_status, user_id=user_id, refresh_token=refresh_token,
+        )
+        response, followups = self.session_manager._extract_followups(response)
+        if followups:
+            context["followup_questions"] = followups
+        return response
+
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""
         chat_id = update.effective_chat.id
@@ -914,15 +970,8 @@ class PokerWizardBot:
             if hand.get("streets"):
                 analysis_input["streets"] = hand["streets"]
 
-            # Set user token for GTO API calls
-            self._setup_user_token(user_id, refresh_token)
-            try:
-                from analyze_hand import analyze_hand_full
-                context = analyze_hand_full(analysis_input)
-            finally:
-                self._clear_user_token()
-            gto_data = context["text"]
-            self.session_manager.hand_contexts[chat_id] = context
+            context = await self._build_grounded_coach_context(
+                chat_id, user_id, refresh_token, analysis_input)
 
             # Extract deviations for leak detection (fire-and-forget)
             import asyncio as _aio
@@ -950,25 +999,11 @@ class PokerWizardBot:
                     )
                     hand_desc += f"\n{cards_to_emoji(board)} → {acts}"
 
-            coaching_prompt = (
-                f"用戶上傳了手牌歷史檔案，想分析這手牌：\n{hand_desc}\n\n"
-                f"用戶問題：{user_text}\n\n"
-                f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-                f"請根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
-                "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
-                "FOLLOWUP: 問題一\n"
-                "FOLLOWUP: 問題二\n"
-                "FOLLOWUP: 問題三\n"
+            response = await self._verified_grounded_coaching(
+                chat_id, user_id, refresh_token, context, hand_desc,
+                user_text or f"請分析 {hand_id}",
+                "用戶上傳了手牌歷史檔案；請使用已解析的穩定手牌資料。",
             )
-            response = await self.session_manager._chat_with_tools(
-                chat_id, coaching_prompt,
-                user_id=user_id, refresh_token=refresh_token,
-            )
-            response, followups = self.session_manager._extract_followups(response)
-            if followups:
-                ctx = self.session_manager.hand_contexts.get(chat_id)
-                if ctx is not None:
-                    ctx["followup_questions"] = followups
 
             elapsed = time.time() - t0
             self.log.info(f"[{label}] HH follow-up done ({elapsed:.1f}s)")
@@ -2913,42 +2948,19 @@ class PokerWizardBot:
 
         if on_status:
             await on_status("查詢 GTO 策略中...")
-        self._setup_user_token(user_id, refresh_token)
-        try:
-            from analyze_hand import analyze_hand_full
-            context = analyze_hand_full(hand_json)
-        finally:
-            self._clear_user_token()
-
-        gto_data = context["text"]
-        self.session_manager.hand_contexts[chat_id] = context
-        pending_images = getattr(self.session_manager, "pending_images", None)
-        if isinstance(pending_images, dict):
-            pending_images.pop(chat_id, None)
+        context = await self._build_grounded_coach_context(
+            chat_id, user_id, refresh_token, hand_json)
 
         if on_status:
             await on_status("分析回覆中...")
-        prompt = (
-            "這是 /live 入帳後的深入分析。手牌已經由 live_flow 解析、修補並入帳；"
-            "請使用下面的穩定 parsed_json 摘要與 GTO Solver 數據，不要重新解析原始 shorthand。\n\n"
-            f"手牌摘要：\n{self._live_hand_desc(hand_id, hand_json)}\n\n"
-            f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-            "請根據上面的 GTO 數據分析 hero 的行動，再用工具回答用戶的其他問題。"
-            "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題（用戶可以點擊按鈕直接發送）：\n"
-            "FOLLOWUP: 問題一\n"
-            "FOLLOWUP: 問題二\n"
-            "FOLLOWUP: 問題三\n"
+        response = await self._verified_grounded_coaching(
+            chat_id, user_id, refresh_token, context,
+            self._live_hand_desc(hand_id, hand_json),
+            f"請深入分析 live hand {hand_id}",
+            "這是 /live 入帳後的深入分析。手牌已由 live_flow 解析、修補並入帳；"
+            "請使用穩定 parsed_json，不要重新解析原始 shorthand。",
+            on_status=on_status,
         )
-        response = await self.session_manager._chat_with_tools(
-            chat_id, prompt, on_status=on_status,
-            user_id=user_id, refresh_token=refresh_token,
-            force_tool_eligible=False,
-        )
-        response, followups = self.session_manager._extract_followups(response)
-        if followups:
-            ctx = self.session_manager.hand_contexts.get(chat_id)
-            if ctx is not None:
-                ctx["followup_questions"] = followups
         warning = (context.get("validation") or {}).get("user_warning")
         if warning:
             response += f"\n\n{warning}"
@@ -2963,43 +2975,20 @@ class PokerWizardBot:
 
         if on_status:
             await on_status("查詢 GTO 策略中...")
-        def analyze_with_user_token():
-            self._setup_user_token(user_id, refresh_token)
-            try:
-                from analyze_hand import analyze_hand_full
-                return analyze_hand_full(hand_json)
-            finally:
-                self._clear_user_token()
-
-        solver_context = await asyncio.to_thread(analyze_with_user_token)
-
-        gto_data = solver_context["text"]
-        self.session_manager.hand_contexts[chat_id] = solver_context
-        pending_images = getattr(self.session_manager, "pending_images", None)
-        if isinstance(pending_images, dict):
-            pending_images.pop(chat_id, None)
+        solver_context = await self._build_grounded_coach_context(
+            chat_id, user_id, refresh_token, hand_json)
 
         if on_status:
             await on_status("分析回覆中...")
-        prompt = (
-            "這是線上 session 總結中選出的 Analyzer 手牌。"
-            "手牌已從封存的 GTOW Analyzer 原始資料精確重建；"
-            "不要重新解析或改寫動作。\n\n"
-            f"手牌摘要：\n{self._live_hand_desc(hand_id, hand_json)}\n\n"
-            f"GTO Solver 數據（已查詢完成，直接分析即可）：\n{gto_data}\n\n"
-            "請根據上面的 GTO 數據分析 hero 的行動，聚焦最大 EV loss 決策，"
-            "並用可帶上桌的 heuristic 收尾。"
-            "\n\n在回覆的最後，用以下格式輸出 3 個值得深入的 follow-up 問題：\n"
-            "FOLLOWUP: 問題一\nFOLLOWUP: 問題二\nFOLLOWUP: 問題三\n"
+        response = await self._verified_grounded_coaching(
+            chat_id, user_id, refresh_token, solver_context,
+            self._live_hand_desc(hand_id, hand_json),
+            f"請深入分析 online hand {hand_id}",
+            "這是線上 session 總結中選出的 Analyzer 手牌。手牌已從封存的 "
+            "GTOW Analyzer 原始資料精確重建；不要重新解析或改寫動作。"
+            "聚焦最大 EV loss 決策，並用可帶上桌的 heuristic 收尾。",
+            on_status=on_status,
         )
-        response = await self.session_manager._chat_with_tools(
-            chat_id, prompt, on_status=on_status, user_id=user_id,
-            refresh_token=refresh_token, force_tool_eligible=False)
-        response, followups = self.session_manager._extract_followups(response)
-        if followups:
-            ctx = self.session_manager.hand_contexts.get(chat_id)
-            if ctx is not None:
-                ctx["followup_questions"] = followups
         warning = (solver_context.get("validation") or {}).get("user_warning")
         if warning:
             response += f"\n\n{warning}"
