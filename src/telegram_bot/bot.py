@@ -1792,6 +1792,26 @@ class PokerWizardBot:
         return bool(self.admin_chat_id
                     and update.effective_user.id == self.admin_chat_id)
 
+    async def _answer_callback_safely(self, query, text: str | None = None,
+                                      **kwargs) -> bool:
+        """ACK a callback without letting an expired Telegram ID kill work.
+
+        Slow cold-cache paths must ACK before doing their work, but an update
+        delayed by a restart can already be expired when it reaches us.  The
+        later chat messages are still valid and should continue normally.
+        """
+        try:
+            await query.answer(text, **kwargs)
+            return True
+        except telegram.error.BadRequest as exc:
+            message = str(exc).lower()
+            if "query is too old" in message or "query id is invalid" in message:
+                self.log.warning(
+                    "Telegram callback ACK expired; continuing message flow: %s",
+                    exc)
+                return False
+            raise
+
     async def live_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/live — owner-only: import a live-hand shorthand batch into the ledger."""
         if not self._is_owner(update):
@@ -2713,12 +2733,19 @@ class PokerWizardBot:
             from session_review import (compute, resolve_session_key,
                                         session_callback_key, _load_detail)
 
+            # A cache miss rebuilds the whole review and may validate several
+            # Study links over the network.  Stop Telegram's spinner before
+            # that work; an expired ACK must not abort the coaching messages.
+            await self._answer_callback_safely(
+                query, "⏳ 正在準備教練分析…")
+
             cache = context.application.bot_data.setdefault("srev", {})
             cached = cache.get(stable_key)
             if cached is None:
                 session = await resolve_session_key(self.db.pool, stable_key)
                 if not session:
-                    await query.answer("找不到這個線上 session，可能已被重建。")
+                    await context.bot.send_message(
+                        chat_id, "找不到這個線上 session，可能已被重建。")
                     return
                 cached = await compute(self.db.pool, session, user_id=user_id)
                 cache[cached["session_id"]] = cached
@@ -2726,7 +2753,7 @@ class PokerWizardBot:
             decisions = cached.get("top_decisions") or []
             i = int(i_s)
             if i < 0 or i >= len(decisions):
-                await query.answer("這個決策已不在清單上。")
+                await context.bot.send_message(chat_id, "這個決策已不在清單上。")
                 return
             hand_id = decisions[i].get("ref_hand_id")
             row = await self.db.pool.fetchrow(
@@ -2735,17 +2762,18 @@ class PokerWizardBot:
                 "WHERE gtow_hand_id=$1 AND source='online'", hand_id)
             detail = _load_detail(row["raw_path"] if row else None)
             if not row or not detail:
-                await query.answer("找不到這手的 Analyzer 原始資料。", show_alert=True)
+                await context.bot.send_message(
+                    chat_id, "找不到這手的 Analyzer 原始資料。")
                 return
             try:
                 from analysis_fidelity_check import reconstruct_analyze_hand
                 hand_json = reconstruct_analyze_hand(dict(row), detail)
             except Exception:
                 self.log.exception("online session coach reconstruction failed: %s", hand_id)
-                await query.answer("無法重建這手的教練分析資料。", show_alert=True)
+                await context.bot.send_message(
+                    chat_id, "無法重建這手的教練分析資料。")
                 return
 
-            await query.answer()
             label = f"online-session-coach-{chat_id}"
             self.log.info("[%s] deep dive %s", label, hand_id)
             await context.bot.send_message(chat_id, f"💬 教練分析：`{hand_id}`", parse_mode="Markdown")
