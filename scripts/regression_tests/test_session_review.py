@@ -43,6 +43,7 @@ def _sample(empty: bool = False) -> dict:
                  "翻前: LJ Raise, HJ Call, BB Raise",
              ],
              "action_line": "Call→應Fold", "ev_loss": 0.76,
+             "line_frequency": 0.0087, "rare_line": True,
              "ref_hand_id": "online-hand-1",
              "exact_url": "https://app.gtowizard.com/analyze/v4/hands/table?filters=x",
              "study_url": "https://app.gtowizard.com/solutions?history_spot=3",
@@ -195,7 +196,7 @@ def test_session_review_study_url_binds_user_token_and_fails_closed():
     import gto_credentials
 
     calls = []
-    old_builder = sr.qf._study_solution_url
+    old_builder = sr.qf._study_solution_link
     old_credentials = gto_credentials.get_user_credentials
     old_set = gto_api.set_user_token
     old_clear = gto_api.clear_user_token
@@ -205,17 +206,20 @@ def test_session_review_study_url_binds_user_token_and_fails_closed():
         gto_api.set_user_token = lambda token, client_id, user_id: calls.append(
             ("set", token, client_id, user_id))
         gto_api.clear_user_token = lambda: calls.append(("clear",))
-        sr.qf._study_solution_url = lambda _row: (
-            "https://app.gtowizard.com/solutions?history_spot=3")
-        url = sr._decision_study_url({}, user_id=123)
-        sr.qf._study_solution_url = lambda _row: None
-        missing = sr._decision_study_url({}, user_id=None)
+        sr.qf._study_solution_link = lambda _row: {
+            "url": "https://app.gtowizard.com/solutions?history_spot=3",
+            "line_frequency": 0.0087, "rare_line": True,
+        }
+        link = sr._decision_study_link({}, user_id=123)
+        sr.qf._study_solution_link = lambda _row: None
+        missing = sr._decision_study_link({}, user_id=None)
     finally:
-        sr.qf._study_solution_url = old_builder
+        sr.qf._study_solution_link = old_builder
         gto_credentials.get_user_credentials = old_credentials
         gto_api.set_user_token = old_set
         gto_api.clear_user_token = old_clear
-    assert_in("/solutions?", url)
+    assert_in("/solutions?", link["url"])
+    assert_true(link["rare_line"])
     assert_eq(calls, [("set", "access", "client", 123), ("clear",)])
     assert_eq(missing, None)
 
@@ -266,6 +270,8 @@ def test_session_review_full_message():
     assert_in("翻前: LJ Raise, HJ Call, BB Raise｜<b>Call→應Fold</b>", html)
     assert_in("Call→應Fold", html)
     assert_in("−<b>0.76bb</b>", html)
+    assert_in("GTO 只走 <b>0.87%</b>", html)
+    assert_in("EV loss 仍是這手的實際條件式損失", html)
     assert_in("T♠️9♠️", html)
     assert_in("Flop 8♥️7☘️2🔷: BB Check, Hero Bet 33%, BB Call", html)
     assert_in("Turn 5♠️: BB Check｜<b>Raise→應Call</b>", html)
@@ -617,21 +623,24 @@ def test_session_review_top_decisions_use_one_joined_query_without_dead_drill_wo
     old_urls = sr.qf.gtow_analyze_hands_urls
     old_label = sr.qf.review_label
     old_action = sr.decision_action_context
-    old_study = sr._decision_study_url
+    old_study = sr._decision_study_link
     try:
         sr.qf.queue_drill_url_from_sources = dead_drill_builder
         sr.qf.gtow_analyze_hands_urls = lambda _ids: [("https://example/analyze", [])]
         sr.qf.review_label = lambda _row: "review"
         sr.decision_action_context = lambda _row: {
             "action_line": "All-in→應Call", "street_lines": [], "is_real_hu": False}
-        sr._decision_study_url = lambda _row, _user_id=None: "https://example/study"
+        sr._decision_study_link = lambda _row, _user_id=None: {
+            "url": "https://example/study", "rare_line": False,
+            "line_frequency": 0.25,
+        }
         out = asyncio.run(sr._decision_items(Conn(), 42, user_id=7))
     finally:
         sr.qf.queue_drill_url_from_sources = old_drill
         sr.qf.gtow_analyze_hands_urls = old_urls
         sr.qf.review_label = old_label
         sr.decision_action_context = old_action
-        sr._decision_study_url = old_study
+        sr._decision_study_link = old_study
 
     assert_eq(len(calls), 1)
     assert_eq(calls[0][1], (42,))

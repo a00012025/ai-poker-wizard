@@ -227,7 +227,12 @@ async def _decision_items(conn, session_id: int,
         row["max_ev"] = row.get("ev_loss_bb")
         row["worst_street"] = row.get("street")
         row["worst_idx"] = row.get("decision_idx")
-        study_url = await asyncio.to_thread(_decision_study_url, row, user_id)
+        study_link = await asyncio.to_thread(_decision_study_link, row, user_id)
+        if study_link:
+            row.update(
+                line_frequency=study_link.get("line_frequency"),
+                rare_line=study_link.get("rare_line", False),
+            )
         out.append({
             "ref_hand_id": row["ref_hand_id"],
             "combo": pretty_hand(row.get("hero_hand")),
@@ -241,7 +246,9 @@ async def _decision_items(conn, session_id: int,
                             or action_line(row.get("taken_code"), row.get("best_code"))),
             "ev_loss": round(float(row.get("ev_loss_bb") or 0.0), 2),
             "exact_url": exact_url,
-            "study_url": study_url,
+            "study_url": study_link["url"] if study_link else None,
+            "line_frequency": row.get("line_frequency"),
+            "rare_line": bool(row.get("rare_line")),
             # Decision rows expose Analyze/Study review links. Their queue item
             # also persists the exact Analyze URL, so building a separate
             # Trainer URL here was dead work (and an N+1 DB/API path).
@@ -259,8 +266,8 @@ async def _decision_items(conn, session_id: int,
     return out
 
 
-def _decision_study_url(row: dict, user_id: int | None = None) -> str | None:
-    """Build a strict real-action GTOW Study link for one Analyzer decision.
+def _decision_study_link(row: dict, user_id: int | None = None) -> dict | None:
+    """Build a validated real-action GTOW Study link for one Analyzer decision.
 
     The resolver needs the requesting user's GTOW session.  Bind and clear it
     inside this worker thread because GTO auth is thread-local.  If exact
@@ -275,13 +282,19 @@ def _decision_study_url(row: dict, user_id: int | None = None) -> str | None:
             credentials = get_user_credentials(user_id)
             set_user_token(credentials.access_token, credentials.client_id, user_id)
             token_bound = True
-        return qf._study_solution_url(row)
+        return qf._study_solution_link(row)
     except Exception:
         return None
     finally:
         if token_bound:
             from gto_api import clear_user_token
             clear_user_token()
+
+
+def _decision_study_url(row: dict, user_id: int | None = None) -> str | None:
+    """Compatibility wrapper for URL-only callers and legacy test hooks."""
+    link = _decision_study_link(row, user_id)
+    return link["url"] if link else None
 
 
 def drill_desc(row: dict, bias: dict | None) -> str:
@@ -573,6 +586,10 @@ def decision_mark(i: int) -> str:
     return keycaps[i] if i < len(keycaps) else f"{i+1}."
 
 
+def _line_frequency_label(freq: float) -> str:
+    return f"{float(freq) * 100:.3g}%"
+
+
 async def compute(conn, session: dict, user_id: int | None = None) -> dict:
     sid = session["id"]
     if hasattr(conn, "acquire"):
@@ -680,6 +697,12 @@ def render_tg(d: dict) -> dict:
                 L.append(f"{escape(street_line)}{suffix}")
             if not street_lines:
                 L.append(f"<b>{escape(h['action_line'])}</b>｜−<b>{h['ev_loss']:.2f}bb</b>")
+            if h.get("rare_line") and h.get("line_frequency") is not None:
+                freq = _line_frequency_label(h["line_frequency"])
+                L.append(
+                    f"⚠️ 上一步 action 在 GTO 只走 <b>{freq}</b>；"
+                    "EV loss 仍是這手的實際條件式損失，但不宜只靠這一手外推成主要 leak。"
+                )
             L.append("")
         for i, h in enumerate(top_decisions):
             m = decision_mark(i)

@@ -57,6 +57,7 @@ _SUIT_ORDER = "shdc"
 # streets[] index count to include for a decision on each postflop street.
 _STREET_BOARD_DEPTH = {"flop": 1, "turn": 2, "river": 3}
 _STREET_ORDER = ("preflop", "flop", "turn", "river")
+RARE_LINE_FREQUENCY = 0.05
 
 
 def _split_cards(s: str) -> list[str]:
@@ -143,6 +144,91 @@ def build_solution_url(resolved: dict, board: str) -> str:
         params.append(("river_actions", resolved["river_actions"]))
 
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
+
+
+def _solution_api_params(resolved: dict, board: str) -> dict:
+    """The subset of a resolved line accepted by ``get_spot_solution``."""
+    return {
+        "gametype": resolved.get("gametype") or "MTTGeneral",
+        "depth": resolved["depth"], "stacks": resolved.get("stacks") or "",
+        "preflop_actions": resolved.get("preflop_actions") or "",
+        "board": board,
+        "flop_actions": resolved.get("flop_actions") or "",
+        "turn_actions": resolved.get("turn_actions") or "",
+        "river_actions": resolved.get("river_actions") or "",
+    }
+
+
+def _terminal_action(resolved: dict) -> tuple[str, str] | None:
+    """Return (street, final action code) immediately before the target node."""
+    for street in reversed(_STREET_ORDER):
+        key = f"{street}_actions"
+        tokens = [t for t in str(resolved.get(key) or "").split("-") if t]
+        if tokens:
+            return street, tokens[-1]
+    return None
+
+
+def _without_terminal_action(resolved: dict, street: str) -> dict:
+    parent = dict(resolved)
+    key = f"{street}_actions"
+    tokens = [t for t in str(parent.get(key) or "").split("-") if t]
+    parent[key] = "-".join(tokens[:-1])
+    parent["history_spot"] = max(0, int(parent.get("history_spot") or 0) - 1)
+    return parent
+
+
+def _board_through_action_street(board: str, street: str) -> str:
+    if street == "preflop":
+        return ""
+    return board[:{"flop": 6, "turn": 8, "river": 10}[street]]
+
+
+def _raise_size(action: dict) -> float | None:
+    raw = (action.get("action") or {}).get("betsize")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        code = str((action.get("action") or {}).get("code") or "")
+        try:
+            return float(code[1:]) if code.startswith("R") and code != "RAI" else None
+        except ValueError:
+            return None
+
+
+def _ordered_parent_actions(action_solutions: list[dict], requested_code: str) -> list[dict]:
+    """Closest authoritative spot-solution action codes for one replay token.
+
+    ``next-actions`` occasionally rounds a code (R18.5 -> R19) that the
+    ``spot-solution`` endpoint does not accept.  Prefer the parent solution's
+    exact action code, preserving action family and never converting an
+    ordinary bet into an all-in merely because its percentage is nearby.
+    """
+    exact = [a for a in action_solutions
+             if (a.get("action") or {}).get("code") == requested_code]
+    if exact:
+        return exact
+    if not requested_code.startswith("R"):
+        return []
+    requested_allin = requested_code == "RAI"
+    candidates = [
+        a for a in action_solutions
+        if str((a.get("action") or {}).get("code") or "").startswith("R")
+        and bool((a.get("action") or {}).get("allin")) == requested_allin
+    ]
+    if requested_allin:
+        return candidates
+    try:
+        requested_size = float(requested_code[1:])
+    except ValueError:
+        return candidates
+
+    def distance(action: dict) -> tuple[float, float]:
+        size = _raise_size(action)
+        return ((abs(size - requested_size), size) if size is not None
+                else (float("inf"), float("inf")))
+
+    return sorted(candidates, key=distance)
 
 
 # ── build straight from an archived GTOW Analyze hand detail ──────────────────
@@ -330,6 +416,118 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
     try:
         return build_solution_url(resolved, board)
     except ValueError:
+        return None
+
+
+def build_hand_solution_link(detail: dict, hero_pos: str, street: str,
+                             decision_idx: int, *,
+                             preflop_depth_bb: float | None = None,
+                             resolver=None, spot_solution_getter=None) -> dict | None:
+    """Build and validate a Study link, returning path-quality metadata.
+
+    Review buttons must never point at a syntactically plausible node that the
+    solution endpoint cannot open.  Replaying via ``next-actions`` is necessary
+    to map the real hand into the current tree, but that endpoint sometimes
+    rounds wager codes differently from ``spot-solution`` (for example R18.5
+    becomes R19).  This function validates the target and, on failure, asks the
+    parent solution for its authoritative action codes, then tries the closest
+    same-family code until it finds a real solution.
+
+    ``line_frequency`` is the aggregate GTO frequency of the final action into
+    the reviewed node.  It is context, not an EV replacement: callers should
+    retain the realized EV loss while warning against generalizing a rare line.
+    """
+    gp = _find_decision_game_point(detail, hero_pos, street, decision_idx)
+    if gp is None or not gp.get("has_solution"):
+        return None
+    board = _canonical_board_str((gp.get("real_game") or {}).get("board") or "", street)
+
+    if preflop_depth_bb is None:
+        url = build_hand_solution_url(detail, hero_pos, street, decision_idx)
+        return ({"url": url, "line_frequency": None, "rare_line": False,
+                 "requested_action_code": None, "resolved_action_code": None}
+                if url else None)
+
+    try:
+        if resolver is None:
+            from gtow_action_resolver import resolve_actions_for_deviation
+            resolver = resolve_actions_for_deviation
+        if spot_solution_getter is None:
+            from gto_api import get_spot_solution
+            spot_solution_getter = get_spot_solution
+        gametype = gp.get("gametype") or "MTTGeneral"
+        hand = _parsed_hand_from_analyze(
+            detail, hero_pos, float(preflop_depth_bb), gametype)
+        resolved = resolver(hand, street, decision_idx)
+
+        # RFI/root has no preceding action. Validate the root itself.
+        terminal = _terminal_action(resolved)
+        if terminal is None:
+            solution = spot_solution_getter(**_solution_api_params(resolved, board))
+            if not solution:
+                return None
+            return {
+                "url": _root_solution_url(resolved["depth"],
+                                          resolved.get("gametype") or gametype),
+                "line_frequency": None, "rare_line": False,
+                "requested_action_code": None, "resolved_action_code": None,
+            }
+
+        action_street, requested_code = terminal
+        target_params = _solution_api_params(resolved, board)
+        target_solution = spot_solution_getter(**target_params)
+
+        parent = _without_terminal_action(resolved, action_street)
+        parent_board = _board_through_action_street(board, action_street)
+        parent_solution = spot_solution_getter(
+            **_solution_api_params(parent, parent_board))
+        parent_actions = ((parent_solution or {}).get("action_solutions") or [])
+        candidates = _ordered_parent_actions(parent_actions, requested_code)
+
+        # If next-actions' code already opens, keep it. Parent metadata may use
+        # a differently rounded code, in which case frequency remains unknown.
+        if target_solution:
+            exact = next((a for a in candidates
+                          if (a.get("action") or {}).get("code") == requested_code), None)
+            frequency = (float(exact.get("total_frequency"))
+                         if exact and exact.get("total_frequency") is not None else None)
+            return {
+                "url": build_solution_url(resolved, board),
+                "line_frequency": frequency,
+                "rare_line": frequency is not None and frequency <= RARE_LINE_FREQUENCY,
+                "requested_action_code": requested_code,
+                "resolved_action_code": requested_code,
+            }
+
+        # The rounded target is dead. Try authoritative parent action codes in
+        # distance order and return only after spot-solution proves the node.
+        key = f"{action_street}_actions"
+        prefix = [t for t in str(parent.get(key) or "").split("-") if t]
+        for candidate in candidates:
+            action = candidate.get("action") or {}
+            code = action.get("code")
+            if not code or code == requested_code:
+                continue
+            repaired = dict(parent)
+            repaired[key] = "-".join([*prefix, code])
+            repaired["history_spot"] = int(parent.get("history_spot") or 0) + 1
+            if not spot_solution_getter(**_solution_api_params(repaired, board)):
+                continue
+            frequency = (float(candidate.get("total_frequency"))
+                         if candidate.get("total_frequency") is not None else None)
+            return {
+                "url": build_solution_url(repaired, board),
+                "line_frequency": frequency,
+                "rare_line": frequency is not None and frequency <= RARE_LINE_FREQUENCY,
+                "requested_action_code": requested_code,
+                "resolved_action_code": code,
+            }
+        return None
+    except Exception as exc:
+        _log.warning(
+            "review Study link validation failed (%s %s[%s]): %s",
+            hero_pos, street, decision_idx, exc,
+        )
         return None
 
 
