@@ -658,6 +658,249 @@ def _h3835_multi_decision_context():
     }
 
 
+def _h3855_range_job_context():
+    """Sparse real-shape fixture for QdJd on AsTh9d-Qc.
+
+    The frequencies and response classes lock the teaching behavior observed
+    in H3855 without committing multi-megabyte raw solver payloads.
+    """
+    import gto_formatter as gf
+
+    hero_hand = "QdJd"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    categories = {
+        "no_made_hand": 0, "king_high": 1, "low_pair": 2,
+        "underpair": 3, "third_pair": 4, "second_pair": 5,
+        "top_pair": 6, "two_pair": 7, "set": 8, "straight": 9,
+    }
+    draws = {"no_draw": 0, "oesd": 1, "gutshot": 2}
+    game_players = [
+        {"position": position, "current_stack": 39.0,
+         "relative_postflop_position": "IP" if position == "UTG+1" else "OOP"}
+        for position in ("UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB")
+    ]
+
+    def action(code, ratio, total, exact_frequency, exact_ev):
+        strategy = _arrays()
+        evs = _arrays()
+        strategy[hero_idx] = exact_frequency
+        evs[hero_idx] = exact_ev
+        return {
+            "action": {"code": code, "betsize_by_pot": ratio, "allin": False},
+            "total_frequency": total, "strategy": strategy, "evs": evs,
+        }
+
+    def response_solution(board, combo_rows, action_frequencies):
+        actor_range = _arrays()
+        made_range = [categories["no_made_hand"]] * 1326
+        draw_range = [draws["no_draw"]] * 1326
+        action_rows = []
+        for code, total in action_frequencies.items():
+            action_rows.append({
+                "action": {"code": code, "allin": code == "RAI"},
+                "total_frequency": total,
+                "strategy": _arrays(),
+                "evs": _arrays(),
+            })
+        by_code = {(row["action"]["code"]): row for row in action_rows}
+        for combo, weight, made, draw, frequencies in combo_rows:
+            idx = gf.combo_index_for_hand(combo)
+            actor_range[idx] = weight
+            made_range[idx] = categories[made]
+            draw_range[idx] = draws[draw]
+            for code, frequency in frequencies.items():
+                by_code[code]["strategy"][idx] = frequency
+        category_rows = [
+            {"name": name, "index": index, "total_frequency": 0.1}
+            for name, index in categories.items()
+        ]
+        draw_rows = [
+            {"name": name, "index": index, "total_frequency": 0.1}
+            for name, index in draws.items()
+        ]
+        return {
+            "game": {"active_position": "BB", "board": board},
+            "action_solutions": action_rows,
+            "players_info": [{
+                "player": {"position": "BB"}, "range": actor_range,
+                "hand_categories": category_rows, "draw_categories": draw_rows,
+            }],
+            "hand_categories_range": made_range,
+            "draw_categories_range": draw_range,
+        }
+
+    def hero_solution(board, street, category, percentile, action_rows,
+                      action_composition, villain_rows, pot):
+        hero_range = _arrays()
+        hero_range[hero_idx] = 1.0
+        eq_percentile = _arrays(-1.0)
+        eq_percentile[hero_idx] = percentile
+        hand_eqs = _arrays()
+        hand_eqs[hero_idx] = 0.37 if street == "flop" else 0.39
+        made_range = [categories["no_made_hand"]] * 1326
+        made_range[hero_idx] = categories[category]
+        draw_range = [draws["no_draw"]] * 1326
+        draw_range[hero_idx] = draws["oesd"]
+
+        villain_range = _arrays()
+        villain_category_totals = {name: 0.0 for name in categories}
+        for combo, weight, made, _draw, _frequencies in villain_rows:
+            idx = gf.combo_index_for_hand(combo)
+            villain_range[idx] = weight
+            made_range[idx] = categories[made]
+            villain_category_totals[made] += weight
+
+        category_rows = []
+        for name, index in categories.items():
+            per_action = {
+                code: masses.get(name, 0.0)
+                for code, masses in action_composition.items()
+            }
+            category_rows.append({
+                "name": name, "index": index,
+                "total_frequency": max(0.01, sum(per_action.values())),
+                "actions_total_combos": per_action,
+            })
+        simple = {}
+        for hand_class, mass in (
+            (("AQo", 42), ("AQs", 11), ("QJs", 9), ("AA", 5),
+             ("55", 4), ("TT", 4), ("88", 4), ("44", 3))
+            if street == "turn" else
+            (("AQo", 12), ("AJo", 5), ("TT", 5), ("99", 5),
+             ("KQo", 5), ("AJs", 4), ("AQs", 4), ("QJs", 3))
+        ):
+            branch_code = "R15.85" if street == "turn" else "R5.3"
+            simple[hand_class] = {
+                "actions_total_combos": {branch_code: mass},
+            }
+        return {
+            "game": {
+                "active_position": "UTG+1", "board": board, "pot": pot,
+                "players": game_players,
+            },
+            "action_solutions": action_rows,
+            "players_info": [
+                {
+                    "player": {"position": "UTG+1"}, "range": hero_range,
+                    "eq_percentile": eq_percentile, "hand_eqs": hand_eqs,
+                    "total_eq": 0.48, "hand_categories": category_rows,
+                    "draw_categories": [
+                        {"name": name, "index": index, "total_frequency": 0.1}
+                        for name, index in draws.items()
+                    ],
+                    "simple_hand_counters": simple,
+                },
+                {
+                    "player": {"position": "BB"}, "range": villain_range,
+                    "total_eq": 0.52,
+                    "hand_categories": [
+                        {"name": name, "index": index,
+                         "total_frequency": villain_category_totals[name]}
+                        for name, index in categories.items()
+                    ],
+                    "draw_categories": [
+                        {"name": name, "index": index, "total_frequency": 0.1}
+                        for name, index in draws.items()
+                    ],
+                },
+            ],
+            "hand_categories_range": made_range,
+            "draw_categories_range": draw_range,
+        }
+
+    flop_villain = [
+        ("Kc6c", 1.0, "king_high", "no_draw", {"F": 1.0}),
+        ("Kc7c", 0.8, "king_high", "no_draw", {"F": 1.0}),
+        ("JcJh", 0.8, "underpair", "no_draw", {"F": 0.35, "C": 0.65}),
+        ("KcKh", 1.0, "underpair", "no_draw", {"F": 0.12, "C": 0.88}),
+        ("AcAh", 0.8, "set", "no_draw", {"C": 0.6, "R15.75": 0.4}),
+        ("7c6c", 0.7, "no_made_hand", "gutshot", {"C": 1.0}),
+        ("8c7c", 0.7, "no_made_hand", "oesd", {"C": 1.0}),
+    ]
+    turn_villain = [
+        ("JcJh", 1.0, "third_pair", "oesd", {"C": 1.0}),
+        ("KcKh", 1.4, "underpair", "gutshot", {"F": 0.87, "C": 0.13}),
+        ("KcTc", 0.8, "third_pair", "gutshot", {"F": 1.0}),
+        ("8c7c", 0.4, "no_made_hand", "oesd", {"C": 1.0}),
+        ("7c6c", 0.5, "no_made_hand", "gutshot", {"F": 1.0}),
+        ("AcAh", 0.9, "set", "no_draw", {"RAI": 1.0}),
+        ("AcJh", 0.6, "top_pair", "oesd", {"C": 0.5, "RAI": 0.5}),
+        ("TcTs", 0.5, "set", "no_draw", {"RAI": 1.0}),
+    ]
+    flop_actions = [
+        action("X", None, 0.65, 0.65, 11.16),
+        action("R2.1", 0.10, 0.11, 0.11, 10.92),
+        action("R5.3", 0.25, 0.17, 0.17, 11.01),
+        action("R10.55", 0.50, 0.08, 0.08, 10.74),
+    ]
+    turn_actions = [
+        action("X", None, 0.17, 0.17, 11.74),
+        action("R7.9", 0.25, 0.21, 0.21, 11.53),
+        action("R15.85", 0.50, 0.62, 0.62, 11.56),
+    ]
+    flop_composition = {
+        "R5.3": {
+            "top_pair": 34, "low_pair": 16, "set": 13, "king_high": 12,
+            "second_pair": 11, "two_pair": 6, "underpair": 5,
+            "no_made_hand": 3,
+        },
+    }
+    turn_composition = {
+        "R15.85": {
+            "two_pair": 53, "low_pair": 18, "second_pair": 10,
+            "set": 10, "top_pair": 7, "third_pair": 1,
+        },
+        "R7.9": {"top_pair": 33, "set": 21, "two_pair": 14, "low_pair": 17},
+    }
+    flop_solution = hero_solution(
+        "AsTh9d", "flop", "no_made_hand", 0.59, flop_actions,
+        flop_composition, flop_villain, 21.1,
+    )
+    turn_solution = hero_solution(
+        "AsTh9dQc", "turn", "second_pair", 0.35, turn_actions,
+        turn_composition, turn_villain, 31.7,
+    )
+    return {
+        "hand": {"hero_hand": hero_hand}, "hero_hand": "QJs",
+        "hero_position": "UTG+1",
+        "preflop_actions": "F-R2.3-F-F-F-F-F-R9.8-C",
+        "hero_spots": [
+            {
+                "street": "flop", "taken_code": "R5.3",
+                "solver_hero_pos": "UTG+1",
+                "params": {
+                    "gametype": "MTTGeneral", "depth": 50.125,
+                    "preflop_actions": "F-R2.3-F-F-F-F-F-R9.8-C",
+                    "board": "AsTh9d", "flop_actions": "X",
+                    "turn_actions": "", "river_actions": "", "stacks": "",
+                },
+            },
+            {
+                "street": "turn", "taken_code": "X",
+                "solver_hero_pos": "UTG+1",
+                "params": {
+                    "gametype": "MTTGeneral", "depth": 50.125,
+                    "preflop_actions": "F-R2.3-F-F-F-F-F-R9.8-C",
+                    "board": "AsTh9dQc", "flop_actions": "X-R5.3-C",
+                    "turn_actions": "X", "river_actions": "", "stacks": "",
+                },
+            },
+        ],
+        "solutions": [flop_solution, turn_solution],
+        "_coach_response_solutions": {
+            "flop:R5.3": response_solution(
+                "AsTh9d", flop_villain,
+                {"F": 0.15, "C": 0.77, "R15.75": 0.08},
+            ),
+            "turn:R15.85": response_solution(
+                "AsTh9dQc", turn_villain,
+                {"F": 0.30, "C": 0.41, "RAI": 0.29},
+            ),
+        },
+        "validation": {},
+    }
+
+
 @test
 def test_coach_teaching_real_fixture_builds_human_range_story():
     """Teaching card: real node becomes range role + human category evidence."""
@@ -677,6 +920,119 @@ def test_coach_teaching_real_fixture_builds_human_range_story():
     assert_in("已觀測 range plan", prompt)
     assert_in("第二則訊息一定要有內容", prompt)
     assert_in("不要逐點重述", prompt)
+
+
+@test
+def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
+    """H3855: replace frequency narration with grounded range/action reasons."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3855_range_job_context())
+    assert_eq([row["street"] for row in digest["decisions"]], ["flop", "turn"])
+
+    flop, turn = digest["decisions"]
+    assert_eq(flop["action_range_profile"]["shape"], "merged")
+    assert_eq(flop["aggression_job"]["combo_job"], "semi_bluff")
+    assert_eq(flop["aggression_job"]["value_targets"], [])
+    assert_in("JJ", flop["aggression_job"]["bluff_targets"])
+    assert_in("JJ", flop["aggression_job"]["indifferent_targets"])
+    assert_in("K 高", flop["aggression_job"]["interpretation"])
+    assert_eq(
+        flop["drivers"]["primary"],
+        "下注／加注的 value、bluff 與 protection 任務",
+    )
+
+    assert_eq(turn["action_range_profile"]["shape"], "polar")
+    assert_eq(turn["action_range_profile"]["value_threshold"], "兩對以上為主")
+    assert_eq(turn["aggression_job"]["combo_job"], "hybrid")
+    assert_in("JJ", turn["aggression_job"]["value_targets"])
+    assert_in("KK", turn["aggression_job"]["bluff_targets"])
+    assert_in("KTs", turn["aggression_job"]["protection_targets"])
+    assert_in("AJo", turn["aggression_job"]["indifferent_targets"])
+    assert_true(turn["check_story"]["free_card"])
+    assert_in("range 偏下段", turn["check_story"]["interpretation"])
+    assert_in("bet 50% pot", turn["check_story"]["interpretation"])
+    assert_eq(
+        turn["drivers"]["primary"],
+        "過牌的相對牌力、equity realization 與替代分支",
+    )
+
+    prompt = ct.render_prompt_block(digest)
+    assert_in("Action range morphology", prompt)
+    assert_in("Opponent solved response", prompt)
+    assert_in("較差牌繼續=value", prompt)
+    assert_in("較好牌棄掉=bluff", prompt)
+    assert_in("protection／equity denial", prompt)
+    assert_in("indifferent 邊界", prompt)
+    fallback = ct.render_fallback(digest)
+    assert_in("merged／線性", fallback)
+    assert_in("明顯偏極化", prompt)
+    assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+
+
+@test
+def test_raise_facing_bet_names_protection_and_indifferent_targets():
+    """A raise over a bet explains which worse-equity hands are denied."""
+    import coach_teaching as ct
+    import gto_formatter as gf
+
+    context = _low_spr_88_context()
+    context["hero_spots"][0]["taken_code"] = "RAI"
+    combos = {
+        "AsKd": ("ace_high", "no_draw", {"F": 1.0}),
+        "QhTh": ("king_high", "oesd", {"F": 0.5, "C": 0.5}),
+        "JcTc": ("top_pair", "no_draw", {"C": 1.0}),
+    }
+    category_index = {"ace_high": 0, "king_high": 1, "top_pair": 2}
+    draw_index = {"no_draw": 0, "oesd": 1}
+    actor_range = _arrays()
+    made_range = [0] * 1326
+    draw_range = [0] * 1326
+    fold_strategy = _arrays()
+    call_strategy = _arrays()
+    for combo, (made, draw, frequencies) in combos.items():
+        idx = gf.combo_index_for_hand(combo)
+        actor_range[idx] = 1.0
+        made_range[idx] = category_index[made]
+        draw_range[idx] = draw_index[draw]
+        fold_strategy[idx] = frequencies.get("F", 0.0)
+        call_strategy[idx] = frequencies.get("C", 0.0)
+    response = {
+        "game": {"active_position": "SB", "board": "Js9h3c"},
+        "action_solutions": [
+            {"action": {"code": "F"}, "total_frequency": 0.50,
+             "strategy": fold_strategy, "evs": _arrays()},
+            {"action": {"code": "C"}, "total_frequency": 0.50,
+             "strategy": call_strategy, "evs": _arrays()},
+        ],
+        "players_info": [{
+            "player": {"position": "SB"}, "range": actor_range,
+            "hand_categories": [
+                {"name": name, "index": index, "total_frequency": 0.33}
+                for name, index in category_index.items()
+            ],
+            "draw_categories": [
+                {"name": name, "index": index, "total_frequency": 0.5}
+                for name, index in draw_index.items()
+            ],
+        }],
+        "hand_categories_range": made_range,
+        "draw_categories_range": draw_range,
+    }
+    context["_coach_response_solutions"] = {"flop:RAI": response}
+
+    digest = ct.build_teaching_digest(context)
+    decision = digest["decisions"][0]
+    job = decision["aggression_job"]
+    assert_eq(job["combo_job"], "hybrid")
+    assert_true(not job["is_alternative"])
+    assert_in("AKo", job["protection_targets"])
+    assert_in("QTs", job["protection_targets"])
+    assert_in("QTs", job["value_targets"])
+    assert_in("QTs", job["indifferent_targets"])
+    prompt = ct.render_prompt_block(digest)
+    assert_in("實戰進攻分支 all-in", prompt)
+    assert_in("protection／equity denial", prompt)
 
 
 @test
@@ -1331,7 +1687,7 @@ def test_coach_teaching_fallback_is_short_and_teachable():
 
     digest = ct.build_teaching_digest(_h3818_like_context())
     answer = ct.render_fallback(digest)
-    assert_in("最值得看的在 River", answer)
+    assert_in("River bet 58% pot 正確", answer)
     assert_not_in("*核心判斷*", answer)
     assert_not_in("*你要記得*", answer)
     assert_in("同花", answer)
@@ -1767,11 +2123,14 @@ def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
     digest = ct.build_teaching_digest(context)
     decision = digest["decisions"][0]
     assert_eq(decision["ev_loss_bb"], 0.0)
-    assert_eq(decision["drivers"]["primary"], "exact combo 的 mixed strategy 分配")
+    assert_eq(decision["drivers"]["primary"], "Hero 這個 combo 的 range 角色與 EV")
     assert_in("實戰動作是 solver 保留的分支", decision["mix_strategy"]["interpretation"])
+    assert_not_in("exact combo 的 mixed strategy 分配", {
+        row["title"] for row in decision["causal_mechanisms"]
+    })
     fallback = ct.render_fallback(digest)
     assert_in("沒有實質 EV 損失", fallback)
-    assert_in("最高頻動作只是較常用，不是唯一正解", fallback)
+    assert_in("Mix contract", ct.render_prompt_block(digest))
     assert_true(ct.audit_draft(fallback, digest).ok)
 
 

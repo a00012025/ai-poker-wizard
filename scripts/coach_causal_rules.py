@@ -82,6 +82,46 @@ CAUSAL_RULES = (
         primary_priority=98,
     ),
     CausalRule(
+        id="grounded_aggression_job",
+        title="下注／加注的 value、bluff 與 protection 任務",
+        evidence_tier="A_successor_node_fact",
+        required_facts=(
+            "action_range_profile", "opponent_response_profile",
+            "continues_worse", "folds_better", "folds_worse_with_equity",
+            "indifferent_response_classes",
+        ),
+        claim_scope=(
+            "用對手在此 action 後的 solved response 區分：較差牌繼續是 value，"
+            "較好牌棄掉是 bluff，目前較差但帶改善 equity 的牌棄掉是 protection；"
+            "同一 combo 可以是 hybrid；若對手某類牌在多個 response 間顯著混合，"
+            "可稱為此 size 推入 indifferent 邊界的困難決策區"
+        ),
+        forbidden_inferences=(
+            "未查詢 action 的 fold/call 範圍", "把所有 raise 都稱為 protection",
+            "把 range-level 組成說成 exact combo 的唯一動機",
+        ),
+        applies=lambda row: bool(row.get("aggression_job") and not row.get("check_story")),
+        primary_priority=97,
+    ),
+    CausalRule(
+        id="grounded_check_job",
+        title="過牌的相對牌力、equity realization 與替代分支",
+        evidence_tier="A_successor_node_plus_current_node_fact",
+        required_facts=(
+            "hero_range_band", "relative_strength", "live_draws",
+            "alternative_aggressive_branch", "opponent_response_profile",
+        ),
+        claim_scope=(
+            "說明 Hero 在自身 range 的位置、目前領先與落後的範圍、"
+            "過牌保留的 equity realization，以及替代下注／加注真正攻擊哪些牌"
+        ),
+        forbidden_inferences=(
+            "把 check 擴寫成 check-fold/call/raise", "沒有牌力與 response 證據就稱 pot control",
+        ),
+        applies=lambda row: bool(row.get("check_story")),
+        primary_priority=96,
+    ),
+    CausalRule(
         id="exact_combo_mix",
         title="exact combo 的 mixed strategy 分配",
         evidence_tier="A_direct_node_fact",
@@ -89,7 +129,7 @@ CAUSAL_RULES = (
         claim_scope="實戰 action 是 solver 明確保留的 mix 分支，較高頻 action 只是偏好而非唯一正解",
         forbidden_inferences=("把低頻 mix 稱為 EV 錯誤", "跨 node 套用相同 mix"),
         applies=lambda row: bool(row.get("mix_strategy")),
-        primary_priority=95,
+        secondary_priority=50,
     ),
     CausalRule(
         id="made_hand_showdown_buffer",

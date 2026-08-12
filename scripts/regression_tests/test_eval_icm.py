@@ -103,6 +103,17 @@ def test_hand_eval_top_pair():
 
 
 @test
+def test_hand_eval_showdown_rank_key_distinguishes_pairs_in_same_solver_bucket():
+    """Current-street comparison separates KK from JJ against QJ on A-T-9-Q."""
+    from hand_eval import showdown_rank_key
+
+    board = "AsTh9dQc"
+    hero = showdown_rank_key("QdJd", board)
+    assert_true(showdown_rank_key("KcKh", board) > hero)
+    assert_true(showdown_rank_key("JcJh", board) < hero)
+
+
+@test
 def test_hand_eval_ac7c_on_7h5c4c_is_nut_flush_draw():
     """Exact real-hand regression used by grounded coaching."""
     from hand_eval import evaluate
