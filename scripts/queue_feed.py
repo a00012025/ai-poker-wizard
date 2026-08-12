@@ -236,6 +236,10 @@ def pretty_hand(hero_hand: str | None) -> str:
     return cards_to_emoji(hero_hand)
 
 
+def _frequency_pct_label(freq: float) -> str:
+    return f"{float(freq) * 100:.3g}%"
+
+
 def review_label(row: dict) -> str:
     """`復盤 {M/D} {hero combo w/ suits} {spot_desc_zh(worst decision)} −{ev:.1f}bb`
     (+⚠近似 when the worst decision leans on an off-tree approximation, §5.2).
@@ -255,8 +259,13 @@ def review_label(row: dict) -> str:
     anchor_title = _STREET_TITLE.get(row.get("review_anchor_street"))
     hint = (f"（{anchor_title} 走了低頻分支，建議從 {anchor_title} 開始看）"
             if anchor_title else "")
+    line_freq = row.get("line_frequency")
+    rare = bool(row.get("rare_line"))
+    rare_hint = (f" ⚠GTO 低頻路線 {_frequency_pct_label(line_freq)}"
+                 if rare and line_freq is not None else "")
     warn = " ⚠近似" if _has_approx(row.get("approx_flags")) else ""
-    return f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb{hint}{warn}"
+    return (f"復盤 {md} {hand + ' ' if hand else ''}{desc} −{ev:.1f}bb"
+            f"{hint}{rare_hint}{warn}")
 
 
 def drill_label(row: dict, action_bias: dict | None = None) -> str:
@@ -291,9 +300,13 @@ def review_url(row: dict) -> str | None:
     built from the archived hand detail (the owner reads their exact combo there).
     FALLBACK (archive missing / node has no solution): the Analyze table filtered
     to the hand's Taipei day."""
-    study = _study_solution_url(row)
+    study = _study_solution_link(row)
     if study:
-        return study
+        return study["url"]
+    return _review_fallback_url(row)
+
+
+def _review_fallback_url(row: dict) -> str | None:
     played = row.get("played_at")
     if not played:
         return None
@@ -301,10 +314,8 @@ def review_url(row: dict) -> str | None:
     return analyze_table_url(day, day)
 
 
-def _study_solution_url(row: dict) -> str | None:
-    """Build the /solutions Study URL for a review hand's worst decision from
-    its archived GTOW detail JSON (`ledger_hands.raw_path`). Returns None on any
-    failure so review_url falls back to the day-range Analyze table."""
+def _study_solution_link(row: dict) -> dict | None:
+    """Validated Study URL plus frequency context for the incoming line."""
     raw_path = row.get("raw_path")
     hero_pos = row.get("hero_pos")
     street = row.get("worst_street")
@@ -313,19 +324,25 @@ def _study_solution_url(row: dict) -> str | None:
         return None
     try:
         import gzip
-        from gtow_solution_url import build_hand_solution_url
+        from gtow_solution_url import build_hand_solution_link
         p = Path(raw_path) if os.path.isabs(raw_path) else (ROOT / raw_path)
         if not p.exists():
             return None
         opener = gzip.open if str(p).endswith(".gz") else open
         with opener(p, "rb") as fh:
             detail = json.loads(fh.read())
-        return build_hand_solution_url(
+        return build_hand_solution_link(
             detail, hero_pos, street, int(idx),
             preflop_depth_bb=_decision_effective_depth(row),
         )
     except Exception:
         return None
+
+
+def _study_solution_url(row: dict) -> str | None:
+    """Backward-compatible URL-only wrapper around the validated link result."""
+    link = _study_solution_link(row)
+    return link["url"] if link else None
 
 
 def mix_queue_quota(rows: list[dict], drill_slots: int, review_slots: int,
@@ -897,11 +914,19 @@ async def _build_review_items(conn, since) -> list[dict]:
                        worst_idx=row.get("worst_idx"),
                        max_ev=row.get("max_ev"),
                        hero_pos=row.get("hero_pos") or (worst_dec or {}).get("position"))
+        loss_link = _study_solution_link(context)
+        if loss_link:
+            context.update(
+                line_frequency=loss_link.get("line_frequency"),
+                rare_line=loss_link.get("rare_line", False),
+            )
         items.append({
             "kind": "review", "added_by": "auto", "source": "online",
             "ref_hand_id": row["ref_hand_id"], "spot_leaf": row["spot_leaf"],
             "spot_category": row["spot_category"], "label": review_label(context),
-            "drill_url": review_url(context), "review_anchor_url": anchor_url,
+            "drill_url": (loss_link["url"] if loss_link
+                          else _review_fallback_url(context)),
+            "review_anchor_url": anchor_url,
             "review_anchor_street": context.get("review_anchor_street"),
             "source_hands": _as_list(row["source_hands"]),
             "total_ev_loss_bb": round(float(row["total_ev"]), 4),
@@ -950,8 +975,14 @@ async def refresh_review_links(conn, include_all: bool = False) -> dict:
         context = dict(row, **worst_dec, worst_street=worst_street,
                        worst_idx=worst_idx, max_ev=worst_dec.get("ev_loss_bb"),
                        hero_pos=row.get("hero_pos") or worst_dec.get("position"))
-        loss_url = _study_solution_url(context)
-        if not loss_url:
+        loss_link = _study_solution_link(context)
+        loss_url = loss_link["url"] if loss_link else None
+        if loss_link:
+            context.update(
+                line_frequency=loss_link.get("line_frequency"),
+                rare_line=loss_link.get("rare_line", False),
+            )
+        else:
             tally["unresolved"] += 1
             loss_url = row.get("drill_url")
 

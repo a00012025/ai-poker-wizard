@@ -3085,6 +3085,10 @@ def test_queue_feed_review_and_manual_items():
     assert_in("−22.7bb", lbl)
     assert_not_in("⚠近似", lbl)                                 # no approx flag -> no warn
     assert_in("⚠近似", qf.review_label(dict(row, approx_flags=["sizing_snap"])))
+    assert_in("⚠GTO 低頻路線 0.87%", qf.review_label(dict(
+        row, rare_line=True, line_frequency=0.0087)))
+    assert_in("⚠GTO 低頻路線 0.000505%", qf.review_label(dict(
+        row, rare_line=True, line_frequency=0.00000505)))
     hinted = qf.review_label(dict(row, review_anchor_street="flop"))
     assert_in("（Flop 走了低頻分支，建議從 Flop 開始看）", hinted)
     # no raw_path -> Study link can't build -> day-range Analyze fallback
@@ -3247,6 +3251,69 @@ def test_review_solution_url_replays_real_line_at_preflop_depth():
 
 
 @test
+def test_review_solution_link_repairs_next_actions_rounding_and_marks_rare_line():
+    """Production repro 8bbfdb87: next-actions calls the river bet ``R19``
+    while spot-solution addresses the same branch as ``R18.5``.  The review
+    link must validate the destination, repair to the solution action code,
+    and expose the branch frequency instead of opening a no-solution page.
+    """
+    from gtow_solution_url import build_hand_solution_link
+
+    sas = {"preflop_actions": ["F", "R2.3", "F", "F", "F", "F", "F", "R9.8", "C"],
+           "flop_actions": ["X", "R5.3", "C"], "turn_actions": ["X", "X"],
+           "river_actions": ["R18.5"]}
+    gp = {
+        "real_game_action": {"position": "UTG+1", "code": "F"},
+        "real_game": {"current_street": {"type": "RIVER"},
+                      "board": "AsTh9dQc3h"},
+        "analysis_solved": {"available_actions": [{"selected": True}]},
+        "has_solution": True, "depth": "47.72", "gametype": "MTTGeneral",
+        "solved_action_sequence": sas,
+    }
+    preflop_gp = {
+        "real_game_action": {"position": "UTG", "code": "F", "betsize": "0"},
+        "real_game": {"current_street": {"type": "PREFLOP"}, "board": ""},
+        "analysis_solved": {"available_actions": []}, "has_solution": False,
+    }
+    detail = {"players_dealt": 7, "boards": ["AsTh9dQc3h"],
+              "game_analysis": {"game_points": [preflop_gp, gp]}}
+    resolved = {
+        "preflop_actions": "F-R2.3-F-F-F-F-F-R9.8-C",
+        "flop_actions": "X-R5.3-C", "turn_actions": "X-X",
+        "river_actions": "R19", "history_spot": 15,
+        "depth": 50.125, "gametype": "MTTGeneral",
+    }
+    calls = []
+
+    def fake_getter(**params):
+        calls.append(params.get("river_actions", ""))
+        if params.get("river_actions") == "":
+            return {"action_solutions": [
+                {"action": {"code": "X", "betsize": "0"},
+                 "total_frequency": 0.721},
+                {"action": {"code": "R11", "betsize": "11"},
+                 "total_frequency": 0.0087},
+                {"action": {"code": "R18.5", "betsize": "18.5"},
+                 "total_frequency": 0.000005},
+            ]}
+        if params.get("river_actions") == "R18.5":
+            return {"action_solutions": [{"action": {"code": "C"}}]}
+        return None
+
+    link = build_hand_solution_link(
+        detail, "UTG+1", "river", 0, preflop_depth_bb=47.72,
+        resolver=lambda *_: resolved, spot_solution_getter=fake_getter)
+    assert_true(link is not None)
+    assert_in("river_actions=R18.5", link["url"])
+    assert_not_in("river_actions=R19", link["url"])
+    assert_eq(link["requested_action_code"], "R19")
+    assert_eq(link["resolved_action_code"], "R18.5")
+    assert_eq(link["line_frequency"], 0.000005)
+    assert_true(link["rare_line"])
+    assert_eq(calls, ["R19", "", "R18.5"])
+
+
+@test
 def test_queue_review_study_url_passes_decision_effective_depth():
     """queue_feed must pass the ledger decision solver depth into the strict
     real-action review-link builder; ledger_hands.preflop_depth_bb is only the
@@ -3260,11 +3327,12 @@ def test_queue_review_study_url_passes_decision_effective_depth():
         with gzip.open(raw.name, "wt") as fh:
             json.dump({"game_analysis": {"game_points": []}}, fh)
         calls = []
-        old = gtow_solution_url.build_hand_solution_url
+        old = gtow_solution_url.build_hand_solution_link
         def fake(detail, hero, street, idx, **kw):
             calls.append((hero, street, idx, kw))
-            return "https://app.gtowizard.com/solutions?depth=40.125"
-        gtow_solution_url.build_hand_solution_url = fake
+            return {"url": "https://app.gtowizard.com/solutions?depth=40.125",
+                    "line_frequency": 0.25, "rare_line": False}
+        gtow_solution_url.build_hand_solution_link = fake
         try:
             url = qf._study_solution_url({
                 "raw_path": raw.name, "hero_pos": "CO", "worst_street": "river",
@@ -3272,7 +3340,7 @@ def test_queue_review_study_url_passes_decision_effective_depth():
                 "played_depth_bb": 50.0, "solver_depth_bb": 11.0,
             })
         finally:
-            gtow_solution_url.build_hand_solution_url = old
+            gtow_solution_url.build_hand_solution_link = old
     assert_in("depth=40.125", url)
     assert_eq(calls, [("CO", "river", 0, {"preflop_depth_bb": 11.0})])
 
