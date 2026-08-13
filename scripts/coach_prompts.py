@@ -460,7 +460,7 @@ INITIAL_COACH_SYSTEM = """\
 - Exact combo action job 的 value／bluff／protection target 只要非空，每類至少點名一個主要 target；不能只說 range 是 merged 或 polar 就結束。
 - 若骨架列出對手的 indifferent 邊界，要指出這個 size 把哪些牌推進 fold／call／raise 混合的困難決策；不可把純 action 的牌說成 indifferent。
 - 若骨架證明 action range 偏極化，要交代價值端門檻、弱端組成與 Hero exact combo 在其中的角色；若是 merged，就明說它也包含哪些中等牌力，不可套用 nuts-or-air 口號。
-- 核心判定、Actor lock、exact combo、牌型、聽牌、action bucket 與適用邊界都是硬契約。
+- 核心判定、Actor lock、exact combo、牌型、聽牌與 action bucket 都是硬契約。
 - 低頻不等於 EV 錯誤；骨架寫「沒有實質 EV 損失」時不得翻案。
 - 骨架寫「小漏洞／明顯失誤」時，即使只差 0.01bb 也必須照寫；不得改成「沒有實質損失」、正確、可接受或 solver mix。
 - 強牌類別若只是次要機制，只能作背景，不得用「因此／所以／支持」直接推出 exact action 或整體策略。
@@ -470,7 +470,7 @@ INITIAL_COACH_SYSTEM = """\
 - 像真人教練，以牌局理解為主；可以用自然段落或少量貼合內容的標題，不使用固定三段模板。
 - 不要解釋 LLM 如何判讀資料，也不要把「不同 node 分開判定」「最高頻不等於唯一正解」等內部查核規則當成 lesson，除非它直接回應使用者的疑問。
 - 不要用「先看 exact combo EV」「再服從 solver action」這類操作說明充當撲克洞見；要說這手牌在此牌局中的策略角色與可執行調整。
-- 結尾不必固定給 heuristic，也不要每手附上 exact-node 罐頭邊界；只有近似、off-tree、低到達率或容易誤用時才提醒限制。
+- 結尾不必固定給 heuristic，也不要每手附上 generic node 邊界。低到達率只需說這個 combo 少量到達，說完就停止。
 - 遵守骨架末尾的事實與數字配額，但格式與敘事順序由你決定。
 - 下注尺寸百分比一律寫成 `33% pot` 這類格式，不可省略 pot，以免和 action frequency 混淆。
 - exact combo 保留花色；標準術語可直接用 GTO、EV、SPR、IP、OOP、range、equity、all-in、solver。
@@ -499,6 +499,16 @@ _TERM_REPLACEMENTS = (
 )
 _RE_CBET = re.compile(r"[cC]-[bB]et")
 _RE_SHORT_FLUSH_DRAW = re.compile(r"(?<![梅同])花聽牌")
+_RE_ATTACHED_SCOPE_BOILERPLATE = re.compile(
+    r"[，；]\s*(?:這個)?結論(?:只|僅)(?:限|適用於)"
+    r"(?:目前|這個)?(?:的)?深度、牌面與\s*action line[。.]?",
+    re.I,
+)
+_RE_STANDALONE_SCOPE_BOILERPLATE = re.compile(
+    r"(?m)^[ \t]*(?:這個)?結論(?:只|僅)(?:限|適用於)"
+    r"(?:目前|這個)?(?:的)?深度、牌面與\s*action line[。.]?[ \t]*\n?",
+    re.I,
+)
 _CARD_CODE_BEFORE_EMOJI_RE = re.compile(
     r"(?P<rank>[2-9TJQKA])(?P<suit>[cdhs])(?:☘️?|♣️?|🔷️?|♦️?|♥️?|♠️?)"
 )
@@ -514,6 +524,9 @@ def _normalize_terms(text: str) -> str:
         text = text.replace(old, new)
     text = _RE_CBET.sub("cbet", text)
     text = _RE_SHORT_FLUSH_DRAW.sub("同花聽牌", text)
+    text = _RE_ATTACHED_SCOPE_BOILERPLATE.sub("。", text)
+    text = _RE_STANDALONE_SCOPE_BOILERPLATE.sub("", text)
+    text = text.replace("。。", "。")
     return _CARD_CODE_BEFORE_EMOJI_RE.sub(
         lambda match: match.group("rank") + _SUIT_EMOJI[match.group("suit")],
         text,

@@ -1046,6 +1046,8 @@ def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     )
     assert_in("近乎純進攻", prompt)
     assert_in("不得替 0% 過牌補理由", prompt)
+    assert_not_in("適用邊界", prompt)
+    assert_not_in("結論只適用於目前深度、牌面與 action line", prompt)
 
     fallback = ct.render_fallback(digest)
     assert_in("先看整體 range", fallback)
@@ -2914,6 +2916,20 @@ def test_coach_term_normalizer_expands_flush_draw_shorthand_safely():
 
     assert_eq(_normalize_terms("堅果花聽牌"), "堅果同花聽牌")
     assert_eq(_normalize_terms("梅花聽牌"), "梅花聽牌")
+
+
+@test
+def test_coach_term_normalizer_removes_scope_boilerplate_but_keeps_low_reach():
+    """A useful low-reach warning must not end in generic node boilerplate."""
+    from coach_prompts import _normalize_terms
+
+    text = (
+        "注意此 combo 是沿前街低頻路線才少量到達，"
+        "結論只限這個深度、牌面與 action line。"
+    )
+    normalized = _normalize_terms(text)
+    assert_eq(normalized, "注意此 combo 是沿前街低頻路線才少量到達。")
+    assert_not_in("action line", normalized)
 
 
 @test

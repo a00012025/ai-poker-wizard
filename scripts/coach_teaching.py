@@ -397,7 +397,7 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
         "range_plan": range_plan,
         "action_contract": _action_contract(actions, range_plan),
         "confidence": "high",
-        "scope": "只適用於這個深度與 preflop action line",
+        "scope": "同一深度與 preflop node 的已驗證事實",
     }
 
 
@@ -2126,9 +2126,9 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "_spot_params": dict(spot.get("params") or {}),
         "confidence": "medium" if reach_weight < 0.005 else "high",
         "scope": (
-            "這個 combo 因前街低頻線只少量到達此節點；結論只適用於目前深度、牌面與 action line"
+            "這個 combo 因前街低頻線只少量到達此節點"
             if reach_weight < 0.005
-            else "只適用於這個深度、牌面與 action line；range 事實來自同一個已評分 solver node"
+            else "range 事實來自同一個已評分 solver node"
         ),
     }
     decision["decision_type"] = _decision_type(
@@ -2743,7 +2743,6 @@ def render_prompt_block(digest: dict | None) -> str:
             )
         if decision["drivers"].get("secondary"):
             lines.append(f"• 次要機制：{decision['drivers']['secondary']}。")
-        lines.append(f"• 適用邊界：{decision['scope']}。")
     if digest.get("caveats"):
         lines.append("• 降級註記：" + "；".join(digest["caveats"]) + "。")
     lines.extend([
@@ -2758,6 +2757,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
         "若你選擇討論『這個 combo 只少量到達此節點』的焦點，必須保留低到達率 caveat。",
+        "低到達率 caveat 到『這個 combo 只少量到達此節點』為止；正文不得再加 generic node 邊界收尾。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
