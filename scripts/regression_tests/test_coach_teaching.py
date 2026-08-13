@@ -901,6 +901,51 @@ def _h3855_range_job_context():
     }
 
 
+def _pure_aggression_after_check_context():
+    """Pure recommended aggression after Hero wrongly checked.
+
+    Reuse the successor-node response data from H3855, but make the selected
+    exact combo a 100% bet with a material check penalty.  This locks the
+    H3856 teaching failure without storing another multi-megabyte solver node.
+    """
+    import gto_formatter as gf
+
+    context = _h3855_range_job_context()
+    spot = context["hero_spots"][1]
+    solution = context["solutions"][1]
+    hero_idx = gf.combo_index_for_hand("QdJd")
+    for row in solution["action_solutions"]:
+        code = row["action"]["code"]
+        if code == "X":
+            row["strategy"][hero_idx] = 0.0
+            row["evs"][hero_idx] = 6.0
+        elif code == "R15.85":
+            row["strategy"][hero_idx] = 1.0
+            row["evs"][hero_idx] = 11.0
+        else:
+            row["strategy"][hero_idx] = 0.0
+
+    solution["players_info"][0]["equity_buckets_advanced"] = [
+        {"name": "hands_90_100", "total_frequency": 0.18},
+        {"name": "hands_80_90", "total_frequency": 0.15},
+        {"name": "hands_70_80", "total_frequency": 0.15},
+        {"name": "hands_60_70", "total_frequency": 0.10},
+        {"name": "hands_50_60", "total_frequency": 0.10},
+        {"name": "hands_0_50", "total_frequency": 0.32},
+    ]
+    solution["players_info"][1]["equity_buckets_advanced"] = [
+        {"name": "hands_90_100", "total_frequency": 0.03},
+        {"name": "hands_80_90", "total_frequency": 0.08},
+        {"name": "hands_70_80", "total_frequency": 0.12},
+        {"name": "hands_60_70", "total_frequency": 0.10},
+        {"name": "hands_50_60", "total_frequency": 0.10},
+        {"name": "hands_0_50", "total_frequency": 0.57},
+    ]
+    context["hero_spots"] = [spot]
+    context["solutions"] = [solution]
+    return context
+
+
 @test
 def test_coach_teaching_real_fixture_builds_human_range_story():
     """Teaching card: real node becomes range role + human category evidence."""
@@ -943,7 +988,10 @@ def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     )
 
     assert_eq(turn["action_range_profile"]["shape"], "polar")
-    assert_eq(turn["action_range_profile"]["value_threshold"], "兩對以上為主")
+    assert_eq(
+        turn["action_range_profile"]["value_threshold"],
+        "兩對、set 為主要價值端",
+    )
     assert_eq(turn["aggression_job"]["combo_job"], "hybrid")
     assert_in("JJ", turn["aggression_job"]["value_targets"])
     assert_in("KK", turn["aggression_job"]["bluff_targets"])
@@ -967,6 +1015,44 @@ def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     fallback = ct.render_fallback(digest)
     assert_in("merged／線性", fallback)
     assert_in("明顯偏極化", prompt)
+    assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+
+
+@test
+def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
+    """H3856: a zero-frequency check cannot receive a fabricated check story."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_pure_aggression_after_check_context())
+    decision = digest["decisions"][0]
+    assert_eq(decision["actual_action"]["code"], "X")
+    assert_eq(decision["actual_action"]["frequency"], 0.0)
+    assert_eq(decision["preferred_action"]["code"], "R15.85")
+    assert_eq(decision["preferred_action"]["frequency"], 1.0)
+    assert_true(decision["check_story"] is None)
+    assert_true(decision["aggressive_branch_is_preferred"])
+    assert_true(not decision["aggression_job"]["is_alternative"])
+    assert_eq(
+        decision["causal_mechanisms"][0]["id"],
+        "grounded_aggression_job",
+    )
+
+    prompt = ct.render_prompt_block(digest)
+    assert_in("Range-first overview", prompt)
+    assert_in("solver 建議進攻分支 bet 50% pot", prompt)
+    assert_true(
+        prompt.index("Range-first overview") < prompt.index("Exact combo action job"),
+        "whole-range structure must be presented before the exact combo job",
+    )
+    assert_in("近乎純進攻", prompt)
+    assert_in("不得替 0% 過牌補理由", prompt)
+
+    fallback = ct.render_fallback(digest)
+    assert_in("先看整體 range", fallback)
+    assert_in("價值端", fallback)
+    assert_in("弱端", fallback)
+    assert_not_in("過牌的理由", fallback)
+    assert_not_in("免費保留", fallback)
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
 
 

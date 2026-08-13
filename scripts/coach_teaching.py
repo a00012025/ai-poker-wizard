@@ -1102,13 +1102,32 @@ def _action_range_profile(
     weak_share = sum(composition.get(name, 0.0) for name in _ACTION_WEAK)
     accounted = value_share + middle_share + weak_share
     middle_share += max(0.0, 1.0 - accounted)
+    ordered = sorted(composition.items(), key=lambda item: -item[1])
+    value_categories = [
+        _MADE_ZH.get(name, name)
+        for name, share in ordered if name in _ACTION_VALUE_CORE and share >= 0.01
+    ]
+    middle_categories = [
+        _MADE_ZH.get(name, name)
+        for name, share in ordered if name in _ACTION_MIDDLE and share >= 0.01
+    ]
+    weak_categories = [
+        _MADE_ZH.get(name, name)
+        for name, share in ordered if name in _ACTION_WEAK and share >= 0.01
+    ]
     if value_share >= 0.35 and weak_share >= 0.12 and middle_share <= 0.30:
         shape = "polar"
         shape_label = "明顯偏極化"
-        value_threshold = "兩對以上為主"
+        value_threshold = (
+            "、".join(value_categories[:4]) + " 為主要價值端"
+            if value_categories else "兩對以上為主"
+        )
+        value_text = "、".join(value_categories[:4]) or "已驗證的強牌"
+        weak_text = "、".join(weak_categories[:4]) or "已驗證的弱端"
         interpretation = (
-            "此 action range 的重量集中在兩對以上的價值核心與弱端，"
-            "中段成牌較少；可說『兩對以上為主的價值端，加上弱端詐唬』，"
+            f"此 action range 的價值端主要由 {value_text} 構成，"
+            f"弱端主要由 {weak_text} 構成，中段成牌較少；"
+            "可描述成已驗證價值端加弱端詐唬候選，"
             "但不能簡化成 literal nuts-or-air"
         )
     elif middle_share >= 0.35:
@@ -1128,7 +1147,6 @@ def _action_range_profile(
         shape_label = "混合結構"
         value_threshold = "沒有單一清楚門檻"
         interpretation = "此 action range 同時含強端、中段與弱端，沒有足夠證據貼純極化標籤"
-    ordered = sorted(composition.items(), key=lambda item: -item[1])
     return {
         "action_code": code,
         "action_label": _action_label(
@@ -1152,18 +1170,9 @@ def _action_range_profile(
             }
             for name, share in ordered[:6]
         ],
-        "value_categories": [
-            _MADE_ZH.get(name, name)
-            for name, share in ordered if name in _ACTION_VALUE_CORE and share >= 0.01
-        ],
-        "middle_categories": [
-            _MADE_ZH.get(name, name)
-            for name, share in ordered if name in _ACTION_MIDDLE and share >= 0.01
-        ],
-        "weak_categories": [
-            _MADE_ZH.get(name, name)
-            for name, share in ordered if name in _ACTION_WEAK and share >= 0.01
-        ],
+        "value_categories": value_categories,
+        "middle_categories": middle_categories,
+        "weak_categories": weak_categories,
         "representative_classes": _representative_classes_for_action(
             player_info, code,
         ),
@@ -1559,7 +1568,10 @@ def _aggression_job_story(decision: dict) -> dict | None:
         )
     return {
         "combo_job": combo_job,
-        "is_alternative": not decision.get("aggressive_branch_is_actual"),
+        "is_alternative": not (
+            decision.get("aggressive_branch_is_actual")
+            or decision.get("aggressive_branch_is_preferred")
+        ),
         "value_targets": value_targets,
         "bluff_targets": bluff_targets,
         "protection_targets": protection_targets,
@@ -1572,7 +1584,11 @@ def _aggression_job_story(decision: dict) -> dict | None:
 
 def _check_story(decision: dict) -> dict | None:
     actual = decision.get("actual_action") or {}
-    if actual.get("code") != "X":
+    # Explain checks only when the exact combo is genuinely in solver's check
+    # mix.  A zero-frequency check with a pure recommended bet is a mistake to
+    # correct, not an action that deserves a fabricated pot-control/free-card
+    # rationale.
+    if actual.get("code") != "X" or _float(actual.get("frequency")) < 0.01:
         return None
     strength = decision.get("relative_strength") or {}
     ahead = _target_names(strength.get("ahead_of"))
@@ -2050,6 +2066,10 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         actual and aggressive_branch
         and actual.get("code") == aggressive_branch.get("code")
     )
+    aggressive_branch_is_preferred = bool(
+        aggressive_branch
+        and preferred.get("code") == aggressive_branch.get("code")
+    )
     action_range_profile = _action_range_profile(
         solution, hero_pi, (aggressive_branch or {}).get("code"),
     )
@@ -2094,6 +2114,7 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "mix_strategy": mix_strategy,
         "aggressive_branch": aggressive_branch,
         "aggressive_branch_is_actual": aggressive_branch_is_actual,
+        "aggressive_branch_is_preferred": aggressive_branch_is_preferred,
         "action_range_profile": action_range_profile,
         "relative_strength": relative_strength,
         "check_range_composition": _action_composition(hero_pi, "X"),
@@ -2345,6 +2366,73 @@ def _category_sentence(decision: dict) -> str | None:
     return "；".join(parts)
 
 
+def _range_first_overview(decision: dict) -> dict | None:
+    """Put whole-range construction before the exact combo's assignment."""
+    profile = decision.get("action_range_profile") or {}
+    if not profile:
+        return None
+    hero = decision.get("hero") or "Hero"
+    villain = decision.get("villain") or "Villain"
+    structure = decision.get("range_structure") or {}
+    top = structure.get("nut_region") or {}
+    strong = structure.get("strong_region") or {}
+    structure_parts = []
+    if top.get("owner") == hero and strong.get("owner") == hero:
+        structure_parts.append(
+            f"{hero} 在 equity 頂端與強端的份量都比 {villain} 厚"
+        )
+    else:
+        if top.get("owner"):
+            structure_parts.append(f"{top['owner']} 的 equity 頂端份量較厚")
+        if strong.get("owner"):
+            structure_parts.append(f"{strong['owner']} 的強端份量較厚")
+    category_story = _category_sentence(decision)
+    if category_story:
+        structure_parts.append(category_story)
+
+    frequencies = (decision.get("range_plan") or {}).get("frequencies") or {}
+    check = _float(frequencies.get("X"))
+    aggression = sum(
+        _float(frequency)
+        for code, frequency in frequencies.items()
+        if (code or "").startswith("R")
+    )
+    if check >= 0.05 and aggression >= 0.05:
+        plan_text = "整體策略仍在 check 與進攻之間混合，不是全 range 開火"
+    elif aggression >= 0.97:
+        plan_text = "整體 range 幾乎全部進攻"
+    else:
+        plan_text = (decision.get("range_plan") or {}).get("text")
+
+    value_categories = profile.get("value_categories") or []
+    weak_categories = profile.get("weak_categories") or []
+    if profile.get("shape") == "polar":
+        construction = (
+            f"{profile['action_label']} 是{profile['shape_label']}："
+            f"價值端主要由 {'、'.join(value_categories[:4]) or '已驗證強牌'} 構成，"
+            f"弱端則從 {'、'.join(weak_categories[:4]) or '已驗證弱牌'} 挑選詐唬候選"
+        )
+    elif profile.get("shape") == "merged":
+        construction = (
+            f"{profile['action_label']} 是{profile['shape_label']}，"
+            f"中段主要包含{'、'.join((profile.get('middle_categories') or [])[:4]) or '一對類牌力'}"
+        )
+    else:
+        construction = f"{profile['action_label']} 採{profile['shape_label']}"
+    parts = structure_parts + [part for part in (plan_text, construction) if part]
+    return {
+        "hero": hero,
+        "villain": villain,
+        "value_categories": value_categories,
+        "weak_categories": weak_categories,
+        "interpretation": "先看整體 range：" + "；".join(parts),
+        "scope": (
+            "先描述雙方 range 的強端厚度與此 action bucket 的價值／弱端組成，"
+            "再描述 exact combo；不得把頂端 equity proxy 稱為 literal nut advantage"
+        ),
+    }
+
+
 def build_decision_evidence(context: dict, spot: dict,
                             solution: dict) -> dict | None:
     """Build the full causal card for one exact cached Hero decision.
@@ -2521,18 +2609,27 @@ def render_prompt_block(digest: dict | None) -> str:
             f"焦點 {index}｜{decision['street'].capitalize()} {decision['board']}",
             f"• 核心判定：{verdict}；solver 最常用 {preferred['label']}（約 {_pct(preferred['frequency'])}%）。",
             f"• Actor lock：{decision['node_context']['actor_lock']}；不可交換位置、preflop role 或 IP/OOP。",
-            f"• Hero 角色：{role['range_band']}的{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}。",
-            f"• Exact combo action：{decision['action_contract']['summary']}。",
             f"• 主要機制：{decision['drivers']['primary']}。",
             f"• 已觀測 range plan：{decision['range_plan']['text']}。",
         ])
+        range_first = _range_first_overview(decision)
+        if range_first:
+            lines.append(
+                f"• Range-first overview：{range_first['interpretation']}；"
+                f"{range_first['scope']}。"
+            )
+        lines.extend([
+            f"• Hero 角色：{role['range_band']}的{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}。",
+            f"• Exact combo action：{decision['action_contract']['summary']}。",
+        ])
         action_profile = decision.get("action_range_profile") or {}
         if action_profile:
-            branch_kind = (
-                "實戰進攻分支"
-                if decision.get("aggressive_branch_is_actual")
-                else "solver 的進攻替代分支"
-            )
+            if decision.get("aggressive_branch_is_actual"):
+                branch_kind = "實戰進攻分支"
+            elif decision.get("aggressive_branch_is_preferred"):
+                branch_kind = "solver 建議進攻分支"
+            else:
+                branch_kind = "solver 的進攻替代分支"
             main = "、".join(
                 f"{row['label']} {_pct(row['share'])}%"
                 for row in action_profile.get("main_categories") or []
@@ -2583,7 +2680,7 @@ def render_prompt_block(digest: dict | None) -> str:
         range_structure = decision.get("range_structure") or {}
         nut_region = range_structure.get("nut_region") or {}
         strong_region = range_structure.get("strong_region") or {}
-        if nut_region.get("owner") or strong_region.get("owner"):
+        if not range_first and (nut_region.get("owner") or strong_region.get("owner")):
             ownership = []
             if nut_region.get("owner"):
                 ownership.append(
@@ -2665,12 +2762,14 @@ def render_prompt_block(digest: dict | None) -> str:
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
         "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
+        "每個 postflop 焦點在總評後都先講雙方整體 range：誰的 equity 頂端／強端較厚、整體 check／進攻計畫，以及所選 action bucket 的價值端與弱端組成；之後才講 exact combo 在其中負責什麼。",
+        "若 exact combo 對某個 bet／raise 是近乎純進攻（至少 97%），而實戰 check 低於 1%，只能解釋 solver 建議的進攻及 check 犧牲的收益；不得替 0% 過牌補理由（包括 pot control、免費看牌或 equity realization）。",
         "每個進攻焦點先講 action range 是 merged、polar 或 mixed，再講 exact combo 在其中負責什麼；不可只說它是低頻／高頻 mix。",
         "下注或加注的理由必須依 Opponent solved response 分開：較差牌繼續=value、較好牌棄掉=bluff、目前較差但有改善 equity 的牌棄掉=protection／equity denial；同時命中多項時稱 hybrid。",
         "不能只交代 action range 形狀：Exact combo action job 中 value／bluff／protection 哪些欄位非空，就至少各點名一個骨架提供的主要 target；check 的替代進攻分支也遵守此規則。",
         "若 Exact combo action job 列出 indifferent 邊界，可說該 size 把哪些牌推入 fold／call／raise 的混合困難決策；沒有 combo-level 顯著混合時不得自行使用 indifferent。",
-        "若 Action range morphology 寫明偏極化，可說『兩對以上為主的價值端＋弱端詐唬』並列出骨架提供的組成；不得縮寫成 literal nuts-or-air。",
-        "過牌焦點必須交代 Hero 在自身 range 的位置、目前領先／落後的主要範圍，以及保留 equity realization 或避開反擊的作用；再用替代進攻分支說明沒有選 bet/raise 犧牲了什麼。",
+        "若 Action range morphology 寫明偏極化，必須沿用骨架列出的實際 value_categories 與 weak_categories 說明價值端／詐唬候選組成；不得固定套『兩對以上』，也不得縮寫成 literal nuts-or-air。",
+        "只有骨架存在 Check job 時，過牌焦點才可交代 Hero 在自身 range 的位置、目前領先／落後的主要範圍，以及保留 equity realization 或避開反擊的作用；再用替代進攻分支說明沒有選 bet/raise 犧牲了什麼。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
@@ -2700,6 +2799,9 @@ def render_fallback(digest: dict) -> str:
     for decision in focus:
         role = decision["hero_role"]
         pieces = []
+        range_first = _range_first_overview(decision)
+        if range_first:
+            pieces.append(range_first["interpretation"])
         if decision.get("check_story"):
             check = decision["check_story"]
             relation = []
@@ -2707,11 +2809,15 @@ def render_fallback(digest: dict) -> str:
                 relation.append("領先 " + "、".join(check["ahead_of"][:2]))
             if check.get("behind"):
                 relation.append("落後 " + "、".join(check["behind"][:2]))
-            pieces.append(
+            check_reason = (
                 f"{decision['street'].capitalize()} 過牌的理由是：{decision['hero_hand']} 位於"
-                f" {role['range_band']}，{'、'.join(relation)}；"
-                f"IP 可以免費保留{role.get('draw_summary')}的 realization"
+                f" {role['range_band']}，{'、'.join(relation)}"
             )
+            if check.get("free_card"):
+                check_reason += (
+                    f"；IP 可以免費保留{role.get('draw_summary')}的 realization"
+                )
+            pieces.append(check_reason)
             job = decision.get("aggression_job") or {}
             profile = decision.get("action_range_profile") or {}
             targets = []
@@ -2735,11 +2841,17 @@ def render_fallback(digest: dict) -> str:
                 targets.append("逼 " + "、".join(job["bluff_targets"][:3]) + " 棄牌")
             if job.get("protection_targets"):
                 targets.append("拒絕 " + "、".join(job["protection_targets"][:2]) + " 的 equity")
+            job_label = {
+                "value": "價值下注",
+                "bluff": "詐唬",
+                "protection": "保護下注",
+                "semi_bluff": "半詐唬",
+                "hybrid": "複合任務",
+            }.get(job.get("combo_job"), "進攻候選")
             pieces.append(
-                f"{decision['street'].capitalize()} 的 "
-                f"{profile.get('action_label', '這個進攻動作')} 採用 "
-                f"{profile.get('shape_label', '已驗證的 range 結構')}；"
-                + "、".join(targets)
+                f"再看 exact combo：{decision['hero_hand']} 是 {role['range_band']}的"
+                f"{role['made_hand_label']}，在 {profile.get('action_label', '這個進攻動作')}"
+                f" 中負責{job_label}；" + "、".join(targets)
             )
             if job.get("combo_job") == "semi_bluff":
                 pieces.append(
@@ -3672,6 +3784,37 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     )
     supports_check_story = any(row.get("check_story") for row in digest["decisions"])
+    pure_aggressive_corrections = [
+        row for row in digest["decisions"]
+        if (row.get("actual_action") or {}).get("code") == "X"
+        and _float((row.get("actual_action") or {}).get("frequency")) < 0.01
+        and ((row.get("preferred_action") or {}).get("code") or "").startswith("R")
+        and _float((row.get("preferred_action") or {}).get("frequency")) >= 0.97
+    ]
+    if pure_aggressive_corrections and re.search(
+        r"(?:check|過牌)[^。；\n]{0,28}"
+        r"(?:理由|控制底池|pot control|免費|保留[^。；\n]{0,10}(?:equity|勝率)|"
+        r"realization|避免[^。；\n]{0,10}(?:反擊|加注))",
+        body,
+        re.I,
+    ):
+        violations.append("unsupported check rationale for pure aggression")
+    for decision in pure_aggressive_corrections:
+        profile = decision.get("action_range_profile") or {}
+        if profile.get("shape") != "polar":
+            continue
+        value_terms = profile.get("value_categories") or []
+        weak_terms = profile.get("weak_categories") or []
+        has_value_side = bool(
+            re.search(r"價值(?:端|範圍|下注)", body)
+            and any(term in body for term in value_terms)
+        )
+        has_bluff_side = bool(
+            re.search(r"詐唬|bluff", body, re.I)
+            and any(term in body for term in weak_terms)
+        )
+        if not (has_value_side and has_bluff_side):
+            violations.append("missing range-first value/bluff construction")
     unsupported_pot_control = bool(
         re.search(r"(?:控制底池|pot control)", body, re.I)
         and not supports_check_story
