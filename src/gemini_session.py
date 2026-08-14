@@ -2327,7 +2327,17 @@ class GeminiSessionManager:
             nearest_pct = min((75, 50, 25, 10, 5), key=lambda value: abs(value - pct))
             phase = f"PCT{nearest_pct}"
 
-        return {
+        average_match = re.search(
+            r"\b(?:avg|average)\s*(?:stack)?\s*(\d+(?:\.\d+)?)\s*bb\b"
+            r"|均碼\s*(\d+(?:\.\d+)?)\s*bb",
+            low,
+            re.I,
+        )
+        average_stack_bb = None
+        if average_match:
+            average_stack_bb = float(average_match.group(1) or average_match.group(2))
+
+        hand = {
             "gametype": "MTTGeneral",
             "tournament_type": "icm",
             "phase": phase,
@@ -2339,6 +2349,9 @@ class GeminiSessionManager:
             "no_hero_hand": hand_match is None,
             "preflop_actions": action_line,
         }
+        if average_stack_bb is not None:
+            hand["average_stack_bb"] = average_stack_bb
+        return hand
 
     def _fix_folded_players_guarded(self, hand: dict, chat_id: int):
         """``_fix_folded_players`` with a rules before/after double-check (§4a).

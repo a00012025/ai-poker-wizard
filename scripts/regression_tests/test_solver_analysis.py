@@ -1902,6 +1902,49 @@ def test_icm_partial_stacks_prioritize_known_positions():
 
 
 @test
+def test_icm_explicit_average_stack_constrains_config_pool():
+    """ICM: avg 25bb selects metadata avg_stack=25 before seat-distance ranking."""
+    import icm_modes
+
+    original = icm_modes._load_game_modes
+    icm_modes._load_game_modes = lambda: [{
+        "name": "TEST_ICM",
+        "game_modes": [
+            {
+                "depth": "17.125",
+                "stacks": [
+                    "17.125", "8.125", "29.125", "26.125",
+                    "32.125", "14.125", "23.125", "11.125",
+                ],
+                "info": {"avg_stack": 20},
+            },
+            {
+                "depth": "25.125",
+                "stacks": [
+                    "25.125", "37.125", "19.125", "20.125",
+                    "16.125", "12.125", "18.125", "53.125",
+                ],
+                "info": {"avg_stack": 25},
+            },
+        ],
+    }]
+    try:
+        depth, stacks, metadata = icm_modes.find_stacks(
+            "TEST_ICM",
+            [None, None, None, 28, None, 14, None, None],
+            preflop_actions="F-F-F-R2-F-AI14-F-F-C",
+            target_average_bb=25,
+            return_metadata=True,
+        )
+    finally:
+        icm_modes._load_game_modes = original
+
+    assert_eq(depth, "25.125")
+    assert_eq(metadata["avg_stack"], 25)
+    assert_eq(stacks, "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125")
+
+
+@test
 def test_icm_find_params():
     """ICM: find_icm_params returns complete ICM configuration."""
     from icm_modes import find_icm_params

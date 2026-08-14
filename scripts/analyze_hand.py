@@ -1848,6 +1848,7 @@ def _run_analysis(hand: dict) -> dict:
                 phase=hand.get("phase"),
                 players_at_table=num_players,
                 preflop_actions=hand.get("preflop_actions", ""),
+                average_stack_bb=hand.get("average_stack_bb"),
             )
             gametype = icm_params["gametype"]
             depth = icm_params["depth"]

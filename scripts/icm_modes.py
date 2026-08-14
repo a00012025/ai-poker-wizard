@@ -173,6 +173,7 @@ def find_stacks(
     player_stacks: list[float | None],
     preflop_actions: str = "",
     empty_seats: set[int] | None = None,
+    target_average_bb: float | None = None,
     return_metadata: bool = False,
 ) -> tuple[str, str] | tuple[str, str, dict]:
     """Find the nearest stack configuration for an ICM gametype.
@@ -191,6 +192,9 @@ def find_stacks(
             ``None`` means the user did not provide that seat's stack; it is
             excluded from distance scoring rather than fabricated as equal.
         preflop_actions: e.g., 'F-F-F-F-F-RAI' to identify folded positions
+        target_average_bb: Explicit tournament average stack. When provided,
+            first restrict configs to the nearest metadata ``avg_stack``;
+            stated seat stacks then rank candidates inside that pool.
         return_metadata: Include the selected config's GTOW ``info`` metadata
             as a third tuple item.
 
@@ -245,6 +249,22 @@ def find_stacks(
             for s in player_stacks
         )
         return (depth_str, stacks_str, {}) if return_metadata else (depth_str, stacks_str)
+
+    if target_average_bb is not None:
+        configs_with_average = [
+            config for config in configs
+            if config["metadata"].get("avg_stack") is not None
+        ]
+        if configs_with_average:
+            closest_average_delta = min(
+                abs(float(config["metadata"]["avg_stack"]) - target_average_bb)
+                for config in configs_with_average
+            )
+            configs = [
+                config for config in configs_with_average
+                if abs(float(config["metadata"]["avg_stack"]) - target_average_bb)
+                == closest_average_delta
+            ]
 
     # --- Identify folded positions from preflop_actions ---
     # "F-F-F-F-F-RAI" → first 5 positions folded
@@ -355,6 +375,7 @@ def find_icm_params(
     phase: str | None = None,
     players_at_table: int | None = None,
     preflop_actions: str = "",
+    average_stack_bb: float | None = None,
 ) -> dict:
     """High-level: find gametype + stacks for an ICM scenario.
 
@@ -369,6 +390,8 @@ def find_icm_params(
             average of remaining stacks for better solver matching.
         preflop_actions: e.g., 'F-F-F-F-F-RAI' — used to identify folded
             positions for smarter stack matching.
+        average_stack_bb: Explicit tournament average stack in bb. Constrains
+            selection using each GTOW config's metadata ``avg_stack``.
 
     Returns:
         Dict with keys: gametype, depth, stacks, approximation_note
@@ -414,6 +437,7 @@ def find_icm_params(
         player_stacks,
         preflop_actions=preflop_actions,
         empty_seats=empty_seats,
+        target_average_bb=average_stack_bb,
         return_metadata=True,
     )
     actual_stacks = _parse_stacks(stacks_str.split("-"))

@@ -820,6 +820,25 @@ def test_structured_partial_icm_decision_preserves_named_stacks():
 
 
 @test
+def test_structured_partial_icm_decision_preserves_explicit_average_stack():
+    """An explicit tournament average is a config constraint, not another seat."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "Icm 30% avg 25bb, hero has 28bb hj open ATo "
+        "btn has 14bb all in hero call"
+    )
+
+    assert_true(hand is not None)
+    assert_eq(hand["average_stack_bb"], 25.0)
+    assert_eq(
+        hand["player_stacks"],
+        [None, None, None, 28.0, None, 14.0, None, None],
+        "avg 25bb must not be mistaken for a player's stack",
+    )
+
+
+@test
 def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     """ICM range coaching: no-hero FT response should be explanatory but deterministic."""
     from gemini_session import GeminiSessionManager

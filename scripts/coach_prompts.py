@@ -59,6 +59,7 @@ ICM 支援：
   "tournament_size": 1000 或 200（錦標賽人數，預設 1000）
   "players_remaining": 數字（剩餘人數，例如 152）
   "phase": 階段名稱（可選，如 "BUBBLE", "FT", "PCT25" 等）
+  "average_stack_bb": 用戶明確提供的全賽事均碼 bb（例如 "avg 25bb" → 25）；這是解的 metadata 約束，不是任何座位的籌碼
   "player_stacks": [每個位置的籌碼]（按位置順序排列，如 [50, 30, 45, 20, 35, 25, 15, 40]）。只知道部分位置時，未知位置用 null，不能擅自補成與 Hero 相同；例如只知道 8-max HJ=28、BTN=14 → [null, null, null, 28, null, 14, null, null]
 - 決賽桌（FT）桌位規則（重要！）：
   決賽桌預設是 8 人桌！即使只描述了 5 個位置的籌碼，也要補齊到 8 人。
