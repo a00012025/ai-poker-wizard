@@ -1860,6 +1860,48 @@ def test_icm_stacks_matching():
 
 
 @test
+def test_icm_partial_stacks_prioritize_known_positions():
+    """ICM: explicitly stated HJ/BTN stacks outrank unknown seats."""
+    import icm_modes
+
+    original = icm_modes._load_game_modes
+    icm_modes._load_game_modes = lambda: [{
+        "name": "TEST_ICM",
+        "game_modes": [
+            {
+                "depth": "25.125",
+                "stacks": ["25.125"] * 8,
+                "info": {"stacks_type": "SYMMETRIC"},
+            },
+            {
+                "depth": "17.125",
+                "stacks": [
+                    "17.125", "8.125", "29.125", "26.125",
+                    "32.125", "14.125", "23.125", "11.125",
+                ],
+                "info": {"stacks_type": "ASYMMETRIC_FAR", "avg_stack": 21},
+            },
+        ],
+    }]
+    try:
+        depth, stacks, metadata = icm_modes.find_stacks(
+            "TEST_ICM",
+            [None, None, None, 28, None, 14, None, None],
+            preflop_actions="F-F-F-R2-F-AI14-F-F-C",
+            return_metadata=True,
+        )
+    finally:
+        icm_modes._load_game_modes = original
+
+    assert_eq(depth, "17.125")
+    assert_eq(
+        stacks,
+        "17.125-8.125-29.125-26.125-32.125-14.125-23.125-11.125",
+    )
+    assert_eq(metadata["avg_stack"], 21, "must preserve config metadata, not recompute it")
+
+
+@test
 def test_icm_find_params():
     """ICM: find_icm_params returns complete ICM configuration."""
     from icm_modes import find_icm_params
@@ -1872,6 +1914,7 @@ def test_icm_find_params():
     assert_true("stacks" in result)
     assert_true("approximation_note" in result)
     assert_true(result["gametype"].startswith("MTTGeneral_ICM"))
+    assert_in("Solver metadata 均碼:", result["approximation_note"])
 
 
 @test

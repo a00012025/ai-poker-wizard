@@ -170,10 +170,11 @@ def find_gametype(
 
 def find_stacks(
     gametype: str,
-    player_stacks: list[float],
+    player_stacks: list[float | None],
     preflop_actions: str = "",
     empty_seats: set[int] | None = None,
-) -> tuple[str, str]:
+    return_metadata: bool = False,
+) -> tuple[str, str] | tuple[str, str, dict]:
     """Find the nearest stack configuration for an ICM gametype.
 
     Uses a three-component distance metric:
@@ -186,11 +187,16 @@ def find_stacks(
 
     Args:
         gametype: e.g., 'MTTGeneral_ICM8m1000PTPCT25'
-        player_stacks: Stack sizes in bb ordered [UTG, UTG+1, ..., BB]
+        player_stacks: Stack sizes in bb ordered [UTG, UTG+1, ..., BB].
+            ``None`` means the user did not provide that seat's stack; it is
+            excluded from distance scoring rather than fabricated as equal.
         preflop_actions: e.g., 'F-F-F-F-F-RAI' to identify folded positions
+        return_metadata: Include the selected config's GTOW ``info`` metadata
+            as a third tuple item.
 
     Returns:
-        (depth_str, stacks_str) e.g., ('50.125', '50.125-25.125-...')
+        ``(depth_str, stacks_str)`` by default, optionally followed by the
+        selected config metadata when ``return_metadata`` is true.
     """
     modes = _load_game_modes()
 
@@ -202,10 +208,14 @@ def find_stacks(
             break
     if not mode:
         # Fallback: symmetric stacks at average depth
-        avg = sum(player_stacks) / len(player_stacks)
+        known = [s for s in player_stacks if s is not None and s > 0]
+        avg = sum(known) / len(known) if known else 20.0
         depth_str = f"{avg:.3f}"
-        stacks_str = "-".join(f"{s + 0.125:.3f}" for s in player_stacks)
-        return depth_str, stacks_str
+        stacks_str = "-".join(
+            f"{(s if s is not None and s > 0 else avg) + 0.125:.3f}"
+            for s in player_stacks
+        )
+        return (depth_str, stacks_str, {}) if return_metadata else (depth_str, stacks_str)
 
     # Get visible configs
     configs = []
@@ -223,13 +233,18 @@ def find_stacks(
             "stacks": stacks,
             "stacks_bb": _parse_stacks(stacks),
             "type": info.get("stacks_type", ""),
+            "metadata": info,
         })
 
     if not configs:
-        avg = sum(player_stacks) / len(player_stacks)
+        known = [s for s in player_stacks if s is not None and s > 0]
+        avg = sum(known) / len(known) if known else 20.0
         depth_str = f"{avg + 0.125:.3f}"
-        stacks_str = "-".join(f"{s + 0.125:.3f}" for s in player_stacks)
-        return depth_str, stacks_str
+        stacks_str = "-".join(
+            f"{(s if s is not None and s > 0 else avg) + 0.125:.3f}"
+            for s in player_stacks
+        )
+        return (depth_str, stacks_str, {}) if return_metadata else (depth_str, stacks_str)
 
     # --- Identify folded positions from preflop_actions ---
     # "F-F-F-F-F-RAI" → first 5 positions folded
@@ -256,7 +271,8 @@ def find_stacks(
     # the shortest non-active stack in the config.
     folded_min_stack: float | None = None
     real_folded = [player_stacks[i] for i in folded
-                   if player_stacks[i] > 0 and i not in empty_seats]
+                   if player_stacks[i] is not None
+                   and player_stacks[i] > 0 and i not in empty_seats]
     if real_folded:
         folded_min_stack = min(real_folded)
 
@@ -267,7 +283,7 @@ def find_stacks(
         log_dist = 0.0
         for i in range(n):
             a, c = player_stacks[i], config_stacks[i]
-            if a <= 0 or c <= 0:
+            if a is None or a <= 0 or c <= 0:
                 continue
             if i in folded or i in empty_seats:
                 continue  # folded/empty handled by ③ instead
@@ -278,7 +294,9 @@ def find_stacks(
         # Count pairwise inversions: if actual[i] < actual[j] but
         # config[i] > config[j], the cover relationship is flipped.
         active_idx = [i for i in range(n)
-                      if i not in folded and player_stacks[i] > 0]
+                      if i not in folded
+                      and player_stacks[i] is not None
+                      and player_stacks[i] > 0]
         inversions = 0
         for ii in range(len(active_idx)):
             for jj in range(ii + 1, len(active_idx)):
@@ -324,11 +342,13 @@ def find_stacks(
     depth_str = best["depth"]
     stacks_str = "-".join(best["stacks"])
 
+    if return_metadata:
+        return depth_str, stacks_str, best["metadata"]
     return depth_str, stacks_str
 
 
 def find_icm_params(
-    player_stacks: list[float],
+    player_stacks: list[float | None],
     pko: bool = False,
     tournament_size: int = 1000,
     players_remaining: int | None = None,
@@ -362,10 +382,13 @@ def find_icm_params(
     # These are filled with small values for config length matching but
     # should be ignored in the ICM distance calculation.
     empty_seats = {i for i, s in enumerate(player_stacks) if s == 0}
-    non_zero = [s for s in player_stacks if s > 0]
+    non_zero = [s for s in player_stacks if s is not None and s > 0]
     if non_zero and empty_seats:
         fill_value = min(non_zero) * 0.5
-        player_stacks = [s if s > 0 else fill_value for s in player_stacks]
+        player_stacks = [
+            fill_value if s == 0 else s
+            for s in player_stacks
+        ]
 
     gametype = find_gametype(
         players_at_table=players_at_table,
@@ -386,20 +409,31 @@ def find_icm_params(
             "approximation_note": "找不到匹配的 ICM 模式，使用 Chip EV 替代",
         }
 
-    depth_str, stacks_str = find_stacks(gametype, player_stacks,
-                                        preflop_actions=preflop_actions,
-                                        empty_seats=empty_seats)
+    depth_str, stacks_str, stack_metadata = find_stacks(
+        gametype,
+        player_stacks,
+        preflop_actions=preflop_actions,
+        empty_seats=empty_seats,
+        return_metadata=True,
+    )
     actual_stacks = _parse_stacks(stacks_str.split("-"))
 
     # Build approximation note with clear user stacks vs solver stacks comparison
     notes = []
     notes.append(f"ICM 模式: {gametype}")
-    notes.append(f"用戶籌碼: {' / '.join(f'{s:.0f}' for s in user_player_stacks)}")
+    notes.append(
+        "用戶籌碼: "
+        + " / ".join("?" if s is None else f"{s:.0f}" for s in user_player_stacks)
+    )
     notes.append(f"Solver 籌碼: {' / '.join(f'{s:.0f}' for s in actual_stacks)}")
+    solver_average = stack_metadata.get("avg_stack")
+    if solver_average is not None:
+        notes.append(f"Solver metadata 均碼: {float(solver_average):g}bb")
 
     # Show stack differences
-    diffs = [abs(a - b) for a, b in zip(player_stacks, actual_stacks)]
-    max_diff = max(diffs)
+    diffs = [abs(a - b) for a, b in zip(player_stacks, actual_stacks)
+             if a is not None]
+    max_diff = max(diffs) if diffs else 0.0
     if max_diff > 1:
         notes.append(f"最大差異: {max_diff:.0f}bb")
 
@@ -410,6 +444,8 @@ def find_icm_params(
         "approximation_note": "\n".join(notes),
         "user_stacks": user_player_stacks,
         "solver_stacks": actual_stacks,
+        "solver_average_bb": float(solver_average) if solver_average is not None else None,
+        "stack_metadata": stack_metadata,
     }
 
 

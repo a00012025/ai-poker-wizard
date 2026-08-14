@@ -2157,7 +2157,7 @@ class GeminiSessionManager:
 
     @staticmethod
     def _parse_structured_icm_range_query(user_text: str) -> dict | None:
-        """Parse explicit text-only ICM range requests without an LLM round.
+        """Parse explicit text-only ICM range/decision requests without an LLM round.
 
         This catches messages like:
 
@@ -2167,17 +2167,23 @@ class GeminiSessionManager:
         The normal "existing context + not a hand" guard intentionally skips
         many follow-up questions so stack lists such as ``37/42/76`` are not
         misread as hole cards.  But explicit ICM + FT + stack-distribution
-        range requests are complete solver scenarios, and sending them to the
+        range/decision requests are complete solver scenarios, and sending them to the
         free-form chat path lets the LLM reorder stacks or answer from theory.
         Deterministically building the no-hero hand JSON preserves the user's
-        exact stack order and lets analyze_hand.py choose the approximate FT
-        solver config.
+        exact known stack positions and lets analyze_hand.py choose the nearest
+        built-in ICM solver config.
         """
         text = user_text.strip()
         low = text.lower()
 
         has_icm = "icm" in low or "決賽桌" in text or "final table" in low or re.search(r"\bft\b", low)
-        has_stack = "stack" in low or "籌碼" in text
+        position_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
+        named_stack_patterns = (
+            rf"\b({position_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*(\d+(?:\.\d+)?)\s*bb\b",
+            rf"\b(\d+(?:\.\d+)?)\s*bb\b\s*({position_token})\b",
+        )
+        has_named_stacks = any(re.search(p, low, re.I) for p in named_stack_patterns)
+        has_stack = "stack" in low or "籌碼" in text or has_named_stacks
         asks_range = (
             "range" in low or "範圍" in text or "open" in low or "raise" in low
             or "all in" in low or "all-in" in low or "全下" in text
@@ -2192,21 +2198,22 @@ class GeminiSessionManager:
             text,
             re.I,
         )
-        if not stack_match:
+        full_stacks = (
+            [float(x) for x in re.findall(r"\d+(?:\.\d+)?", stack_match.group(1))]
+            if stack_match else None
+        )
+        if full_stacks is not None and not (2 <= len(full_stacks) <= 9):
             return None
 
-        stacks = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", stack_match.group(1))]
-        if not (2 <= len(stacks) <= 9):
-            return None
-
-        # "剩餘 7 人" on an FT means 7 players are seated.  If omitted, the
-        # stack count is the best table-size signal.
+        # "剩餘 7 人" means 7 players are seated only when the user says FT.
+        # A phrase like "ICM 30%" is tournament phase, not table size; default
+        # ordinary tournament decisions to the project's 8-max tree.
         n_match = re.search(r"(?:剩(?:餘|下)?|剩餘|剩下)?\s*(\d)\s*(?:人|players?)", text, re.I)
-        players_at_table = int(n_match.group(1)) if n_match else len(stacks)
-        if players_at_table != len(stacks):
-            # Keep exact user stacks.  If the count and list disagree, the
-            # list is safer because it maps one-to-one onto solver positions.
-            players_at_table = len(stacks)
+        players_at_table = int(n_match.group(1)) if n_match else (
+            len(full_stacks) if full_stacks else 8
+        )
+        if full_stacks is not None and players_at_table != len(full_stacks):
+            players_at_table = len(full_stacks)
 
         position_order = {
             9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
@@ -2235,7 +2242,29 @@ class GeminiSessionManager:
             return None
 
         hero_idx = position_order.index(raw_pos)
-        effective_bb = stacks[hero_idx]
+
+        if full_stacks is not None:
+            stacks: list[float | None] = full_stacks
+        else:
+            stacks = [None] * players_at_table
+            # Position-first form: "BTN has 14bb" / "HJ 28bb".
+            for match in re.finditer(named_stack_patterns[0], low, re.I):
+                pos = match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                if pos in position_order:
+                    stacks[position_order.index(pos)] = float(match.group(2))
+            # Stack-first form: "28bb HJ".  This also captures
+            # "hero has 28bb HJ", which is common shorthand.
+            for match in re.finditer(named_stack_patterns[1], low, re.I):
+                pos = match.group(2).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                if pos in position_order:
+                    stacks[position_order.index(pos)] = float(match.group(1))
+            if sum(s is not None for s in stacks) < 2:
+                return None
+
+        hero_stack = stacks[hero_idx]
+        if hero_stack is None:
+            return None
+        effective_bb = hero_stack
 
         # Build the decision point.  For "HJ open range", everyone before HJ
         # folded and HJ raises in the complete hand line; analyze_hand.py will
@@ -2252,17 +2281,63 @@ class GeminiSessionManager:
                 if raiser_pos in position_order and position_order.index(raiser_pos) < hero_idx:
                     actions[position_order.index(raiser_pos)] = "R2"
 
+        # Preserve a named shove and the hero's response as a continuation
+        # decision.  This is the exact gap that previously reduced partial
+        # distributions to a symmetric-stack ICM query.
+        shover_idx = None
+        mentioned_positions = list(re.finditer(pos_pattern, low, re.I))
+        for mention_i, pos_match in enumerate(mentioned_positions):
+            segment_end = (
+                mentioned_positions[mention_i + 1].start()
+                if mention_i + 1 < len(mentioned_positions)
+                else min(len(low), pos_match.start() + 80)
+            )
+            segment = low[pos_match.start():segment_end]
+            if not re.search(r"(?:all[ -]?in|shove|jam|全下)", segment):
+                continue
+            if "/" in segment or "range" in segment or "範圍" in segment:
+                continue  # requested options, not a played shove
+            pos = pos_match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+            shover_idx = position_order.index(pos)
+            shove_stack = stacks[shover_idx]
+            actions[shover_idx] = f"AI{shove_stack:g}" if shove_stack is not None else "AI"
+            if shove_stack is not None:
+                effective_bb = min(float(hero_stack), float(shove_stack))
+            break
+        action_line = "-".join(actions)
+        if shover_idx is not None and re.search(r"hero\s*(?:call|跟注)|(?:call|跟注)\s*hero", low):
+            action_line += "-C"
+
+        hand_match = re.search(
+            r"\b(aa|kk|qq|jj|tt|99|88|77|66|55|44|33|22|"
+            r"[akqjt2-9][akqjt2-9][so])\b",
+            low,
+            re.I,
+        )
+        hero_hand = hand_match.group(1) if hand_match else "AA"
+        if len(hero_hand) == 3:
+            hero_hand = hero_hand[:2].upper() + hero_hand[2].lower()
+        else:
+            hero_hand = hero_hand.upper()
+
+        phase = "FT" if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low)) else "BUBBLE"
+        pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
+        if pct_match:
+            pct = int(pct_match.group(1))
+            nearest_pct = min((75, 50, 25, 10, 5), key=lambda value: abs(value - pct))
+            phase = f"PCT{nearest_pct}"
+
         return {
             "gametype": "MTTGeneral",
             "tournament_type": "icm",
-            "phase": "FT" if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low)) else "BUBBLE",
+            "phase": phase,
             "players_at_table": players_at_table,
             "player_stacks": stacks,
             "effective_bb": effective_bb,
             "hero_position": raw_pos,
-            "hero_hand": "AA",
-            "no_hero_hand": True,
-            "preflop_actions": "-".join(actions),
+            "hero_hand": hero_hand,
+            "no_hero_hand": hand_match is None,
+            "preflop_actions": action_line,
         }
 
     def _fix_folded_players_guarded(self, hand: dict, chat_id: int):
@@ -4324,6 +4399,9 @@ class GeminiSessionManager:
         """Format bb stacks without noisy .0 decimals."""
         formatted = []
         for stack in stacks:
+            if stack is None:
+                formatted.append("?")
+                continue
             try:
                 value = float(stack)
                 formatted.append(f"{value:.0f}" if value.is_integer() else f"{value:g}")
@@ -4455,7 +4533,11 @@ class GeminiSessionManager:
 
         max_diff = None
         if user_stacks and solver_stacks:
-            diffs = [abs(float(a) - float(b)) for a, b in zip(user_stacks, solver_stacks)]
+            diffs = [
+                abs(float(a) - float(b))
+                for a, b in zip(user_stacks, solver_stacks)
+                if a is not None
+            ]
             if diffs:
                 max_diff = max(diffs)
 
@@ -4492,6 +4574,9 @@ class GeminiSessionManager:
             lines.append(f"- 用戶籌碼: {user_stack_text}")
         if solver_stack_text:
             lines.append(f"- Solver 籌碼: {solver_stack_text}")
+        solver_average = context.get("icm_solver_average_bb")
+        if solver_average is not None:
+            lines.append(f"- Solver metadata 均碼: {float(solver_average):g}bb")
         if max_diff is not None:
             lines.append(f"- 最大差異: {max_diff:.0f}bb")
         lines.append(
