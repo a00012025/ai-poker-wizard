@@ -289,6 +289,43 @@ def test_live_split_batch_bare_eff_header_continues_to_seat_line():
 
 
 @test
+def test_live_split_batch_keeps_each_explicit_icm_hand_separate():
+    """Multiple live ICM rows retain their own phase/average/stack context."""
+    from live_flow import split_batch
+
+    text = (
+        "Icm 30% avg 25bb hero has 28bb hj open ATo btn has 14bb all in hero call\n"
+        "Icm 10% avg 18bb hero has 12bb co open 77 sb has 8bb all in hero call"
+    )
+    blocks = split_batch(text)
+    assert_eq(len(blocks), 2)
+    assert_in("avg 25bb", blocks[0])
+    assert_in("avg 18bb", blocks[1])
+
+
+@test
+def test_live_parse_block_uses_structured_icm_metadata_without_llm():
+    """The reported partial-stack shorthand is deterministic in /live too."""
+    from live_flow import parse_block
+
+    class NoClient:
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                raise AssertionError("structured ICM live row must not call Gemini")
+
+    hand = parse_block(
+        "Icm 30% avg 25bb hero has 28bb hj open ATo "
+        "btn has 14bb all in hero call",
+        client=NoClient(),
+    )
+    assert_eq(hand["phase"], "PCT25")
+    assert_eq(hand["average_stack_bb"], 25.0)
+    assert_eq(hand["player_stacks"], [None, None, None, 28.0, None, 14.0, None, None])
+    assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
+
+
+@test
 def test_live_split_batch_near_bubble_prefix_starts_each_hand():
     """Tournament-stage qualifiers can replace the stack/header prefix.
 
@@ -1657,6 +1694,66 @@ def test_live_multiway_grading_keeps_exact_preflop_and_uses_hu_postflop():
     assert_eq(calls[0]["streets"], [])
     assert_eq(calls[1]["preflop_actions"], "F-R2-F-F-F-F-F-C")
     assert_eq(hand["_multiway_projection"]["label"], "UTG+1 vs BB")
+
+
+@test
+def test_live_icm_grade_passes_partial_stacks_and_average_to_solver():
+    """Explicit live ICM metadata reaches check_hand instead of Chip EV."""
+    import hh_deviation_check
+    import icm_modes
+    from live_flow import grade_hand
+
+    hand = {
+        "gametype": "MTTGeneral", "tournament_type": "icm",
+        "phase": "PCT25", "average_stack_bb": 25,
+        "players_at_table": 8,
+        "player_stacks": [None, None, None, 28, None, 14, None, None],
+        "effective_bb": 14, "hero_position": "HJ", "hero_hand": "ATo",
+        "preflop_actions": "F-F-F-R2-F-AI14-F-F-C", "streets": [],
+    }
+    captured = {}
+    original_check = hh_deviation_check.check_hand
+    original_find = icm_modes.find_icm_params
+
+    def fake_find(**kwargs):
+        captured["find"] = kwargs
+        return {
+            "gametype": "MTTGeneral_ICM8m1000PTPCT25",
+            "depth": "25.125", "stacks": "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125",
+            "solver_average_bb": 25, "approximation_note": "metadata avg 25",
+        }
+
+    def fake_check(candidate, icm_params=None, emit_ungraded=False):
+        captured["check"] = icm_params
+        return [{"street": "preflop", "hero_action": "C"}]
+
+    icm_modes.find_icm_params = fake_find
+    hh_deviation_check.check_hand = fake_check
+    try:
+        devmap = grade_hand(hand)
+    finally:
+        icm_modes.find_icm_params = original_find
+        hh_deviation_check.check_hand = original_check
+
+    assert_eq(captured["find"]["average_stack_bb"], 25)
+    assert_eq(captured["find"]["player_stacks"][3], 28)
+    assert_eq(captured["find"]["player_stacks"][5], 14)
+    assert_eq(captured["check"]["solver_average_bb"], 25)
+    assert_eq(devmap[("preflop", 0)]["hero_action"], "C")
+    assert_eq(hand["_icm_params"]["solver_average_bb"], 25)
+
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows
+    _hand_row, decisions = build_hand_rows(
+        hand, "live:icm:test", datetime(2026, 8, 15, tzinfo=timezone.utc),
+        "raw", {},
+    )
+    preflop = [decision for decision in decisions if decision["street"] == "preflop"]
+    assert_true(preflop)
+    assert_in("icm_grading", preflop[0]["approx_flags"])
+    assert_in("icm_partial_stack_distribution", preflop[0]["approx_flags"])
+    assert_not_in("live_phase_unknown", preflop[0]["approx_flags"])
+    assert_eq(preflop[0]["gametype"], "MTTGeneral_ICM8m1000PTPCT25")
 
 
 @test
