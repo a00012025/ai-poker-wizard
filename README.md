@@ -138,6 +138,14 @@ AhQhJh x b1.2 c
 2h x b1.5 f
 ```
 
+ICM 批次中，每手在 header 寫明階段與已知籌碼；`avg` 會約束 GTOW
+config metadata 的 `avg_stack`，未知座位不會被偽造成對稱籌碼：
+
+```text
+Icm 30% avg 25bb hero has 28bb hj open ATo btn has 14bb all in hero call
+Icm 10% avg 18bb hero has 12bb co open 77 sb has 8bb all in hero call
+```
+
 ## 常用指令
 
 一般功能：

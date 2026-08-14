@@ -6,8 +6,10 @@ Shorthand live-hand batches ("Eff 50bb u+1 open hero bb Qd7d call\n..." blocks)
 (hh_deviation_check.check_hand, grader=own_pipeline) → spot taxonomy →
 ledger (source='live') + drill_queue for deviated action lines.
 
-Honesty (§5.2): live grading is chipEV (tournament phase unknown) — every
-decision carries approx flags; ungraded nodes are excluded, never guessed.
+Honesty (§5.2): live grading defaults to chipEV when tournament phase is
+unknown. Explicit ICM headers use the nearest built-in ICM preflop config;
+postflop remains chipEV because GTOW ICM modes are preflop-only. Every
+decision carries approximation flags; ungraded nodes are excluded, never guessed.
 Hand ids are content-hashed (live:{date}:{hash}) so re-imports are idempotent.
 
 CLI:
@@ -934,6 +936,8 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     if pos is None and toks and _bb_number(toks[0]) is not None and len(toks) > 1:
         pos = _norm_pos(toks[1])
         start = 2
+    if pos is None and toks and _clean_word(toks[0]) == "icm":
+        pos = next((_norm_pos(tok) for tok in toks[1:] if _norm_pos(tok)), None)
     order = POSITION_ORDERS.get(8)
     if not pos or not order or pos not in order:
         return None
@@ -954,7 +958,7 @@ def parse_simple_preflop_block(block: str) -> dict | None:
             preflop = "-".join(parts)
     if preflop is None:
         return None
-    return {
+    hand = {
         "gametype": "MTTGeneral",
         "players_at_table": 8,
         "effective_bb": float(eff),
@@ -962,6 +966,8 @@ def parse_simple_preflop_block(block: str) -> dict | None:
         "hero_hand": hero_hand,
         "preflop_actions": preflop,
     }
+    hand.update(_extract_live_icm_metadata(block, hand))
+    return hand
 
 
 LiveActionKind = Literal[
@@ -1081,6 +1087,66 @@ def _extract_live_metadata(block: str) -> dict:
     out = {"hero_hand": hero_hand, "hero_position": hero_position}
     if effective is not None:
         out["effective_bb"] = float(effective)
+    return out
+
+
+def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
+    """Extract explicit ICM phase, average, and sparse named seat stacks."""
+    low = block.lower()
+    if "icm" not in low and "泡沫" not in block and "決賽桌" not in block:
+        return {}
+
+    players = int(hand.get("players_at_table") or 8)
+    from hh_parser import POSITION_ORDERS
+    order = POSITION_ORDERS.get(players)
+    if not order:
+        return {}
+
+    phase = "BUBBLE"
+    if "final table" in low or "決賽桌" in block or re.search(r"\bft\b", low):
+        phase = "FT"
+    pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
+    if pct_match:
+        pct = int(pct_match.group(1))
+        nearest = min((75, 50, 25, 10, 5), key=lambda value: abs(value - pct))
+        phase = f"PCT{nearest}"
+
+    out: dict = {"tournament_type": "icm", "phase": phase}
+    avg_match = re.search(
+        r"\b(?:avg|average)\s*(?:stack)?\s*(\d+(?:\.\d+)?)\s*bb\b"
+        r"|均碼\s*(\d+(?:\.\d+)?)\s*bb",
+        low,
+        re.I,
+    )
+    if avg_match:
+        out["average_stack_bb"] = float(avg_match.group(1) or avg_match.group(2))
+
+    pos_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
+    stacks: list[float | None] = [None] * players
+    for match in re.finditer(
+        rf"\b({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
+        r"(\d+(?:\.\d+)?)\s*bb\b",
+        low,
+        re.I,
+    ):
+        pos = _norm_pos(match.group(1))
+        if pos in order:
+            stacks[order.index(pos)] = float(match.group(2))
+    for match in re.finditer(
+        rf"\b(\d+(?:\.\d+)?)\s*bb\b\s*({pos_token})\b",
+        low,
+        re.I,
+    ):
+        pos = _norm_pos(match.group(2))
+        if pos in order:
+            stacks[order.index(pos)] = float(match.group(1))
+
+    hero_pos = hand.get("hero_position")
+    hero_stack = hand.get("effective_bb")
+    if hero_pos in order and hero_stack and stacks[order.index(hero_pos)] is None:
+        stacks[order.index(hero_pos)] = float(hero_stack)
+    if any(stack is not None for stack in stacks):
+        out["player_stacks"] = stacks
     return out
 
 
@@ -1590,6 +1656,15 @@ def parse_block(block: str, client=None, model: str | None = None,
     if len(raw_blocks) != 1:
         return {"_refused": [
             f"輸入包含 {len(raw_blocks)} 手，必須先分手再解析"]}
+    if not _raw_street_lines(block):
+        from gemini_session import GeminiSessionManager
+        structured_icm = GeminiSessionManager._parse_structured_icm_range_query(block)
+        if structured_icm:
+            structured_icm["_parse_trace"] = [{
+                "street": "preflop", "resolution": "raw_structured_icm",
+            }]
+            structured_icm["_parse_flags"] = []
+            return structured_icm
     client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     model = model or os.getenv(
         "GEMINI_LIVE_PARSE_MODEL", "gemini-3.6-flash")
@@ -1611,6 +1686,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             tokenized = LiveTokenizedHand.model_validate_json(
                 resp.text or "").model_dump(exclude_none=True)
             hand = replay_live_action_tokens(block, tokenized)
+            hand.update(_extract_live_icm_metadata(block, hand))
             gated, notes = repair_card_literals_from_block(block, hand)
             if gated is None:
                 return {"_refused": notes or ["牌面字面值衝突"]}
@@ -1971,15 +2047,49 @@ def training_hand_for_postflop(hand: dict) -> dict:
     return projected
 
 
+def _resolve_live_icm_params(hand: dict) -> dict | None:
+    """Resolve an explicit live ICM header to one built-in preflop config."""
+    if hand.get("tournament_type") != "icm":
+        return None
+    from icm_modes import find_icm_params
+
+    players = int(hand.get("players_at_table") or 8)
+    stacks = hand.get("player_stacks")
+    if not stacks:
+        stacks = [float(hand.get("effective_bb") or 20)] * players
+    return find_icm_params(
+        player_stacks=stacks,
+        pko=hand.get("pko", False),
+        tournament_size=hand.get("tournament_size", 1000),
+        players_remaining=hand.get("players_remaining"),
+        phase=hand.get("phase"),
+        players_at_table=players,
+        preflop_actions=hand.get("preflop_actions", ""),
+        average_stack_bb=hand.get("average_stack_bb"),
+    )
+
+
 def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     """Run check_hand and index graded nodes by (street, per-street idx)."""
     from hh_deviation_check import check_hand
     h = copy.deepcopy(hand)
     h.setdefault("num_players", h.get("players_at_table", 8))
-    # chipEV only: live phase unknown (flagged below). emit_ungraded keeps
+    icm_params = _resolve_live_icm_params(h)
+    if icm_params:
+        hand["_icm_params"] = copy.deepcopy(icm_params)
+    else:
+        hand.pop("_icm_params", None)
+    # Explicit ICM uses the chosen config preflop; otherwise chipEV. The
+    # emit_ungraded stubs keep
     # per-street node ordering aligned when the solver refuses a node
     # (off-range arrival / no solution) — without stubs a refused node would
     # shift every later node on that street onto the wrong taxonomy row.
+    def _check(candidate: dict) -> list[dict]:
+        if icm_params:
+            return check_hand(
+                candidate, icm_params=icm_params, emit_ungraded=True)
+        return check_hand(candidate, emit_ungraded=True)
+
     projected, projection_meta, projection_failure = (
         project_multiway_postflop(h))
     if projected is not None:
@@ -1989,11 +2099,11 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
         exact_preflop = copy.deepcopy(h)
         exact_preflop["streets"] = []
         devs = [
-            d for d in check_hand(exact_preflop, emit_ungraded=True)
+            d for d in _check(exact_preflop)
             if d.get("street") == "preflop"
         ]
         devs.extend(
-            d for d in check_hand(projected, emit_ungraded=True)
+            d for d in _check(projected)
             if d.get("street") != "preflop"
         )
         hand["_multiway_projection"] = projection_meta
@@ -2003,7 +2113,7 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
         hand["_multiway_projected_hand"] = projected
         hand.pop("_multiway_unresolved", None)
     else:
-        devs = check_hand(h, emit_ungraded=True)
+        devs = _check(h)
         if projection_failure:
             hand["_multiway_unresolved"] = True
             hand.pop("_multiway_projection", None)
@@ -2169,6 +2279,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     escalation_depth = escalation_state.get("depth")
     escalation_failed_keys = escalation_state.get("failed_keys") or set()
     escalation_offrange_keys = escalation_state.get("offrange_after_attempt_keys") or set()
+    icm_params = hand.get("_icm_params") if hand.get("tournament_type") == "icm" else None
 
     training_hand = training_hand_for_postflop(hand)
     original_spots = list(walk_spots_from_parsed(hand))
@@ -2184,7 +2295,14 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     for spot in spots:
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
-        flags = ["chipev_grading", "live_phase_unknown"]
+        if icm_params and spot["street"] == "preflop":
+            flags = ["icm_grading", "icm_stack_approximation"]
+            if any(stack is None for stack in (hand.get("player_stacks") or [])):
+                flags.append("icm_partial_stack_distribution")
+        elif icm_params:
+            flags = ["chipev_postflop_icm_preflop_only"]
+        else:
+            flags = ["chipev_grading", "live_phase_unknown"]
         flags.extend(f"parse:{flag}" for flag in parse_flags)
         if key in escalated_keys:
             flags.append(f"depth_escalated:{int(escalation_depth or _next_depth_up(float(hand.get('effective_bb') or 0)) or 0)}")
@@ -2235,7 +2353,11 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             "pot_type": compute_pot_type_from_preflop(hand.get("preflop_actions") or "", npl),
             "facing": spot["facing"], "taken_code": taken, "best_code": best,
             "ev_loss_bb": ev_loss, "taken_freq": taken_freq,
-            "gametype": "MTTGeneral", "confidence": parse_conf,
+            "gametype": (
+                icm_params.get("gametype", "MTTGeneral")
+                if icm_params and spot["street"] == "preflop"
+                else "MTTGeneral"
+            ), "confidence": parse_conf,
             "approx_flags": flags, "excluded": excluded, "played_at": played_at,
             "spot_category": spot["category"], "spot_leaf": spot["leaf"],
             "spot_keys": spot["keys"], "hero_cat": spot["hero_cat"],
@@ -2251,6 +2373,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
 
     persisted_hand = copy.deepcopy(hand)
     persisted_hand.pop("_multiway_projected_hand", None)
+    persisted_hand.pop("_icm_params", None)
     hand_row = {
         "gtow_hand_id": hand_id, "played_at": played_at, "site": "live",
         "position": hand.get("hero_position"), "hero_hand": hand.get("hero_hand"),

@@ -797,6 +797,48 @@ def test_structured_icm_facing_range_query_prefers_explicit_hero():
 
 
 @test
+def test_structured_partial_icm_decision_preserves_named_stacks():
+    """Partial ICM text keeps stated seats instead of inventing symmetric stacks."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "Icm 30% hero has 28bb hj open ATo btn has 14bb all in hero call"
+    )
+
+    assert_true(hand is not None, "explicit partial ICM decision should parse deterministically")
+    assert_eq(hand["players_at_table"], 8)
+    assert_eq(hand["phase"], "PCT25", "30% remaining should use the nearest PCT25 library")
+    assert_eq(hand["hero_position"], "HJ")
+    assert_eq(hand["hero_hand"], "ATo")
+    assert_eq(
+        hand["player_stacks"],
+        [None, None, None, 28.0, None, 14.0, None, None],
+        "unknown seats must remain unknown; named HJ/BTN stacks must retain position",
+    )
+    assert_eq(hand["effective_bb"], 14.0)
+    assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
+
+
+@test
+def test_structured_partial_icm_decision_preserves_explicit_average_stack():
+    """An explicit tournament average is a config constraint, not another seat."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "Icm 30% avg 25bb, hero has 28bb hj open ATo "
+        "btn has 14bb all in hero call"
+    )
+
+    assert_true(hand is not None)
+    assert_eq(hand["average_stack_bb"], 25.0)
+    assert_eq(
+        hand["player_stacks"],
+        [None, None, None, 28.0, None, 14.0, None, None],
+        "avg 25bb must not be mistaken for a player's stack",
+    )
+
+
+@test
 def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     """ICM range coaching: no-hero FT response should be explanatory but deterministic."""
     from gemini_session import GeminiSessionManager
@@ -853,6 +895,7 @@ def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
             "hero_position": "HJ",
         },
         "gametype": "MTTGeneral_ICM7m1000PTFT",
+        "icm_solver_average_bb": 30,
         "stacks": "15.125-20.125-30.125-45.125-40.125-10.125-50.125",
         "hero_spots": [{"street": "preflop", "solver_hero_pos": "HJ"}],
         "solutions": [solution],
@@ -864,6 +907,7 @@ def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     assert_in("近似說明", text)
     assert_in("用戶籌碼: 15 / 68 / 35 / 50 / 18 / 10 / 26", text)
     assert_in("Solver 籌碼: 15 / 20 / 30 / 45 / 40 / 10 / 50", text)
+    assert_in("Solver metadata 均碼: 30bb", text)
     assert_in("最大差異: 48bb", text)
     assert_in("HJ 對應 35bb", text)
     assert_in("GTO Wizard ICM 只能查內建的 FT stack configuration", text)

@@ -1835,6 +1835,7 @@ def _run_analysis(hand: dict) -> dict:
     # ICM support: resolve gametype and stacks
     icm_stacks = ""
     icm_note = ""
+    icm_solver_average_bb = None
     if is_icm:
         from icm_modes import find_icm_params
         player_stacks = hand.get("player_stacks")
@@ -1847,11 +1848,13 @@ def _run_analysis(hand: dict) -> dict:
                 phase=hand.get("phase"),
                 players_at_table=num_players,
                 preflop_actions=hand.get("preflop_actions", ""),
+                average_stack_bb=hand.get("average_stack_bb"),
             )
             gametype = icm_params["gametype"]
             depth = icm_params["depth"]
             icm_stacks = icm_params["stacks"]
             icm_note = icm_params["approximation_note"]
+            icm_solver_average_bb = icm_params.get("solver_average_bb")
         else:
             # No per-position stacks — synthesize symmetric stacks and route
             # through find_stacks() so the solver gets an actually-available
@@ -1873,14 +1876,20 @@ def _run_analysis(hand: dict) -> dict:
                 icm_note = f"ICM 模式: {gametype}\n對稱籌碼: {eff:.0f}bb"
             else:
                 synth_stacks = [float(eff)] * num_players
-                depth, icm_stacks = find_stacks(
+                depth, icm_stacks, stack_metadata = find_stacks(
                     gametype, synth_stacks,
                     preflop_actions=hand.get("preflop_actions", ""),
+                    return_metadata=True,
                 )
                 solver_eff = float(icm_stacks.split("-")[0]) - 0.125
                 note_lines = [f"ICM 模式: {gametype}",
                               f"用戶籌碼: {eff:.0f}bb (對稱)",
                               f"Solver 籌碼: {solver_eff:.0f}bb (對稱)"]
+                icm_solver_average_bb = stack_metadata.get("avg_stack")
+                if icm_solver_average_bb is not None:
+                    note_lines.append(
+                        f"Solver metadata 均碼: {float(icm_solver_average_bb):g}bb"
+                    )
                 if abs(eff - solver_eff) > 1:
                     note_lines.append(f"差異: {abs(eff - solver_eff):.0f}bb")
                 icm_note = "\n".join(note_lines)
@@ -3567,6 +3576,7 @@ def _run_analysis(hand: dict) -> dict:
         "depth": depth,
         "stacks": icm_stacks,
         "is_icm": is_icm,
+        "icm_solver_average_bb": icm_solver_average_bb,
         "hero_position": display_hero_pos,
         "hero_hand": hero_hand,
         "no_hero_hand": no_hero_hand,
