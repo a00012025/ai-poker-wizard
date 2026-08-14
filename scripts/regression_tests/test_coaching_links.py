@@ -1774,6 +1774,115 @@ def test_build_last_node_url_uses_resolved_spot_params_h3639():
 
 
 @test
+def test_build_last_node_url_preserves_icm_mode_and_stack_distribution_h3868():
+    """H3868: an ICM button must open the exact asymmetric ICM solution.
+
+    ICM spot params carry depth as a string plus the solver's complete stack
+    distribution.  The old URL builder rejected the string depth, fell back
+    to the generic resolver, and emitted MTTGeneral 14bb without ``stacks``.
+    """
+    ctx = {
+        "hand": {
+            "gametype": "MTTGeneral", "effective_bb": 14,
+            "players_at_table": 8, "hero_position": "HJ",
+            "hero_hand": "ATo",
+            "preflop_actions": "F-F-F-R2-F-AI14-F-F-C",
+            "streets": [],
+        },
+        "hero_spots": [
+            {"street": "preflop", "params": {
+                "gametype": "MTTGeneral_ICM8m1000PTPCT25",
+                "depth": "25.125",
+                "stacks": "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125",
+                "preflop_actions": "F-F-F",
+            }},
+            {"street": "preflop", "params": {
+                "gametype": "MTTGeneral_ICM8m1000PTPCT25",
+                "depth": "25.125",
+                "stacks": "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125",
+                "preflop_actions": "F-F-F-R2-F-R12-F-F",
+            }},
+        ],
+        "solutions": [{"action_solutions": []}, {"action_solutions": []}],
+    }
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("ICM spot params must build without generic fallback")
+
+    url = build_last_node_url(ctx, _resolver=boom)
+    qs = parse_qs(urlparse(url).query)
+    assert_eq(qs["gametype"], ["MTTGeneral_ICM8m1000PTPCT25"])
+    assert_eq(qs["depth"], ["25.125"])
+    assert_eq(
+        qs["stacks"],
+        ["25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125"],
+    )
+    assert_eq(qs["preflop_actions"], ["F-F-F-R2-F-R12-F-F"])
+
+    from gtow_solution_url import build_solution_url
+    try:
+        build_solution_url({
+            "gametype": "MTTGeneral_ICM8m1000PTPCT25",
+            "depth": "25.125", "preflop_actions": "F-F-F",
+        }, "")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ICM URLs without stacks must be refused, not downgraded")
+
+
+@test
+def test_build_last_hero_hand_url_reconstructs_icm_params_from_parsed_hand():
+    """Persisted live hands must also rebuild the exact ICM review URL."""
+    import gtow_action_resolver as resolver_module
+    import icm_modes
+    from gtow_solution_url import build_last_hero_hand_url
+
+    stacks = "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125"
+    seen_stacks = []
+    old_next = resolver_module.get_next_actions
+    old_find = icm_modes.find_icm_params
+
+    def fake_next(**kwargs):
+        seen_stacks.append(kwargs.get("stacks"))
+        prefix = kwargs.get("preflop_actions") or ""
+        if prefix == "F-F-F":
+            actions = [{"action": {"code": "R2", "betsize": 2}}]
+        elif prefix == "F-F-F-R2-F":
+            actions = [{"action": {
+                "code": "R12", "betsize": 12, "allin": True}}]
+        else:
+            actions = []
+        return {"next_actions": {"available_actions": actions}}
+
+    resolver_module.get_next_actions = fake_next
+    icm_modes.find_icm_params = lambda **_kwargs: {
+        "gametype": "MTTGeneral_ICM8m1000PTPCT25",
+        "depth": "25.125", "stacks": stacks,
+    }
+    hand = {
+        "gametype": "MTTGeneral", "tournament_type": "icm",
+        "phase": "PCT25", "average_stack_bb": 25,
+        "players_at_table": 8, "effective_bb": 14,
+        "player_stacks": [None, None, None, 28, None, 14, None, None],
+        "hero_position": "HJ", "hero_hand": "ATo",
+        "preflop_actions": "F-F-F-R2-F-AI14-F-F-C", "streets": [],
+    }
+    try:
+        url = build_last_hero_hand_url(
+            hand, [{"street": "preflop", "decision_idx": 1}])
+    finally:
+        resolver_module.get_next_actions = old_next
+        icm_modes.find_icm_params = old_find
+
+    qs = parse_qs(urlparse(url).query)
+    assert_true(seen_stacks and all(value == stacks for value in seen_stacks))
+    assert_eq(qs["gametype"], ["MTTGeneral_ICM8m1000PTPCT25"])
+    assert_eq(qs["stacks"], [stacks])
+    assert_eq(qs["preflop_actions"], ["F-F-F-R2-F-R12-F-F"])
+
+
+@test
 def test_build_node_url_for_street_uses_resolved_spot_params():
     """build_node_url_for_street: turn link uses the turn spot's snapped codes."""
     from gtow_solution_url import build_node_url_for_street

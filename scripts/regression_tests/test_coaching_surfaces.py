@@ -554,6 +554,36 @@ def test_build_custom_spot_url_h2665():
 
 
 @test
+def test_build_custom_spot_url_preserves_icm_solver_context():
+    """Every custom Trainer URL must carry ICM gametype, depth, and stacks."""
+    from urllib.parse import parse_qs, urlsplit
+    import gtow_action_resolver
+    from gtow_custom_url import build_custom_spot_url
+
+    stacks = "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125"
+    old = gtow_action_resolver.resolve_actions_for_deviation
+    gtow_action_resolver.resolve_actions_for_deviation = lambda *_args, **_kwargs: {
+        "preflop_actions": "F-F-F-R2-F-R12-F-F",
+        "flop_actions": "", "turn_actions": "", "river_actions": "",
+        "history_spot": 8, "depth": "25.125",
+        "gametype": "MTTGeneral_ICM8m1000PTPCT25", "stacks": stacks,
+        "hero_pos": "HJ", "villain_pos": "BTN",
+    }
+    try:
+        url = build_custom_spot_url(
+            {"hero_position": "HJ", "streets": []},
+            street="preflop", action_index=1, pot_type="3bet")
+    finally:
+        gtow_action_resolver.resolve_actions_for_deviation = old
+
+    qs = parse_qs(urlsplit(url).query)
+    assert_eq(qs["gametype"], ["MTTGeneral_ICM8m1000PTPCT25"])
+    assert_eq(qs["depth"], ["25.125"])
+    assert_eq(qs["depth_list"], ["25.125"])
+    assert_eq(qs["stacks"], [stacks])
+
+
+@test
 def test_custom_turn_first_act_drill_uses_full_hand_mode():
     """Queue custom spots always continue as a Full hand exercise."""
     from urllib.parse import parse_qs, urlsplit

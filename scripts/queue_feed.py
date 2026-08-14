@@ -504,6 +504,18 @@ def _exact_pot_type(dec: dict) -> str:
     return dec.get("pot_type") or ""
 
 
+def _decision_is_icm(dec: dict) -> bool:
+    parsed = dec.get("parsed_json")
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (TypeError, ValueError):
+            parsed = None
+    return (
+        isinstance(parsed, dict) and parsed.get("tournament_type") == "icm"
+    ) or str(dec.get("gametype") or "").startswith("MTTGeneral_ICM")
+
+
 def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> str | None:
     """Faithful queue Trainer URL for one joined ledger decision.
 
@@ -512,7 +524,8 @@ def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> 
     continue to use CDP-verified shortcuts.
     """
     category = dec.get("spot_category")
-    if category in _EXACT_SOURCE_CATEGORIES or _is_flat_vs_squeeze(dec):
+    is_icm = _decision_is_icm(dec)
+    if category in _EXACT_SOURCE_CATEGORIES or _is_flat_vs_squeeze(dec) or is_icm:
         try:
             from gtow_custom_url import build_custom_spot_url
             hand = _load_source_hand(dec)
@@ -592,7 +605,8 @@ async def queue_drill_url_from_sources(conn, entries: list[dict],
     """
     decisions = await _source_decisions(conn, entries)
     for dec in reversed(decisions):
-        if dec.get("spot_category") in _EXACT_SOURCE_CATEGORIES:
+        if (dec.get("spot_category") in _EXACT_SOURCE_CATEGORIES
+                or _decision_is_icm(dec)):
             # Exact resolution may query GTOW while snapping real bet sizes;
             # keep Telegram callbacks and weekly jobs off the event loop.
             url = await asyncio.to_thread(

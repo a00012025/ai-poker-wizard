@@ -123,13 +123,22 @@ def build_solution_url(resolved: dict, board: str) -> str:
         raise ValueError("resolved result has no preflop_actions")
 
     gametype = resolved.get("gametype") or "MTTGeneral"
-    depth_str = f"{resolved['depth']:g}"
+    stacks = resolved.get("stacks") or ""
+    if str(gametype).startswith("MTTGeneral_ICM") and not stacks:
+        raise ValueError("ICM solution URL requires the solver stack distribution")
+    # analyze_hand stores ICM depths exactly as GTOW strings (``"25.125"``),
+    # while Chip EV resolver paths use floats.  Accept both; formatting a
+    # string with ``:g`` used to throw here and silently fall through to the
+    # generic MTTGeneral resolver, producing a plausible but wrong button.
+    depth_str = f"{float(resolved['depth']):g}"
     if gametype == "MTTGeneral" and not depth_str.endswith(".125"):
         depth_str = f"{int(resolved['depth'])}.125"
 
     params: list[tuple[str, str]] = []
     params.append(("gametype", gametype))
     params.append(("depth", depth_str))
+    if stacks:
+        params.append(("stacks", str(stacks)))
     params.extend(_STATIC_UI)
     params.append(("preflop_actions", preflop))
     params.append(("history_spot", str(resolved.get("history_spot", 0))))
@@ -272,16 +281,20 @@ def _canonical_board_str(board_raw: str, street: str) -> str:
     return _canonical_flop(b[:6]) + b[6:] if len(b) >= 6 else b
 
 
-def _root_solution_url(depth: float, gametype: str) -> str:
+def _root_solution_url(depth: float, gametype: str, stacks: str = "") -> str:
     """Bare /solutions ROOT node — the first-to-act (RFI) decision, which GTOW
     addresses by gametype+depth alone (no action line). Verified against GTOW's
     own study-link endpoint (emits `history_spot=0`, no `preflop_actions`) and
     the live SPA (lands on the UTG opening range)."""
     gametype = gametype or "MTTGeneral"
-    depth_str = f"{depth:g}"
+    if str(gametype).startswith("MTTGeneral_ICM") and not stacks:
+        raise ValueError("ICM root URL requires the solver stack distribution")
+    depth_str = f"{float(depth):g}"
     if gametype == "MTTGeneral" and not depth_str.endswith(".125"):
         depth_str = f"{int(depth)}.125"
     params: list[tuple[str, str]] = [("gametype", gametype), ("depth", depth_str)]
+    if stacks:
+        params.append(("stacks", str(stacks)))
     params.extend(_STATIC_UI)
     params.append(("history_spot", "0"))
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
@@ -379,7 +392,9 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
                 detail, hero_pos, float(preflop_depth_bb), gametype)
             resolved = resolver(hand, street, decision_idx)
             if not resolved.get("preflop_actions"):
-                return _root_solution_url(resolved["depth"], resolved.get("gametype") or gametype)
+                return _root_solution_url(
+                    resolved["depth"], resolved.get("gametype") or gametype,
+                    resolved.get("stacks") or "")
             return build_solution_url(resolved, board)
         except Exception as exc:
             # A wrong Study link is worse than the caller's broad Analyze-table
@@ -394,8 +409,16 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
     pre = sas.get("preflop_actions") or []
     if not pre:
         # first-to-act RFI: no preceding action line → the solver ROOT node.
-        return _root_solution_url(float(gp.get("depth") or 0),
-                                  gp.get("gametype") or "MTTGeneral")
+        try:
+            return _root_solution_url(
+                float(gp.get("depth") or 0),
+                gp.get("gametype") or "MTTGeneral",
+                gp.get("stacks") or "")
+        except ValueError:
+            # Never emit an ICM-looking URL without its distribution. Older
+            # Analyze archives may not carry stacks; the caller can use its
+            # broader Analyze-table fallback instead.
+            return None
 
     def _join(x):
         return "-".join(x) if x else ""
@@ -412,6 +435,7 @@ def build_hand_solution_url(detail: dict, hero_pos: str, street: str,
                          + _cnt(sas.get("turn_actions")) + _cnt(sas.get("river_actions"))),
         "depth": float(gp.get("depth") or 0),
         "gametype": gp.get("gametype") or "MTTGeneral",
+        "stacks": gp.get("stacks") or "",
     }
     try:
         return build_solution_url(resolved, board)
@@ -468,7 +492,8 @@ def build_hand_solution_link(detail: dict, hero_pos: str, street: str,
                 return None
             return {
                 "url": _root_solution_url(resolved["depth"],
-                                          resolved.get("gametype") or gametype),
+                                          resolved.get("gametype") or gametype,
+                                          resolved.get("stacks") or ""),
                 "line_frequency": None, "rare_line": False,
                 "requested_action_code": None, "resolved_action_code": None,
             }
@@ -611,6 +636,7 @@ def _resolved_from_spot(spot: dict) -> dict | None:
         "history_spot": _count(preflop) + _count(flop) + _count(turn) + _count(river),
         "depth": depth,
         "gametype": p.get("gametype") or "MTTGeneral",
+        "stacks": p.get("stacks") or "",
     }
 
 
@@ -738,7 +764,8 @@ def build_last_hero_hand_url(hand: dict, decisions: list[dict], *,
                 if street != "preflop":
                     continue
                 return _root_solution_url(
-                    resolved["depth"], resolved.get("gametype") or "MTTGeneral")
+                    resolved["depth"], resolved.get("gametype") or "MTTGeneral",
+                    resolved.get("stacks") or "")
             board = canonical_board_through_street(node_hand, street)
             return build_solution_url(resolved, board)
         except Exception as exc:  # noqa: BLE001 — convenience link, keep falling back
