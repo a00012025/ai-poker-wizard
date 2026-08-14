@@ -105,6 +105,53 @@ def _hero_continuation_context(pf_parts: list[str], num_players: int,
     return before_hero, None
 
 
+def _cold_caller_hu_prefix(prefix_parts: list[str], num_players: int,
+                           hero_pos: str, gametype: str, depth,
+                           stacks: str = "") -> str | None:
+    """Collapse pure cold callers while preserving Hero and last aggressor.
+
+    Some GTOW ICM trees do not contain multiway call branches.  This creates
+    the same honest HU approximation used by the main analyzer: cold callers
+    fold, while the complete raise sequence and the actual Hero decision stay
+    intact.  The collapsed line is re-normalized because removing a caller can
+    change the solver's available raise sizes at the next node.
+    """
+    from spot_taxonomy import _preflop_seat_tokens
+
+    attributed = _preflop_seat_tokens(prefix_parts, num_players)
+    aggressor = next(
+        (pos for pos, code in reversed(attributed)
+         if code.startswith(("R", "AI"))),
+        None,
+    )
+    if not aggressor:
+        return None
+    last_by_pos = {}
+    for pos, code in attributed:
+        last_by_pos[pos] = code
+    cold_callers = {
+        pos for pos, code in last_by_pos.items()
+        if code == "C" and pos not in {hero_pos, aggressor}
+    }
+    if not cold_callers:
+        return None
+
+    collapsed = []
+    for index, (pos, code) in enumerate(attributed):
+        if pos in cold_callers:
+            if index < num_players:
+                collapsed.append("F")
+            continue
+        collapsed.append(code)
+
+    normalized = []
+    for code in collapsed:
+        so_far = "-".join(normalized)
+        normalized.append(_normalize_preflop_action(
+            code, gametype, depth, so_far, stacks))
+    return "-".join(normalized)
+
+
 def _get_hand_ev(solution: dict, hero_hand: str, hero_pos: str, is_preflop: bool,
                  combo_idx: int | None = None) -> float | None:
     """Extract EV for hero's hand from a spot solution.
@@ -637,14 +684,18 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                            "reason": "no_solution"})
 
     # ── Preflop: hero's second decision (if facing re-raise) ──
-    # Check if someone raised after hero
-    has_reraise = False
-    for i in range(hero_idx_n + 1, min(len(pf_parts_n), num_players)):
-        if pf_parts_n[i].startswith("R") or pf_parts_n[i].startswith("AI"):
-            has_reraise = True
-            break
+    # The re-raiser can be later in the first pass (the common 3-bet case) or
+    # an earlier seat acting again in the continuation round (UTG 4-betting
+    # after Hero LJ 3-bets).  Resolve the actual next Hero turn first so both
+    # shapes reach the same grading path.
+    before_hero_cont, hero_cont_raw = _hero_continuation_context(
+        pf_parts_n, num_players, hero_idx_n)
+    has_reraise = any(
+        code.startswith(("R", "AI"))
+        for code in pf_parts_n[hero_idx_n + 1:min(len(pf_parts_n), num_players)]
+    ) or any(code.startswith(("R", "AI")) for code in before_hero_cont)
 
-    if has_reraise and len(pf_parts_n) > num_players:
+    if has_reraise and hero_cont_raw:
         # Normalize full first round in 8-max
         full_first_round = []
         for i in range(min(len(pf_parts_8), 8)):
@@ -655,9 +706,6 @@ def check_hand(hand: dict, icm_params: dict | None = None,
 
         # Include every intervening continuation action so the solver query
         # lands on hero's actual node (e.g. CO folds before BTN faces squeeze).
-        before_hero_cont, hero_cont_raw = _hero_continuation_context(
-            pf_parts_n, num_players, hero_idx_n)
-
         if hero_cont_raw:
             second_prefix_parts = list(full_first_round)
             for code in before_hero_cont:
@@ -672,6 +720,20 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                                           stacks=pf_stacks, preflop_actions=second_prefix)
             except Exception:
                 sol2 = None
+
+            used_hu_fallback = False
+            if sol2 is None:
+                hu_prefix = _cold_caller_hu_prefix(
+                    second_prefix_parts, num_players, hero_pos,
+                    pf_gametype, pf_depth, pf_stacks)
+                if hu_prefix:
+                    try:
+                        sol2 = get_spot_solution(
+                            gametype=pf_gametype, depth=pf_depth,
+                            stacks=pf_stacks, preflop_actions=hu_prefix)
+                        used_hu_fallback = sol2 is not None
+                    except Exception:
+                        sol2 = None
 
             # ICM fallback for re-raise spot
             if sol2 is None and icm_gametype and pf_gametype == icm_gametype:
@@ -711,6 +773,8 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                         "gto_freq": best_freq2,
                         "all_freqs": freqs2,
                         "hero_ev": hand_ev2,
+                        **({"approximation": "cold_callers_folded_hu"}
+                           if used_hu_fallback else {}),
                         **ev_entry2,
                     })
                 elif emit_ungraded:

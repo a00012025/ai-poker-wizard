@@ -2176,6 +2176,21 @@ class GeminiSessionManager:
         text = user_text.strip()
         low = text.lower()
 
+        # A played, preflop-only live decision with an explicit hero hand is
+        # richer than the older range-query shortcut below: it may contain
+        # multiple raises, calls, and a later hero response.  Reuse the live
+        # deterministic action parser so those continuations are preserved
+        # instead of silently reducing the hand to one open plus one shove.
+        # Range-only requests (no hero hand) still use the legacy builder.
+        try:
+            from live_flow import parse_simple_preflop_block
+            played_hand = parse_simple_preflop_block(text)
+        except (ImportError, ValueError):
+            played_hand = None
+        if played_hand and played_hand.get("tournament_type") == "icm":
+            played_hand["no_hero_hand"] = False
+            return played_hand
+
         has_icm = "icm" in low or "決賽桌" in text or "final table" in low or re.search(r"\bft\b", low)
         position_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
         named_stack_patterns = (
