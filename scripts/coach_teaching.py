@@ -2205,11 +2205,24 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         # With no EV mistake, give the narrator two evidence-rich candidates.
         # It may teach either one or connect them into a cross-street strategy
         # story; the first solver card already handles exhaustive coverage.
+        # Prefer the final Hero response on each street before comparing the
+        # evidence scores.  A later node (for example a flop check-raise after
+        # Hero's initial check) contains the preceding action line and is the
+        # decision the user actually needs explained; selecting the bare check
+        # instead used to hide that response node from live-hand coaching.
+        last_index_by_street = {
+            row["street"]: index
+            for index, row in enumerate(postflop_decisions)
+        }
         selected = sorted(
-            postflop_decisions,
-            key=_teaching_score,
+            enumerate(postflop_decisions),
+            key=lambda item: (
+                item[0] == last_index_by_street[item[1]["street"]],
+                _teaching_score(item[1]),
+            ),
             reverse=True,
         )[:2]
+        selected = [row for _, row in selected]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
 
     # Successor nodes are fetched only for the 1–2 selected teaching focuses.

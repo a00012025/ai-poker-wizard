@@ -1164,6 +1164,34 @@ def test_coach_teaching_h3835_allows_selective_freeform_coaching():
     empty_audit = ct.audit_draft("", digest)
     assert_in("coaching response too short", empty_audit.violations)
 
+
+@test
+def test_correct_check_raise_node_beats_bare_check_for_coaching_focus():
+    """Live regression: x-x-b-fold-r-call must teach the Hero raise node.
+
+    With no EV loss on any action, the old evidence-score ranking selected the
+    initial flop check and turn bet, so the narrator never received the flop
+    check-raise as a deep-teaching candidate.  The final Hero response on a
+    street carries the complete preceding line and must win that street's slot.
+    """
+    import coach_teaching as ct
+
+    context = _h3835_multi_decision_context()
+    context["hero_spots"] = context["hero_spots"][:4]
+    context["solutions"] = context["solutions"][:4]
+
+    digest = ct.build_teaching_digest(context)
+
+    assert_eq(
+        [row["coverage_label"] for row in digest["decisions"]],
+        ["Flop ②", "Turn"],
+        "flop response raise and turn bet should replace the bare flop check",
+    )
+    assert_eq(digest["decisions"][0]["actual_action"]["code"], "R5")
+    prompt = ct.render_prompt_block(digest)
+    assert_in("焦點 1｜Flop", prompt)
+    assert_in("Hero 的 raise", prompt)
+
     generic_audit = ct.audit_draft(
         "這手整體可以。重點是保持耐心，照著計畫執行，不要被結果影響。",
         digest,
