@@ -4255,6 +4255,24 @@ def test_deploy_runs_resumable_ledger_upgrade_backfill():
 
 
 @test
+def test_docker_torch_install_can_resolve_cuda_dependencies_from_pypi():
+    """PyTorch's wheel index can temporarily omit pinned NVIDIA packages.
+
+    Keep PyTorch itself pinned to the official CUDA index while allowing its
+    transitive CUDA wheels (such as nvidia-cudnn-cu12==9.1.0.70) to resolve
+    from PyPI instead of making production deploys depend on one mirror.
+    """
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    torch_install = next(
+        line for line in dockerfile.splitlines()
+        if "pip install --no-cache-dir torch==" in line
+    )
+    assert_in("torch==2.5.1+cu121", torch_install)
+    assert_in("--index-url https://download.pytorch.org/whl/cu121", dockerfile)
+    assert_in("--extra-index-url https://pypi.org/simple", dockerfile)
+
+
+@test
 def test_validator_accepts_complete_bb_walk():
     """Eight-player action ends after seven folds; BB wins without acting, so
     N-1 folds is complete rather than a dropped-seat PREFLOP_LEN error."""
