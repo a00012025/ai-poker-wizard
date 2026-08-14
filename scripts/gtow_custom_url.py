@@ -231,7 +231,11 @@ def build_custom_spot_url(
     full_board = "".join(board_parts)
     texture = classify_board(full_board)
 
-    depth_str = f"{resolved['depth']:g}"
+    stacks = resolved.get("stacks") or ""
+    if str(resolved["gametype"]).startswith("MTTGeneral_ICM") and not stacks:
+        raise CustomSpotBuildError(
+            "ICM Trainer URL requires the solver stack distribution")
+    depth_str = f"{float(resolved['depth']):g}"
     if resolved["gametype"] == "MTTGeneral" and not depth_str.endswith(".125"):
         depth_str = f"{int(resolved['depth'])}.125"
 
@@ -240,6 +244,8 @@ def build_custom_spot_url(
     params.append(("gametype", resolved["gametype"]))
     params.append(("depth", depth_str))
     params.append(("depth_list", depth_str))
+    if stacks:
+        params.append(("stacks", str(stacks)))
     params.extend(trainer_solution_defaults(resolved["gametype"]).items())
     # Trainer UI flags — skip solution_type (already emitted) and dialogs
     # (we set a custom value below).  All practice links intentionally use

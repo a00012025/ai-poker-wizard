@@ -102,7 +102,7 @@ def _replay_preflop_actors(tokens: list[str], positions: list[str]) -> list[str]
         t = (tok or "").strip()
         if t in ("F", ""):
             folded[seat] = True
-        elif t.startswith("R") or t == "AI":
+        elif t.startswith(("R", "AI")):
             pending = {s for s in range(n) if not folded[s] and s != seat}
         # C / X close nothing
         seat = (seat + 1) % n
@@ -143,7 +143,7 @@ def _collapse_coldcall_folders(
         if pos == hero_pos:
             continue
         toks = [tokens[i] for i in idxs]
-        has_raise = any(t.startswith("R") or t == "AI" for t in toks)
+        has_raise = any(t.startswith(("R", "AI")) for t in toks)
         has_call = "C" in toks
         ends_folded = toks[-1] == "F"
         if has_raise or not has_call or not ends_folded:
@@ -174,6 +174,7 @@ def _resolve_one_raise(
     actual_pot: float = 0.0,
     target_pct: float | None = None,
     target_pct_explicit: bool = False,
+    stacks: str = "",
 ) -> str:
     """Call next_actions at the current node and snap target_size to R* code.
 
@@ -185,7 +186,7 @@ def _resolve_one_raise(
     ~1/3 of the real pot would otherwise snap to the 1/2-pot bucket (H3480).
     """
     resp = get_next_actions(
-        gametype=gametype, depth=depth, stacks="",
+        gametype=gametype, depth=depth, stacks=stacks,
         preflop_actions=preflop_actions, board=board,
         flop_actions=flop_actions, turn_actions=turn_actions,
         river_actions=river_actions,
@@ -222,6 +223,7 @@ def _resolve_preflop_codes(
     depth: float,
     raw_preflop: str,
     hero_pad: int,  # unused but kept for call-site clarity
+    stacks: str = "",
 ) -> str:
     """Walk preflop action-by-action, replacing each R-size with the GTOW code."""
     if not raw_preflop:
@@ -234,10 +236,26 @@ def _resolve_preflop_codes(
     for tok in tokens:
         if not tok:
             continue
-        if tok.startswith("R"):
+        if tok.startswith(("R", "AI")):
+            if tok.startswith("AI"):
+                resp = get_next_actions(
+                    gametype=gametype, depth=depth, stacks=stacks,
+                    preflop_actions=prefix_history,
+                )
+                available = resp.get(
+                    "next_actions", {}).get("available_actions", []) or []
+                allin = next(
+                    (a.get("action", {}).get("code") for a in available
+                     if a.get("action", {}).get("allin")),
+                    None,
+                )
+                if allin:
+                    out_tokens.append(allin)
+                    prefix_history = "-".join(out_tokens)
+                    continue
             if tok == "R":
                 resp = get_next_actions(
-                    gametype=gametype, depth=depth, stacks="",
+                    gametype=gametype, depth=depth, stacks=stacks,
                     preflop_actions=prefix_history,
                 )
                 available = resp.get(
@@ -247,7 +265,7 @@ def _resolve_preflop_codes(
                 prefix_history = "-".join(out_tokens)
                 continue
             try:
-                target = float(tok[1:])
+                target = float(tok[2:] if tok.startswith("AI") else tok[1:])
             except ValueError:
                 out_tokens.append(tok)
                 prefix_history = "-".join(out_tokens)
@@ -257,6 +275,7 @@ def _resolve_preflop_codes(
                 preflop_actions=prefix_history,
                 board="", flop_actions="", turn_actions="", river_actions="",
                 target_size=target,
+                stacks=stacks,
             )
             out_tokens.append(code)
         else:
@@ -439,7 +458,42 @@ def resolve_actions_for_deviation(
     raw_preflop_for_pot = (
         hand_data.get("preflop_actions_for_pot") or raw_preflop)
 
-    depth = nearest_cash_depth(effective_bb) if _is_cash(gametype) else nearest_depth(effective_bb)
+    stacks = ""
+    is_explicit_icm = (
+        hand_data.get("tournament_type") == "icm"
+        or str(gametype).startswith("MTTGeneral_ICM")
+    )
+    if street == "preflop" and is_explicit_icm:
+        icm_params = hand_data.get("_icm_params")
+        if not icm_params and hand_data.get("tournament_type") == "icm":
+            from icm_modes import find_icm_params
+            players = int(hand_data.get("players_at_table") or 8)
+            player_stacks = hand_data.get("player_stacks") or [effective_bb] * players
+            icm_params = find_icm_params(
+                player_stacks=player_stacks,
+                pko=hand_data.get("pko", False),
+                tournament_size=hand_data.get("tournament_size", 1000),
+                players_remaining=hand_data.get("players_remaining"),
+                phase=hand_data.get("phase"),
+                players_at_table=players,
+                preflop_actions=raw_preflop,
+                average_stack_bb=hand_data.get("average_stack_bb"),
+            )
+        if icm_params:
+            gametype = icm_params.get("gametype") or gametype
+            depth = icm_params.get("depth")
+            stacks = icm_params.get("stacks") or ""
+        else:
+            depth = hand_data.get("depth") or effective_bb
+            stacks = hand_data.get("stacks") or ""
+        if not str(gametype).startswith("MTTGeneral_ICM") or not stacks:
+            raise ValueError("ICM preflop URL requires exact gametype and stacks")
+    else:
+        # GTOW ICM modes are preflop-only. Parsed ICM hands intentionally use
+        # the project's standard Chip EV tree for postflop review links.
+        if str(gametype).startswith("MTTGeneral_ICM"):
+            gametype = "MTTGeneral"
+        depth = nearest_cash_depth(effective_bb) if _is_cash(gametype) else nearest_depth(effective_bb)
 
     if _is_cash(gametype):
         padded_preflop = raw_preflop
@@ -465,7 +519,12 @@ def resolve_actions_for_deviation(
         # 3bet/4bet is not adjacent to their opening seat in the token stream;
         # locate it by replaying the betting order instead of hero_slot + N.
         truncated = "-".join(tokens[:hero_actions[action_index]])
-        preflop_codes = _resolve_preflop_codes(gametype, depth, truncated, 0)
+        if stacks:
+            preflop_codes = _resolve_preflop_codes(
+                gametype, depth, truncated, 0, stacks=stacks)
+        else:
+            preflop_codes = _resolve_preflop_codes(
+                gametype, depth, truncated, 0)
         flop_codes = turn_codes = river_codes = ""
     else:
         # Collapse extra cold-callers who folded before the flop into folds so
@@ -475,7 +534,12 @@ def resolve_actions_for_deviation(
             POSITION_ORDERS[players] if _is_cash(gametype) else POSITION_ORDERS[MTT_TREE_SIZE]
         )
         hu_preflop = _collapse_coldcall_folders(padded_preflop, collapse_positions, hero_pos_8)
-        preflop_codes = _resolve_preflop_codes(gametype, depth, hu_preflop, 0)
+        if stacks:
+            preflop_codes = _resolve_preflop_codes(
+                gametype, depth, hu_preflop, 0, stacks=stacks)
+        else:
+            preflop_codes = _resolve_preflop_codes(
+                gametype, depth, hu_preflop, 0)
         flop_codes = turn_codes = river_codes = ""
 
         # Real pot at the flop, from the ORIGINAL (un-collapsed) preflop line so
@@ -545,4 +609,5 @@ def resolve_actions_for_deviation(
         "history_spot":    history_spot,
         "depth":           depth,
         "gametype":        gametype,
+        "stacks":          stacks,
     }

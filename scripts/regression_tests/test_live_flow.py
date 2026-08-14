@@ -2330,6 +2330,32 @@ def test_live_drill_url_omits_failed_exact_postflop_link():
 
 
 @test
+def test_live_icm_drill_url_never_falls_back_to_generic_bucket():
+    """Any live ICM drill must use its source hand's exact custom builder."""
+    import gtow_custom_url
+    from live_flow import drill_url_for
+
+    seen = []
+    old = gtow_custom_url.build_custom_spot_url
+    gtow_custom_url.build_custom_spot_url = lambda hand, street, idx, pot: (
+        seen.append((hand, street, idx, pot))
+        or "https://app.gtowizard.com/practice/trainer?gametype=ICM&stacks=x")
+    try:
+        url = drill_url_for({
+            "street": "preflop", "decision_idx": 1,
+            "spot_category": "vs3bet", "spot_leaf": "HJ_vs3bet_BTN",
+            "position": "HJ", "hero_cat": "HJ", "villain_cat": "BTN",
+            "pot_type": "3bet", "eff_stack": "short",
+            "_hand": {"tournament_type": "icm", "hero_position": "HJ"},
+        })
+    finally:
+        gtow_custom_url.build_custom_spot_url = old
+
+    assert_in("gametype=ICM", url)
+    assert_eq(seen[0][1:], ("preflop", 1, "3bet"))
+
+
+@test
 def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
     """A bad first source must not suppress a valid shared-leaf drill button."""
     import gtow_custom_url
@@ -2387,6 +2413,34 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
     assert_in("fh_start_spot=custom_spot", post)
     assert_in("fh_start_spot=custom_spot", cold)
     assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "squeezed")])
+
+
+@test
+def test_queue_decision_url_requires_exact_source_for_icm():
+    """Persisted ICM queue rows must not use a generic Chip EV drill URL."""
+    import queue_feed as qf
+    import gtow_custom_url
+
+    seen = []
+    old_load = qf._load_source_hand
+    old_build = gtow_custom_url.build_custom_spot_url
+    qf._load_source_hand = lambda _dec: {
+        "tournament_type": "icm", "hero_position": "HJ"}
+    gtow_custom_url.build_custom_spot_url = lambda hand, street, idx, pot: (
+        seen.append((hand, street, idx, pot))
+        or "https://app.gtowizard.com/practice/trainer?gametype=ICM&stacks=x")
+    try:
+        url = qf.queue_drill_url_for_decision({
+            "spot_category": "vs3bet", "street": "preflop",
+            "decision_idx": 1, "position": "HJ", "pot_type": "3bet",
+            "parsed_json": json.dumps({"tournament_type": "icm"}),
+        })
+    finally:
+        qf._load_source_hand = old_load
+        gtow_custom_url.build_custom_spot_url = old_build
+
+    assert_in("gametype=ICM", url)
+    assert_eq(seen[0][1:], ("preflop", 1, "3bet"))
 
 
 @test
