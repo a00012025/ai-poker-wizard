@@ -326,6 +326,46 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
 
 
 @test
+def test_live_icm_multiraise_line_preserves_hero_fourbet_fold_node():
+    """A sparse-stack ICM line must retain every raise/call continuation."""
+    from live_flow import parse_block
+
+    hand = parse_block(
+        "icm 18%, utg has 45bb raise, hero lj has 28bb raise JJ to 5bb, "
+        "bb has 20bb call, utg raise to 15bb, hero fold"
+    )
+
+    assert_eq(hand["phase"], "PCT25")
+    assert_eq(hand["hero_position"], "LJ")
+    assert_eq(hand["hero_hand"], "JJ")
+    assert_eq(
+        hand["player_stacks"],
+        [45.0, None, 28.0, None, None, None, None, 20.0],
+    )
+    assert_eq(hand["preflop_actions"], "R2-F-R5-F-F-F-F-C-R15-F")
+
+
+@test
+def test_live_icm_multiway_bubble_line_preserves_final_hero_fold_node():
+    """Named short-stack shove, cold raise/call, and hero fold all survive."""
+    from live_flow import parse_block
+
+    hand = parse_block(
+        "icm near bubble, Hero has 34bb Lj open A5s, hj has 4bb all in, "
+        "co has 40bb raise to 9bb, btn has 40bb call, hero fold"
+    )
+
+    assert_eq(hand["phase"], "BUBBLE")
+    assert_eq(hand["hero_position"], "LJ")
+    assert_eq(hand["hero_hand"], "A5s")
+    assert_eq(
+        hand["player_stacks"],
+        [None, None, 34.0, 4.0, 40.0, 40.0, None, None],
+    )
+    assert_eq(hand["preflop_actions"], "F-F-R2-AI4-R9-C-F-F-F")
+
+
+@test
 def test_live_split_batch_near_bubble_prefix_starts_each_hand():
     """Tournament-stage qualifiers can replace the stack/header prefix.
 

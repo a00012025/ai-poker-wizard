@@ -526,6 +526,55 @@ def test_hh_check_hand_second_decision_queries_after_intervening_fold():
 
 
 @test
+def test_hh_check_hand_second_decision_detects_earlier_seat_fourbet():
+    """UTG's continuation 4-bet must create LJ's second decision node."""
+    import hh_deviation_check as hdc
+
+    calls = []
+    originals = {
+        "get_spot_solution": hdc.get_spot_solution,
+        "_normalize_preflop_action": hdc._normalize_preflop_action,
+        "_get_preflop_hand_freqs": hdc._get_preflop_hand_freqs,
+        "_get_hand_ev": hdc._get_hand_ev,
+        "_get_action_evs_preflop": hdc._get_action_evs_preflop,
+    }
+
+    exact_prefix = "R2-F-R5-F-F-F-F-C-R15"
+    hu_prefix = "R2-F-R5-F-F-F-F-F-R15"
+
+    def fake_solution(**kwargs):
+        prefix = kwargs["preflop_actions"]
+        calls.append(prefix)
+        if prefix == exact_prefix:
+            return None
+        return {"node": prefix, "action_solutions": []}
+
+    hdc.get_spot_solution = fake_solution
+    hdc._normalize_preflop_action = lambda code, *_args, **_kwargs: code
+    hdc._get_preflop_hand_freqs = lambda sol, *_args: (
+        {"F": 1.0} if sol["node"] == hu_prefix else {"R5": 1.0})
+    hdc._get_hand_ev = lambda *_args, **_kwargs: 0.0
+    hdc._get_action_evs_preflop = lambda *_args, **_kwargs: {"F": 0.0, "R5": 0.0}
+    try:
+        devs = hdc.check_hand({
+            "hero_position": "LJ",
+            "hero_hand": "JJ",
+            "effective_bb": 28,
+            "num_players": 8,
+            "preflop_actions": "R2-F-R5-F-F-F-F-C-R15-F",
+        }, emit_ungraded=True)
+    finally:
+        for name, value in originals.items():
+            setattr(hdc, name, value)
+
+    assert_in(exact_prefix, calls)
+    assert_in(hu_prefix, calls)
+    assert_eq(devs[1]["spot"], "facing 3bet/4bet")
+    assert_eq(devs[1]["hero_action"], "F")
+    assert_eq(devs[1]["approximation"], "cold_callers_folded_hu")
+
+
+@test
 def test_deviation_report_low_ev_shown():
     """Report: low EV deviations are still shown (no EV filter)."""
     from hh_deviation_report import format_deviation_report

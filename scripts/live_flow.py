@@ -747,6 +747,11 @@ def _allin_size_from_tokens(toks: list[str], start: int,
 
 def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | None = None) -> str | None:
     for k in range(start, min(len(toks), start + 8)):
+        # An explicitly named next actor ends this actor's phrase.  Without
+        # this boundary, metadata such as ``Hero has 34bb LJ open`` made the
+        # scanner incorrectly attach LJ's open to an earlier HERO mention.
+        if _clean_word(toks[k]) == "hero" or _norm_pos(toks[k]):
+            break
         t = _clean_word(toks[k])
         compact_raise = re.fullmatch(r"r(\d+(?:\.\d+)?)(?:bb)?", t)
         if compact_raise:
@@ -781,10 +786,36 @@ def _action_code_from_tokens(toks: list[str], start: int, default_stack: str | N
     return None
 
 
+def _named_stacks_from_tokens(toks: list[str]) -> dict[str, str]:
+    """Return explicit seat stacks from a preflop shorthand line."""
+    stacks: dict[str, str] = {}
+    for i, tok in enumerate(toks):
+        pos = _norm_pos(tok)
+        if not pos:
+            continue
+        candidates = []
+        if i + 1 < len(toks):
+            candidates.append(toks[i + 1])
+        if i + 2 < len(toks) and _clean_word(toks[i + 1]) in {
+                "has", "stack", "eff", "effective", "有"}:
+            candidates.insert(0, toks[i + 2])
+        if i > 0:
+            candidates.append(toks[i - 1])
+        stack = next(
+            (_bb_number_with_unit(candidate) for candidate in candidates
+             if _bb_number_with_unit(candidate) is not None),
+            None,
+        )
+        if stack is not None:
+            stacks[pos] = stack
+    return stacks
+
+
 def _live_preflop_events(toks: list[str], hero_pos: str,
                          eff: str) -> list[tuple[str, str]]:
     """Extract explicitly mentioned preflop actor events from one live line."""
     events: list[tuple[str, str]] = []
+    named_stacks = _named_stacks_from_tokens(toks)
     i = 0
     while i < len(toks):
         pos = None
@@ -814,7 +845,8 @@ def _live_preflop_events(toks: list[str], hero_pos: str,
                 pos = maybe_pos
                 action_start = i + 1
         if pos and action_start is not None:
-            code = _action_code_from_tokens(toks, action_start, default_stack=eff)
+            code = _action_code_from_tokens(
+                toks, action_start, default_stack=named_stacks.get(pos, eff))
             if code:
                 events.append((pos, code))
         i += 1
@@ -958,10 +990,15 @@ def parse_simple_preflop_block(block: str) -> dict | None:
             preflop = "-".join(parts)
     if preflop is None:
         return None
+    effective_value = float(eff)
+    for actor, code in events:
+        shove = re.fullmatch(r"AI(\d+(?:\.\d+)?)", code)
+        if actor != pos and shove:
+            effective_value = min(effective_value, float(shove.group(1)))
     hand = {
         "gametype": "MTTGeneral",
         "players_at_table": 8,
-        "effective_bb": float(eff),
+        "effective_bb": effective_value,
         "hero_position": pos,
         "hero_hand": hero_hand,
         "preflop_actions": preflop,
@@ -2336,6 +2373,8 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             dev = None
         else:
             taken, best = dev["hero_action"], dev["gto_action"]
+            if dev.get("approximation"):
+                flags.append(dev["approximation"])
             taken_freq = dev.get("hero_freq")
             if "ev_loss" in dev:
                 ev_loss = round(float(dev["ev_loss"]), 4)
