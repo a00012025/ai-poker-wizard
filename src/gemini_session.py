@@ -2579,7 +2579,146 @@ class GeminiSessionManager:
         return result
 
     @staticmethod
-    def _normalize_text_action_tokens(hand: dict):
+    def _text_position_action(segment: str) -> str | None:
+        """Extract one explicit preflop action from a position's text span."""
+        low = segment.lower()
+        allin = re.search(
+            r"(?:all\s*-?\s*in|allin|shove|jam|全下)"
+            r"(?:\s*(\d+(?:\.\d+)?)\s*bb?)?",
+            low,
+        )
+        if allin:
+            return f"AI{float(allin.group(1)):g}" if allin.group(1) else "AI"
+        if re.search(r"\b(?:raise|open)\b|加注", low):
+            size = re.search(
+                r"(?:raise(?:\s+to)?|open(?:\s+to)?|加注(?:到)?)"
+                r"\s*(\d+(?:\.\d+)?)",
+                low,
+            )
+            return f"R{float(size.group(1)):g}" if size else "R2"
+        if re.search(r"\blimp\b|\bcall\b|跟注", low):
+            return "C"
+        if re.search(r"\bfold\b|棄牌", low):
+            return "F"
+        if re.search(r"\bcheck\b|過牌", low):
+            return "X"
+        return None
+
+    @staticmethod
+    def _repair_short_text_preflop(hand: dict, user_text: str):
+        """Rebuild a truncated first round from explicit position/action prose.
+
+        Flash occasionally drops a fold placeholder even though the user names
+        every player who entered the pot.  H3870 became a seven-token 8-max
+        line, shifted both blind callers onto BTN/SB, and therefore removed the
+        real BB hero from every postflop street.  Only repair an objectively
+        short first round and only when the source line provides unique,
+        explicit position/action anchors including Hero.
+        """
+        from hh_parser import POSITION_ORDERS
+
+        n = hand.get("players_at_table", 8)
+        pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
+        parts = [p for p in str(hand.get("preflop_actions") or "").split("-") if p]
+        if len(parts) >= len(pos_order) or not user_text:
+            return
+
+        preflop_line = next(
+            (line.strip() for line in user_text.splitlines() if line.strip()),
+            "",
+        )
+        if not preflop_line:
+            return
+        position_re = re.compile(
+            r"(?<![A-Za-z0-9+])(?:hero\s+|我\s*)?"
+            r"(utg\+2|utg\+1|utg|lj|hj|co|btn|sb|bb)(?![A-Za-z0-9+])",
+            re.I,
+        )
+        matches = list(position_re.finditer(preflop_line))
+        explicit: dict[str, str] = {}
+        duplicate = False
+        for idx, match in enumerate(matches):
+            position = match.group(1).upper()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(preflop_line)
+            action = GeminiSessionManager._text_position_action(
+                preflop_line[match.end():end]
+            )
+            if not action:
+                continue
+            if position in explicit:
+                duplicate = True
+                break
+            explicit[position] = action
+
+        hero_pos = str(hand.get("hero_position") or "").upper()
+        if duplicate or hero_pos not in explicit or len(explicit) < 2:
+            return
+        # Do not discard model-extracted voluntary actions unless the raw line
+        # accounts for at least as many entrants.  This keeps the repair narrow
+        # to a missing fold placeholder rather than guessing a complex line.
+        model_voluntary = sum(p not in ("F", "") for p in parts)
+        explicit_voluntary = sum(p not in ("F", "") for p in explicit.values())
+        if explicit_voluntary < model_voluntary:
+            return
+
+        rebuilt = ["F"] * len(pos_order)
+        for position, action in explicit.items():
+            if position in pos_order:
+                rebuilt[pos_order.index(position)] = action
+        hand["preflop_actions"] = "-".join(rebuilt)
+
+    @staticmethod
+    def _text_street_action_tokens(user_text: str, card_text: str) -> str | None:
+        """Read ordered shorthand actions from the source line for one street."""
+        if not user_text or not card_text:
+            return None
+        card_compact = re.sub(r"\s+", "", card_text)
+        card_parts = [
+            re.escape(card_compact[i:i + 2])
+            for i in range(0, len(card_compact), 2)
+        ]
+        card_pattern = r"\s*".join(card_parts)
+        line_re = re.compile(
+            rf"^\s*(?:(?:flop|turn|river)\s*[:：]?\s*)?"
+            rf"{card_pattern}(?=\s|$)(.*)$",
+            re.I,
+        )
+        suffix = None
+        for raw_line in user_text.splitlines():
+            match = line_re.match(raw_line)
+            if match:
+                suffix = match.group(1)
+                break
+        if suffix is None:
+            return None
+
+        token_re = re.compile(
+            r"(?P<allin>\ball\s*-?\s*in\b|\ballin\b|\bshove\b|\bjam\b|全下)"
+            r"(?:\s*(?P<allin_size>\d+(?:\.\d+)?)\s*bb?)?"
+            r"|(?P<raise>\b(?:bet|raise(?:\s+to)?|[br])\s*"
+            r"(?P<raise_size>\d+(?:\.\d+)?))"
+            r"|(?P<check>\b[xk]\b|\bcheck\b|過牌)"
+            r"|(?P<call>\bc\b|\bcall\b|跟注)"
+            r"|(?P<fold>\bf\b|\bfold\b|棄牌)",
+            re.I,
+        )
+        tokens: list[str] = []
+        for match in token_re.finditer(suffix):
+            if match.group("allin"):
+                size = match.group("allin_size")
+                tokens.append(f"AI{float(size):g}" if size else "AI")
+            elif match.group("raise"):
+                tokens.append(f"R{float(match.group('raise_size')):g}")
+            elif match.group("check"):
+                tokens.append("X")
+            elif match.group("call"):
+                tokens.append("C")
+            elif match.group("fold"):
+                tokens.append("F")
+        return "-".join(tokens) if tokens else None
+
+    @staticmethod
+    def _normalize_text_action_tokens(hand: dict, user_text: str = ""):
         """Make text-parser postflop positions a deterministic concern.
 
         Flash is responsible only for extracting ordered action tokens.  It may
@@ -2589,6 +2728,8 @@ class GeminiSessionManager:
         """
         hand["hero_hand"] = re.sub(r"10", "T", hand["hero_hand"])
         from hh_parser import POSITION_ORDERS
+
+        GeminiSessionManager._repair_short_text_preflop(hand, user_text)
 
         n = hand.get("players_at_table", 8)
         pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
@@ -2606,7 +2747,7 @@ class GeminiSessionManager:
 
             actions = street.get("actions")
             if isinstance(actions, str):
-                token_string = actions
+                model_token_string = actions
             elif isinstance(actions, list):
                 tokens = []
                 for action in actions:
@@ -2625,9 +2766,22 @@ class GeminiSessionManager:
                         size = action.get("size")
                         code = f"AI{float(size):g}" if size is not None else "AI"
                     tokens.append(code)
-                token_string = "-".join(tokens)
+                model_token_string = "-".join(tokens)
             else:
                 continue
+            source_tokens = GeminiSessionManager._text_street_action_tokens(
+                user_text,
+                street.get("board") or street.get("card") or "",
+            )
+            # Raw shorthand can restore tokens Flash omitted (H3870), but a
+            # partial regex read must never truncate a fuller model extraction.
+            source_count = len(source_tokens.split("-")) if source_tokens else 0
+            model_count = len([t for t in model_token_string.split("-") if t])
+            token_string = (
+                source_tokens
+                if source_tokens and source_count >= model_count
+                else model_token_string
+            )
             street["actions"] = GeminiSessionManager._parse_street_actions_string(
                 token_string, hand, active_positions=can_act)
             for action in street["actions"]:
@@ -2735,7 +2889,7 @@ class GeminiSessionManager:
                 # Text Flash extracts ordered action tokens; actor ownership is
                 # always assigned by poker order in deterministic code.  Ignore
                 # any legacy model-provided position labels.
-                self._normalize_text_action_tokens(hand)
+                self._normalize_text_action_tokens(hand, user_text)
                 self._fix_folded_players_guarded(hand, chat_id)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:

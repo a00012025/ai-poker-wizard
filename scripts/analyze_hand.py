@@ -964,6 +964,45 @@ def _find_action_by_pot_pct(available_actions: list, bet_size: float,
     return find_closest_action(available_actions, bet_size)
 
 
+def _find_postflop_allin_action(
+    available_actions: list[dict], target_size: float | int | None,
+) -> str:
+    """Resolve an explicit shove without ever mapping an unsized AI to check.
+
+    Passing an unsized ``AI`` (target zero) to ``find_closest_action`` returns
+    ``X`` immediately.  H3870 then analyzed Hero's river fold as though SB had
+    checked.  Use the solver's all-in branch when the amount is unknown.  When
+    an amount exists, keep the deeper-avatar nearest-size behavior but limit
+    candidates to aggressive actions so a shove cannot become check/call.
+    """
+    try:
+        size = float(target_size or 0)
+    except (TypeError, ValueError):
+        size = 0.0
+    aggressive = [
+        entry for entry in available_actions
+        if entry.get("action", {}).get("code") not in ("X", "C", "F")
+    ]
+    if size > 0 and aggressive:
+        return find_closest_action(aggressive, size)
+    allin = next(
+        (
+            entry.get("action", {}).get("code")
+            for entry in aggressive
+            if entry.get("action", {}).get("allin")
+        ),
+        None,
+    )
+    if allin:
+        return allin
+    if aggressive:
+        return max(
+            aggressive,
+            key=lambda entry: float(entry.get("action", {}).get("betsize") or 0),
+        )["action"]["code"]
+    return "RAI"
+
+
 def _display_pot_pct(pct: float) -> float:
     """Snap noisy actual pot percentages to familiar poker bet labels."""
     for target in (20, 25, 33, 50, 55, 66, 75, 100, 125, 150, 200):
@@ -2464,7 +2503,7 @@ def _run_analysis(hand: dict) -> dict:
                         # explicit all-in flag separately for response logic.
                         # Explicit all-in is an absolute bb amount, never an
                         # LLM percentage token; bypass percentage auto-detect.
-                        taken_code = find_closest_action(avail, target_size)
+                        taken_code = _find_postflop_allin_action(avail, target_size)
                     elif pot_fraction is not None:
                         taken_code = find_closest_action_by_pot_fraction(
                             avail, pot_fraction)
@@ -2557,7 +2596,7 @@ def _run_analysis(hand: dict) -> dict:
                     next_resp = get_next_actions(**params)
                     avail = next_resp["next_actions"]["available_actions"]
                     if bool(act.get("allin")) or action_type.startswith("AI"):
-                        taken_code = find_closest_action(avail, target_size)
+                        taken_code = _find_postflop_allin_action(avail, target_size)
                     elif pot_fraction is not None:
                         taken_code = find_closest_action_by_pot_fraction(
                             avail, pot_fraction)

@@ -3095,6 +3095,7 @@ def test_openai_hero_range_query_is_enriched_with_exact_combo():
     import asyncio
     import json as _json
     import types as py_types
+    from card_display import cards_to_emoji
 
     planner = py_types.SimpleNamespace(
         id="plan-hero-range", usage=None, output_text="",
@@ -3130,7 +3131,7 @@ def test_openai_hero_range_query_is_enriched_with_exact_combo():
     answer = asyncio.run(manager._chat_with_openai_evidence(
         7, "Hero turn 的範圍怎麼分？",
     ))
-    assert_in("Q♦J♠", answer)
+    assert_in(cards_to_emoji("QdJs"), answer)
     assert_eq(observed[0][1].get("hand"), "QdJs")
 
 

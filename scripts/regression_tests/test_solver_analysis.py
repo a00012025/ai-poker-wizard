@@ -870,13 +870,19 @@ def test_multiway_3way_check_raise_on_flop():
     # BB's raise should NOT match all-in (RAI) — 8.7bb is a raise, not an all-in
     assert_true("solver code: RAI" not in result["text"],
                 "BB's 8.7bb raise should not match all-in")
-    # Flop and turn should both have solver data
+    # Flop should have solver data.  The turn shove is a legal terminal node,
+    # but GTOW exposes only next-actions (F/C with no frequencies) there and
+    # spot-solution returns 204.  Preserve the real RAI line rather than the
+    # old false-positive test behavior where unsized AI became X and happened
+    # to fetch an unrelated check node.
     flop_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
                       if spot["street"] == "flop" and s is not None]
-    turn_solutions = [s for s, spot in zip(result["solutions"], result["hero_spots"])
-                      if spot["street"] == "turn" and s is not None]
     assert_true(len(flop_solutions) > 0, "flop should have solver data")
-    assert_true(len(turn_solutions) > 0, "turn should have solver data")
+    turn_spots = [spot for spot in result["hero_spots"]
+                  if spot["street"] == "turn"]
+    assert_true(turn_spots, "turn call decision should still be represented")
+    assert_eq(turn_spots[-1]["params"]["turn_actions"], "RAI")
+    assert_eq(result["final_actions"]["turn_actions"], "RAI-C")
 
 
 @test
@@ -1333,6 +1339,20 @@ def test_rederive_postflop_codes_remaps_stale_bet():
     # Simple codes on later streets pass through untouched
     assert_eq(nt, "", "no turn actions in → empty out")
     assert_eq(nr, "", "no river actions in → empty out")
+
+
+@test
+def test_h3870_unsized_postflop_allin_maps_to_allin_not_check():
+    """H3870: an explicit unsized AI must select RAI instead of zero-size X."""
+    from analyze_hand import _find_postflop_allin_action
+
+    avail = [
+        {"action": {"code": "X", "betsize": "0", "allin": False}},
+        {"action": {"code": "R5", "betsize": "5", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "8.35", "allin": True}},
+    ]
+    assert_eq(_find_postflop_allin_action(avail, 0), "RAI")
+    assert_eq(_find_postflop_allin_action(avail, None), "RAI")
 
 
 @test
