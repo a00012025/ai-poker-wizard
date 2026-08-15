@@ -29,6 +29,12 @@ from coach_evidence import (
 from coach_prompts import _needs_solver_grounding, _normalize_terms
 
 
+_FULL_RANGE_REQUEST_RE = re.compile(
+    r"(?:範圍|range|哪些(?:手)?牌|哪些\s*combo|combo\s*(?:範圍|range))",
+    re.I,
+)
+
+
 async def run_evidence_chat(
     session: Any,
     chat_id: int,
@@ -171,6 +177,16 @@ async def run_evidence_chat(
                 result = f"工具參數無法解析：{exc}"
                 status = "error"
             else:
+                if (
+                    name == "query_gto"
+                    and args.get("position")
+                    and _FULL_RANGE_REQUEST_RE.search(user_text or "")
+                ):
+                    # Preserve the user's range intent even when the planner
+                    # also attaches ``hand`` for exact-combo grounding.  The
+                    # formatter and image queue need an explicit signal to
+                    # return both artifacts instead of choosing one branch.
+                    args["include_range"] = True
                 # A Hero range query can include ``hand`` without losing the
                 # whole-range breakdown. Enrich it deterministically so the
                 # narrator never applies a 169-class average to the exact suit

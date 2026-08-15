@@ -65,6 +65,7 @@ from coach_teaching import (
 )
 from coach_evidence import (
     COACH_FACTS_TOOL,
+    display_exact_cards,
     normalize_emoji_cards,
     tool_spec_from_declaration,
 )
@@ -179,6 +180,14 @@ QUERY_GTO_DECLARATION = types.FunctionDeclaration(
                     "因為不同花色在有同花/同花聽牌的牌面上策略差異極大。\n"
                     "例如 board Jc4d3s5d: Ad8d（方塊花聽）96% bet vs Ah8h（無聽牌）97% check。\n"
                     "Preflop 查詢用簡化格式即可：66, AKs, QTo。"
+                ),
+            ),
+            "include_range": types.Schema(
+                type=types.Type.BOOLEAN,
+                description=(
+                    "問題在問完整 range、哪些牌或哪些 combos 時設為 true。"
+                    "即使同時傳 hand 以保留 Hero exact combo，也會一併回傳完整"
+                    " action-by-action range 並產生 13x13 range 圖。"
                 ),
             ),
             "effective_bb": types.Schema(
@@ -2827,6 +2836,40 @@ class GeminiSessionManager:
             return True
         return False
 
+    @staticmethod
+    def _repair_text_hero_hand_literal(hand: dict, user_text: str) -> str | None:
+        """Restore an explicit 169-class suffix when Flash flips ``s``/``o``.
+
+        A standalone token such as ``kts`` is stronger evidence than the model's
+        derived ``KTo``.  Keep the repair deliberately narrow: exactly one
+        explicit suited/offsuit class must be present, and the model must agree
+        on both ranks.  Multi-hand discussion and rank disagreements stay with
+        the parser instead of being guessed here.
+        """
+        candidates = {
+            match.group(1).upper() + match.group(2).upper() + match.group(3).lower()
+            for match in re.finditer(
+                r"(?<![A-Za-z0-9])([2-9TJQKA])([2-9TJQKA])([so])"
+                r"(?![A-Za-z0-9])",
+                user_text or "",
+                re.I,
+            )
+        }
+        if len(candidates) != 1:
+            return None
+        literal = next(iter(candidates))
+        parsed = str(hand.get("hero_hand") or "").strip()
+        parsed_match = re.fullmatch(
+            r"([2-9TJQKA])([2-9TJQKA])([so])", parsed, re.I,
+        )
+        if not parsed_match:
+            return None
+        parsed_ranks = parsed_match.group(1).upper() + parsed_match.group(2).upper()
+        if parsed_ranks != literal[:2] or parsed == literal:
+            return None
+        hand["hero_hand"] = literal
+        return literal
+
     async def _parse_hand(self, chat_id: int, user_text: str,
                            usage_acc: dict | None = None,
                            feedback_hint: str = "") -> dict | None:
@@ -2886,6 +2929,12 @@ class GeminiSessionManager:
             result = json.loads(json_str)
             hand = result.get("hand")
             if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+                repaired_hand = self._repair_text_hero_hand_literal(hand, user_text)
+                if repaired_hand:
+                    self._logger.warning(
+                        f"[chat={chat_id}] Restored explicit Hero hand class "
+                        f"from source text: {repaired_hand}"
+                    )
                 # Text Flash extracts ordered action tokens; actor ownership is
                 # always assigned by poker order in deterministic code.  Ignore
                 # any legacy model-provided position labels.
@@ -3260,7 +3309,7 @@ class GeminiSessionManager:
                     usage_acc,
                 )
                 if result.strip():
-                    result = _normalize_terms(result)
+                    result = display_exact_cards(_normalize_terms(result))
                     self._logger.debug(
                         "[chat=%s] Initial narrator response (model=%s, %s chars)",
                         chat_id, self.coach_narrator_model, len(result),
@@ -3943,6 +3992,7 @@ class GeminiSessionManager:
         decision_index = args.get("decision_index")
         position = args.get("position")
         hand = args.get("hand")
+        include_range = bool(args.get("include_range") or (position and not hand))
         effective_bb = args.get("effective_bb")
         preflop_override = args.get("preflop_actions_override")
         board_override = args.get("board_override")
@@ -4022,13 +4072,23 @@ class GeminiSessionManager:
                     self._logger.debug(
                         f"[chat={chat_id}] Overrides match played line; using cached {street} solution"
                     )
-                    return self._format_solution(solution, position, hand)
+                    result_text = self._format_solution(
+                        solution, position, hand, include_range=include_range,
+                    )
+                    if position and include_range:
+                        self._queue_query_range_chart(chat_id, solution, position)
+                    return result_text
 
         # Try cached solution first (no overrides)
         if not has_override:
             solution = self._find_cached_solution(ctx, street, decision_index)
             if solution:
-                return self._format_solution(solution, position, hand)
+                result_text = self._format_solution(
+                    solution, position, hand, include_range=include_range,
+                )
+                if position and include_range:
+                    self._queue_query_range_chart(chat_id, solution, position)
+                return result_text
 
         # Build API params from context + overrides
         params = self._build_query_params(ctx, street, board_override,
@@ -4112,26 +4172,41 @@ class GeminiSessionManager:
                     if not solution:
                         return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
 
-        result_text = self._format_solution(solution, position, hand)
+        result_text = self._format_solution(
+            solution, position, hand, include_range=include_range,
+        )
 
-        # Queue range grid image when querying a position's range (no specific hand)
-        if position and not hand:
-            try:
-                from range_image import generate_range_grid
-                game = solution.get("game", {})
-                st = game.get("current_street", {}).get("type", "").capitalize()
-                board = game.get("board", "")
-                title = f"{position} {st}"
-                if board:
-                    title += f" | {cards_to_emoji(board)}"
-                img = generate_range_grid(solution, position, title=title)
-                if chat_id not in self.pending_images:
-                    self.pending_images[chat_id] = []
-                self.pending_images[chat_id].append((img, f"📊 {title}"))
-            except Exception:
-                pass  # non-critical
+        # A full-range request still needs its grid when ``hand`` is also
+        # present for exact-combo grounding (H3874).
+        if position and include_range:
+            self._queue_query_range_chart(chat_id, solution, position)
 
         return result_text
+
+    def _queue_query_range_chart(self, chat_id: int, solution: dict,
+                                 position: str) -> None:
+        """Queue the query_gto range grid for cached and freshly fetched nodes."""
+        try:
+            from range_image import generate_range_grid
+
+            game = solution.get("game", {})
+            st = game.get("current_street", {}).get("type", "").capitalize()
+            board = game.get("board", "")
+            title = f"{position} {st}"
+            if board:
+                title += f" | {cards_to_emoji(board)}"
+            caption = f"📊 {title}"
+            if any(
+                existing_caption == caption
+                for _, existing_caption in self.pending_images.get(chat_id, [])
+            ):
+                return
+            img = generate_range_grid(solution, position, title=title)
+            self.pending_images.setdefault(chat_id, []).append((img, caption))
+        except Exception as exc:
+            self._logger.warning(
+                f"[chat={chat_id}] Failed to render {position} range chart: {exc}"
+            )
 
     def _find_cached_solution(self, ctx: dict, street: str,
                               decision_index: int | None = None) -> dict | None:
@@ -4392,16 +4467,21 @@ class GeminiSessionManager:
 
         return params
 
-    def _format_solution(self, solution: dict, position: str | None, hand: str | None) -> str:
+    def _format_solution(self, solution: dict, position: str | None,
+                         hand: str | None, *, include_range: bool = False) -> str:
         """Format a spot-solution based on what was requested."""
         from gto_formatter import format_action_summary, format_hand_detail, format_range_by_action
 
         parts = [format_action_summary(solution)]
 
+        if position and include_range:
+            parts.append("")
+            parts.append(format_range_by_action(solution, position))
+
         if hand and position:
             parts.append("")
             parts.append(format_hand_detail(solution, hand, position))
-        elif position:
+        elif position and not include_range:
             parts.append("")
             parts.append(format_range_by_action(solution, position))
         elif hand:

@@ -166,6 +166,50 @@ Jd all in fold"""
 
 
 @test
+def test_h3874_text_repairs_explicit_suited_class_suffix():
+    """H3874: an explicit ``kts`` literal must beat Flash's ``KTo`` drift."""
+    import gemini_session as gs
+
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 12, "hero_position": "UTG", "hero_hand": "KTo",
+        "preflop_actions": "AI-F-F-F-F-F-F-F",
+    }
+
+    repaired = gs.GeminiSessionManager._repair_text_hero_hand_literal(
+        hand, "Eff 12bb utg kts 要 all in 嗎",
+    )
+
+    assert_eq(repaired, "KTs")
+    assert_eq(hand["hero_hand"], "KTs")
+
+
+@test
+def test_h3874_full_range_query_keeps_hand_detail_and_queues_chart():
+    """A range follow-up may include ``hand`` without losing range text/image."""
+    from gemini_session import GeminiSessionManager
+
+    _, hand_context, _, _ = _load_coach_ctx()
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager.hand_contexts = {3874: hand_context}
+    manager.pending_images = {}
+    manager._logger = logging.getLogger("test-h3874-range")
+
+    result = manager._execute_query_gto(3874, {
+        "street": "flop",
+        "position": "CO",
+        "hand": "KdJh",
+        "include_range": True,
+    })
+
+    assert_in("策略分佈", result, "full action ranges must remain in tool output")
+    assert_in("K🔷J♥️", result, "exact combo detail must remain alongside the range")
+    pending = manager.pending_images.get(3874) or []
+    assert_eq(len(pending), 1, "range follow-up must queue one 13x13 chart")
+    assert_true(len(pending[0][0]) > 100, "queued chart is a real PNG")
+
+
+@test
 def test_coach_facts_extract_tokens():
     """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
     import coach_facts as cf

@@ -2881,6 +2881,34 @@ def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
 
 
 @test
+def test_h3874_range_fallback_preserves_complete_solver_range():
+    """A verifier fallback must not collapse a requested range to six facts."""
+    from coach_evidence import EvidenceBundle, render_safe_fallback
+
+    bundle = EvidenceBundle()
+    bundle.add_text("current_hand", {}, "hand_id=H3874\nHero=UTG KTs")
+    bundle.add_text(
+        "query_gto",
+        {"street": "preflop", "position": "UTG", "hand": "KTs",
+         "include_range": True},
+        "【UTG 在 Preflop 的策略分佈】\n"
+        "All-in（97 combos）:\n  55+, A8s+, ATo+, KTs+, KQo\n"
+        "Raise（29 combos）:\n  AA(20%), A5s(30%)\n"
+        "Limp（93 combos）:\n  22-44, A2s-A7s\n"
+        "Fold（1107 combos）:\n  其餘範圍\n"
+        "【UTG KTs】\n  Fold 100%",
+    )
+
+    answer = render_safe_fallback(bundle)
+
+    assert_in("完整 solver 範圍", answer)
+    assert_in("All-in（97 combos）", answer)
+    assert_in("Fold（1107 combos）", answer)
+    assert_in("【UTG KTs】", answer, "last lines must not be cut by the six-line fallback")
+    assert_not_in("核心資料", answer)
+
+
+@test
 def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable():
     """A failed exact-combo narration must not expose range totals as advice."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -2958,6 +2986,17 @@ def test_coach_term_normalizer_canonicalizes_legacy_card_emoji():
     assert_eq(_normalize_terms(canonical), canonical, "normalization is idempotent")
     assert_eq(_normalize_terms("Q7s、AKo、AA"), "Q7s、AKo、AA",
               "169 hand classes remain machine-readable")
+
+
+@test
+def test_h3874_coach_normalizer_repairs_impossible_emoji_hand_class():
+    """Two exact-card glyphs followed by s/o are a malformed 169 class."""
+    from coach_evidence import display_exact_cards
+
+    assert_eq(display_exact_cards("UTG K♠️T♠️o 在 12bb fold"),
+              "UTG KTo 在 12bb fold")
+    assert_eq(display_exact_cards("UTG K♠️T♠️s 在 12bb fold"),
+              "UTG KTs 在 12bb fold")
 
 
 @test
@@ -3133,6 +3172,8 @@ def test_openai_hero_range_query_is_enriched_with_exact_combo():
     ))
     assert_in(cards_to_emoji("QdJs"), answer)
     assert_eq(observed[0][1].get("hand"), "QdJs")
+    assert_true(observed[0][1].get("include_range"),
+                "range intent must survive exact-combo enrichment")
 
 
 @test
