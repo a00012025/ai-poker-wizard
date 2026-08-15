@@ -2071,20 +2071,27 @@ class PokerWizardBot:
                 raise
 
     async def _fetch_queue_page(self, page: int = 0):
-        total = await self.db.pool.fetchval(
-            "SELECT count(*) FROM drill_queue "
-            "WHERE status IN ('pending','prescribed')")
-        pages = max(1, (int(total) + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
-        page = max(0, min(int(page), pages - 1))
-        rows = await self.db.pool.fetch(
+        rows = [dict(row) for row in await self.db.pool.fetch(
             "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
             "review_anchor_street, status, n_sources, added_by, "
             "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
-            "bias_direction, bias_n, bias_ev_loss_bb, bias_share, depth_scope "
-            "FROM drill_queue WHERE status IN ('pending','prescribed') "
-            "ORDER BY (status='pending') DESC, total_ev_loss_bb DESC NULLS LAST "
-            "LIMIT $1 OFFSET $2", QUEUE_PAGE_SIZE, page * QUEUE_PAGE_SIZE)
-        return rows, int(total), page
+            "bias_direction, bias_n, bias_ev_loss_bb, bias_share, depth_scope, "
+            "source, source_hands "
+            "FROM drill_queue WHERE status IN ('pending','prescribed')")]
+        # A row may contain both online and live examples. Resolve provenance
+        # from ledger_hands and rank on this row's own track EV so selective
+        # live evidence never inflates the online ordering (§5.2).
+        from plan_scheduler import annotate_rows
+        rows = await annotate_rows(self.db.pool, rows)
+        rows.sort(key=lambda row: (
+            -float(row.get("track_ev_loss_bb") or 0.0),
+            row.get("status") != "pending",
+        ))
+        total = len(rows)
+        pages = max(1, (total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
+        page = max(0, min(int(page), pages - 1))
+        start = page * QUEUE_PAGE_SIZE
+        return rows[start:start + QUEUE_PAGE_SIZE], total, page
 
     async def queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/queue — owner-only: pending/prescribed practice queue with buttons."""

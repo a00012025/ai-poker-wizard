@@ -52,7 +52,8 @@ _TRACKS = ("online", "live")
 # ── pure policy ──────────────────────────────────────────────────────────────
 def _ev(row: dict) -> float:
     try:
-        return float(row.get("total_ev_loss_bb") or 0.0)
+        return float(row.get("track_ev_loss_bb",
+                             row.get("total_ev_loss_bb")) or 0.0)
     except (TypeError, ValueError):
         return 0.0
 
@@ -87,6 +88,34 @@ def resolve_track(row: dict, hand_sources: dict[str, str]) -> str:
     if votes["live"] or votes["online"]:
         return "live" if votes["live"] >= votes["online"] else "online"
     return "live" if row.get("source") == "live" else "online"
+
+
+def track_ev_loss(row: dict, hand_sources: dict[str, str], track: str) -> float:
+    """EV attributed only to one authoritative ledger source.
+
+    A learning unit may deliberately merge online and live examples into one
+    queue row. This helper preserves that consolidation without letting live
+    EV inflate online rankings (or the reverse). If ledger provenance is
+    unavailable, retain the stored total as an honest legacy fallback.
+    """
+    from queue_feed import entry_key
+
+    total = 0.0
+    seen = set()
+    authoritative = False
+    for entry in _as_entries(row.get("source_hands")):
+        source = hand_sources.get(entry.get("hand_id"))
+        if source not in _TRACKS:
+            continue
+        authoritative = True
+        key = entry_key(entry)
+        if source != track or key in seen:
+            continue
+        seen.add(key)
+        total += float(entry.get("ev_loss_bb") or 0.0)
+    if authoritative:
+        return round(total, 4)
+    return _ev({"total_ev_loss_bb": row.get("total_ev_loss_bb")})
 
 
 def classify_freshness(row: dict) -> str:
@@ -256,6 +285,8 @@ async def annotate_rows(conn, rows: list[dict]) -> list[dict]:
     for row in rows:
         item = dict(row)
         item["track"] = resolve_track(item, hand_sources)
+        item["track_ev_loss_bb"] = track_ev_loss(
+            item, hand_sources, item["track"])
         stamped = item.get("last_surfaced_at")
         if stamped and item.get("spot_leaf") and item.get("kind") != "review":
             item["new_evidence_n"] = int(await conn.fetchval(

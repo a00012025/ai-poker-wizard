@@ -11,8 +11,8 @@ Scans the rolling online-hand window and enqueues two shapes into
                   hand → a GTOW Analyze review link.
 
 This module also owns the SINGLE upsert policy for the whole queue: the
-dedupe-aware ``enqueue`` (idempotent under the weekly rolling re-scan) lives
-here and ``live_flow`` imports it — no second copy (§5.2, PR #92 dedup spirit).
+dedupe-aware ``enqueue`` (idempotent under the weekly rolling re-scan) and the
+live promotion gate live here — no second copy (§5.2, PR #92 dedup spirit).
 
 CLI:
   python scripts/queue_feed.py --scan [--window-days 60] [--dry-run]
@@ -58,6 +58,15 @@ LOW_FREQUENCY_BRANCH = 0.05     # path hint only; NEVER used for EV ordering (§
 QUEUE_SOURCE_HANDS_PER_LINK = 20
 GTOW_ANALYZE_HANDS_URL = "https://app.gtowizard.com/analyze/v4/hands/table"
 
+# Live sessions are selectively recorded and naturally noisy. Every honest
+# 0.1bb+ decision stays in the ledger/session report, but a durable drill needs
+# either one severe error or repeated evidence in the same action line + stack
+# band. Existing open drills always accept fresh live evidence.
+LIVE_QUEUE_WINDOW_DAYS = 60
+LIVE_QUEUE_SEVERE_BB = 1.0
+LIVE_QUEUE_PATTERN_MIN_N = 2
+LIVE_QUEUE_PATTERN_MIN_TOTAL_BB = 0.5
+
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
 _HONEST = ("NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL "
@@ -79,12 +88,19 @@ def _as_list(v):
 
 
 def entry_key(e: dict) -> tuple:
-    """Dedupe identity of a source_hands entry (§5.2). Old live rows may lack
-    decision_idx/src — .get keeps them distinct from new full-key entries
-    rather than colliding."""
+    """Semantic identity of a queue source decision (§5.2).
+
+    ``src`` describes the transport that added an entry, not a new poker
+    decision. Likewise, a later re-grade changing EV does not create a second
+    sample. Modern rows therefore dedupe on hand/street/decision index. Legacy
+    rows without an index retain EV as a fallback so distinct same-street
+    decisions are not silently collapsed during cleanup.
+    """
     ev = e.get("ev_loss_bb")
-    return (e.get("hand_id"), e.get("street"), e.get("decision_idx"),
-            round(float(ev), 4) if ev is not None else None, e.get("src"))
+    base = (e.get("hand_id"), e.get("street"), e.get("decision_idx"))
+    if e.get("decision_idx") is not None:
+        return base
+    return base + (round(float(ev), 4) if ev is not None else None,)
 
 
 def dedupe_entries(entries: list[dict]) -> list[dict]:
@@ -132,8 +148,7 @@ def resolve_queue_source_hands(entries: list[dict], ledger_rows,
         if hand_id not in aggregates:
             continue
         ev = float(entry.get("ev_loss_bb") or 0.0)
-        decision_key = (hand_id, entry.get("street"), entry.get("decision_idx"),
-                        round(ev, 4))
+        decision_key = entry_key(entry)
         if decision_key in seen_decisions:
             continue
         seen_decisions.add(decision_key)
@@ -715,6 +730,82 @@ async def enqueue(conn, items: list[dict]) -> dict:
     tally = {"merged": 0, "inserted": 0, "noop": 0}
     for it in items:
         tally[await enqueue_one(conn, it)] += 1
+    return tally
+
+
+_LIVE_EVIDENCE_SQL = """
+SELECT count(*)::int n,
+       COALESCE(sum(ev_loss_bb), 0)::float total_ev,
+       COALESCE(max(ev_loss_bb), 0)::float max_ev
+FROM ledger_decisions
+WHERE spot_leaf = $1 AND source = 'live' AND played_at >= $2
+  AND ev_loss_bb >= $4 AND NOT excluded AND NOT discarded
+  AND NOT limp_origin AND confidence >= 0.8
+  AND ($3 = 'all' OR eff_stack = $3)
+"""
+
+
+def live_promotion_decision(open_exists: bool, evidence_n: int,
+                            total_ev: float, max_ev: float) -> str:
+    """Return ``merge`` | ``insert`` | ``watchlist`` for live evidence.
+
+    Counts are only a confidence gate. Once admitted, scheduling remains
+    EV-weighted. Callers scope evidence to the rolling window or, for a
+    cleared drill, to decisions played after its most recent clear.
+    """
+    if open_exists:
+        return "merge"
+    if float(max_ev or 0.0) >= LIVE_QUEUE_SEVERE_BB:
+        return "insert"
+    if (int(evidence_n or 0) >= LIVE_QUEUE_PATTERN_MIN_N
+            and float(total_ev or 0.0) >= LIVE_QUEUE_PATTERN_MIN_TOTAL_BB):
+        return "insert"
+    return "watchlist"
+
+
+async def enqueue_live_candidates(conn, items: list[dict]) -> dict:
+    """Promote honest live candidates into the durable queue.
+
+    Items that fail the promotion gate are annotated as ``watchlist`` and stay
+    in the live-session JSON/ledger, but no ``drill_queue`` row is written.
+    This is intentionally separate from :func:`enqueue`: online scan thresholds
+    and explicit/manual inserts already have their own admission decisions.
+    """
+    from spot_naming import drill_depth_scope
+
+    tally = {"merged": 0, "inserted": 0, "noop": 0, "watchlist": 0}
+    window_start = datetime.now(timezone.utc) - timedelta(
+        days=LIVE_QUEUE_WINDOW_DAYS)
+    for item in items:
+        item["depth_scope"] = drill_depth_scope(item)
+        leaf, scope = item["spot_leaf"], item["depth_scope"]
+        open_exists = bool(await conn.fetchval(
+            _OPEN_EXISTS_SQL, leaf, scope))
+        if open_exists:
+            route = "merge"
+        else:
+            cleared_at = await conn.fetchval(_CLEARED_SQL, leaf, scope)
+            since = window_start
+            if cleared_at is not None:
+                if cleared_at.tzinfo is None:
+                    cleared_at = cleared_at.replace(tzinfo=timezone.utc)
+                since = max(since, cleared_at)
+            evidence = await conn.fetchrow(
+                _LIVE_EVIDENCE_SQL, leaf, since, scope, LOSSY_MIN_BB)
+            route = live_promotion_decision(
+                False, evidence["n"], evidence["total_ev"], evidence["max_ev"])
+
+        if route == "watchlist":
+            item["promotion"] = route
+            item["promoted"] = False
+            item["queue_id"] = None
+            tally[route] += 1
+            continue
+
+        outcome = await enqueue_one(conn, item)
+        item["promotion"] = outcome
+        item["promoted"] = True
+        tally[outcome] += 1
     return tally
 
 

@@ -242,6 +242,31 @@ def test_track_majority_wins_on_mixed_sources():
               "live")
 
 
+@test
+def test_mixed_queue_row_ranks_on_its_track_ev_only():
+    """Live evidence may merge into an existing online drill for one learning
+    unit, but it must not inflate that row's online-track EV ranking (§5.2)."""
+    from plan_scheduler import track_ev_loss
+
+    row = {
+        "total_ev_loss_bb": 7.2,
+        "source_hands": [
+            {"hand_id": "o1", "street": "preflop", "decision_idx": 0,
+             "ev_loss_bb": 4.0, "src": "online"},
+            {"hand_id": "o2", "street": "preflop", "decision_idx": 0,
+             "ev_loss_bb": 3.0, "src": "online"},
+            {"hand_id": "l1", "street": "preflop", "decision_idx": 0,
+             "ev_loss_bb": 0.2, "src": "live"},
+            # Duplicate transport source for the same decision must not count.
+            {"hand_id": "l1", "street": "preflop", "decision_idx": 0,
+             "ev_loss_bb": 0.2, "src": "manual"},
+        ],
+    }
+    sources = {"o1": "online", "o2": "online", "l1": "live"}
+    assert_eq(track_ev_loss(row, sources, "online"), 7.0)
+    assert_eq(track_ev_loss(row, sources, "live"), 0.2)
+
+
 # ── focus cooldown ───────────────────────────────────────────────────────────
 @test
 def test_focus_blocked_inside_the_cooldown_window():
