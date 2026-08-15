@@ -1258,7 +1258,8 @@ class GeminiSessionManager:
                            on_status: Callable[[str], Any] | None = None,
                            user_id: int | None = None,
                            refresh_token: str | None = None,
-                           send_gto_callback: Callable[[str], Any] | None = None) -> str:
+                           send_gto_callback: Callable[[str], Any] | None = None,
+                           force_followup: bool = False) -> str:
         """Main entry: parse hand → GTO analysis → coaching, or chat with tools.
 
         Args:
@@ -1269,6 +1270,9 @@ class GeminiSessionManager:
                 structured per-street GTO summary card immediately, before the
                 slower coaching reply.  Mirrors the image pipeline's split
                 response so text hands with a concrete hero hand feel faster.
+            force_followup: authoritative follow-up intent from an inline
+                button.  Bypasses hand parsing even when the generated question
+                contains a hand class plus actions and looks like a new hand.
         """
         request_id_var.set(new_request_id())
         t0 = time.time()
@@ -1281,7 +1285,30 @@ class GeminiSessionManager:
                 if asyncio.iscoroutine(r):
                     await r
 
+        async def _answer_followup() -> str:
+            await _status("查詢中...")
+            result = await self._run_followup_chat(
+                chat_id, user_text, on_status=on_status,
+                user_id=user_id, refresh_token=refresh_token,
+                usage_acc=usage_acc)
+            elapsed = time.time() - t0
+            self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
+            await self._save_usage(chat_id, "follow_up", self.model,
+                                   usage_acc, int(elapsed * 1000))
+            return result
+
         try:
+            # An inline follow-up button is an explicit intent boundary.  Do
+            # not send its generated question back through the hand parser:
+            # questions such as "ATo limp 後面對 all-in" contain enough poker
+            # tokens to look like a new hand and Flash may fabricate a fresh
+            # depth/action line (H3865).
+            if force_followup:
+                if chat_id not in self.hand_contexts:
+                    await self._ensure_hand_context(
+                        chat_id, user_id, refresh_token)
+                return await _answer_followup()
+
             # Check for FT switch request on previous hand
             ft_switch_keywords = {"決賽桌分析", "FT分析", "用ICM", "用icm", "切換決賽桌", "final table分析"}
             stripped = user_text.strip().lower()
@@ -1539,16 +1566,7 @@ class GeminiSessionManager:
                 return result
             else:
                 # Not a hand — chat (with tools if hand context exists)
-                await _status("查詢中...")
-                result = await self._run_followup_chat(
-                    chat_id, user_text, on_status=on_status,
-                    user_id=user_id, refresh_token=refresh_token,
-                    usage_acc=usage_acc)
-                elapsed = time.time() - t0
-                self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
-                await self._save_usage(chat_id, "follow_up", self.model,
-                                       usage_acc, int(elapsed * 1000))
-                return result
+                return await _answer_followup()
 
         except asyncio.TimeoutError:
             self._logger.error(f"[chat={chat_id}] Model API timeout")
