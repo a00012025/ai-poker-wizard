@@ -125,6 +125,47 @@ def test_text_action_tokens_heads_up_bb_acts_first_postflop():
 
 
 @test
+def test_h3870_text_repairs_short_preflop_and_missing_flop_check():
+    """H3870: source shorthand is authoritative when Flash drops a seat token
+    and the leading flop check.  The BB hero must remain in the hand; otherwise
+    analysis appends a ghost call and sends illegal ``RAI-F-C-C`` to GTOW.
+    """
+    import gemini_session as gs
+
+    user_text = """Eff 14bb utg raise sb call hero bb call JhTd
+Ad7dJc x b2.5 fold call
+8d x x
+Jd all in fold"""
+    hand = {
+        "gametype": "MTTGeneral", "players_at_table": 8,
+        "effective_bb": 14, "hero_position": "BB", "hero_hand": "JhTd",
+        "preflop_actions": "R2-F-F-F-F-C-C",
+        "streets": [
+            {"board": "Ad7dJc", "actions": [
+                {"position": "SB", "action": "R2.5", "size": 2.5},
+                {"position": "UTG", "action": "F"},
+                {"position": "BTN", "action": "C"},
+            ]},
+            {"card": "8d", "actions": "X-X"},
+            {"card": "Jd", "actions": "AI-F"},
+        ],
+    }
+
+    gs.GeminiSessionManager._normalize_text_action_tokens(hand, user_text)
+
+    assert_eq(hand["preflop_actions"], "R2-F-F-F-F-F-C-C")
+    assert_eq(
+        [[(a["position"], a["action"]) for a in street["actions"]]
+         for street in hand["streets"]],
+        [
+            [("SB", "X"), ("BB", "R2.5"), ("UTG", "F"), ("SB", "C")],
+            [("SB", "X"), ("BB", "X")],
+            [("SB", "AI"), ("BB", "F")],
+        ],
+    )
+
+
+@test
 def test_coach_facts_extract_tokens():
     """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
     import coach_facts as cf
