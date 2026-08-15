@@ -201,8 +201,8 @@ PLANNER_SYSTEM = """\
 - 目前已分析手牌上的 why/sizing/牌力/對手下注範圍/對手面對 Hero 下注的反應，優先用 query_coach_facts。
 - 當前牌局若同一街列出多個 decision，問題提到後一次 fold/call/raise/all-in 時，必須傳 decision_index；不可默認抓第一個 node。
 - 「對手某街的下注/加注範圍」用 query_coach_facts(intent=villain_range)；「對手面對我的下注會 call/fold 哪些牌」用 fold_equity，兩者不可混淆。
-- 單純列出目前行動者某街各 action 的完整 range，用 query_gto(street, position)，不要逐手查詢。
-- 若完整 range 問題明確問 Hero／我的範圍，且當前牌局有 exact Hero combo，query_gto 同時傳 hand；工具仍會回完整 range，並額外提供該花色 combo，避免把 169 class 平均套到 exact suit。
+- 單純列出目前行動者某街各 action 的完整 range，用 query_gto(street, position, include_range=true)，不要逐手查詢。
+- 若完整 range 問題明確問 Hero／我的範圍，且當前牌局有 exact Hero combo，query_gto 同時傳 hand 並保留 include_range=true；工具會回完整 range 並額外提供該花色 combo，避免把 169 class 平均套到 exact suit。
 - 假設 action line 若不知道正確 action code，先 query_next_actions，再根據回傳 code 查 query_gto。
 - query_next_actions 只證明某動作「可用」，不證明該 combo 應採用它；要回答推薦頻率/EV，仍必須 query_gto 或 query_coach_facts。
 - 訓練計畫、進步與 leak 問題使用對應 ledger 工具，不可用 solver 單手資料代替。
@@ -266,6 +266,13 @@ _ASCII_CARD_RUN_RE = re.compile(
     r"(?<![A-Za-z0-9])((?:[2-9TJQKA][cdhs]){1,5})(?![A-Za-z0-9])",
     re.I,
 )
+_MALFORMED_EMOJI_CLASS_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<rank1>[2-9TJQKA])(?:[cdhs]|[☘♣🔷♦♥♠](?:️)?)"
+    r"(?P<rank2>[2-9TJQKA])(?:[cdhs]|[☘♣🔷♦♥♠](?:️)?)"
+    r"(?P<kind>[so])(?![A-Za-z0-9])",
+    re.I,
+)
 _CATEGORY_TERMS = {
     "同花", "flush", "set", "三條", "順子", "straight", "兩對", "two pair",
     "頂對", "top pair", "中對", "middle pair", "底對", "bottom pair",
@@ -322,10 +329,18 @@ def normalize_emoji_cards(text: str) -> str:
 
 
 def display_exact_cards(text: str) -> str:
-    """Render exact ASCII cards/boards while leaving 169 classes untouched."""
+    """Render exact cards and collapse impossible emoji-decorated classes."""
+    repaired = _MALFORMED_EMOJI_CLASS_RE.sub(
+        lambda match: (
+            match.group("rank1").upper()
+            + match.group("rank2").upper()
+            + match.group("kind").lower()
+        ),
+        text or "",
+    )
     return _ASCII_CARD_RUN_RE.sub(
         lambda match: cards_to_emoji(match.group(1)),
-        text or "",
+        repaired,
     )
 
 
@@ -718,6 +733,19 @@ def render_safe_fallback(bundle: EvidenceBundle) -> str:
             seen.add(key)
             rows.append(line)
         return "*核心資料*\n" + "\n".join(f"• {line}" for line in rows[:5])
+
+    full_range_items = [
+        item for item in tool_items
+        if item.source == "query_gto" and item.args.get("include_range")
+    ]
+    if full_range_items:
+        # The user explicitly requested the range artifact.  A narrator audit
+        # failure must not degrade that deterministic output to the first six
+        # summary lines and silently discard the combo list (H3874).
+        rows = []
+        for item in full_range_items:
+            rows.extend(item.facts)
+        return "*完整 solver 範圍*\n" + "\n".join(rows)
 
     candidates = []
     for item in tool_items:
