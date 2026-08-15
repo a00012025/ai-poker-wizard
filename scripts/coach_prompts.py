@@ -515,6 +515,12 @@ _CARD_CODE_BEFORE_EMOJI_RE = re.compile(
     r"(?P<rank>[2-9TJQKA])(?P<suit>[cdhs])(?:☘️?|♣️?|🔷️?|♦️?|♥️?|♠️?)"
 )
 _SUIT_EMOJI = {"c": "☘️", "d": "🔷", "h": "♥️", "s": "♠️"}
+_CARD_EMOJI_RE = re.compile(
+    r"(?P<rank>[2-9TJQKA])(?P<suit>[☘♣🔷♦♥♠])(?:️)?"
+)
+_EMOJI_SUIT_CODES = {
+    "☘": "c", "♣": "c", "🔷": "d", "♦": "d", "♥": "h", "♠": "s",
+}
 
 
 def _normalize_terms(text: str) -> str:
@@ -529,8 +535,15 @@ def _normalize_terms(text: str) -> str:
     text = _RE_ATTACHED_SCOPE_BOILERPLATE.sub("。", text)
     text = _RE_STANDALONE_SCOPE_BOILERPLATE.sub("", text)
     text = text.replace("。。", "。")
-    return _CARD_CODE_BEFORE_EMOJI_RE.sub(
+    text = _CARD_CODE_BEFORE_EMOJI_RE.sub(
         lambda match: match.group("rank") + _SUIT_EMOJI[match.group("suit")],
+        text,
+    )
+    return _CARD_EMOJI_RE.sub(
+        lambda match: (
+            match.group("rank")
+            + _SUIT_EMOJI[_EMOJI_SUIT_CODES[match.group("suit")]]
+        ),
         text,
     )
 

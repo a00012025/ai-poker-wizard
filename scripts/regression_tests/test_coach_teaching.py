@@ -2947,6 +2947,20 @@ def test_coach_term_normalizer_expands_flush_draw_shorthand_safely():
 
 
 @test
+def test_coach_term_normalizer_canonicalizes_legacy_card_emoji():
+    """LLM glyph variants must not leak past the Telegram output boundary."""
+    from coach_prompts import _normalize_terms
+
+    old = "BB Q♠7♠ 面對 A♦K♣；另一組是 J♥T♥。"
+    canonical = "BB Q♠️7♠️ 面對 A🔷K☘️；另一組是 J♥️T♥️。"
+
+    assert_eq(_normalize_terms(old), canonical)
+    assert_eq(_normalize_terms(canonical), canonical, "normalization is idempotent")
+    assert_eq(_normalize_terms("Q7s、AKo、AA"), "Q7s、AKo、AA",
+              "169 hand classes remain machine-readable")
+
+
+@test
 def test_coach_term_normalizer_removes_scope_boilerplate_but_keeps_low_reach():
     """A useful low-reach warning must not end in generic node boilerplate."""
     from coach_prompts import _normalize_terms
