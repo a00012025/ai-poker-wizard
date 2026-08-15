@@ -2478,6 +2478,8 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
         if (ev is None or ev < QUEUE_EV_MIN or d["excluded"]
                 or d["discarded"] or d["limp_origin"]):
             continue
+        if float(d.get("confidence", 1.0) or 0.0) < 0.8:
+            continue
         url = drill_url_for(d)
         depth_scope = drill_depth_scope({**d, "drill_url": url})
         key = (d["spot_leaf"], depth_scope)
@@ -2494,7 +2496,8 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
             # unresolvable first hand so a later faithful custom spot can own
             # the shared drill button.
             it["drill_url"] = url
-        # §5.2 full dedupe key: {hand_id, street, decision_idx, ev_loss_bb, src}
+        # Semantic identity is hand/street/decision_idx. ``src`` remains audit
+        # metadata; it must not turn one decision into two EV samples.
         it["source_hands"].append({"hand_id": d["gtow_hand_id"],
                                    "street": d["street"],
                                    "decision_idx": d.get("decision_idx"),
@@ -2508,12 +2511,12 @@ def spot_label_zh(dec: dict) -> str:
     return compact_spot_name({**dec, "hero_pos": dec.get("position")})
 
 
-# The queue's upsert policy lives in ONE place — queue_feed.enqueue — so the
-# live flow, the online scan, and manual adds share a single dedupe-aware
-# implementation (§5.2, PR #92 dedup spirit). live_flow re-exports it for its
-# own persist path; a re-offending leaf merges into its OPEN row (pending OR
-# prescribed) with per-entry key dedupe so re-imports never inflate totals.
-from queue_feed import enqueue, remove_source_hand  # noqa: E402,F401  (shared upsert; used by persist/overwrite)
+# Queue mutation lives in ONE place — queue_feed — so live promotion, the
+# online scan, and manual adds share the same dedupe-aware implementation
+# (§5.2, PR #92 dedup spirit). A re-offending leaf merges into its OPEN row
+# (pending OR prescribed) without re-import inflation.
+from queue_feed import (enqueue, enqueue_live_candidates,
+                        remove_source_hand)  # noqa: E402,F401  (shared queue policy)
 
 
 async def open_drill_queue_id(conn, item: dict) -> int | None:
@@ -2772,12 +2775,13 @@ async def persist(result: dict) -> None:
         for entry in result["hands"]:
             if entry.get("ok"):
                 await write_hand(conn, entry["hand_row"], entry["dec_rows"])
-        await enqueue(conn, result["queue"])
+        await enqueue_live_candidates(conn, result["queue"])
         # The JSON result is sent straight to Telegram after persistence.
         # Attach the canonical open-row id so its immediate drill button uses
         # the same detail/provisioning menu as /queue instead of bypassing it.
         for item in result["queue"]:
-            item["queue_id"] = await open_drill_queue_id(conn, item)
+            if item.get("promoted"):
+                item["queue_id"] = await open_drill_queue_id(conn, item)
     finally:
         await conn.close()
 
@@ -2850,9 +2854,10 @@ async def overwrite_hand(conn, session_id: int, hand_idx: int,
         await write_hand(conn, new_entry["hand_row"], new_entry["dec_rows"])
 
         result = splice_hand(result, hand_idx, new_entry)
-        await enqueue(conn, result["queue"])
+        await enqueue_live_candidates(conn, result["queue"])
         for item in result["queue"]:
-            item["queue_id"] = await open_drill_queue_id(conn, item)
+            if item.get("promoted"):
+                item["queue_id"] = await open_drill_queue_id(conn, item)
         page = hand_idx // PER_PAGE if page is None else page
         await update_session_result(conn, session_id, result, page)
         return {"ok": True, "session": session, "result": result, "page": page}
@@ -3227,7 +3232,8 @@ def report_buttons(result: dict) -> list[list[dict]]:
                 cur = []
     if cur:
         rows.append(cur)
-    for it in result["queue"][:MAX_DRILL_BUTTONS]:
+    promoted = [it for it in result["queue"] if it.get("promoted") is not False]
+    for it in promoted[:MAX_DRILL_BUTTONS]:
         if it["drill_url"]:
             button = {"text": f"🎯 詳細／練習：{it['label']}"}
             if it.get("queue_id") is not None:

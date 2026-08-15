@@ -2019,6 +2019,7 @@ def test_live_queue_selection_and_report():
         dict(base, gtow_hand_id="live:d:3", ev_loss_bb=0.05),        # below threshold
         dict(base, gtow_hand_id="live:d:4", ev_loss_bb=0.50, limp_origin=True),  # limp -> out
         dict(base, gtow_hand_id="live:d:5", ev_loss_bb=None, excluded=True),     # ungraded -> out
+        dict(base, gtow_hand_id="live:d:6", ev_loss_bb=0.60, confidence=0.7),    # low confidence -> out
     ]
     # Live postflop drills only expose a button when their exact source hand
     # can build a custom spot; never fall back to a broad turn shortcut.
@@ -2080,6 +2081,127 @@ def test_live_queue_selection_and_report():
     assert_true(not any(b.get("url") == items[0]["drill_url"]
                         for b in persisted_flat))
     assert_true(QUEUE_EV_MIN == 0.10)
+
+
+@test
+def test_live_queue_promotion_filters_one_off_noise_and_reopens_only_on_recurrence():
+    """Every 0.1bb+ live mistake remains a session candidate, but the durable
+    queue only admits an existing drill, a severe one-off, or a repeated
+    spot×depth pattern.  A cleared drill follows the same evidence gate."""
+    from queue_feed import (LIVE_QUEUE_PATTERN_MIN_N,
+                            LIVE_QUEUE_PATTERN_MIN_TOTAL_BB,
+                            LIVE_QUEUE_SEVERE_BB,
+                            live_promotion_decision)
+
+    assert_eq(live_promotion_decision(True, 1, 0.11, 0.11), "merge")
+    assert_eq(live_promotion_decision(False, 1, 0.99, 0.99), "watchlist")
+    assert_eq(live_promotion_decision(False, 1, 1.0, 1.0), "insert")
+    assert_eq(live_promotion_decision(False, 2, 0.49, 0.30), "watchlist")
+    assert_eq(live_promotion_decision(False, 2, 0.50, 0.30), "insert")
+    assert_eq(LIVE_QUEUE_SEVERE_BB, 1.0)
+    assert_eq(LIVE_QUEUE_PATTERN_MIN_N, 2)
+    assert_eq(LIVE_QUEUE_PATTERN_MIN_TOTAL_BB, 0.5)
+
+
+@test
+def test_enqueue_live_candidates_marks_watchlist_without_inserting():
+    """A singleton 0.3bb live error is retained in the result for review but
+    must not create a durable queue row or a drill button."""
+    import asyncio
+    from queue_feed import enqueue_live_candidates
+    from live_flow import report_buttons
+
+    class FakeConn:
+        def __init__(self):
+            self.execs = []
+
+        async def fetchval(self, sql, *_args):
+            if "count(*) FROM drill_queue" in sql:
+                return 0
+            if "max(cleared_at)" in sql:
+                return None
+            raise AssertionError(sql)
+
+        async def fetchrow(self, sql, *_args):
+            if "FROM ledger_decisions" in sql:
+                return {"n": 1, "total_ev": 0.3, "max_ev": 0.3}
+            raise AssertionError(sql)
+
+        async def execute(self, *args):
+            self.execs.append(args)
+
+    item = {
+        "spot_leaf": "turn:SRP:BBvLP:OOP:[x-b-c]:vs_bet",
+        "spot_category": "turn", "depth_scope": "medium",
+        "label": "SRP｜BB OOP｜轉牌 vs Bet｜翻牌 x-b-c",
+        "drill_url": "https://example.com/drill", "kind": "drill",
+        "source": "live", "source_hands": [{
+            "hand_id": "live:1", "street": "turn", "decision_idx": 0,
+            "ev_loss_bb": 0.3, "src": "live",
+        }], "total_ev_loss_bb": 0.3,
+    }
+    conn = FakeConn()
+    tally = asyncio.run(enqueue_live_candidates(conn, [item]))
+
+    assert_eq(tally, {"merged": 0, "inserted": 0, "noop": 0,
+                      "watchlist": 1})
+    assert_eq(item["promotion"], "watchlist")
+    assert_eq(item["promoted"], False)
+    assert_eq(conn.execs, [])
+    result = {"hands": [], "queue": [item]}
+    assert_eq(report_buttons(result), [])
+
+
+@test
+def test_enqueue_live_candidates_promotes_severe_post_clear_error():
+    """One fresh >=1bb error may reopen a cleared drill immediately, and the
+    evidence query must exclude all decisions played before that clear."""
+    import asyncio
+    from datetime import datetime, timezone
+    from queue_feed import enqueue_live_candidates
+
+    cleared_at = datetime(2026, 8, 15, 12, tzinfo=timezone.utc)
+
+    class FakeConn:
+        def __init__(self):
+            self.evidence_since = None
+            self.execs = []
+
+        async def fetchval(self, sql, *_args):
+            if "count(*) FROM drill_queue" in sql:
+                return 0
+            if "max(cleared_at)" in sql:
+                return cleared_at
+            raise AssertionError(sql)
+
+        async def fetchrow(self, sql, *args):
+            if "FROM ledger_decisions" in sql:
+                self.evidence_since = args[1]
+                return {"n": 1, "total_ev": 1.2, "max_ev": 1.2}
+            if "SELECT id, source_hands" in sql:
+                return None
+            raise AssertionError(sql)
+
+        async def execute(self, sql, *args):
+            self.execs.append((sql, args))
+
+    item = {
+        "spot_leaf": "UTG_RFI", "spot_category": "RFI",
+        "depth_scope": "short", "label": "UTG RFI (≤20bb)",
+        "drill_url": "https://example.com/drill", "kind": "drill",
+        "source": "live", "source_hands": [{
+            "hand_id": "live:severe", "street": "preflop",
+            "decision_idx": 0, "ev_loss_bb": 1.2, "src": "live",
+        }], "total_ev_loss_bb": 1.2,
+    }
+    conn = FakeConn()
+    tally = asyncio.run(enqueue_live_candidates(conn, [item]))
+
+    assert_eq(tally["inserted"], 1)
+    assert_eq(item["promoted"], True)
+    assert_eq(item["promotion"], "inserted")
+    assert_eq(conn.evidence_since, cleared_at)
+    assert_eq(len(conn.execs), 1)
 
 
 @test
@@ -2979,6 +3101,68 @@ def test_queue_aging_and_single_upsert_policy():
 
 
 @test
+def test_queue_page_orders_by_ev_before_lifecycle_status():
+    """A tiny new pending row must not jump above a large prescribed drill;
+    mixed rows use source-isolated track EV rather than the combined total."""
+    import inspect
+    from telegram_bot.bot import PokerWizardBot
+
+    src = inspect.getsource(PokerWizardBot._fetch_queue_page)
+    assert_in("annotate_rows", src)
+    assert_in('row.get("track_ev_loss_bb")', src)
+    assert_not_in("ORDER BY (status='pending') DESC", src)
+
+
+@test
+def test_queue_page_runtime_uses_source_isolated_ev_order():
+    import asyncio
+    from types import SimpleNamespace
+    from telegram_bot.bot import PokerWizardBot
+
+    class FakePool:
+        async def fetch(self, sql, *_args):
+            if "FROM drill_queue" in sql:
+                return [
+                    {"id": 1, "status": "prescribed", "source": "online",
+                     "source_hands": [
+                         {"hand_id": "o1", "street": "preflop",
+                          "decision_idx": 0, "ev_loss_bb": 5.0},
+                         {"hand_id": "o3", "street": "flop",
+                          "decision_idx": 0, "ev_loss_bb": 1.0},
+                         {"hand_id": "l1", "street": "preflop",
+                          "decision_idx": 0, "ev_loss_bb": 4.0}],
+                     "total_ev_loss_bb": 10.0},
+                    {"id": 2, "status": "pending", "source": "live",
+                     "source_hands": [{
+                         "hand_id": "l2", "street": "turn",
+                         "decision_idx": 0, "ev_loss_bb": 0.2}],
+                     "total_ev_loss_bb": 0.2},
+                    {"id": 3, "status": "prescribed", "source": "online",
+                     "source_hands": [{
+                         "hand_id": "o2", "street": "flop",
+                         "decision_idx": 0, "ev_loss_bb": 4.0}],
+                     "total_ev_loss_bb": 4.0},
+                ]
+            if "FROM ledger_hands" in sql:
+                return [
+                    {"gtow_hand_id": "o1", "source": "online"},
+                    {"gtow_hand_id": "o2", "source": "online"},
+                    {"gtow_hand_id": "o3", "source": "online"},
+                    {"gtow_hand_id": "l1", "source": "live"},
+                    {"gtow_hand_id": "l2", "source": "live"},
+                ]
+            raise AssertionError(sql)
+
+    bot = object.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=FakePool())
+    rows, total, page = asyncio.run(bot._fetch_queue_page(0))
+
+    assert_eq([row["id"] for row in rows], [1, 3, 2])
+    assert_eq([row["track_ev_loss_bb"] for row in rows], [6.0, 4.0, 0.2])
+    assert_eq((total, page), (3, 0))
+
+
+@test
 def test_queue_feed_scan_sql_shape():
     """The online scan reuses the leaderboard honesty predicate verbatim, gates
     drills by n>=MIN_N AND total>=MIN_TOTAL over lossy decisions, aggregates
@@ -3038,7 +3222,9 @@ def test_queue_feed_dedupe_and_reopen():
     import queue_feed as qf
     e = {"hand_id": "h1", "street": "flop", "decision_idx": 0,
          "ev_loss_bb": 0.5, "src": "online"}
-    assert_eq(qf.entry_key(e), ("h1", "flop", 0, 0.5, "online"))
+    assert_eq(qf.entry_key(e), ("h1", "flop", 0))
+    assert_eq(qf.entry_key({**e, "src": "live", "ev_loss_bb": 0.7}),
+              qf.entry_key(e))  # same semantic decision, not two EV samples
     existing = [e]
     incoming = [dict(e), {"hand_id": "h2", "street": "turn", "decision_idx": 1,
                           "ev_loss_bb": 0.3, "src": "online"}]
@@ -3049,6 +3235,7 @@ def test_queue_feed_dedupe_and_reopen():
     assert_eq(qf.diff_new_entries(existing, [dict(e)]), ([], 0.0))  # nothing new -> noop
     # dedupe within a single incoming batch
     assert_eq(len(qf.dedupe_entries([dict(e), dict(e)])), 1)
+    assert_eq(len(qf.dedupe_entries([dict(e), {**e, "src": "live"}])), 1)
     # re-open routing
     c = datetime(2026, 7, 1, tzinfo=timezone.utc)
     assert_eq(qf.reopen_decision(True, None, []), "merge")     # open row exists
