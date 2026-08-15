@@ -1020,6 +1020,68 @@ def test_followup_markup_for_no_hero_uses_callback_ids():
 
 
 @test
+def test_followup_button_marks_question_as_authoritative_followup():
+    """H3865: Telegram button questions must carry explicit follow-up intent
+    into the session manager instead of being reclassified from their text.
+    """
+    import logging
+    from telegram_bot.bot import PokerWizardBot
+
+    question = "HJ ATo 採取 Limp 後，面對 BTN all-in 的 exact combo 策略是什麼？"
+    calls = []
+
+    class FakeMessage:
+        async def edit_text(self, *args, **kwargs):
+            return None
+
+        async def delete(self):
+            return None
+
+    class FakeQuery:
+        data = "fq:0"
+
+        async def answer(self):
+            return None
+
+        async def edit_message_reply_markup(self, **kwargs):
+            return None
+
+    class FakeTelegramBot:
+        async def send_message(self, *args, **kwargs):
+            return FakeMessage()
+
+    class FakeSession:
+        hand_contexts = {42: {"_followup_buttons": {"0": question}}}
+        pending_images = {}
+
+        async def send_message(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return ""
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.log = logging.getLogger("regression-h3865-button-boundary")
+    bot.session_manager = FakeSession()
+
+    async def fake_token(_user_id):
+        return "token"
+
+    bot._get_user_refresh_token = fake_token
+    update = type("Update", (), {
+        "callback_query": FakeQuery(),
+        "effective_chat": type("Chat", (), {"id": 42})(),
+        "effective_user": type("User", (), {"id": 7})(),
+    })()
+    context = type("Context", (), {"bot": FakeTelegramBot()})()
+
+    asyncio.run(bot.handle_followup_button(update, context))
+
+    assert_eq(len(calls), 1, "button invokes the session exactly once")
+    assert_eq(calls[0][0][:2], (42, question), "full stored question is forwarded")
+    assert_eq(calls[0][1].get("force_followup"), True,
+              "button boundary must bypass hand parsing")
+
+
+@test
 def test_gto_link_lives_on_summary_card_not_coaching():
     """"Open in GTO Wizard" button rides the 📋 summary card, not the coaching reply."""
     from telegram_bot.bot import PokerWizardBot

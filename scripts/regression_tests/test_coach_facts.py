@@ -1103,6 +1103,52 @@ def test_empty_parse_rehydrates_ambiguous_followup_after_restart():
 
 
 @test
+def test_explicit_followup_bypasses_hand_parser_for_hand_like_question():
+    """H3865: a generated button is follow-up intent, even if its text looks
+    like a complete hand description (ATo + limp + all-in).
+
+    The button boundary must not ask Flash to classify that text again: it can
+    hallucinate a new 40bb hand and send an invalid action line to GTOW.
+    """
+    import asyncio as _asyncio
+    import types as _types
+    from gemini_session import GeminiSessionManager
+
+    s = GeminiSessionManager.__new__(GeminiSessionManager)
+    s.hand_contexts = {42: {"hand": {"effective_bb": 14}}}
+    s.model = "test-model"
+    s._logger = logging.getLogger("regression-h3865-explicit-followup")
+    calls = []
+
+    async def forbidden_parse(self, *args, **kwargs):
+        calls.append("parse")
+        raise AssertionError("explicit follow-up must bypass hand parsing")
+
+    async def fake_followup(self, chat_id, *args, **kwargs):
+        calls.append("followup")
+        assert_eq(self.hand_contexts[chat_id]["hand"]["effective_bb"], 14)
+        return "ATo limp 後面對 BTN all-in 的已驗證策略"
+
+    async def fake_usage(self, *args, **kwargs):
+        return None
+
+    s._parse_hand = _types.MethodType(forbidden_parse, s)
+    s._run_followup_chat = _types.MethodType(fake_followup, s)
+    s._save_usage = _types.MethodType(fake_usage, s)
+
+    result = _asyncio.run(s.send_message(
+        42,
+        "HJ ATo 採取 Limp 後，面對 BTN all-in 的 exact combo 策略是什麼？",
+        user_id=42,
+        refresh_token="token",
+        force_followup=True,
+    ))
+
+    assert_eq(result, "ATo limp 後面對 BTN all-in 的已驗證策略")
+    assert_eq(calls, ["followup"])
+
+
+@test
 def test_ensure_hand_context_noop_without_token_or_db():
     """Rehydrate is best-effort: no token or no DB → leave context empty."""
     import asyncio as _asyncio

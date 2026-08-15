@@ -1289,6 +1289,7 @@ class PokerWizardBot:
             response = await self.session_manager.send_message(
                 chat_id, question, on_status=_on_status,
                 user_id=user_id, refresh_token=refresh_token,
+                force_followup=True,
             )
             await status_msg.delete()
             if response and response.strip():
