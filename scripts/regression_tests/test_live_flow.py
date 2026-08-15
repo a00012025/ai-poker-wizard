@@ -326,6 +326,37 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
 
 
 @test
+def test_live_parse_block_icm_import_works_without_src_on_sys_path():
+    """Container CLI executes live_flow with repo root, not src as top-level."""
+    import sys
+    from live_flow import parse_block
+
+    old_path = list(sys.path)
+    saved_modules = {
+        name: sys.modules.pop(name, None)
+        for name in ("gemini_session", "src.gemini_session")
+    }
+    try:
+        sys.path[:] = [
+            value for value in sys.path
+            if value.rstrip("/") != str(SCRIPTS_DIR.parent / "src")
+        ]
+        hand = parse_block(
+            "icm 25% avg 25bb Hero Hj has 28bb raise ATo "
+            "btn has 14bb all in hero call"
+        )
+    finally:
+        sys.path[:] = old_path
+        for name in ("gemini_session", "src.gemini_session"):
+            sys.modules.pop(name, None)
+            if saved_modules[name] is not None:
+                sys.modules[name] = saved_modules[name]
+
+    assert_eq(hand["tournament_type"], "icm")
+    assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
+
+
+@test
 def test_live_icm_multiraise_line_preserves_hero_fourbet_fold_node():
     """A sparse-stack ICM line must retain every raise/call continuation."""
     from live_flow import parse_block

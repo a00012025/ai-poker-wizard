@@ -1694,7 +1694,11 @@ def parse_block(block: str, client=None, model: str | None = None,
         return {"_refused": [
             f"輸入包含 {len(raw_blocks)} 手，必須先分手再解析"]}
     if not _raw_street_lines(block):
-        from gemini_session import GeminiSessionManager
+        # ``live_flow.py`` is also executed directly inside the deployment
+        # container. In that CLI shape repo root is importable but ``src`` is
+        # not a top-level module directory, so the unqualified import crashed
+        # before any live hand could be parsed (H3868 follow-up import).
+        from src.gemini_session import GeminiSessionManager
         structured_icm = GeminiSessionManager._parse_structured_icm_range_query(block)
         if structured_icm:
             structured_icm["_parse_trace"] = [{
