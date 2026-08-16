@@ -1372,65 +1372,41 @@ def test_training_plan_focus_and_readback():
     assert_true(any(text.startswith("🔍 解法") for text in review_texts))
 
 
-def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
-    """The focus button must have a queue row to provision/reuse a GTOW Drill;
-    it must never bypass the existing detail flow with a raw Trainer URL."""
-    from scorecard import focus_queue_item
-
-    item = focus_queue_item({
-        "spot_leaf": "river:SRP:SBvBB:OOP:[b-c]:vs_bet",
-        "spot_category": "river", "desc": "Hero SB 對 BB",
-        "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
-        "samples": [
-            {"gtow_hand_id": "h1", "street": "river", "decision_idx": 0,
-             "ev_loss_bb": 2.25},
-            {"gtow_hand_id": "h2", "street": "river", "decision_idx": 1,
-             "ev_loss_bb": 1.75},
-        ],
-    })
-    assert_eq(item["kind"], "drill")
-    assert_eq(item["added_by"], "scorecard_focus")
-    assert_eq(item["total_ev_loss_bb"], 4.0)
-    assert_eq([s["hand_id"] for s in item["source_hands"]], ["h1", "h2"])
-    missing_link = focus_queue_item({
-        "spot_leaf": "x", "drill_url": None, "source": "live",
-        "samples": [{"gtow_hand_id": "live-1", "street": "turn",
-                     "decision_idx": 0, "ev_loss_bb": 0.7}],
-    })
-    assert_eq(missing_link["source"], "live")
-    assert_eq(missing_link["source_hands"][0]["src"], "live")
-
+def test_weekly_focus_only_binds_drills_admitted_by_queue_gates():
+    """A weekly focus may reuse an admitted row, but never create one itself."""
     import asyncio
-    import queue_feed
     from scorecard import bind_focus_queue_items
 
-    calls = []
-    old_enqueue = queue_feed.enqueue_one
-
-    async def fake_enqueue(_conn, queued):
-        calls.append(queued)
-        return "inserted"
-
     class FakeConn:
-        async def fetchrow(self, _sql, leaf, depth_scope):
-            assert_eq(leaf, item["spot_leaf"])
-            assert_eq(depth_scope, "all")
-            return {"id": 91}
+        def __init__(self):
+            self.lookups = []
 
-    focus = [{
-        "spot_leaf": item["spot_leaf"], "spot_category": "river",
-        "desc": "Hero SB 對 BB", "drill_url": item["drill_url"],
-        "samples": [{"gtow_hand_id": "h1", "street": "river",
-                     "decision_idx": 0, "ev_loss_bb": 2.25}],
-    }]
-    queue_feed.enqueue_one = fake_enqueue
-    try:
-        ids = asyncio.run(bind_focus_queue_items(FakeConn(), focus))
-    finally:
-        queue_feed.enqueue_one = old_enqueue
+        async def fetchrow(self, sql, leaf, depth_scope):
+            assert_in("status IN ('pending','prescribed')", sql)
+            self.lookups.append((leaf, depth_scope))
+            assert_eq(depth_scope, "all")
+            return {"id": 91} if leaf == "admitted" else None
+
+        async def execute(self, *_args):
+            raise AssertionError("weekly focus must not write drill_queue")
+
+    focus = [
+        {"spot_leaf": "admitted", "drill_url": "https://example/admitted"},
+        {"spot_leaf": "live-one-off-noise", "source": "live",
+         "drill_url": "https://example/noise"},
+        {"spot_leaf": "online-below-threshold", "source": "online",
+         "drill_url": "https://example/noise"},
+    ]
+    conn = FakeConn()
+    ids = asyncio.run(bind_focus_queue_items(conn, focus))
+
     assert_eq(ids, [91])
     assert_eq(focus[0]["queue_id"], 91)
-    assert_eq(calls[0]["added_by"], "scorecard_focus")
+    assert_true("queue_id" not in focus[1])
+    assert_true("queue_id" not in focus[2])
+    assert_eq(conn.lookups, [("admitted", "all"),
+                             ("live-one-off-noise", "all"),
+                             ("online-below-threshold", "all")])
 
 
 def test_scorecard_html_analyze_links_filter_exact_hand_ids():
