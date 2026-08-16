@@ -697,6 +697,40 @@ def test_multiway_projection_matches_every_raise_by_real_pot_percentage():
     assert_eq(final_pot, 25.0)
 
 
+def test_live_hand_24_resolver_converts_sized_river_allin_to_solver_code():
+    """A live ``AI12.5`` token must never leak into a GTOW solutions URL."""
+    import gtow_action_resolver as resolver
+
+    seen = []
+    old = resolver._resolve_one_raise
+
+    def fake_resolve(**kwargs):
+        seen.append((kwargs["target_size"], kwargs["force_allin"]))
+        return "RAI"
+
+    resolver._resolve_one_raise = fake_resolve
+    try:
+        line, final_pot = resolver._resolve_street_codes(
+            gametype="MTTGeneral", depth=20.125,
+            preflop_actions="F-F-F-R2-F-F-F-C",
+            board_so_far="Ac3c8h5hTc", street_key="river",
+            raw_actions=[
+                {"position": "BB", "action": "X"},
+                {"position": "HJ", "action": "AI12.5", "size": 12.5},
+                {"position": "BB", "action": "F"},
+            ],
+            stop_after_n=2,
+            prior_streets={"flop": "X-R1.4-C", "turn": "X-R4.15-C"},
+            actual_pot=15.875,
+        )
+    finally:
+        resolver._resolve_one_raise = old
+
+    assert_eq(line, "X-RAI")
+    assert_eq(seen, [(12.5, True)])
+    assert_eq(final_pot, 28.375)
+
+
 def test_custom_spot_resolver_uses_explicit_pot_fraction_without_bb_pot():
     """A persisted ``pot_fraction`` is enough to resolve a custom solver line
     even when no absolute size/pot can be reconstructed."""
