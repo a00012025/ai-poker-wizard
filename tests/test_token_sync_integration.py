@@ -30,6 +30,8 @@ def test_pair_command_rejects_group_chat_before_touching_database():
     assert replies == ["為保護配對碼，請私訊 Bot 後再輸入 /pair。"]
 
 
+@pytest.mark.external
+@pytest.mark.db
 @pytest.mark.skipif(not os.getenv("SUPABASE_CONN"), reason="需要 SUPABASE_CONN")
 def test_logout_lock_order_blocks_concurrent_sync_from_restoring_token():
     async def scenario():
@@ -93,6 +95,7 @@ def test_logout_lock_order_blocks_concurrent_sync_from_restoring_token():
     asyncio.run(scenario())
 
 
+@pytest.mark.external
 @pytest.mark.skipif(
     not os.getenv("GTOW_SYNC_API_BASE"), reason="需要 GTOW_SYNC_API_BASE"
 )

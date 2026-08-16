@@ -7,10 +7,7 @@ emit-guard that rejects an incomplete Gemini hand.
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr_recall_eval import (
     select_parse_none,

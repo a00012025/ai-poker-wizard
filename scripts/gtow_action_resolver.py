@@ -15,11 +15,8 @@ Key decisions:
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_next_actions,
     nearest_depth,
@@ -29,16 +26,7 @@ from gto_api import (
     find_unique_nonallin_raise,
 )
 
-POSITION_ORDERS: dict[int, list[str]] = {
-    2: ["SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    5: ["UTG", "CO", "BTN", "SB", "BB"],
-    6: ["UTG", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-}
+from position_constants import CASH_POSITION_ORDERS as POSITION_ORDERS
 
 MTT_TREE_SIZE = 8  # MTTGeneral preflop tree
 STREET_ORDER = ("preflop", "flop", "turn", "river")

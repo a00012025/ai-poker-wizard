@@ -39,49 +39,6 @@ class ToolSpec:
         }
 
 
-def _json_schema(value: Any) -> Any:
-    """Convert a Google/Pydantic schema dump to ordinary JSON Schema."""
-    if isinstance(value, dict):
-        out = {}
-        for key, item in value.items():
-            # Google GenAI emits these metadata-only fields in model dumps;
-            # OpenAI function schemas do not need them.
-            if item is None or key in {"property_ordering"}:
-                continue
-            out[key] = _json_schema(item)
-        return out
-    if isinstance(value, list):
-        return [_json_schema(item) for item in value]
-    if hasattr(value, "value"):
-        value = value.value
-    if isinstance(value, str) and value.upper() in {
-        "OBJECT", "STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "NULL",
-    }:
-        return value.lower()
-    return value
-
-
-def tool_spec_from_declaration(declaration: Any, *, requires_db: bool = False) -> ToolSpec:
-    params = getattr(declaration, "parameters", None)
-    if params is None:
-        schema = {"type": "object", "properties": {}}
-    elif hasattr(params, "model_dump"):
-        schema = params.model_dump(mode="json", exclude_none=True)
-    elif hasattr(params, "to_json_dict"):
-        schema = params.to_json_dict()
-    else:
-        schema = dict(params)
-    schema = _json_schema(schema)
-    schema.setdefault("type", "object")
-    schema.setdefault("properties", {})
-    return ToolSpec(
-        name=declaration.name,
-        description=declaration.description or "",
-        parameters=schema,
-        requires_db=requires_db,
-    )
-
-
 COACH_FACTS_TOOL = ToolSpec(
     name="query_coach_facts",
     description=(

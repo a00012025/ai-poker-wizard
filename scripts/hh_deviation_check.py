@@ -12,12 +12,11 @@ Usage:
 """
 
 import json
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from hh_parser import parse_directory, parse_file, POSITION_ORDERS
+from hh_parser import parse_directory, parse_file
+from position_constants import POSITION_ORDER_8MAX, POSITION_ORDERS
 from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, find_closest_action_by_pot_fraction,
@@ -52,7 +51,6 @@ def _build_hands_169() -> list[str]:
 HANDS_169 = _build_hands_169()
 HAND_TO_169 = {h: i for i, h in enumerate(HANDS_169)}
 
-POSITION_ORDER_8MAX = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
 
 
 def _convert_preflop_to_8max(preflop_actions: str, num_players: int) -> str:

@@ -15,20 +15,21 @@ from typing import TYPE_CHECKING
 
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
-                          MessageHandler, filters, ContextTypes)
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from telegram.request import HTTPXRequest
-from src.claude_session import ClaudeSessionManager
 
 if TYPE_CHECKING:
     from src.database import Database
-
-# Allow importing from scripts/
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
+    from src.gemini_session import GeminiSessionManager
 
 from card_display import cards_to_emoji
-from coach_prompts import FOLLOWUP_REQUEST
 
 # Upload analysis timeout (seconds)
 ANALYSIS_TIMEOUT = 1800
@@ -56,13 +57,15 @@ def _estimate_live_batch_minutes(hand_count: int) -> tuple[int, int]:
     return low, high
 
 
-def _queue_payload(rows, *, page: int = 0,
-                   total: int | None = None) -> tuple[str, list[list[dict]]]:
+def _queue_payload(
+    rows, *, page: int = 0, total: int | None = None
+) -> tuple[str, list[list[dict]]]:
     """Render the current practice queue for both /queue and qcl refresh."""
     total = len(rows) if total is None else int(total)
     if total <= 0:
         return "📥 練習佇列已清空 — 沒有待練的行動線。", []
     from html import escape as _esc
+
     pages = max(1, (total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
     page = max(0, min(int(page), pages - 1))
     if pages > 1:
@@ -78,6 +81,7 @@ def _queue_payload(rows, *, page: int = 0,
             lbl = r["label"] or r["spot_leaf"]
         else:
             from spot_naming import compact_spot_name
+
             lbl = compact_spot_name(r)
         st = "（本週課表內）" if r["status"] == "prescribed" else ""
         if r["kind"] == "review":
@@ -86,13 +90,19 @@ def _queue_payload(rows, *, page: int = 0,
             anchor = r.get("review_anchor_url")
             anchor_street = r.get("review_anchor_street")
             if anchor:
-                row_btns.append({"text": f"↩ {i} {(anchor_street or '上游').title()}",
-                                 "url": anchor})
+                row_btns.append(
+                    {
+                        "text": f"↩ {i} {(anchor_street or '上游').title()}",
+                        "url": anchor,
+                    }
+                )
             if r["drill_url"]:
                 text = f"💥 {i} 損失" if anchor else f"🔗 復盤 {i}"
                 from gtow_trainer_url import apply_trainer_defaults
-                row_btns.append({"text": text,
-                                 "url": apply_trainer_defaults(r["drill_url"])})
+
+                row_btns.append(
+                    {"text": text, "url": apply_trainer_defaults(r["drill_url"])}
+                )
             actions = [
                 {"text": f"📚 {i} 來源", "callback_data": f"qsrc:{r['id']}"},
                 {"text": f"✔ {i} 完成", "callback_data": f"qcl:{r['id']}:{page}"},
@@ -105,21 +115,32 @@ def _queue_payload(rows, *, page: int = 0,
                 row_btns.extend(actions)
         else:
             from spot_naming import telegram_bias_summary
+
             ev = r["total_ev_loss_bb"] or 0
             # 手動加練（➕加練 / 復盤排入）不設 EV 門檻，可能是 0bb 的
             # non-leak spot；標「（手動加入）」讓 0.0bb 不被誤讀為算錯。
             manual = "（手動加入）" if r.get("added_by") == "manual" else ""
-            L.append(f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}{manual}")
+            L.append(
+                f"🎯 {i}. {_esc(lbl)} — 來自 {r['n_sources']} 手，累計損失 {ev:.1f}bb{st}{manual}"
+            )
             bias = telegram_bias_summary(r)
             if bias:
                 L.append(f"   ↳ {_esc(bias)}")
-            row_btns = [{"text": f"🎯 詳細／練習 {i}",
-                         "callback_data": f"qdet:{r['id']}:{page}"}]
-            row_btns.append({"text": f"📚 {i} 來源",
-                             "callback_data": f"qsrc:{r['id']}"})
-            row_btns.append({"text": f"✔ {i} 完成",
-                             "callback_data":
-                                 f"qcl:{r['id']}:{page}:completed"})
+            row_btns = [
+                {
+                    "text": f"🎯 詳細／練習 {i}",
+                    "callback_data": f"qdet:{r['id']}:{page}",
+                }
+            ]
+            row_btns.append(
+                {"text": f"📚 {i} 來源", "callback_data": f"qsrc:{r['id']}"}
+            )
+            row_btns.append(
+                {
+                    "text": f"✔ {i} 完成",
+                    "callback_data": f"qcl:{r['id']}:{page}:completed",
+                }
+            )
         buttons.append(row_btns)
     if pages > 1:
         nav = []
@@ -132,13 +153,13 @@ def _queue_payload(rows, *, page: int = 0,
     return "\n".join(L), buttons
 
 
-def _recent_live_sessions_payload(sessions: list[dict]
-                                  ) -> tuple[str, list[list[dict]]]:
+def _recent_live_sessions_payload(sessions: list[dict]) -> tuple[str, list[list[dict]]]:
     """Render the persisted /live report index and resend callbacks."""
     if not sessions:
         return "🃏 還沒有線下 session — 先用 /live 匯入現場手牌。", []
 
     from html import escape as _esc
+
     lines = ["🃏 <b>最近線下 Sessions</b>", "點按鈕可重新傳送該場復盤列表。", ""]
     buttons: list[list[dict]] = []
     for i, session in enumerate(sessions, 1):
@@ -150,6 +171,7 @@ def _recent_live_sessions_payload(sessions: list[dict]
         created_label = ""
         if created_at:
             from zoneinfo import ZoneInfo
+
             local_created = created_at.astimezone(ZoneInfo("Asia/Taipei"))
             created_label = local_created.strftime("%H:%M")
         raw_date = str(result.get("date") or "")
@@ -163,17 +185,21 @@ def _recent_live_sessions_payload(sessions: list[dict]
         else:
             date_label = "日期未知"
         stamp = f"{date_label} {created_label}".strip()
-        lines.append(
-            f"{i}. <b>{_esc(stamp)}</b> · {hands} 手 · {mistakes} 個偏差")
-        buttons.append([{
-            "text": f"↩ {i}　{stamp}（{hands} 手）",
-            "callback_data": f"lvs:{session['id']}",
-        }])
+        lines.append(f"{i}. <b>{_esc(stamp)}</b> · {hands} 手 · {mistakes} 個偏差")
+        buttons.append(
+            [
+                {
+                    "text": f"↩ {i}　{stamp}（{hands} 手）",
+                    "callback_data": f"lvs:{session['id']}",
+                }
+            ]
+        )
     return "\n".join(lines), buttons
 
 
-def _recent_online_sessions_payload(sessions: list[dict]
-                                    ) -> tuple[str, list[list[dict]]]:
+def _recent_online_sessions_payload(
+    sessions: list[dict],
+) -> tuple[str, list[list[dict]]]:
     """Render recent online ledger sessions with stable summary callbacks."""
     if not sessions:
         return ("♠️ 還沒有線上 session — 先用 ♠ 同步手牌或 /ingest。", [])
@@ -181,30 +207,40 @@ def _recent_online_sessions_payload(sessions: list[dict]
     from html import escape as _esc
     from session_review import _session_span, session_callback_key
 
-    lines = ["♠️ <b>最近線上 Sessions</b>",
-             "點按鈕可重新產生並傳送該場復盤 summary。", ""]
+    lines = [
+        "♠️ <b>最近線上 Sessions</b>",
+        "點按鈕可重新產生並傳送該場復盤 summary。",
+        "",
+    ]
     buttons: list[list[dict]] = []
     for i, session in enumerate(sessions, 1):
         span = _session_span(session["started_at"], session["ended_at"])
         hands = int(session.get("hands_count") or 0)
         tables = int(session.get("max_concurrent_tables") or 1)
-        lines.append(
-            f"{i}. <b>{_esc(span)}</b> · {hands} 手 · 最多 {tables} 桌")
-        buttons.append([{
-            "text": f"↩ {i}　{span}（{hands} 手）",
-            "callback_data": f"ors:{session_callback_key(session)}",
-        }])
+        lines.append(f"{i}. <b>{_esc(span)}</b> · {hands} 手 · 最多 {tables} 桌")
+        buttons.append(
+            [
+                {
+                    "text": f"↩ {i}　{span}（{hands} 手）",
+                    "callback_data": f"ors:{session_callback_key(session)}",
+                }
+            ]
+        )
     return "\n".join(lines), buttons
 
 
-def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
-                          *, page: int = 0, queue_page: int = 0,
-                          kind: str = "drill"
-                          ) -> tuple[str, list[list[dict]]]:
+def _queue_source_payload(
+    queue_id: int,
+    label: str,
+    sources: list[dict],
+    *,
+    page: int = 0,
+    queue_page: int = 0,
+    kind: str = "drill",
+) -> tuple[str, list[list[dict]]]:
     """Render exact online links + lightweight live-hand callbacks."""
     from html import escape as _esc
-    from queue_feed import (QUEUE_SOURCE_HANDS_PER_LINK,
-                            gtow_analyze_hands_urls)
+    from queue_feed import QUEUE_SOURCE_HANDS_PER_LINK, gtow_analyze_hands_urls
 
     online = [source for source in sources if source.get("source") == "online"]
     live = [source for source in sources if source.get("source") == "live"]
@@ -226,23 +262,31 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
         played_at = source.get("played_at")
         if hasattr(played_at, "astimezone"):
             from queue_feed import TPE
+
             date_text = played_at.astimezone(TPE).strftime("%-m/%-d")
         elif hasattr(played_at, "strftime"):
             date_text = played_at.strftime("%-m/%-d")
         else:
             date_text = "線下"
-        detail = " ".join(part for part in (
-            date_text, source.get("position"), source.get("hero_hand")) if part)
+        detail = " ".join(
+            part
+            for part in (date_text, source.get("position"), source.get("hero_hand"))
+            if part
+        )
         ev = float(source.get("ev_loss_bb") or 0.0)
         text = f"🎴 {detail} · 損失 {ev:.1f}bb"[:60]
-        action_rows.append([{
-            "text": text,
-            "callback_data":
-                f"qraw:{queue_id}:{page}:{queue_page}:{source['hand_id']}",
-        }])
+        action_rows.append(
+            [
+                {
+                    "text": text,
+                    "callback_data": f"qraw:{queue_id}:{page}:{queue_page}:{source['hand_id']}",
+                }
+            ]
+        )
 
-    pages = max(1, (len(action_rows) + QUEUE_SOURCE_PAGE_SIZE - 1)
-                // QUEUE_SOURCE_PAGE_SIZE)
+    pages = max(
+        1, (len(action_rows) + QUEUE_SOURCE_PAGE_SIZE - 1) // QUEUE_SOURCE_PAGE_SIZE
+    )
     page = max(0, min(int(page), pages - 1))
     heading = "📚 <b>來源牌局</b>"
     if pages > 1:
@@ -250,39 +294,59 @@ def _queue_source_payload(queue_id: int, label: str, sources: list[dict],
     counts = f"線上 {len(online)} 手、線下 {len(live)} 手"
     if missing:
         counts += f"、缺資料 {len(missing)} 手"
-    html = (f"{heading}\n{_esc(label or str(queue_id))}\n"
-            f"{counts}\n線上以實際來源牌局分組；線下保留原始紀錄。")
+    html = (
+        f"{heading}\n{_esc(label or str(queue_id))}\n"
+        f"{counts}\n線上以實際來源牌局分組；線下保留原始紀錄。"
+    )
     if online_ids:
-        html += ("\n線上只列這個項目的實際來源牌局，"
-                 f"每組最多 {QUEUE_SOURCE_HANDS_PER_LINK} 手。")
-    buttons = action_rows[page * QUEUE_SOURCE_PAGE_SIZE:
-                          (page + 1) * QUEUE_SOURCE_PAGE_SIZE]
+        html += (
+            "\n線上只列這個項目的實際來源牌局，"
+            f"每組最多 {QUEUE_SOURCE_HANDS_PER_LINK} 手。"
+        )
+    buttons = action_rows[
+        page * QUEUE_SOURCE_PAGE_SIZE : (page + 1) * QUEUE_SOURCE_PAGE_SIZE
+    ]
     if pages > 1:
         nav = []
         if page > 0:
-            nav.append({"text": "⬅ 上一頁",
-                        "callback_data":
-                            f"qsrc:{queue_id}:{page - 1}:{queue_page}"})
+            nav.append(
+                {
+                    "text": "⬅ 上一頁",
+                    "callback_data": f"qsrc:{queue_id}:{page - 1}:{queue_page}",
+                }
+            )
         if page + 1 < pages:
-            nav.append({"text": "下一頁 ➡",
-                        "callback_data":
-                            f"qsrc:{queue_id}:{page + 1}:{queue_page}"})
+            nav.append(
+                {
+                    "text": "下一頁 ➡",
+                    "callback_data": f"qsrc:{queue_id}:{page + 1}:{queue_page}",
+                }
+            )
         buttons.append(nav)
     if kind == "drill":
-        buttons.append([{
-            "text": "⬅ 返回練習詳情",
-            "callback_data": f"qdet:{queue_id}:{queue_page}",
-        }])
+        buttons.append(
+            [
+                {
+                    "text": "⬅ 返回練習詳情",
+                    "callback_data": f"qdet:{queue_id}:{queue_page}",
+                }
+            ]
+        )
     else:
-        buttons.append([{
-            "text": "⬅ 返回 Queue",
-            "callback_data": f"qpg:{queue_page}",
-        }])
+        buttons.append(
+            [
+                {
+                    "text": "⬅ 返回 Queue",
+                    "callback_data": f"qpg:{queue_page}",
+                }
+            ]
+        )
     return html, buttons
 
 
-def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
-                                *, page: int = 0) -> tuple[str, list[list[dict]]]:
+def _queue_drill_detail_payload(
+    item: dict, binding, lifetime, attempt, *, page: int = 0
+) -> tuple[str, list[list[dict]]]:
     """Render one queue prescription after its GTOW Drill is ensured."""
     from html import escape as _esc
     from spot_naming import compact_spot_name, telegram_bias_summary
@@ -292,13 +356,10 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
     bias_line = f"• {_esc(bias)}\n" if bias else ""
     target_hands = int(item.get("gtow_target_hands") or 30)
     target_score = float(item.get("gtow_target_score") or 0.90)
-    passed = (attempt.total_hands >= target_hands
-              and attempt.gto_score >= target_score)
+    passed = attempt.total_hands >= target_hands and attempt.gto_score >= target_score
     link_state = "剛建立" if binding.created else "已連結既有"
-    lifetime_score = (f"{lifetime.gto_score * 100:.1f}%"
-                      if lifetime.total_hands else "—")
-    attempt_score = (f"{attempt.gto_score * 100:.1f}%"
-                     if attempt.total_hands else "—")
+    lifetime_score = f"{lifetime.gto_score * 100:.1f}%" if lifetime.total_hands else "—"
+    attempt_score = f"{attempt.gto_score * 100:.1f}%" if attempt.total_hands else "—"
     status = "✅ 本次 Drill 已達標" if passed else "⏳ 尚未達標"
     html = (
         f"🎯 <b>{_esc(label)}</b>\n\n"
@@ -325,23 +386,25 @@ def _queue_drill_detail_payload(item: dict, binding, lifetime, attempt,
         [{"text": "🎯 開始練習", "url": item["drill_url"]}],
         [
             {"text": "🔄 更新成績", "callback_data": f"qdst:{qid}:{page}"},
-            {"text": "📚 來源牌局",
-             "callback_data": f"qsrc:{qid}:0:{page}"},
+            {"text": "📚 來源牌局", "callback_data": f"qsrc:{qid}:0:{page}"},
         ],
         [
-            {"text": "✔ 完成",
-             "callback_data": f"qcl:{qid}:{page}:completed"},
+            {"text": "✔ 完成", "callback_data": f"qcl:{qid}:{page}:completed"},
             {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
         ],
     ]
     return html, buttons
 
 
-async def _present_queue_detail(query, context, chat_id: int, html: str,
-                                markup, *, new_message: bool = False):
+async def _present_queue_detail(
+    query, context, chat_id: int, html: str, markup, *, new_message: bool = False
+):
     """Keep the weekly plan immutable while retaining in-place queue detail."""
-    kwargs = {"parse_mode": "HTML", "disable_web_page_preview": True,
-              "reply_markup": markup}
+    kwargs = {
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "reply_markup": markup,
+    }
     if new_message:
         await context.bot.send_message(chat_id, html, **kwargs)
     else:
@@ -357,11 +420,15 @@ def _setup_logger() -> logging.Logger:
     logger = logging.getLogger("poker_bot")
     if not logger.handlers:
         handler = logging.FileHandler(_LOG_DIR / "bot.log", encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
         logger.addHandler(handler)
         # Also log to console
         console = logging.StreamHandler()
-        console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        console.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
         logger.addHandler(console)
         logger.setLevel(logging.DEBUG)
     return logger
@@ -386,10 +453,16 @@ def _is_image_document(mime_type: str | None, fname_lower: str) -> bool:
 
 
 class PokerWizardBot:
-    def __init__(self, token: str = None, session_manager: ClaudeSessionManager = None,
-                 db: Database | None = None):
-        self.token = token or os.getenv('BOT_TOKEN')
-        self.session_manager = session_manager or ClaudeSessionManager()
+    def __init__(
+        self,
+        token: str | None = None,
+        session_manager: GeminiSessionManager | None = None,
+        db: Database | None = None,
+    ):
+        if session_manager is None:
+            raise ValueError("session_manager is required")
+        self.token = token or os.getenv("BOT_TOKEN")
+        self.session_manager = session_manager
         self.db = db
         self.application = None
         self.log = _setup_logger()
@@ -516,10 +589,10 @@ class PokerWizardBot:
 
 有問題隨時問我！"""
 
-        await update.message.reply_text(help_msg, parse_mode='Markdown')
+        await update.message.reply_text(help_msg, parse_mode="Markdown")
 
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /clear command — reset Claude session"""
+        """Handle /clear command — reset the chat session."""
         chat_id = update.effective_chat.id
         self.log.info(f"[{self._user_label(update)}] /clear")
         self.session_manager.clear_session(chat_id)
@@ -543,7 +616,9 @@ class PokerWizardBot:
             return
         try:
             code = generate_pair_code()
-            expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAIR_TTL_MINUTES)
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                minutes=PAIR_TTL_MINUTES
+            )
             await self.db.create_gtow_device_pairing(
                 update.effective_user.id,
                 hash_pair_code(code),
@@ -575,12 +650,16 @@ class PokerWizardBot:
             return
         rows = await self.db.list_gtow_sync_devices(update.effective_user.id)
         if not rows:
-            await update.message.reply_text("目前沒有已配對的 Chrome Extension。輸入 /pair 開始配對。")
+            await update.message.reply_text(
+                "目前沒有已配對的 Chrome Extension。輸入 /pair 開始配對。"
+            )
             return
         lines = ["🧩 已配對裝置", ""]
         for row in rows:
             last_sync = row["last_sync_at"]
-            sync_text = last_sync.strftime("%Y-%m-%d %H:%M UTC") if last_sync else "尚未同步"
+            sync_text = (
+                last_sync.strftime("%Y-%m-%d %H:%M UTC") if last_sync else "尚未同步"
+            )
             lines.append(
                 f"• {escape_markdown(row['name'], version=1)}\n"
                 f"  ID: `{short_device_id(row['id'])}` · {sync_text}"
@@ -598,18 +677,27 @@ class PokerWizardBot:
             return
         prefix = "".join(context.args).strip().lower()
         if not re.fullmatch(r"[0-9a-f]{8,32}", prefix):
-            await update.message.reply_text("請使用 `/revoke 裝置ID`。裝置 ID 可從 /devices 查看。", parse_mode="Markdown")
+            await update.message.reply_text(
+                "請使用 `/revoke 裝置ID`。裝置 ID 可從 /devices 查看。",
+                parse_mode="Markdown",
+            )
             return
         row = await self.db.revoke_gtow_sync_device(update.effective_user.id, prefix)
         if not row:
-            await update.message.reply_text("找不到唯一對應的有效裝置，請重新查看 /devices。")
+            await update.message.reply_text(
+                "找不到唯一對應的有效裝置，請重新查看 /devices。"
+            )
             return
         await update.message.reply_text(f"已撤銷裝置：{row['name']}")
 
-    async def settoken_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def settoken_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Handle /settoken <token> — validate and store user's GTO Wizard token."""
         if update.effective_chat.type != "private":
-            await update.message.reply_text("Token 綁定僅限私訊 Bot 使用，請勿在群組貼上 token。")
+            await update.message.reply_text(
+                "Token 綁定僅限私訊 Bot 使用，請勿在群組貼上 token。"
+            )
             return
         label = self._user_label(update)
         user_id = update.effective_user.id
@@ -618,26 +706,35 @@ class PokerWizardBot:
         # Extract token from command args
         raw_text = update.message.text or ""
         token = " ".join(context.args) if context.args else ""
-        self.log.info(f"[{label}] /settoken raw len={len(raw_text)}, token len={len(token)}")
+        self.log.info(
+            f"[{label}] /settoken raw len={len(raw_text)}, token len={len(token)}"
+        )
         if not token or not token.startswith("eyJ"):
-            self.log.warning(f"[{label}] /settoken bad format: token_empty={not token}, raw='{raw_text[:60]}'")
+            self.log.warning(
+                f"[{label}] /settoken bad format: token_empty={not token}, raw='{raw_text[:60]}'"
+            )
             await update.message.reply_text(
                 "格式錯誤。請使用書籤工具複製指令，或手動輸入：\n"
                 "`/settoken eyJhbG...`",
-                parse_mode='Markdown',
+                parse_mode="Markdown",
             )
             return
 
         # Validate: try refreshing the token
         from gto_signing import generate_keypair_jwk
         from gto_token import _refresh_access, _jwt_exp
+
         try:
             exp = _jwt_exp(token)
             remaining = exp - time.time()
             self.log.info(f"[{label}] /settoken JWT exp in {remaining:.0f}s")
             if exp < time.time():
-                self.log.warning(f"[{label}] /settoken token expired {-remaining:.0f}s ago")
-                await update.message.reply_text("Token 已過期，請重新登入 GTO Wizard 後再試。")
+                self.log.warning(
+                    f"[{label}] /settoken token expired {-remaining:.0f}s ago"
+                )
+                await update.message.reply_text(
+                    "Token 已過期，請重新登入 GTO Wizard 後再試。"
+                )
                 return
         except Exception as e:
             self.log.warning(f"[{label}] /settoken JWT decode failed: {e}")
@@ -653,6 +750,7 @@ class PokerWizardBot:
             try:
                 import requests as _req
                 from gto_token import API_BASE, ORIGIN
+
                 r = _req.post(
                     f"{API_BASE}/v1/token/refresh/",
                     json={"refresh": token},
@@ -665,7 +763,9 @@ class PokerWizardBot:
                     code = body.get("code", "")
             except Exception:
                 pass
-            self.log.warning(f"[{label}] /settoken refresh failed code={code} reason={reason}")
+            self.log.warning(
+                f"[{label}] /settoken refresh failed code={code} reason={reason}"
+            )
 
             ERROR_HINTS = {
                 "FORCED_LOGOUT": (
@@ -694,7 +794,9 @@ class PokerWizardBot:
             )
 
         self.log.info(f"[{label}] GTO token bound successfully")
-        await update.message.reply_text("GTO Wizard 帳號綁定成功！之後的查詢會使用你的帳號。")
+        await update.message.reply_text(
+            "GTO Wizard 帳號綁定成功！之後的查詢會使用你的帳號。"
+        )
 
     async def logout_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /logout — remove user's GTO Wizard token."""
@@ -707,10 +809,13 @@ class PokerWizardBot:
 
         from gto_credentials import invalidate_synced_credentials
         from gto_token import invalidate_user_token
+
         invalidate_user_token(user_id)
         invalidate_synced_credentials(user_id)
 
-        await update.message.reply_text("已解除 GTO Wizard token，並撤銷所有 Extension 同步裝置。")
+        await update.message.reply_text(
+            "已解除 GTO Wizard token，並撤銷所有 Extension 同步裝置。"
+        )
 
     async def _get_user_refresh_token(self, user_id: int) -> str | None:
         """Look up user's GTO Wizard refresh token from DB."""
@@ -723,8 +828,8 @@ class PokerWizardBot:
         """Set thread-local GTO token for the current thread."""
         from gto_credentials import get_user_credentials
         from gto_api import set_user_token
-        credentials = get_user_credentials(
-            user_id, fallback_refresh=refresh_token)
+
+        credentials = get_user_credentials(user_id, fallback_refresh=refresh_token)
         set_user_token(
             credentials.access_token,
             credentials.client_id,
@@ -735,15 +840,17 @@ class PokerWizardBot:
     def _clear_user_token():
         """Clear thread-local GTO token."""
         from gto_api import clear_user_token
+
         clear_user_token()
 
     async def _find_hh_hand(self, chat_id: int, text: str) -> dict | None:
         """Try to find a referenced hand from uploaded HH by hand_id suffix."""
         import re
+
         # Check in-memory cache first
         hands = self.hh_hands.get(chat_id, [])
         # Match TM followed by digits, or just last 4+ digits of a hand_id
-        m = re.search(r'(TM\d+)', text)
+        m = re.search(r"(TM\d+)", text)
         if m:
             full_id = m.group(1)
             for h in hands:
@@ -756,7 +863,7 @@ class PokerWizardBot:
         # Match "H2672", "h2672", or a bare "2672" (4+ digits).
         # Can't use \b before \d because "H" + "2" has no word boundary
         # (both are word chars).
-        m = re.search(r'(?:^|[^A-Za-z0-9])[Hh]?(\d{4,})\b', text)
+        m = re.search(r"(?:^|[^A-Za-z0-9])[Hh]?(\d{4,})\b", text)
         if m:
             suffix = m.group(1)
             for h in hands:
@@ -768,7 +875,7 @@ class PokerWizardBot:
         return None
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle all text messages via Claude session"""
+        """Handle text messages through the injected chat workflow."""
         await self._touch_user(update)
         user_id = update.effective_user.id
         if not await self._has_gto_token(user_id):
@@ -778,7 +885,9 @@ class PokerWizardBot:
         async with self._user_lock(chat_id):
             await self._handle_message_inner(update, context)
 
-    async def _handle_message_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def _handle_message_inner(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         user_text = update.message.text
@@ -792,7 +901,8 @@ class PokerWizardBot:
         if resend_pending and resend_pending[0] == user_id:
             _owner_id, sid, hand_idx = self._live_resend_pending.pop(chat_id)
             await self._apply_live_resend(
-                update, context, sid, hand_idx, user_text or "")
+                update, context, sid, hand_idx, user_text or ""
+            )
             return
 
         # /live capture mode: this message is the live-hand batch
@@ -810,8 +920,10 @@ class PokerWizardBot:
         # Check if user is referencing a hand from uploaded HH
         hh_hand = await self._find_hh_hand(chat_id, user_text)
         if hh_hand:
-            self.log.info(f"[{label}] HH follow-up: {hh_hand['hand_id']} "
-                          f"{hh_hand['hero_position']} {hh_hand['hero_hand']}")
+            self.log.info(
+                f"[{label}] HH follow-up: {hh_hand['hand_id']} "
+                f"{hh_hand['hero_position']} {hh_hand['hero_hand']}"
+            )
             await self._analyze_hh_hand(update, hh_hand, user_text)
             return
 
@@ -834,20 +946,26 @@ class PokerWizardBot:
             await status_msg.delete()
             # "Open in GTO Wizard" deep-link rides on the 📋 summary card.
             gto_markup = self._build_gto_link_markup(chat_id)
-            await _send_reply(update.message, text, self.log, label,
-                              reply_markup=gto_markup)
+            await _send_reply(
+                update.message, text, self.log, label, reply_markup=gto_markup
+            )
             gto_sent = True
 
         t0 = time.time()
         try:
             async with _TypingLoop(update.message.chat):
                 response = await self.session_manager.send_message(
-                    chat_id, user_text, on_status=_on_status,
-                    user_id=user_id, refresh_token=refresh_token,
+                    chat_id,
+                    user_text,
+                    on_status=_on_status,
+                    user_id=user_id,
+                    refresh_token=refresh_token,
                     send_gto_callback=send_gto_summary,
                 )
             elapsed = time.time() - t0
-            self.log.info(f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)")
+            self.log.info(
+                f"[{label}] Response OK ({elapsed:.1f}s, {len(response)} chars)"
+            )
 
             if not gto_sent:
                 await status_msg.delete()
@@ -855,15 +973,19 @@ class PokerWizardBot:
             if not response or not response.strip():
                 self.log.warning(f"[{label}] Empty response from session manager")
                 if not gto_sent:
-                    await update.message.reply_text("抱歉，分析過程中出現問題，請重新傳送手牌。")
+                    await update.message.reply_text(
+                        "抱歉，分析過程中出現問題，請重新傳送手牌。"
+                    )
                 return
             # When the summary card already carries the GTO Wizard link, the
             # coaching reply only needs follow-up buttons; otherwise fall back
             # to putting the link on the coaching reply.
             response, markup = self._finalize_followups(
-                chat_id, response, include_gto_link=not gto_sent)
-            await _send_reply(update.message, response, self.log, label,
-                              reply_markup=markup)
+                chat_id, response, include_gto_link=not gto_sent
+            )
+            await _send_reply(
+                update.message, response, self.log, label, reply_markup=markup
+            )
 
             # Send range grid images
             await self._send_pending_range_images(update, chat_id, label)
@@ -872,6 +994,7 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
             from gto_token import TokenExpiredError
+
             # Once the summary card went out the status message is gone, so a
             # failed coaching call must surface the error as a fresh reply.
             async def _show_err(text: str):
@@ -879,6 +1002,7 @@ class PokerWizardBot:
                     await update.message.reply_text(text)
                 else:
                     await status_msg.edit_text(text)
+
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during message handling")
                 await _show_err(
@@ -886,61 +1010,6 @@ class PokerWizardBot:
                 )
                 return
             await _show_err(f"❌ {str(e)}")
-
-    async def _build_grounded_coach_context(self, chat_id: int, user_id: int,
-                                             refresh_token: str,
-                                             hand_json: dict) -> dict:
-        """Analyze and enrich one hand while its per-user token is bound.
-
-        Every initial-coach surface must use this boundary.  Response-node
-        enrichment is solver I/O too, so it belongs inside the same worker
-        thread and credential scope as ``analyze_hand_full``.
-        """
-        def analyze_with_user_token():
-            self._setup_user_token(user_id, refresh_token)
-            try:
-                from analyze_hand import analyze_hand_full
-
-                context = analyze_hand_full(hand_json)
-                self.session_manager._prepare_initial_teaching_digest(context)
-                return context
-            finally:
-                self._clear_user_token()
-
-        context = await asyncio.to_thread(analyze_with_user_token)
-        self.session_manager.hand_contexts[chat_id] = context
-        pending_images = getattr(self.session_manager, "pending_images", None)
-        if isinstance(pending_images, dict):
-            pending_images.pop(chat_id, None)
-        return context
-
-    async def _verified_grounded_coaching(
-            self, chat_id: int, user_id: int, refresh_token: str,
-            context: dict, hand_desc: str, user_text: str,
-            source_instruction: str, on_status=None) -> str:
-        """Narrate one analyzed hand through the shared verified coach path."""
-        teaching_block = self.session_manager._initial_teaching_block(context)
-        solver_prompt_data = (
-            "逐街 solver 結果已另行顯示；以下 deterministic 教學骨架是本段唯一事實來源。"
-            if teaching_block else context.get("text", "")
-        )
-        prompt = (
-            f"{source_instruction}\n\n"
-            f"手牌摘要：\n{hand_desc}\n\n"
-            f"用戶要求：\n{user_text}\n\n"
-            f"已驗證 solver 事實：\n{solver_prompt_data}\n\n"
-            "逐街 summary 已由系統顯示；請總評整手，並從教學骨架挑 1–2 個"
-            "最有價值的 range／action 邏輯自然解釋，不要重新解析或改寫動作。\n\n"
-            f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
-        )
-        response = await self.session_manager._verified_initial_coaching(
-            chat_id, prompt, context, user_text,
-            on_status=on_status, user_id=user_id, refresh_token=refresh_token,
-        )
-        response, followups = self.session_manager._extract_followups(response)
-        if followups:
-            context["followup_questions"] = followups
-        return response
 
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""
@@ -952,7 +1021,9 @@ class PokerWizardBot:
         # Require user's GTO token
         refresh_token = await self._get_user_refresh_token(user_id)
         if not refresh_token:
-            await update.message.reply_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
+            await update.message.reply_text(
+                "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
+            )
             return
 
         t0 = time.time()
@@ -970,14 +1041,17 @@ class PokerWizardBot:
             if hand.get("streets"):
                 analysis_input["streets"] = hand["streets"]
 
-            context = await self._build_grounded_coach_context(
-                chat_id, user_id, refresh_token, analysis_input)
+            context = await self.session_manager.analyze_parsed_hand(
+                chat_id, analysis_input, user_id=user_id, refresh_token=refresh_token
+            )
 
             # Extract deviations for leak detection (fire-and-forget)
-            import asyncio as _aio
             if self.session_manager.db and self.session_manager.db.pool:
-                _aio.create_task(self.session_manager._extract_deviations(
-                    chat_id, hand_id, analysis_input, context))
+                asyncio.create_task(
+                    self.session_manager.extract_deviations(
+                        chat_id, hand_id, analysis_input, context
+                    )
+                )
 
             t_analyze = time.time()
             self.log.info(
@@ -999,10 +1073,14 @@ class PokerWizardBot:
                     )
                     hand_desc += f"\n{cards_to_emoji(board)} → {acts}"
 
-            response = await self._verified_grounded_coaching(
-                chat_id, user_id, refresh_token, context, hand_desc,
-                user_text or f"請分析 {hand_id}",
-                "用戶上傳了手牌歷史檔案；請使用已解析的穩定手牌資料。",
+            response = await self.session_manager.coach_parsed_hand(
+                chat_id,
+                context,
+                hand_description=hand_desc,
+                user_text=user_text or f"請分析 {hand_id}",
+                source_instruction="用戶上傳了手牌歷史檔案；請使用已解析的穩定手牌資料。",
+                user_id=user_id,
+                refresh_token=refresh_token,
             )
 
             elapsed = time.time() - t0
@@ -1016,11 +1094,14 @@ class PokerWizardBot:
                     continue
                 try:
                     await update.message.reply_text(
-                        chunk, parse_mode='Markdown',
-                        reply_markup=markup if not sent_markup else None)
+                        chunk,
+                        parse_mode="Markdown",
+                        reply_markup=markup if not sent_markup else None,
+                    )
                 except Exception:
                     await update.message.reply_text(
-                        chunk, reply_markup=markup if not sent_markup else None)
+                        chunk, reply_markup=markup if not sent_markup else None
+                    )
                 sent_markup = True
 
             # Flush any range images queued by tool calls during this turn.
@@ -1029,6 +1110,7 @@ class PokerWizardBot:
         except Exception as e:
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
+
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during HH follow-up")
                 await update.message.reply_text(
@@ -1040,7 +1122,9 @@ class PokerWizardBot:
         finally:
             await _typing.__aexit__(None, None, None)
 
-    async def _send_pending_range_images(self, update: Update, chat_id: int, label: str):
+    async def _send_pending_range_images(
+        self, update: Update, chat_id: int, label: str
+    ):
         """Send at most one range grid image (last street with data).
 
         Uses update.effective_chat so it works for both messages and
@@ -1061,23 +1145,23 @@ class PokerWizardBot:
                     hero_pos = hand.get("hero_position", "")
                     # Find the LAST street with solver data
                     last_spot, last_sol = None, None
-                    for spot, sol in zip(ctx.get("hero_spots", []),
-                                         ctx.get("solutions", [])):
+                    for spot, sol in zip(
+                        ctx.get("hero_spots", []), ctx.get("solutions", [])
+                    ):
                         if sol is not None:
                             last_spot, last_sol = spot, sol
                     if last_spot and last_sol:
                         from range_image import generate_range_grid
+
                         st = last_spot.get("street", "").capitalize()
                         board = last_spot.get("params", {}).get("board", "")
                         title = f"{hero_pos} {st}"
                         if board:
                             title += f" | {cards_to_emoji(board)}"
                         solver_pos = last_spot.get("solver_hero_pos", hero_pos)
-                        img = generate_range_grid(
-                            last_sol, solver_pos, title=title)
+                        img = generate_range_grid(last_sol, solver_pos, title=title)
                         if img:
-                            await chat.send_photo(
-                                photo=img, caption=f"📊 {title}")
+                            await chat.send_photo(photo=img, caption=f"📊 {title}")
                             ctx["_range_img_sent"] = True
 
             # Send queued images from tool calls (query_gto with position, no hand)
@@ -1089,13 +1173,13 @@ class PokerWizardBot:
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
-    def _finalize_followups(self, chat_id: int, response: str,
-                            include_gto_link: bool = False
-                            ) -> tuple[str, InlineKeyboardMarkup | None]:
+    def _finalize_followups(
+        self, chat_id: int, response: str, include_gto_link: bool = False
+    ) -> tuple[str, InlineKeyboardMarkup | None]:
         """Strip any leaked FOLLOWUP lines from a reply and turn them into buttons.
 
         Safety net for the plain-chat follow-up path (_chat), which never ran
-        _extract_followups — so the LLM's FOLLOWUP: lines surfaced as raw text
+        extract_followups — so the LLM's FOLLOWUP: lines surfaced as raw text
         instead of inline buttons. Re-extract here right before sending: strip
         the lines from the visible text and, when fresh questions are found,
         register them and rebuild the button set (clearing _followup_sent so the
@@ -1104,18 +1188,18 @@ class PokerWizardBot:
         On the initial-analysis paths the response is already clean (extraction
         happened upstream), so this is a no-op that just builds the markup.
         """
-        clean, recovered = self.session_manager._extract_followups(response)
+        clean, recovered = self.session_manager.extract_followups(response)
         if recovered:
             ctx = self.session_manager.hand_contexts.get(chat_id)
             if ctx is not None:
                 ctx["followup_questions"] = recovered
                 ctx["_followup_sent"] = False
-        markup = self._build_followup_markup(
-            chat_id, include_gto_link=include_gto_link)
+        markup = self._build_followup_markup(chat_id, include_gto_link=include_gto_link)
         return clean, markup
 
-    def _build_followup_markup(self, chat_id: int,
-                               include_gto_link: bool = False) -> InlineKeyboardMarkup | None:
+    def _build_followup_markup(
+        self, chat_id: int, include_gto_link: bool = False
+    ) -> InlineKeyboardMarkup | None:
         """Build follow-up question buttons from hand analysis context.
 
         When include_gto_link is True (image/text analysis flow only — not HH
@@ -1150,9 +1234,9 @@ class PokerWizardBot:
                 if opp_pos:
                     if len(streets) > 0:
                         last_street = ["flop", "turn", "river"][
-                            min(len(streets) - 1, 2)]
-                        questions.append(
-                            f"{opp_pos} 在 {last_street} 的範圍是什麼？")
+                            min(len(streets) - 1, 2)
+                        ]
+                        questions.append(f"{opp_pos} 在 {last_street} 的範圍是什麼？")
                     else:
                         questions.append(f"{opp_pos} 的範圍是什麼？")
 
@@ -1160,12 +1244,14 @@ class PokerWizardBot:
                     questions.append(f"{hero_pos} 這個 range 面對 3-bet 要怎麼防守？")
                 elif len(streets) > 1:
                     questions.append(
-                        f"{cards_to_emoji(hero_hand)} 在這裡應該用什麼 size？")
+                        f"{cards_to_emoji(hero_hand)} 在這裡應該用什麼 size？"
+                    )
                 elif is_icm:
                     questions.append("這個位置的 push 範圍有多寬？")
                 else:
                     questions.append(
-                        f"{cards_to_emoji(hero_hand)} 的 EV 跟其他手牌比如何？")
+                        f"{cards_to_emoji(hero_hand)} 的 EV 跟其他手牌比如何？"
+                    )
 
                 if is_icm:
                     questions.append("如果對手更短碼，策略會怎麼變？")
@@ -1190,8 +1276,9 @@ class PokerWizardBot:
             if include_gto_link:
                 gto_url = self._build_gto_solution_url(ctx)
                 if gto_url:
-                    keyboard.append([InlineKeyboardButton(
-                        "🧙 在 GTO Wizard 開啟", url=gto_url)])
+                    keyboard.append(
+                        [InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]
+                    )
 
             if not keyboard:
                 return None
@@ -1216,7 +1303,8 @@ class PokerWizardBot:
             if not gto_url:
                 return None
             return InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]])
+                [[InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]]
+            )
         except Exception:
             return None
 
@@ -1231,8 +1319,8 @@ class PokerWizardBot:
         Never raises — a failed build just means no button.
         """
         try:
-            from gtow_solution_url import (build_last_node_url,
-                                           build_node_url_for_street)
+            from gtow_solution_url import build_last_node_url, build_node_url_for_street
+
             node_street = ctx.get("_followup_node_street")
             if node_street:
                 url = build_node_url_for_street(ctx, node_street)
@@ -1243,8 +1331,9 @@ class PokerWizardBot:
             self.log.debug("GTOW solution URL build failed", exc_info=True)
             return None
 
-    async def handle_followup_button(self, update: Update,
-                                     context: ContextTypes.DEFAULT_TYPE):
+    async def handle_followup_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Handle inline keyboard button press.
 
         1. Remove buttons from the original message
@@ -1259,7 +1348,9 @@ class PokerWizardBot:
         chat_id = update.effective_chat.id
         key_or_question = data[3:]
         ctx = self.session_manager.hand_contexts.get(chat_id, {})
-        question = (ctx.get("_followup_buttons", {}) or {}).get(key_or_question, key_or_question)
+        question = (ctx.get("_followup_buttons", {}) or {}).get(
+            key_or_question, key_or_question
+        )
         user_id = update.effective_user.id
         label = f"followup-{chat_id}"
         self.log.info(f"[{label}] Button: {question}")
@@ -1272,13 +1363,21 @@ class PokerWizardBot:
 
         # Send question as a visible "user" message so it appears in chat
         await context.bot.send_message(
-            chat_id, f"💬 {question}",
-            read_timeout=10, write_timeout=10, connect_timeout=10)
+            chat_id,
+            f"💬 {question}",
+            read_timeout=10,
+            write_timeout=10,
+            connect_timeout=10,
+        )
 
         # Process the question
         raw_status = await context.bot.send_message(
-            chat_id, "⏳ 查詢中...",
-            read_timeout=10, write_timeout=10, connect_timeout=10)
+            chat_id,
+            "⏳ 查詢中...",
+            read_timeout=10,
+            write_timeout=10,
+            connect_timeout=10,
+        )
         status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
         async def _on_status(msg: str):
@@ -1287,8 +1386,11 @@ class PokerWizardBot:
         refresh_token = await self._get_user_refresh_token(user_id)
         try:
             response = await self.session_manager.send_message(
-                chat_id, question, on_status=_on_status,
-                user_id=user_id, refresh_token=refresh_token,
+                chat_id,
+                question,
+                on_status=_on_status,
+                user_id=user_id,
+                refresh_token=refresh_token,
                 force_followup=True,
             )
             await status_msg.delete()
@@ -1303,16 +1405,23 @@ class PokerWizardBot:
                     chunk_markup = markup if i == len(chunks) - 1 else None
                     try:
                         await context.bot.send_message(
-                            chat_id, chunk, parse_mode='Markdown',
+                            chat_id,
+                            chunk,
+                            parse_mode="Markdown",
                             reply_markup=chunk_markup,
-                            read_timeout=30, write_timeout=30,
-                            connect_timeout=30)
+                            read_timeout=30,
+                            write_timeout=30,
+                            connect_timeout=30,
+                        )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id, _strip_markdown(chunk),
+                            chat_id,
+                            _strip_markdown(chunk),
                             reply_markup=chunk_markup,
-                            read_timeout=30, write_timeout=30,
-                            connect_timeout=30)
+                            read_timeout=30,
+                            write_timeout=30,
+                            connect_timeout=30,
+                        )
 
             # Flush any range images queued by tool calls during this turn.
             # Without this, images get stranded and bleed into the next message.
@@ -1336,7 +1445,9 @@ class PokerWizardBot:
         async with self._user_lock(chat_id):
             await self._handle_photo_inner(update, context)
 
-    async def _handle_photo_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def _handle_photo_inner(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         label = self._user_label(update)
         user_id = update.effective_user.id
         caption = update.message.caption or ""
@@ -1365,12 +1476,19 @@ class PokerWizardBot:
 
         await self._run_image_analysis(
             update,
-            label=label, user_id=user_id, caption=caption,
-            image_bytes=image_bytes, mime_type="image/jpeg",
-            status_msg=status_msg, refresh_token=refresh_token, t0=t0,
+            label=label,
+            user_id=user_id,
+            caption=caption,
+            image_bytes=image_bytes,
+            mime_type="image/jpeg",
+            status_msg=status_msg,
+            refresh_token=refresh_token,
+            t0=t0,
         )
 
-    async def _download_telegram_image(self, source, label: str, status_msg) -> bytes | None:
+    async def _download_telegram_image(
+        self, source, label: str, status_msg
+    ) -> bytes | None:
         """Download bytes from a Telegram PhotoSize or Document with retry.
 
         Returns None when all attempts timed out (status message updated).
@@ -1378,11 +1496,17 @@ class PokerWizardBot:
         for attempt in range(3):
             try:
                 tg_file = await source.get_file(
-                    read_timeout=30, write_timeout=30, connect_timeout=30,
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=30,
                 )
-                return bytes(await tg_file.download_as_bytearray(
-                    read_timeout=30, write_timeout=30, connect_timeout=30,
-                ))
+                return bytes(
+                    await tg_file.download_as_bytearray(
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=30,
+                    )
+                )
             except telegram.error.TimedOut:
                 delay = 3 * (attempt + 1)
                 self.log.warning(
@@ -1395,10 +1519,17 @@ class PokerWizardBot:
         return None
 
     async def _run_image_analysis(
-        self, update: Update, *,
-        label: str, user_id: int, caption: str,
-        image_bytes: bytes, mime_type: str,
-        status_msg, refresh_token, t0: float,
+        self,
+        update: Update,
+        *,
+        label: str,
+        user_id: int,
+        caption: str,
+        image_bytes: bytes,
+        mime_type: str,
+        status_msg,
+        refresh_token,
+        t0: float,
     ):
         """Run the shared image-analysis pipeline.
 
@@ -1413,8 +1544,9 @@ class PokerWizardBot:
             # Put the "Open in GTO Wizard" deep-link on the analysis card (📋),
             # not the coaching reply that follows.
             gto_markup = self._build_gto_link_markup(update.effective_chat.id)
-            await _send_reply(update.message, text, self.log, label,
-                              reply_markup=gto_markup)
+            await _send_reply(
+                update.message, text, self.log, label, reply_markup=gto_markup
+            )
             gto_sent = True
 
         try:
@@ -1443,24 +1575,31 @@ class PokerWizardBot:
             # GTO Wizard link rides on the 📋 summary card; coaching reply only
             # carries the follow-up question buttons. Fall back to putting the
             # link on the coaching reply if the summary card never went out.
-            markup = self._build_followup_markup(update.effective_chat.id,
-                                                 include_gto_link=not gto_sent)
-            await _send_reply(update.message, response, self.log, label,
-                              reply_markup=markup)
+            markup = self._build_followup_markup(
+                update.effective_chat.id, include_gto_link=not gto_sent
+            )
+            await _send_reply(
+                update.message, response, self.log, label, reply_markup=markup
+            )
 
             # Send range grid images
-            await self._send_pending_range_images(update, update.effective_chat.id, label)
+            await self._send_pending_range_images(
+                update, update.effective_chat.id, label
+            )
 
         except Exception as e:
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
+
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during photo analysis")
                 await status_msg.edit_text(
                     "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                 )
                 return
-            self.log.error(f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True)
+            self.log.error(
+                f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True
+            )
             err_msg = f"❌ 分析截圖時發生錯誤：{e}"
             if gto_sent:
                 # status_msg was deleted after sending GTO summary;
@@ -1480,7 +1619,9 @@ class PokerWizardBot:
         async with self._user_lock(chat_id):
             await self._handle_document_inner(update, context)
 
-    async def _handle_document_inner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def _handle_document_inner(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         label = self._user_label(update)
         user_id = update.effective_user.id
         doc = update.message.document
@@ -1491,7 +1632,9 @@ class PokerWizardBot:
         fname = doc.file_name or ""
         fsize = doc.file_size or 0
         caption = update.message.caption or ""
-        self.log.info(f"[{label}] Document: {fname} ({fsize} bytes), caption: {caption[:100]}")
+        self.log.info(
+            f"[{label}] Document: {fname} ({fsize} bytes), caption: {caption[:100]}"
+        )
 
         if self.db:
             try:
@@ -1514,10 +1657,14 @@ class PokerWizardBot:
                 return
             await self._run_image_analysis(
                 update,
-                label=label, user_id=user_id, caption=caption,
+                label=label,
+                user_id=user_id,
+                caption=caption,
                 image_bytes=image_bytes,
                 mime_type=doc.mime_type or "image/jpeg",
-                status_msg=status_msg, refresh_token=refresh_token, t0=t0,
+                status_msg=status_msg,
+                refresh_token=refresh_token,
+                t0=t0,
             )
             return
 
@@ -1525,7 +1672,7 @@ class PokerWizardBot:
         # When starting_stack=0, analyze_hands auto-detects from first hand's hero chips
         starting_stack = 0
         tournament_size = 1000
-        caption_numbers = re.findall(r'\d+', caption)
+        caption_numbers = re.findall(r"\d+", caption)
         if caption_numbers:
             starting_stack = int(caption_numbers[0])
             if len(caption_numbers) >= 2:
@@ -1535,9 +1682,7 @@ class PokerWizardBot:
 
         # Validate file type
         if not (fname_lower.endswith(".txt") or fname_lower.endswith(".zip")):
-            await update.message.reply_text(
-                "請上傳手牌歷史檔案（.txt 或 .zip）"
-            )
+            await update.message.reply_text("請上傳手牌歷史檔案（.txt 或 .zip）")
             return
 
         # Validate file size (5MB max)
@@ -1555,9 +1700,12 @@ class PokerWizardBot:
             # Download file (retry on Telegram timeout)
             tg_file = await _tg_retry(
                 lambda: doc.get_file(
-                    read_timeout=30, write_timeout=30, connect_timeout=30,
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=30,
                 ),
-                label=label, log=self.log,
+                label=label,
+                log=self.log,
             )
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmpdir_path = Path(tmpdir)
@@ -1565,9 +1713,12 @@ class PokerWizardBot:
                 await _tg_retry(
                     lambda: tg_file.download_to_drive(
                         str(download_path),
-                        read_timeout=30, write_timeout=30, connect_timeout=30,
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=30,
                     ),
-                    label=label, log=self.log,
+                    label=label,
+                    log=self.log,
                 )
 
                 # Extract txt files
@@ -1575,7 +1726,9 @@ class PokerWizardBot:
                 if fname_lower.endswith(".zip"):
                     with zipfile.ZipFile(download_path) as zf:
                         for name in zf.namelist():
-                            if name.lower().endswith(".txt") and not name.startswith("__"):
+                            if name.lower().endswith(".txt") and not name.startswith(
+                                "__"
+                            ):
                                 zf.extract(name, tmpdir_path)
                                 txt_files.append(tmpdir_path / name)
                 else:
@@ -1586,11 +1739,10 @@ class PokerWizardBot:
                     return
 
                 # Parse hands
-                await status_msg.edit_text(
-                    f"📂 解析 {len(txt_files)} 個檔案..."
-                )
+                await status_msg.edit_text(f"📂 解析 {len(txt_files)} 個檔案...")
 
                 from hh_parser import parse_file
+
                 all_hands = []
                 for tf in sorted(txt_files):
                     hands = parse_file(tf, include_folds=True)
@@ -1609,7 +1761,9 @@ class PokerWizardBot:
                 # Require user's GTO token
                 refresh_token = await self._get_user_refresh_token(user_id)
                 if not refresh_token:
-                    await status_msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
+                    await status_msg.edit_text(
+                        "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
+                    )
                     return
 
                 # Run deviation analysis in thread to not block event loop
@@ -1618,7 +1772,11 @@ class PokerWizardBot:
                 async def progress_callback(current, total, hand_info):
                     now = time.time()
                     # Update every 10 hands or every 5 seconds
-                    if current == total or current % 10 == 0 or now - last_update_time[0] > 5:
+                    if (
+                        current == total
+                        or current % 10 == 0
+                        or now - last_update_time[0] > 5
+                    ):
                         last_update_time[0] = now
                         elapsed = now - t0
                         try:
@@ -1636,7 +1794,9 @@ class PokerWizardBot:
                 progress_queue = asyncio.Queue()
 
                 def sync_progress(current, total, info):
-                    loop.call_soon_threadsafe(progress_queue.put_nowait, (current, total, info))
+                    loop.call_soon_threadsafe(
+                        progress_queue.put_nowait, (current, total, info)
+                    )
 
                 async def drain_progress():
                     while True:
@@ -1658,9 +1818,13 @@ class PokerWizardBot:
                 def _run_in_thread():
                     _setup(_user_id, _refresh_token)
                     try:
-                        return analyze_hands(all_hands, delay=0.3, on_progress=sync_progress,
-                                             starting_stack=_starting_stack,
-                                             tournament_size=_tournament_size)
+                        return analyze_hands(
+                            all_hands,
+                            delay=0.3,
+                            on_progress=sync_progress,
+                            starting_stack=_starting_stack,
+                            tournament_size=_tournament_size,
+                        )
                     finally:
                         _clear()
 
@@ -1682,7 +1846,9 @@ class PokerWizardBot:
                     results = await analysis_task
                 except asyncio.TimeoutError:
                     await drain_progress()
-                    self.log.warning(f"[{label}] HH analysis timed out after {ANALYSIS_TIMEOUT}s")
+                    self.log.warning(
+                        f"[{label}] HH analysis timed out after {ANALYSIS_TIMEOUT}s"
+                    )
                     await status_msg.edit_text(
                         f"分析超時（{ANALYSIS_TIMEOUT // 60} 分鐘），請減少手牌數量後重試。"
                     )
@@ -1704,7 +1870,9 @@ class PokerWizardBot:
 
                 # Format report
                 report = format_deviation_report(results)
-                report += "\n\n💬 回覆 hand ID（如 `TM5600279272`）可查看該手詳細 GTO 分析"
+                report += (
+                    "\n\n💬 回覆 hand ID（如 `TM5600279272`）可查看該手詳細 GTO 分析"
+                )
                 report += f"\n⏱ 分析耗時 {elapsed:.0f} 秒"
 
                 # Send report
@@ -1715,13 +1883,16 @@ class PokerWizardBot:
             elapsed = time.time() - t0
             # Handle token expiry gracefully
             from gto_token import TokenExpiredError
+
             if isinstance(e, TokenExpiredError):
                 self.log.warning(f"[{label}] Token expired during HH upload")
                 await status_msg.edit_text(
                     "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                 )
                 return
-            self.log.error(f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True)
+            self.log.error(
+                f"[{label}] HH upload error after {elapsed:.1f}s: {e}", exc_info=True
+            )
             await status_msg.edit_text(f"❌ 分析時發生錯誤：{e}")
 
     async def ingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1740,17 +1911,22 @@ class PokerWizardBot:
             await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
             return
         from src.ingest_runner import enqueue_request, register_status_message
+
         reused = await enqueue_request(self.db.pool, user_id)
         msg = await update.message.reply_text(
-            "⏳ 已有一件同步在跑，完成後會通知你" if reused
-            else "⏳ 已排入增量同步佇列，開始後會即時更新進度…")
+            "⏳ 已有一件同步在跑，完成後會通知你"
+            if reused
+            else "⏳ 已排入增量同步佇列，開始後會即時更新進度…"
+        )
         # Hand this reply to the poller so it edits progress in place on claim.
         # On a reused request the in-flight run already owns its own message, so
         # only register when we actually enqueued a fresh one.
         if not reused:
             register_status_message(user_id, msg.chat_id, msg.message_id)
 
-    async def fullingest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def fullingest_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """/fullingest — owner-only: full-history import, behind a confirm menu.
 
         A full backfill re-sweeps every hand since the ledger epoch and can take
@@ -1764,17 +1940,26 @@ class PokerWizardBot:
         if not self.db or not self.db.pool:
             await update.message.reply_text("⚠️ 資料庫未連線，無法排入攝取佇列")
             return
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ 確定全量匯入", callback_data="fullingest:confirm"),
-            InlineKeyboardButton("❌ 取消", callback_data="fullingest:cancel"),
-        ]])
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ 確定全量匯入", callback_data="fullingest:confirm"
+                    ),
+                    InlineKeyboardButton("❌ 取消", callback_data="fullingest:cancel"),
+                ]
+            ]
+        )
         await update.message.reply_text(
             "⚠️ <b>全量匯入</b>會重抓 GTOW 上所有歷史手牌（自 ledger epoch 2026-03 起），"
             "可能需要數分鐘～十幾分鐘，期間無法同時跑其他同步。\n\n確定要全量匯入嗎？",
-            parse_mode="HTML", reply_markup=kb)
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
 
-    async def handle_fullingest_button(self, update: Update,
-                                       context: ContextTypes.DEFAULT_TYPE):
+    async def handle_fullingest_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Confirm/cancel for /fullingest. On ✅ enqueue mode='full' and hand the
         (now-edited) confirmation message to the poller for live progress."""
         query = update.callback_query
@@ -1791,26 +1976,35 @@ class PokerWizardBot:
             await query.edit_message_text("⚠️ 資料庫未連線，無法排入攝取佇列")
             return
         from src.ingest_runner import enqueue_request, register_status_message
+
         user_id = query.from_user.id
         reused = await enqueue_request(self.db.pool, user_id, mode="full")
         if reused:
             await query.edit_message_text(
-                "⏳ 已有一件同步在跑，完成後會通知你（全量匯入未排入，請稍後再試）")
+                "⏳ 已有一件同步在跑，完成後會通知你（全量匯入未排入，請稍後再試）"
+            )
             return
         await query.edit_message_text("⏳ 已排入全量匯入佇列，開始後會即時更新進度…")
         # query.message is the just-edited confirmation message; the poller edits
         # this same message in place with the live progress bar.
-        register_status_message(user_id, query.message.chat_id,
-                                query.message.message_id)
+        register_status_message(
+            user_id, query.message.chat_id, query.message.message_id
+        )
 
     # ── 線下流: /live /lives /queue /plan + inline buttons ───────────────────
 
     @staticmethod
     def _rows_to_markup(rows: list[list[dict]]) -> InlineKeyboardMarkup | None:
         """[[{"text", "url"|"callback_data"}]] -> InlineKeyboardMarkup."""
-        kb = [[InlineKeyboardButton(b["text"], url=b.get("url"),
-                                    callback_data=b.get("callback_data"))
-               for b in row] for row in rows]
+        kb = [
+            [
+                InlineKeyboardButton(
+                    b["text"], url=b.get("url"), callback_data=b.get("callback_data")
+                )
+                for b in row
+            ]
+            for row in rows
+        ]
         return InlineKeyboardMarkup(kb) if kb else None
 
     @staticmethod
@@ -1819,17 +2013,27 @@ class PokerWizardBot:
         so a re-tap is an idempotent enqueue no-op (enqueue_one dedupes)."""
         if not markup:
             return None
-        kb = [[(InlineKeyboardButton(done_text, callback_data=b.callback_data)
-                if b.callback_data == tapped_data else b)
-               for b in row] for row in markup.inline_keyboard]
+        kb = [
+            [
+                (
+                    InlineKeyboardButton(done_text, callback_data=b.callback_data)
+                    if b.callback_data == tapped_data
+                    else b
+                )
+                for b in row
+            ]
+            for row in markup.inline_keyboard
+        ]
         return InlineKeyboardMarkup(kb)
 
     def _is_owner(self, update: Update) -> bool:
-        return bool(self.admin_chat_id
-                    and update.effective_user.id == self.admin_chat_id)
+        return bool(
+            self.admin_chat_id and update.effective_user.id == self.admin_chat_id
+        )
 
-    async def _answer_callback_safely(self, query, text: str | None = None,
-                                      **kwargs) -> bool:
+    async def _answer_callback_safely(
+        self, query, text: str | None = None, **kwargs
+    ) -> bool:
         """ACK a callback without letting an expired Telegram ID kill work.
 
         Slow cold-cache paths must ACK before doing their work, but an update
@@ -1843,8 +2047,8 @@ class PokerWizardBot:
             message = str(exc).lower()
             if "query is too old" in message or "query id is invalid" in message:
                 self.log.warning(
-                    "Telegram callback ACK expired; continuing message flow: %s",
-                    exc)
+                    "Telegram callback ACK expired; continuing message flow: %s", exc
+                )
                 return False
             raise
 
@@ -1864,10 +2068,12 @@ class PokerWizardBot:
                 "貼上現場手牌（下一則訊息）。每手以「Eff <有效籌碼>」開頭，"
                 "一則訊息可貼多手；街與街換行，例如：\n\n"
                 "Eff 25bb co raise hero bb call As2s\n"
-                "AhQhJh x b1.2 c\n2h x b1.5 f")
+                "AhQhJh x b1.2 c\n2h x b1.5 f"
+            )
 
-    async def live_sessions_command(self, update: Update,
-                                    context: ContextTypes.DEFAULT_TYPE):
+    async def live_sessions_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """/lives — owner-only: list recent persisted live-session reports."""
         if not self._is_owner(update):
             return
@@ -1876,15 +2082,21 @@ class PokerWizardBot:
             return
         self.log.info(f"[{self._user_label(update)}] /lives")
         from live_flow import list_recent_sessions
+
         sessions = await list_recent_sessions(
-            self.db.pool, update.effective_chat.id, LIVE_SESSION_LIST_LIMIT)
+            self.db.pool, update.effective_chat.id, LIVE_SESSION_LIST_LIMIT
+        )
         html, buttons = _recent_live_sessions_payload(sessions)
         await update.message.reply_text(
-            html, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(buttons))
+            html,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons),
+        )
 
-    async def online_sessions_command(self, update: Update,
-                                      context: ContextTypes.DEFAULT_TYPE):
+    async def online_sessions_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """/sessions — owner-only: list recent online sessions for review resend."""
         if not self._is_owner(update):
             return
@@ -1893,27 +2105,33 @@ class PokerWizardBot:
             return
         self.log.info(f"[{self._user_label(update)}] /sessions")
         from session_review import list_recent_sessions
-        sessions = await list_recent_sessions(
-            self.db.pool, ONLINE_SESSION_LIST_LIMIT)
+
+        sessions = await list_recent_sessions(self.db.pool, ONLINE_SESSION_LIST_LIMIT)
         html, buttons = _recent_online_sessions_payload(sessions)
         await update.message.reply_text(
-            html, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(buttons))
+            html,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons),
+        )
 
     async def _process_live_batch(self, update: Update, text: str):
         """Run scripts/live_flow.py on the batch, reply with the deviation
         report + [Hand N 詳細] callbacks + 🎯 drill URL buttons."""
         import json as _json
         from live_flow import split_batch
+
         label = self._user_label(update)
         n = len(split_batch(text))
         if n == 0:
             await update.message.reply_text(
-                "沒有偵測到手牌 — 每手要以「Eff <有效籌碼>」開頭。")
+                "沒有偵測到手牌 — 每手要以「Eff <有效籌碼>」開頭。"
+            )
             return
         eta_low, eta_high = _estimate_live_batch_minutes(n)
         msg = await update.message.reply_text(
-            f"🃏 收到 {n} 手，解析評分中…（約 {eta_low}-{eta_high} 分鐘，依 solver 速度浮動）")
+            f"🃏 收到 {n} 手，解析評分中…（約 {eta_low}-{eta_high} 分鐘，依 solver 速度浮動）"
+        )
         refresh_token = await self._get_user_refresh_token(update.effective_user.id)
         if not refresh_token:
             await msg.edit_text("請先使用 /settoken 綁定你的 GTO Wizard 帳號。")
@@ -1931,34 +2149,49 @@ class PokerWizardBot:
             child_env.pop("GTOW_REFRESH_TOKEN", None)
             child_env.pop("POKER_BOT_PROCESS", None)
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, "scripts/live_flow.py", "--file", tmp_in,
-                "--json-out", tmp_out, cwd=str(root),
+                sys.executable,
+                "scripts/live_flow.py",
+                "--file",
+                tmp_in,
+                "--json-out",
+                tmp_out,
+                cwd=str(root),
                 env=child_env,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
             out, _ = await proc.communicate()
             if proc.returncode != 0 or not Path(tmp_out).exists():
                 tail = out.decode(errors="replace")[-500:]
                 await msg.edit_text(f"⚠️ 匯入失敗：\n{tail}")
                 return
             result = _json.loads(Path(tmp_out).read_text())
-            from live_flow import (hand_id_for, render_session_page,
-                                   save_session, session_page_buttons,
-                                   set_session_message)
+            from live_flow import (
+                hand_id_for,
+                render_session_page,
+                save_session,
+                session_page_buttons,
+                set_session_message,
+            )
+
             date_str = result.get("date")
             session_key = hand_id_for(text, date_str)
             async with self.db.pool.acquire() as conn:
                 session_id = await save_session(
-                    conn, session_key, update.effective_chat.id, result)
+                    conn, session_key, update.effective_chat.id, result
+                )
             html, _prev, _next = render_session_page(result, 0)
-            markup = self._rows_to_markup(
-                session_page_buttons(result, session_id, 0))
+            markup = self._rows_to_markup(session_page_buttons(result, session_id, 0))
             try:
                 await msg.delete()
             except Exception:
                 pass
             sent = await update.message.reply_text(
-                html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=markup)
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
             async with self.db.pool.acquire() as conn:
                 await set_session_message(conn, session_id, sent.message_id)
             self.log.info(f"[{label}] /live done: {result['totals']}")
@@ -1975,12 +2208,19 @@ class PokerWizardBot:
                 except OSError:
                     pass
 
-    async def _apply_live_resend(self, update, context, session_id: int,
-                                 hand_idx: int, block: str):
-        from live_flow import (load_session, overwrite_hand, process_resend_block,
-                               render_session_page, resend_entry_is_graded,
-                               resend_failure_message, session_page_buttons,
-                               set_session_message)
+    async def _apply_live_resend(
+        self, update, context, session_id: int, hand_idx: int, block: str
+    ):
+        from live_flow import (
+            load_session,
+            overwrite_hand,
+            process_resend_block,
+            render_session_page,
+            resend_entry_is_graded,
+            resend_failure_message,
+            session_page_buttons,
+            set_session_message,
+        )
 
         msg = await update.message.reply_text("🔁 重新解析並覆蓋中…")
         async with self.db.pool.acquire() as conn:
@@ -2021,16 +2261,16 @@ class PokerWizardBot:
             if applied.get("error") == "session_missing":
                 await msg.edit_text("這個線下 session 已過期，請重跑 /live。")
             else:
-                await msg.edit_text(resend_failure_message(
-                    hand_idx, applied.get("entry") or new_entry))
+                await msg.edit_text(
+                    resend_failure_message(hand_idx, applied.get("entry") or new_entry)
+                )
             return
 
         session = applied["session"]
         result = applied["result"]
         page = applied["page"]
         html, _prev, _next = render_session_page(result, page)
-        markup = self._rows_to_markup(
-            session_page_buttons(result, session_id, page))
+        markup = self._rows_to_markup(session_page_buttons(result, session_id, page))
         try:
             await msg.delete()
         except Exception:
@@ -2038,60 +2278,76 @@ class PokerWizardBot:
         if session.get("message_id"):
             try:
                 await context.bot.edit_message_text(
-                    html, chat_id=session["chat_id"],
-                    message_id=session["message_id"], parse_mode="HTML",
-                    disable_web_page_preview=True, reply_markup=markup)
+                    html,
+                    chat_id=session["chat_id"],
+                    message_id=session["message_id"],
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=markup,
+                )
                 await update.message.reply_text(f"✅ Hand {hand_idx + 1} 已更新。")
                 return
             except Exception:
                 self.log.warning("live resend edit_message_text failed", exc_info=True)
         sent = await update.message.reply_text(
-            html, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=markup)
+            html, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup
+        )
         async with self.db.pool.acquire() as conn:
             await set_session_message(conn, session_id, sent.message_id)
 
     async def _send_or_edit_session_page(self, query, session: dict, page: int):
         """Re-render one live session page and edit the report message in place."""
-        from live_flow import (render_session_page, session_page_buttons,
-                               update_session_result)
+        from live_flow import (
+            render_session_page,
+            session_page_buttons,
+            update_session_result,
+        )
 
         result = session["result"]
         html, _prev, _next = render_session_page(result, page)
-        markup = self._rows_to_markup(
-            session_page_buttons(result, session["id"], page))
+        markup = self._rows_to_markup(session_page_buttons(result, session["id"], page))
         async with self.db.pool.acquire() as conn:
             await update_session_result(conn, session["id"], result, page)
         try:
             await query.edit_message_text(
-                html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=markup)
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
         except telegram.error.BadRequest as exc:
             if "Message is not modified" not in str(exc):
                 raise
 
     async def _fetch_queue_page(self, page: int = 0):
-        rows = [dict(row) for row in await self.db.pool.fetch(
-            "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
-            "review_anchor_street, status, n_sources, added_by, "
-            "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
-            "bias_direction, bias_n, bias_ev_loss_bb, bias_share, depth_scope, "
-            "source, source_hands "
-            "FROM drill_queue WHERE status IN ('pending','prescribed')")]
+        rows = [
+            dict(row)
+            for row in await self.db.pool.fetch(
+                "SELECT id, spot_leaf, label, drill_url, review_anchor_url, "
+                "review_anchor_street, status, n_sources, added_by, "
+                "total_ev_loss_bb, kind, ref_hand_id, spot_category, "
+                "bias_direction, bias_n, bias_ev_loss_bb, bias_share, depth_scope, "
+                "source, source_hands "
+                "FROM drill_queue WHERE status IN ('pending','prescribed')"
+            )
+        ]
         # A row may contain both online and live examples. Resolve provenance
         # from ledger_hands and rank on this row's own track EV so selective
         # live evidence never inflates the online ordering (§5.2).
         from plan_scheduler import annotate_rows
+
         rows = await annotate_rows(self.db.pool, rows)
-        rows.sort(key=lambda row: (
-            -float(row.get("track_ev_loss_bb") or 0.0),
-            row.get("status") != "pending",
-        ))
+        rows.sort(
+            key=lambda row: (
+                -float(row.get("track_ev_loss_bb") or 0.0),
+                row.get("status") != "pending",
+            )
+        )
         total = len(rows)
         pages = max(1, (total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
         page = max(0, min(int(page), pages - 1))
         start = page * QUEUE_PAGE_SIZE
-        return rows[start:start + QUEUE_PAGE_SIZE], total, page
+        return rows[start : start + QUEUE_PAGE_SIZE], total, page
 
     async def queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/queue — owner-only: pending/prescribed practice queue with buttons."""
@@ -2103,13 +2359,21 @@ class PokerWizardBot:
         rows, total, page = await self._fetch_queue_page(0)
         html, buttons = _queue_payload(rows, page=page, total=total)
         await update.message.reply_text(
-            html, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(buttons))
+            html,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(buttons),
+        )
 
-    async def _queue_drill_detail(self, update: Update,
-                                  context: ContextTypes.DEFAULT_TYPE,
-                                  queue_id: int, page: int = 0,
-                                  *, new_message: bool = False):
+    async def _queue_drill_detail(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        queue_id: int,
+        page: int = 0,
+        *,
+        new_message: bool = False,
+    ):
         """Ensure/reuse the matching GTOW Drill, then show its practice card."""
         query = update.callback_query
         chat_id = update.effective_chat.id
@@ -2122,9 +2386,13 @@ class PokerWizardBot:
             return
         await query.answer("正在準備 GTOW Drill…")
         try:
-            from gtow_drill_service import (GTOWDrillClient,
-                                            settings_from_trainer_url,
-                                            settings_hash, stats_json)
+            from gtow_drill_service import (
+                GTOWDrillClient,
+                settings_from_trainer_url,
+                settings_hash,
+                stats_json,
+            )
+
             client = GTOWDrillClient(update.effective_user.id, refresh_token)
             async with self.db.pool.acquire() as conn:
                 async with conn.transaction():
@@ -2136,16 +2404,25 @@ class PokerWizardBot:
                         "gtow_drill_id, gtow_drill_name, gtow_settings_hash, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
                         "gtow_training_started_at "
-                        "FROM drill_queue WHERE id=$1 FOR UPDATE", queue_id)
+                        "FROM drill_queue WHERE id=$1 FOR UPDATE",
+                        queue_id,
+                    )
                     if not item or item["kind"] != "drill":
                         await _present_queue_detail(
-                            query, context, chat_id, "找不到這個 Drill queue item。",
-                            None, new_message=new_message)
+                            query,
+                            context,
+                            chat_id,
+                            "找不到這個 Drill queue item。",
+                            None,
+                            new_message=new_message,
+                        )
                         return
                     if not item["drill_url"]:
                         from queue_feed import _as_list, queue_drill_url_from_sources
+
                         rebuilt_url = await queue_drill_url_from_sources(
-                            conn, _as_list(item["source_hands"]))
+                            conn, _as_list(item["source_hands"])
+                        )
                         if rebuilt_url:
                             item = await conn.fetchrow(
                                 "UPDATE drill_queue SET drill_url=$2, "
@@ -2153,12 +2430,18 @@ class PokerWizardBot:
                                 "gtow_settings_hash=NULL, "
                                 "gtow_drill_synced_at=NULL, last_added=NOW() "
                                 "WHERE id=$1 RETURNING *",
-                                queue_id, rebuilt_url)
+                                queue_id,
+                                rebuilt_url,
+                            )
                     if not item["drill_url"]:
                         await _present_queue_detail(
-                            query, context, chat_id,
+                            query,
+                            context,
+                            chat_id,
                             "這個項目目前沒有可精確重建的 GTOW Trainer 連結。",
-                            None, new_message=new_message)
+                            None,
+                            new_message=new_message,
+                        )
                         return
                     # Upgrade persisted pre-filter URLs before matching the
                     # GTOW Drill.  In particular, all MTT URLs now pin
@@ -2166,6 +2449,7 @@ class PokerWizardBot:
                     # attempt window so no-limp results cannot count toward
                     # the new prescription.
                     from gtow_trainer_url import apply_trainer_defaults
+
                     upgraded_url = apply_trainer_defaults(item["drill_url"])
                     if upgraded_url != item["drill_url"]:
                         item = await conn.fetchrow(
@@ -2175,23 +2459,34 @@ class PokerWizardBot:
                             "gtow_training_started_at=NULL, "
                             "gtow_baseline_totals=NULL, last_added=NOW() "
                             "WHERE id=$1 RETURNING *",
-                            queue_id, upgraded_url)
+                            queue_id,
+                            upgraded_url,
+                        )
                     fingerprint = settings_hash(
-                        settings_from_trainer_url(item["drill_url"]))
+                        settings_from_trainer_url(item["drill_url"])
+                    )
                     # Serialize ensure/create across different queue rows that
                     # resolve to the same settings; rapid taps cannot create
                     # duplicate GTOW Drills.
                     await conn.fetchval(
                         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        fingerprint)
+                        fingerprint,
+                    )
                     from spot_naming import compact_spot_name
+
                     drill_name = compact_spot_name(item)
                     binding = await asyncio.to_thread(
-                        client.ensure_drill, item["drill_url"], drill_name,
-                        known_drill_id=(str(item["gtow_drill_id"])
-                                        if item["gtow_drill_id"] else None),
+                        client.ensure_drill,
+                        item["drill_url"],
+                        drill_name,
+                        known_drill_id=(
+                            str(item["gtow_drill_id"])
+                            if item["gtow_drill_id"]
+                            else None
+                        ),
                         known_drill_name=item["gtow_drill_name"],
-                        known_settings_hash=item["gtow_settings_hash"])
+                        known_settings_hash=item["gtow_settings_hash"],
+                    )
                     item = await conn.fetchrow(
                         "UPDATE drill_queue SET gtow_drill_id=$2::uuid, "
                         "gtow_drill_name=$3, gtow_settings_hash=$4, "
@@ -2202,39 +2497,70 @@ class PokerWizardBot:
                         "gtow_baseline_totals="
                         "COALESCE(gtow_baseline_totals, $5::jsonb) "
                         "WHERE id=$1 RETURNING *",
-                        queue_id, binding.drill_id, binding.name,
-                        binding.settings_hash, json.dumps(stats_json(binding.stats)),
-                        drill_name)
+                        queue_id,
+                        binding.drill_id,
+                        binding.name,
+                        binding.settings_hash,
+                        json.dumps(stats_json(binding.stats)),
+                        drill_name,
+                    )
 
             def load_stats():
                 return (
                     client.drill_totals(binding.drill_id),
                     client.attempt_stats(
-                        binding.drill_id, item["gtow_training_started_at"]),
+                        binding.drill_id, item["gtow_training_started_at"]
+                    ),
                 )
 
             lifetime, attempt = await asyncio.to_thread(load_stats)
             html, buttons = _queue_drill_detail_payload(
-                dict(item), binding, lifetime, attempt, page=page)
+                dict(item), binding, lifetime, attempt, page=page
+            )
             await _present_queue_detail(
-                query, context, chat_id, html, self._rows_to_markup(buttons),
-                new_message=new_message)
+                query,
+                context,
+                chat_id,
+                html,
+                self._rows_to_markup(buttons),
+                new_message=new_message,
+            )
         except Exception as exc:
-            self.log.error("GTOW Drill detail failed for queue %s: %s",
-                           queue_id, exc, exc_info=True)
+            self.log.error(
+                "GTOW Drill detail failed for queue %s: %s",
+                queue_id,
+                exc,
+                exc_info=True,
+            )
             await _present_queue_detail(
-                query, context, chat_id,
+                query,
+                context,
+                chat_id,
                 "⚠️ 無法準備 GTOW Drill。可能是 GTOW token 已失效或 API 暫時異常。",
-                self._rows_to_markup([[
-                    {"text": "🔄 重試", "callback_data": f"qdet:{queue_id}:{page}"},
-                    {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
-                ]]), new_message=new_message)
+                self._rows_to_markup(
+                    [
+                        [
+                            {
+                                "text": "🔄 重試",
+                                "callback_data": f"qdet:{queue_id}:{page}",
+                            },
+                            {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"},
+                        ]
+                    ]
+                ),
+                new_message=new_message,
+            )
 
-    async def _queue_show_sources(self, update: Update,
-                                  context: ContextTypes.DEFAULT_TYPE,
-                                  queue_id: int, page: int = 0,
-                                  *, queue_page: int = 0,
-                                  edit: bool = False):
+    async def _queue_show_sources(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        queue_id: int,
+        page: int = 0,
+        *,
+        queue_page: int = 0,
+        edit: bool = False,
+    ):
         """Show the exact online/live hands that produced one queue item."""
         query = update.callback_query
         if not (self.db and self.db.pool):
@@ -2244,12 +2570,17 @@ class PokerWizardBot:
             "SELECT label, kind, spot_leaf, spot_category, drill_url, depth_scope, "
             "source_hands, ref_hand_id "
             "FROM drill_queue WHERE id=$1",
-            queue_id)
+            queue_id,
+        )
         if not item:
             await query.answer("找不到這個 queue item。")
             return
-        from queue_feed import (_as_list, queue_source_hand_ids,
-                                resolve_queue_source_hands)
+        from queue_feed import (
+            _as_list,
+            queue_source_hand_ids,
+            resolve_queue_source_hands,
+        )
+
         entries = _as_list(item["source_hands"])
         hand_ids = queue_source_hand_ids(entries, item["ref_hand_id"])
         ledger_rows = []
@@ -2257,32 +2588,53 @@ class PokerWizardBot:
             ledger_rows = await self.db.pool.fetch(
                 "SELECT gtow_hand_id, source, raw_text, played_at, position, hero_hand "
                 "FROM ledger_hands WHERE gtow_hand_id = ANY($1::text[])",
-                hand_ids)
+                hand_ids,
+            )
         sources = resolve_queue_source_hands(
-            entries, ledger_rows, ref_hand_id=item["ref_hand_id"])
+            entries, ledger_rows, ref_hand_id=item["ref_hand_id"]
+        )
         if item["kind"] == "drill":
             from spot_naming import compact_spot_name
+
             source_label = compact_spot_name(item)
         else:
             source_label = item["label"] or str(queue_id)
         html, buttons = _queue_source_payload(
-            queue_id, source_label, sources, page=page,
-            queue_page=queue_page, kind=item["kind"])
+            queue_id,
+            source_label,
+            sources,
+            page=page,
+            queue_page=queue_page,
+            kind=item["kind"],
+        )
         markup = self._rows_to_markup(buttons)
         await query.answer()
         if edit:
             await query.edit_message_text(
-                html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=markup)
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
         else:
             await context.bot.send_message(
-                update.effective_chat.id, html, parse_mode="HTML",
-                disable_web_page_preview=True, reply_markup=markup)
+                update.effective_chat.id,
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
 
-    async def _queue_send_live_raw(self, update: Update,
-                                   context: ContextTypes.DEFAULT_TYPE,
-                                   hand_id: str, *, queue_id: int | None = None,
-                                   source_page: int = 0, queue_page: int = 0):
+    async def _queue_send_live_raw(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        hand_id: str,
+        *,
+        queue_id: int | None = None,
+        source_page: int = 0,
+        queue_page: int = 0,
+    ):
         """Replace the source menu with live shorthand + Study/back buttons."""
         query = update.callback_query
         if not (self.db and self.db.pool):
@@ -2290,7 +2642,9 @@ class PokerWizardBot:
             return
         row = await self.db.pool.fetchrow(
             "SELECT raw_text, parsed_json FROM ledger_hands "
-            "WHERE gtow_hand_id=$1 AND source='live'", hand_id)
+            "WHERE gtow_hand_id=$1 AND source='live'",
+            hand_id,
+        )
         raw_text = row["raw_text"] if row else None
         if not raw_text:
             await query.answer("找不到這手的原始記錄。")
@@ -2306,41 +2660,53 @@ class PokerWizardBot:
                 "SELECT street, decision_idx FROM ledger_decisions "
                 "WHERE gtow_hand_id=$1 AND source='live' "
                 "AND grader='own_pipeline' AND excluded=FALSE",
-                hand_id)
-            refresh_token = await self._get_user_refresh_token(
-                update.effective_user.id)
+                hand_id,
+            )
+            refresh_token = await self._get_user_refresh_token(update.effective_user.id)
             if parsed and decisions and refresh_token:
+
                 def build_study_url():
-                    self._setup_user_token(
-                        update.effective_user.id, refresh_token)
+                    self._setup_user_token(update.effective_user.id, refresh_token)
                     try:
                         from gtow_solution_url import build_last_hero_hand_url
+
                         return build_last_hero_hand_url(
-                            parsed, [dict(d) for d in decisions])
+                            parsed, [dict(d) for d in decisions]
+                        )
                     finally:
                         self._clear_user_token()
 
                 study_url = await asyncio.to_thread(build_study_url)
         except Exception:
-            self.log.debug("Live raw Study URL build failed for %s",
-                           hand_id, exc_info=True)
+            self.log.debug(
+                "Live raw Study URL build failed for %s", hand_id, exc_info=True
+            )
 
         payload = f"📝 線下原始紀錄\n\n{raw_text}"
         buttons = []
         if study_url:
-            buttons.append([{
-                "text": "🧙 查看 Study Spot", "url": study_url,
-            }])
+            buttons.append(
+                [
+                    {
+                        "text": "🧙 查看 Study Spot",
+                        "url": study_url,
+                    }
+                ]
+            )
         if queue_id is not None:
-            buttons.append([{
-                "text": "⬅ 返回來源牌局",
-                "callback_data":
-                    f"qsrc:{queue_id}:{source_page}:{queue_page}",
-            }])
+            buttons.append(
+                [
+                    {
+                        "text": "⬅ 返回來源牌局",
+                        "callback_data": f"qsrc:{queue_id}:{source_page}:{queue_page}",
+                    }
+                ]
+            )
         markup = self._rows_to_markup(buttons) if buttons else None
         chunks = _split_message(payload)
         await query.edit_message_text(
-            chunks[0], disable_web_page_preview=True, reply_markup=markup)
+            chunks[0], disable_web_page_preview=True, reply_markup=markup
+        )
         for chunk in chunks[1:]:
             await context.bot.send_message(update.effective_chat.id, chunk)
 
@@ -2352,18 +2718,27 @@ class PokerWizardBot:
             await update.message.reply_text("Database not connected.")
             return
         import json as _json
+
         row = await self.db.pool.fetchrow(
-            "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
+            "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1"
+        )
         if not row:
             await update.message.reply_text("還沒有訓練計畫 — 週日 21:00 會自動產生。")
             return
         from scorecard import weekly_tg_payload
-        data = (_json.loads(row["data_json"])
-                if isinstance(row["data_json"], str) else row["data_json"])
+
+        data = (
+            _json.loads(row["data_json"])
+            if isinstance(row["data_json"], str)
+            else row["data_json"]
+        )
         payload = weekly_tg_payload(row["week"], data)
         await update.message.reply_text(
-            payload["html"], parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(payload["buttons"]))
+            payload["html"],
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(payload["buttons"]),
+        )
 
     async def review_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/review [session_id] — owner-only: 這場（預設最近一個 online session）
@@ -2376,19 +2751,26 @@ class PokerWizardBot:
         parts = (update.message.text or "").split()
         sid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
         from session_review import resolve_session
+
         session = await resolve_session(self.db.pool, sid)
         if not session:
             await update.message.reply_text(
-                "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。")
+                "還沒有可復盤的 session — 先用 ♠ 同步手牌或 /ingest。"
+            )
             return
         out = await self._online_session_review_payload(
-            context, session, user_id=update.effective_user.id)
+            context, session, user_id=update.effective_user.id
+        )
         await update.message.reply_text(
-            out["html"], parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=self._rows_to_markup(out["buttons"]))
+            out["html"],
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=self._rows_to_markup(out["buttons"]),
+        )
 
-    async def _online_session_review_payload(self, context, session: dict,
-                                             user_id: int | None = None) -> dict:
+    async def _online_session_review_payload(
+        self, context, session: dict, user_id: int | None = None
+    ) -> dict:
         """Compute/cache/render one online session for /review and /sessions."""
         from session_review import compute, render_tg, session_callback_key
 
@@ -2398,8 +2780,9 @@ class PokerWizardBot:
         cache[session_callback_key(data)] = data
         return render_tg(data)
 
-    async def _session_review_enqueue(self, update: Update,
-                                      context: ContextTypes.DEFAULT_TYPE, data: str):
+    async def _session_review_enqueue(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str
+    ):
         """srd|srv:<session_id>:<i> or srd2|srv2:<stable_key>:<i> — enqueue the i-th session-review spot(drill)/
         decision(review) into drill_queue (added_by='session', threshold-free). Idempotent
         via queue_feed.enqueue_one; the tapped button is relabelled ✅."""
@@ -2413,36 +2796,56 @@ class PokerWizardBot:
         cache_key = session_ref if stable else int(session_ref)
         cached = context.application.bot_data.get("srev", {}).get(cache_key)
         if cached is None:
-            from session_review import (compute, resolve_session,
-                                        resolve_session_key, session_callback_key)
-            session = (await resolve_session_key(self.db.pool, session_ref) if stable
-                       else await resolve_session(self.db.pool, int(session_ref)))
+            from session_review import (
+                compute,
+                resolve_session,
+                resolve_session_key,
+                session_callback_key,
+            )
+
+            session = (
+                await resolve_session_key(self.db.pool, session_ref)
+                if stable
+                else await resolve_session(self.db.pool, int(session_ref))
+            )
             if not session:
                 await query.answer("找不到這個 session。")
                 return
             cached = await compute(
-                self.db.pool, session, user_id=update.effective_user.id)
+                self.db.pool, session, user_id=update.effective_user.id
+            )
             cache = context.application.bot_data.setdefault("srev", {})
             cache[cached["session_id"]] = cached
             cache[session_callback_key(cached)] = cached
-        items = (cached["top_spots"] if kind.startswith("srd")
-                 else (cached.get("top_decisions") or cached.get("top_hands") or []))
+        items = (
+            cached["top_spots"]
+            if kind.startswith("srd")
+            else (cached.get("top_decisions") or cached.get("top_hands") or [])
+        )
         if i >= len(items):
             await query.answer("這個項目已不在清單上。")
             return
         from queue_feed import enqueue_one
+
         result = await enqueue_one(self.db.pool, items[i]["enqueue_item"])
-        await query.answer({"inserted": "✅ 已排入佇列", "merged": "✅ 已併入佇列",
-                            "noop": "✔ 已在佇列中"}.get(result, "✅ 已排入"))
+        await query.answer(
+            {
+                "inserted": "✅ 已排入佇列",
+                "merged": "✅ 已併入佇列",
+                "noop": "✔ 已在佇列中",
+            }.get(result, "✅ 已排入")
+        )
         try:
             await query.edit_message_reply_markup(
-                reply_markup=self._mark_button_done(query.message.reply_markup, data))
+                reply_markup=self._mark_button_done(query.message.reply_markup, data)
+            )
         except telegram.error.BadRequest as exc:
             if "Message is not modified" not in str(exc):
                 self.log.exception("session-review enqueue markup refresh failed")
 
-    async def _queue_expand_review(self, update: Update,
-                                   context: ContextTypes.DEFAULT_TYPE, queue_id: int):
+    async def _queue_expand_review(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, queue_id: int
+    ):
         """qex:<queue_id> — show a review hand's graded decisions as a sub-menu;
         each row's ➕ button adds that decision as a manual drill (§6.2)."""
         query = update.callback_query
@@ -2452,7 +2855,8 @@ class PokerWizardBot:
             return
         await query.answer()
         item = await self.db.pool.fetchrow(
-            "SELECT ref_hand_id, label FROM drill_queue WHERE id=$1", queue_id)
+            "SELECT ref_hand_id, label FROM drill_queue WHERE id=$1", queue_id
+        )
         if not item or not item["ref_hand_id"]:
             await context.bot.send_message(chat_id, "找不到這個復盤項的來源手。")
             return
@@ -2463,19 +2867,22 @@ class PokerWizardBot:
             "WHERE gtow_hand_id=$1 AND NOT excluded AND NOT discarded "
             "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
             "WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx",
-            item["ref_hand_id"])
+            item["ref_hand_id"],
+        )
         if not rows:
             await context.bot.send_message(chat_id, "這手沒有可加練的已評分決策。")
             return
         from queue_feed import qex_submenu
         from html import escape as _esc
+
         btn_rows = qex_submenu([dict(r) for r in rows], queue_id)
         await context.bot.send_message(
             chat_id,
             f"➕ <b>選一條 action line 加入練習</b>\n"
             f"{_esc(item['label'] or item['ref_hand_id'])}",
             parse_mode="HTML",
-            reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
+            reply_markup=self._rows_to_markup([[b] for b in btn_rows]),
+        )
 
     async def _live_add_menu(self, context, chat_id, session, hand_idx: int):
         """Expand a live hand's graded decisions as ➕ manual-add buttons."""
@@ -2495,10 +2902,10 @@ class PokerWizardBot:
             "AND NOT discarded "
             "ORDER BY CASE street WHEN 'preflop' THEN 0 WHEN 'flop' THEN 1 "
             "WHEN 'turn' THEN 2 WHEN 'river' THEN 3 ELSE 9 END, decision_idx",
-            hand_id)
+            hand_id,
+        )
         if not rows:
-            await context.bot.send_message(
-                chat_id, "這手沒有可加練的已評分決策。")
+            await context.bot.send_message(chat_id, "這手沒有可加練的已評分決策。")
             return
 
         btn_rows = qex_submenu([dict(r) for r in rows], queue_id=0)
@@ -2506,11 +2913,16 @@ class PokerWizardBot:
             chat_id,
             f"➕ <b>選一條 action line 加入練習</b>\nHand {hand_idx + 1}",
             parse_mode="HTML",
-            reply_markup=self._rows_to_markup([[b] for b in btn_rows]))
+            reply_markup=self._rows_to_markup([[b] for b in btn_rows]),
+        )
 
-    async def _queue_add_manual(self, update: Update,
-                                context: ContextTypes.DEFAULT_TYPE,
-                                queue_id: int, decision_ref):
+    async def _queue_add_manual(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        queue_id: int,
+        decision_ref,
+    ):
         """qad:<queue_id>:<decision_id> or
         qad2:<queue_id>:<gtow_hand_id>:<street>:<decision_idx> — add one graded decision as a manual
         drill (kind='drill', added_by='manual', source='manual'), §6.2."""
@@ -2522,37 +2934,52 @@ class PokerWizardBot:
         select_cols = (
             "SELECT id, gtow_hand_id, street, decision_idx, spot_category, spot_leaf, "
             "hero_cat, villain_cat, ip_oop, position, pot_type, eff_stack, ev_loss_bb "
-            "FROM ledger_decisions ")
+            "FROM ledger_decisions "
+        )
         if isinstance(decision_ref, tuple):
             hid, street, decision_idx = decision_ref
             dec = await self.db.pool.fetchrow(
-                select_cols +
-                "WHERE gtow_hand_id=$1 AND street=$2 AND decision_idx=$3",
-                hid, street, decision_idx)
+                select_cols + "WHERE gtow_hand_id=$1 AND street=$2 AND decision_idx=$3",
+                hid,
+                street,
+                decision_idx,
+            )
         else:
             # Backward compatibility for old Telegram messages emitted before
             # stable qad2 callbacks existed.
             dec = await self.db.pool.fetchrow(
-                select_cols + "WHERE id=$1", int(decision_ref))
+                select_cols + "WHERE id=$1", int(decision_ref)
+            )
         if not dec:
             await query.answer("找不到這個決策。")
             return
-        from queue_feed import (manual_drill_item, enqueue,
-                                queue_drill_url_from_sources)
+        from queue_feed import manual_drill_item, enqueue, queue_drill_url_from_sources
         from html import escape as _esc
+
         async with self.db.pool.acquire() as conn:
-            url = await queue_drill_url_from_sources(conn, [{
-                "hand_id": dec["gtow_hand_id"], "street": dec["street"],
-                "decision_idx": int(dec["decision_idx"]), "src": "manual",
-            }])
+            url = await queue_drill_url_from_sources(
+                conn,
+                [
+                    {
+                        "hand_id": dec["gtow_hand_id"],
+                        "street": dec["street"],
+                        "decision_idx": int(dec["decision_idx"]),
+                        "src": "manual",
+                    }
+                ],
+            )
             item = manual_drill_item(dict(dec), drill_url=url)
             await enqueue(conn, [item])
         await query.answer("➕ 已加入練習佇列")
         await context.bot.send_message(
-            chat_id, f"➕ 已加入練習：{_esc(item['label'] or item['spot_leaf'] or '?')}\n"
-                     "用 /queue 查看。")
+            chat_id,
+            f"➕ 已加入練習：{_esc(item['label'] or item['spot_leaf'] or '?')}\n"
+            "用 /queue 查看。",
+        )
 
-    async def handle_live_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_live_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         """Practice-queue + live-hand callbacks (all owner-only, §6.3):
         lvd:<hand_id> — deep-dive a live hand via the normal coach path;
         src2:<stable_session_key>:<i> — coach the i-th online session decision;
@@ -2576,8 +3003,12 @@ class PokerWizardBot:
             return
 
         if data.startswith("lvs:"):
-            from live_flow import (load_session, render_session_page,
-                                   session_page_buttons, set_session_message)
+            from live_flow import (
+                load_session,
+                render_session_page,
+                session_page_buttons,
+                set_session_message,
+            )
 
             _, sid = data.split(":")
             async with self.db.pool.acquire() as conn:
@@ -2588,10 +3019,15 @@ class PokerWizardBot:
             await query.answer()
             html, _prev, _next = render_session_page(session["result"], 0)
             markup = self._rows_to_markup(
-                session_page_buttons(session["result"], session["id"], 0))
+                session_page_buttons(session["result"], session["id"], 0)
+            )
             sent = await context.bot.send_message(
-                chat_id, html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=markup)
+                chat_id,
+                html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=markup,
+            )
             async with self.db.pool.acquire() as conn:
                 await set_session_message(conn, session["id"], sent.message_id)
             return
@@ -2606,11 +3042,15 @@ class PokerWizardBot:
                 return
             await query.answer()
             out = await self._online_session_review_payload(
-                context, session, user_id=user_id)
+                context, session, user_id=user_id
+            )
             await context.bot.send_message(
-                chat_id, out["html"], parse_mode="HTML",
+                chat_id,
+                out["html"],
+                parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_markup=self._rows_to_markup(out["buttons"]))
+                reply_markup=self._rows_to_markup(out["buttons"]),
+            )
             return
 
         if data.startswith("lvpg:"):
@@ -2653,16 +3093,18 @@ class PokerWizardBot:
             await query.answer()
             h = session["result"]["hands"][hand_idx_i]
             self._live_resend_pending[chat_id] = (user_id, int(sid), hand_idx_i)
-            reps = "；".join(
-                _repair_explanation(str(r)) for r in (h.get("repairs") or [])
-            ) or "無"
+            reps = (
+                "；".join(_repair_explanation(str(r)) for r in (h.get("repairs") or []))
+                or "無"
+            )
             await context.bot.send_message(
                 chat_id,
                 f"請貼上 <b>Hand {hand_idx_i + 1}</b> 的單手更正版本"
                 f"（Header / Flop / Turn / River 各一行）。\n"
                 f"目前 echo：{_esc(h.get('echo') or '（無法評分）')}\n"
                 f"目前校正：{_esc(reps)}",
-                parse_mode="HTML")
+                parse_mode="HTML",
+            )
             return
 
         if data.startswith("qsrc:"):
@@ -2671,16 +3113,26 @@ class PokerWizardBot:
             source_page = int(parts[2]) if len(parts) > 2 else 0
             queue_page = int(parts[3]) if len(parts) > 3 else 0
             await self._queue_show_sources(
-                update, context, queue_id, source_page,
-                queue_page=queue_page, edit=len(parts) > 2)
+                update,
+                context,
+                queue_id,
+                source_page,
+                queue_page=queue_page,
+                edit=len(parts) > 2,
+            )
             return
 
         if data.startswith("qraw:"):
             parts = data.split(":", 4)
             if len(parts) == 5 and parts[1].isdigit():
                 await self._queue_send_live_raw(
-                    update, context, parts[4], queue_id=int(parts[1]),
-                    source_page=int(parts[2]), queue_page=int(parts[3]))
+                    update,
+                    context,
+                    parts[4],
+                    queue_id=int(parts[1]),
+                    source_page=int(parts[2]),
+                    queue_page=int(parts[3]),
+                )
             else:
                 # Backward compatibility for buttons sent before this deploy.
                 await self._queue_send_live_raw(update, context, data[5:])
@@ -2690,9 +3142,12 @@ class PokerWizardBot:
             parts = data.split(":")
             origin = parts[3] if len(parts) > 3 else "queue"
             await self._queue_drill_detail(
-                update, context, int(parts[1]),
+                update,
+                context,
+                int(parts[1]),
                 int(parts[2]) if len(parts) > 2 else 0,
-                new_message=(data.startswith("qdet:") and origin == "plan"))
+                new_message=(data.startswith("qdet:") and origin == "plan"),
+            )
             return
 
         if data.startswith("qpg:"):
@@ -2702,8 +3157,11 @@ class PokerWizardBot:
                 html, buttons = _queue_payload(rows, page=page, total=total)
                 await query.answer()
                 await query.edit_message_text(
-                    html, parse_mode="HTML", disable_web_page_preview=True,
-                    reply_markup=self._rows_to_markup(buttons))
+                    html,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=self._rows_to_markup(buttons),
+                )
             else:
                 await query.answer("Database not connected.")
             return
@@ -2719,27 +3177,35 @@ class PokerWizardBot:
                     reason = "completed"
                 await self.db.pool.execute(
                     "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
-                    "clear_reason=$2 WHERE id=$1", queue_id, reason)
+                    "clear_reason=$2 WHERE id=$1",
+                    queue_id,
+                    reason,
+                )
                 if origin == "plan":
                     await query.answer("✔ 已標記為完成")
                     try:
                         await query.edit_message_reply_markup(
                             reply_markup=self._mark_button_done(
-                                query.message.reply_markup, data,
-                                done_text="✅ 已完成"))
+                                query.message.reply_markup, data, done_text="✅ 已完成"
+                            )
+                        )
                     except telegram.error.BadRequest as exc:
                         if "Message is not modified" not in str(exc):
-                            self.log.exception("Failed to refresh weekly plan after qcl")
+                            self.log.exception(
+                                "Failed to refresh weekly plan after qcl"
+                            )
                     return
                 rows, total, page = await self._fetch_queue_page(page)
                 html, buttons = _queue_payload(rows, page=page, total=total)
-                answer = ("🗑 已移除誤植項目" if reason == "mistake"
-                          else "✔ 已標記為完成")
+                answer = "🗑 已移除誤植項目" if reason == "mistake" else "✔ 已標記為完成"
                 await query.answer(answer)
                 try:
                     await query.edit_message_text(
-                        html, parse_mode="HTML", disable_web_page_preview=True,
-                        reply_markup=self._rows_to_markup(buttons))
+                        html,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=self._rows_to_markup(buttons),
+                    )
                 except telegram.error.BadRequest as exc:
                     # Completion is an in-place queue interaction.  Never add
                     # a separate chat message as a fallback; that makes review
@@ -2763,24 +3229,32 @@ class PokerWizardBot:
             _, qid, decision_key = data.split(":", 2)
             hid, street, didx = decision_key.rsplit(":", 2)
             await self._queue_add_manual(
-                update, context, int(qid), (hid, street, int(didx)))
+                update, context, int(qid), (hid, street, int(didx))
+            )
             return
 
-        if (data.startswith("srd:") or data.startswith("srv:")
-                or data.startswith("srd2:") or data.startswith("srv2:")):
+        if (
+            data.startswith("srd:")
+            or data.startswith("srv:")
+            or data.startswith("srd2:")
+            or data.startswith("srv2:")
+        ):
             await self._session_review_enqueue(update, context, data)
             return
 
         if data.startswith("src2:"):
             _, stable_key, i_s = data.split(":")
-            from session_review import (compute, resolve_session_key,
-                                        session_callback_key, _load_detail)
+            from session_review import (
+                compute,
+                resolve_session_key,
+                session_callback_key,
+                _load_detail,
+            )
 
             # A cache miss rebuilds the whole review and may validate several
             # Study links over the network.  Stop Telegram's spinner before
             # that work; an expired ACK must not abort the coaching messages.
-            await self._answer_callback_safely(
-                query, "⏳ 正在準備教練分析…")
+            await self._answer_callback_safely(query, "⏳ 正在準備教練分析…")
 
             cache = context.application.bot_data.setdefault("srev", {})
             cached = cache.get(stable_key)
@@ -2788,7 +3262,8 @@ class PokerWizardBot:
                 session = await resolve_session_key(self.db.pool, stable_key)
                 if not session:
                     await context.bot.send_message(
-                        chat_id, "找不到這個線上 session，可能已被重建。")
+                        chat_id, "找不到這個線上 session，可能已被重建。"
+                    )
                     return
                 cached = await compute(self.db.pool, session, user_id=user_id)
                 cache[cached["session_id"]] = cached
@@ -2802,24 +3277,31 @@ class PokerWizardBot:
             row = await self.db.pool.fetchrow(
                 "SELECT gtow_hand_id, raw_path, position, hero_hand, total_players, "
                 "preflop_depth_bb FROM ledger_hands "
-                "WHERE gtow_hand_id=$1 AND source='online'", hand_id)
+                "WHERE gtow_hand_id=$1 AND source='online'",
+                hand_id,
+            )
             detail = _load_detail(row["raw_path"] if row else None)
             if not row or not detail:
                 await context.bot.send_message(
-                    chat_id, "找不到這手的 Analyzer 原始資料。")
+                    chat_id, "找不到這手的 Analyzer 原始資料。"
+                )
                 return
             try:
                 from analysis_fidelity_check import reconstruct_analyze_hand
+
                 hand_json = reconstruct_analyze_hand(dict(row), detail)
             except Exception:
-                self.log.exception("online session coach reconstruction failed: %s", hand_id)
-                await context.bot.send_message(
-                    chat_id, "無法重建這手的教練分析資料。")
+                self.log.exception(
+                    "online session coach reconstruction failed: %s", hand_id
+                )
+                await context.bot.send_message(chat_id, "無法重建這手的教練分析資料。")
                 return
 
             label = f"online-session-coach-{chat_id}"
             self.log.info("[%s] deep dive %s", label, hand_id)
-            await context.bot.send_message(chat_id, f"💬 教練分析：`{hand_id}`", parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id, f"💬 教練分析：`{hand_id}`", parse_mode="Markdown"
+            )
             raw_status = await context.bot.send_message(chat_id, "🔍 分析中...")
             status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
@@ -2829,23 +3311,30 @@ class PokerWizardBot:
             refresh_token = await self._get_user_refresh_token(user_id)
             try:
                 response = await self._analyze_online_parsed_hand(
-                    chat_id, user_id, hand_id, hand_json, _on_status, refresh_token)
+                    chat_id, user_id, hand_id, hand_json, _on_status, refresh_token
+                )
                 await status_msg.delete()
                 if response and response.strip():
                     response, markup = self._finalize_followups(
-                        chat_id, response, include_gto_link=True)
+                        chat_id, response, include_gto_link=True
+                    )
                     formatted = _format_for_telegram(response)
                     chunks = [c for c in _split_message(formatted) if c.strip()]
                     for j, chunk in enumerate(chunks):
                         chunk_markup = markup if j == len(chunks) - 1 else None
                         try:
                             await context.bot.send_message(
-                                chat_id, chunk, parse_mode="Markdown",
-                                reply_markup=chunk_markup)
+                                chat_id,
+                                chunk,
+                                parse_mode="Markdown",
+                                reply_markup=chunk_markup,
+                            )
                         except Exception:
                             await context.bot.send_message(
-                                chat_id, _strip_markdown(chunk),
-                                reply_markup=chunk_markup)
+                                chat_id,
+                                _strip_markdown(chunk),
+                                reply_markup=chunk_markup,
+                            )
                 await self._send_pending_range_images(update, chat_id, label)
             except Exception as exc:
                 self.log.error("[%s] Error: %s", label, exc, exc_info=True)
@@ -2857,13 +3346,15 @@ class PokerWizardBot:
             return
 
         await query.answer()
-        hand_id = data[4:]                          # lvd:<hand_id>
+        hand_id = data[4:]  # lvd:<hand_id>
         raw = None
         hand_json = None
         if self.db and self.db.pool:
             row = await self.db.pool.fetchrow(
                 "SELECT raw_text, parsed_json FROM ledger_hands "
-                "WHERE gtow_hand_id=$1 AND source='live'", hand_id)
+                "WHERE gtow_hand_id=$1 AND source='live'",
+                hand_id,
+            )
             if row:
                 raw = row["raw_text"]
                 hand_json = self._decode_live_parsed_json(row["parsed_json"])
@@ -2882,22 +3373,28 @@ class PokerWizardBot:
         refresh_token = await self._get_user_refresh_token(user_id)
         try:
             response = await self._analyze_live_parsed_hand(
-                chat_id, user_id, hand_id, hand_json, _on_status, refresh_token)
+                chat_id, user_id, hand_id, hand_json, _on_status, refresh_token
+            )
             await status_msg.delete()
             if response and response.strip():
                 response, markup = self._finalize_followups(
-                    chat_id, response, include_gto_link=True)
+                    chat_id, response, include_gto_link=True
+                )
                 formatted = _format_for_telegram(response)
                 chunks = [c for c in _split_message(formatted) if c.strip()]
                 for i, chunk in enumerate(chunks):
                     chunk_markup = markup if i == len(chunks) - 1 else None
                     try:
                         await context.bot.send_message(
-                            chat_id, chunk, parse_mode='Markdown',
-                            reply_markup=chunk_markup)
+                            chat_id,
+                            chunk,
+                            parse_mode="Markdown",
+                            reply_markup=chunk_markup,
+                        )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id, _strip_markdown(chunk), reply_markup=chunk_markup)
+                            chat_id, _strip_markdown(chunk), reply_markup=chunk_markup
+                        )
             await self._send_pending_range_images(update, chat_id, label)
         except Exception as e:
             self.log.error(f"[{label}] Error: {e}", exc_info=True)
@@ -2935,7 +3432,9 @@ class PokerWizardBot:
             f"Preflop: {hand.get('preflop_actions')}",
         ]
         for street in hand.get("streets") or []:
-            board = street.get("board") or street.get("card") or street.get("cards") or ""
+            board = (
+                street.get("board") or street.get("card") or street.get("cards") or ""
+            )
             acts = " ".join(
                 f"{a.get('position')}:{a.get('action')}"
                 + (f"({a.get('size')}bb)" if a.get("size") is not None else "")
@@ -2947,55 +3446,79 @@ class PokerWizardBot:
             desc.append("Live parse repairs: " + "；".join(str(r) for r in repairs))
         return "\n".join(desc)
 
-    async def _analyze_live_parsed_hand(self, chat_id: int, user_id: int,
-                                        hand_id: str, hand_json: dict,
-                                        on_status, refresh_token: str | None) -> str:
+    async def _analyze_live_parsed_hand(
+        self,
+        chat_id: int,
+        user_id: int,
+        hand_id: str,
+        hand_json: dict,
+        on_status,
+        refresh_token: str | None,
+    ) -> str:
         """Analyze a stored live parsed_json without reparsing raw shorthand."""
         if not refresh_token:
             return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
 
         if on_status:
             await on_status("查詢 GTO 策略中...")
-        context = await self._build_grounded_coach_context(
-            chat_id, user_id, refresh_token, hand_json)
+        context = await self.session_manager.analyze_parsed_hand(
+            chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
+        )
 
         if on_status:
             await on_status("分析回覆中...")
-        response = await self._verified_grounded_coaching(
-            chat_id, user_id, refresh_token, context,
-            self._live_hand_desc(hand_id, hand_json),
-            f"請深入分析 live hand {hand_id}",
-            "這是 /live 入帳後的深入分析。手牌已由 live_flow 解析、修補並入帳；"
-            "請使用穩定 parsed_json，不要重新解析原始 shorthand。",
+        response = await self.session_manager.coach_parsed_hand(
+            chat_id,
+            context,
+            hand_description=self._live_hand_desc(hand_id, hand_json),
+            user_text=f"請深入分析 live hand {hand_id}",
+            source_instruction=(
+                "這是 /live 入帳後的深入分析。手牌已由 live_flow 解析、修補並入帳；"
+                "請使用穩定 parsed_json，不要重新解析原始 shorthand。"
+            ),
             on_status=on_status,
+            user_id=user_id,
+            refresh_token=refresh_token,
         )
         warning = (context.get("validation") or {}).get("user_warning")
         if warning:
             response += f"\n\n{warning}"
         return f"📋 `{hand_id}`\n\n{response}"
 
-    async def _analyze_online_parsed_hand(self, chat_id: int, user_id: int,
-                                          hand_id: str, hand_json: dict,
-                                          on_status, refresh_token: str | None) -> str:
+    async def _analyze_online_parsed_hand(
+        self,
+        chat_id: int,
+        user_id: int,
+        hand_id: str,
+        hand_json: dict,
+        on_status,
+        refresh_token: str | None,
+    ) -> str:
         """Coach one archived online Analyzer hand through the grounded path."""
         if not refresh_token:
             return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
 
         if on_status:
             await on_status("查詢 GTO 策略中...")
-        solver_context = await self._build_grounded_coach_context(
-            chat_id, user_id, refresh_token, hand_json)
+        solver_context = await self.session_manager.analyze_parsed_hand(
+            chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
+        )
 
         if on_status:
             await on_status("分析回覆中...")
-        response = await self._verified_grounded_coaching(
-            chat_id, user_id, refresh_token, solver_context,
-            self._live_hand_desc(hand_id, hand_json),
-            f"請深入分析 online hand {hand_id}",
-            "這是線上 session 總結中選出的 Analyzer 手牌。手牌已從封存的 "
-            "GTOW Analyzer 原始資料精確重建；不要重新解析或改寫動作。"
-            "聚焦最大 EV loss 決策，並用可帶上桌的 heuristic 收尾。",
+        response = await self.session_manager.coach_parsed_hand(
+            chat_id,
+            solver_context,
+            hand_description=self._live_hand_desc(hand_id, hand_json),
+            user_text=f"請深入分析 online hand {hand_id}",
+            source_instruction=(
+                "這是線上 session 總結中選出的 Analyzer 手牌。手牌已從封存的 "
+                "GTOW Analyzer 原始資料精確重建；不要重新解析或改寫動作。"
+                "聚焦最大 EV loss 決策，並用可帶上桌的 heuristic 收尾。"
+            ),
             on_status=on_status,
+            user_id=user_id,
+            refresh_token=refresh_token,
         )
         warning = (solver_context.get("validation") or {}).get("user_warning")
         if warning:
@@ -3014,7 +3537,9 @@ class PokerWizardBot:
         try:
             m = await self.db.get_analytics_metrics()
             from gto_cache import entry_count as gto_cache_entry_count
+
             m["cache_total"] = gto_cache_entry_count()
+
             def _fmt_tokens(n):
                 """Format token count: 1234567 → 1.2M, 12345 → 12.3K."""
                 if n >= 1_000_000:
@@ -3061,8 +3586,12 @@ class PokerWizardBot:
     def setup_handlers(self, post_init=None, post_shutdown=None):
         """Setup bot handlers"""
         if not self.application:
-            request = HTTPXRequest(read_timeout=30, write_timeout=30, connect_timeout=30)
-            get_updates_request = HTTPXRequest(read_timeout=60, write_timeout=30, connect_timeout=30)
+            request = HTTPXRequest(
+                read_timeout=30, write_timeout=30, connect_timeout=30
+            )
+            get_updates_request = HTTPXRequest(
+                read_timeout=60, write_timeout=30, connect_timeout=30
+            )
             builder = (
                 Application.builder()
                 .token(self.token)
@@ -3085,26 +3614,38 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("logout", self.logout_command))
         self.application.add_handler(CommandHandler("report", self.report_command))
         self.application.add_handler(CommandHandler("ingest", self.ingest_command))
-        self.application.add_handler(CommandHandler("fullingest", self.fullingest_command))
+        self.application.add_handler(
+            CommandHandler("fullingest", self.fullingest_command)
+        )
         self.application.add_handler(CommandHandler("live", self.live_command))
-        self.application.add_handler(CommandHandler(
-            ["lives", "live_sessions"], self.live_sessions_command))
-        self.application.add_handler(CommandHandler(
-            ["sessions", "online_sessions"], self.online_sessions_command))
+        self.application.add_handler(
+            CommandHandler(["lives", "live_sessions"], self.live_sessions_command)
+        )
+        self.application.add_handler(
+            CommandHandler(
+                ["sessions", "online_sessions"], self.online_sessions_command
+            )
+        )
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("review", self.review_command))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+        )
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
-        self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        self.application.add_handler(
+            MessageHandler(filters.Document.ALL, self.handle_document)
+        )
         # pattern handlers must precede the generic follow-up handler
         self.application.add_handler(
             CallbackQueryHandler(
                 self.handle_live_button,
-                pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2|src2):"))
+                pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2|src2):",
+            )
+        )
         self.application.add_handler(
-            CallbackQueryHandler(self.handle_fullingest_button,
-                                 pattern=r"^fullingest:"))
+            CallbackQueryHandler(self.handle_fullingest_button, pattern=r"^fullingest:")
+        )
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 
         return self.application
@@ -3112,7 +3653,12 @@ class PokerWizardBot:
     def run(self, post_init=None, post_shutdown=None):
         """Run the bot (blocking — manages its own event loop)."""
         app = self.setup_handlers(post_init=post_init, post_shutdown=post_shutdown)
-        self.log.info(f"Bot starting — model={self.session_manager.model}, max_turns={self.session_manager.max_turns}")
+        self.log.info(
+            "Bot starting — parser=%s, coach=%s, max_turns=%s",
+            self.session_manager.parse_model,
+            self.session_manager.coach_narrator_model,
+            self.session_manager.max_turns,
+        )
         app.run_polling(drop_pending_updates=False)
 
 
@@ -3123,22 +3669,23 @@ def _format_for_telegram(text: str) -> str:
     Does NOT support: **bold**, # headers, tables, * bullets.
     """
     import re
+
     # * bullet points → • (must do BEFORE bold processing)
     # Matches: "* text" or "*   text" at start of line
-    text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r"^\*\s+", "• ", text, flags=re.MULTILINE)
     # **bold** → *bold*
-    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
     # # headers → *bold*
-    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
     # Sanitize unmatched markdown markers that Telegram would reject.
     # For each marker char, if count is odd, escape the last occurrence.
-    for ch in ('*', '_', '`'):
+    for ch in ("*", "_", "`"):
         # Count occurrences outside of paired markers
         count = text.count(ch)
         if count % 2 == 1:
             # Escape the last lone occurrence
             idx = text.rfind(ch)
-            text = text[:idx] + '\\' + text[idx:]
+            text = text[:idx] + "\\" + text[idx:]
     return text
 
 
@@ -3153,11 +3700,11 @@ def _split_message(text: str) -> list[str]:
             chunks.append(text)
             break
         # Try to split at last newline within limit
-        split_at = text.rfind('\n', 0, MAX_MESSAGE_LENGTH)
+        split_at = text.rfind("\n", 0, MAX_MESSAGE_LENGTH)
         if split_at == -1:
             split_at = MAX_MESSAGE_LENGTH
         chunks.append(text[:split_at])
-        text = text[split_at:].lstrip('\n')
+        text = text[split_at:].lstrip("\n")
     return chunks
 
 
@@ -3174,7 +3721,9 @@ async def _tg_retry(coro_fn, retries=3, label="tg_retry", log=None):
             last_exc = e
             delay = 3 * (attempt + 1)
             if log:
-                log.warning(f"[{label}] Telegram call failed (attempt {attempt+1}/{retries}): {e}, retry in {delay}s")
+                log.warning(
+                    f"[{label}] Telegram call failed (attempt {attempt+1}/{retries}): {e}, retry in {delay}s"
+                )
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
     raise last_exc
@@ -3223,15 +3772,22 @@ class _ResilientStatus:
         try:
             await _tg_retry(
                 lambda: self._msg.edit_text(
-                    text, read_timeout=15, write_timeout=15, connect_timeout=15,
+                    text,
+                    read_timeout=15,
+                    write_timeout=15,
+                    connect_timeout=15,
                     **kwargs,
                 ),
-                retries=2, label=self._label, log=self._log,
+                retries=2,
+                label=self._label,
+                log=self._log,
             )
             self._text = text
         except Exception:
             if self._log:
-                self._log.debug(f"[{self._label}] Status edit failed (non-fatal): {text[:60]}")
+                self._log.debug(
+                    f"[{self._label}] Status edit failed (non-fatal): {text[:60]}"
+                )
 
     async def delete(self):
         try:
@@ -3244,18 +3800,21 @@ async def _send_status(message, text: str):
     """Send a status message with retry on timeout."""
     for attempt in range(3):
         try:
-            return await message.reply_text(text,
-                                            read_timeout=15, write_timeout=15, connect_timeout=15)
+            return await message.reply_text(
+                text, read_timeout=15, write_timeout=15, connect_timeout=15
+            )
         except Exception:
             if attempt < 2:
                 await asyncio.sleep(2)
     # Last resort — try once more, let exception propagate if it fails
-    return await message.reply_text(text,
-                                    read_timeout=30, write_timeout=30, connect_timeout=30)
+    return await message.reply_text(
+        text, read_timeout=30, write_timeout=30, connect_timeout=30
+    )
 
 
-async def _send_reply(message, text: str, log: logging.Logger, label: str,
-                      reply_markup=None) -> None:
+async def _send_reply(
+    message, text: str, log: logging.Logger, label: str, reply_markup=None
+) -> None:
     """Send a formatted reply with Markdown fallback and timeout retry.
 
     1. Try Markdown parse_mode
@@ -3267,14 +3826,19 @@ async def _send_reply(message, text: str, log: logging.Logger, label: str,
     formatted = _format_for_telegram(text)
     chunks = [c for c in _split_message(formatted) if c.strip()]
     for i, chunk in enumerate(chunks):
-        is_last = (i == len(chunks) - 1)
+        is_last = i == len(chunks) - 1
         markup = reply_markup if is_last else None
         sent = False
         # Try Markdown first
         try:
-            await message.reply_text(chunk, parse_mode='Markdown',
-                                     reply_markup=markup,
-                                     read_timeout=30, write_timeout=30, connect_timeout=30)
+            await message.reply_text(
+                chunk,
+                parse_mode="Markdown",
+                reply_markup=markup,
+                read_timeout=30,
+                write_timeout=30,
+                connect_timeout=30,
+            )
             sent = True
         except telegram.error.TimedOut:
             log.warning(f"[{label}] Markdown send timed out")
@@ -3285,13 +3849,20 @@ async def _send_reply(message, text: str, log: logging.Logger, label: str,
             plain = _strip_markdown(chunk)
             for attempt in range(3):
                 try:
-                    await message.reply_text(plain, reply_markup=markup,
-                                             read_timeout=30, write_timeout=30, connect_timeout=30)
+                    await message.reply_text(
+                        plain,
+                        reply_markup=markup,
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=30,
+                    )
                     sent = True
                     break
                 except telegram.error.TimedOut:
                     delay = 2 * (attempt + 1)
-                    log.warning(f"[{label}] Plain text send timed out (attempt {attempt+1}/3), retry in {delay}s")
+                    log.warning(
+                        f"[{label}] Plain text send timed out (attempt {attempt+1}/3), retry in {delay}s"
+                    )
                     await asyncio.sleep(delay)
         if not sent:
             log.error(f"[{label}] Failed to send message after all retries")
@@ -3300,6 +3871,7 @@ async def _send_reply(message, text: str, log: logging.Logger, label: str,
 def _strip_markdown(text: str) -> str:
     """Remove Markdown formatting characters for plain-text fallback."""
     import re
-    text = re.sub(r'\\([*_`])', r'\1', text)  # unescape first
-    text = text.replace('*', '').replace('_', '').replace('`', '')
+
+    text = re.sub(r"\\([*_`])", r"\1", text)  # unescape first
+    text = text.replace("*", "").replace("_", "").replace("`", "")
     return text

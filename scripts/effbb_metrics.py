@@ -1,14 +1,7 @@
 """Pure metric helpers for effective_bb evaluation. No OCR, no I/O."""
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(__file__))
 from gto_api import nearest_depth, AVAILABLE_DEPTHS
 
-try:
-    from analyze_hand import POSITION_ORDERS
-except Exception:  # pragma: no cover - analyze_hand import is heavy
-    POSITION_ORDERS = {}
+from position_constants import POSITION_ORDERS
 
 # classify_fault thresholds (ratio = p_eff / gt_eff)
 _OVER_RATIO = 1.4        # well above GT before we call it an impossible over-add

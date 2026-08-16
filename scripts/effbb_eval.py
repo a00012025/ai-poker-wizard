@@ -9,11 +9,7 @@ Usage: python scripts/effbb_eval.py --cache data/effbb_cache/cache.jsonl
 """
 import argparse
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "ocr"))
 
 from effbb_metrics import bucket_match, hero_folded_preflop, classify_fault, depth_bucket
 from ocr.n8_parser import _compute_effective_bb

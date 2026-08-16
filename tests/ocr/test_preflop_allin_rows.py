@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 import cv2
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from ocr.region_detector import detect_regions  # noqa: E402
 from ocr.panel_parser import parse_panel  # noqa: E402
 

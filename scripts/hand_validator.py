@@ -16,18 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Position orders by table size (GTO Wizard convention).  Duplicated from
-# analyze_hand.POSITION_ORDERS to keep this module import-light and pure.
-POSITION_ORDERS = {
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    2: ["SB", "BB"],
-}
+from position_constants import POSITION_ORDERS
 
 RANKS = set("23456789TJQKA")
 SUITS = set("cdhs")

@@ -33,7 +33,6 @@ import sys
 from multiprocessing import Pool
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from title_ocr import read_title_id  # noqa: E402
 
 _GT: set[str] | None = None

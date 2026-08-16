@@ -7,10 +7,7 @@ VLM's focused JSON response.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr.vlm_recheck import is_suspect, _parse_vlm_response, recheck_structure
 

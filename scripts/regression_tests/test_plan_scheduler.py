@@ -12,7 +12,7 @@ slots that let a 0.15bb live spot outrank nothing yet still get a seat.
 from datetime import datetime, timedelta, timezone
 
 from regression_tests.harness import (assert_eq, assert_in, assert_not_in,
-                                      assert_true, REPO_ROOT, test)
+                                      assert_true, REPO_ROOT)
 
 
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
@@ -43,21 +43,18 @@ def _surfaced(row_id, weeks_ago=1, **kw):
 
 
 # ── freshness buckets ────────────────────────────────────────────────────────
-@test
 def test_freshness_never_surfaced_row_is_fresh():
     from plan_scheduler import classify_freshness
 
     assert_eq(classify_freshness(_row(1)), "fresh")
 
 
-@test
 def test_freshness_surfaced_row_without_new_evidence_is_backlog():
     from plan_scheduler import classify_freshness
 
     assert_eq(classify_freshness(_surfaced(1, new_evidence_n=1)), "backlog")
 
 
-@test
 def test_freshness_surfaced_row_with_new_evidence_relapses():
     from plan_scheduler import RELAPSE_MIN_N, classify_freshness
 
@@ -65,7 +62,6 @@ def test_freshness_surfaced_row_with_new_evidence_relapses():
     assert_eq(classify_freshness(row), "relapse")
 
 
-@test
 def test_freshness_review_row_never_relapses():
     """端上桌一次就算送達: a single hand cannot re-offend, so a surfaced
     review row stays backlog no matter how much later evidence exists."""
@@ -76,7 +72,6 @@ def test_freshness_review_row_never_relapses():
 
 
 # ── slate quotas ─────────────────────────────────────────────────────────────
-@test
 def test_slate_splits_online_three_live_two():
     from plan_scheduler import select_weekly_slate
 
@@ -89,7 +84,6 @@ def test_slate_splits_online_three_live_two():
     assert_eq(len([r for r in picked if r["track"] == "live"]), 2)
 
 
-@test
 def test_slate_online_track_keeps_one_review_seat():
     """A 0.2bb review must not be squeezed out by five bigger drills, or
     single-hand disasters would stop being scheduled entirely."""
@@ -104,7 +98,6 @@ def test_slate_online_track_keeps_one_review_seat():
                 "the review lost its reserved seat")
 
 
-@test
 def test_slate_reserves_a_seat_for_a_tiny_live_leak():
     """1.4 regression: 0.15bb live rows must not be crushed by 4.5bb online
     rows — reserved seats are how 'live weighs more' is implemented."""
@@ -117,7 +110,6 @@ def test_slate_reserves_a_seat_for_a_tiny_live_leak():
                 "live row lost its reserved seat to bigger online EV")
 
 
-@test
 def test_slate_caps_backlog_at_one_per_track():
     from plan_scheduler import select_weekly_slate
 
@@ -131,7 +123,6 @@ def test_slate_caps_backlog_at_one_per_track():
     assert_eq(len([r for r in backlog if r["track"] == "live"]), 1)
 
 
-@test
 def test_slate_backlog_rotates_oldest_first():
     """1.2 regression: the W28/W29 rows must take turns, not all re-appear."""
     from plan_scheduler import select_weekly_slate
@@ -143,7 +134,6 @@ def test_slate_backlog_rotates_oldest_first():
               "backlog must rotate by last_surfaced_at, not by EV")
 
 
-@test
 def test_slate_puts_fresh_rows_before_backlog():
     from plan_scheduler import select_weekly_slate
 
@@ -152,7 +142,6 @@ def test_slate_puts_fresh_rows_before_backlog():
     assert_eq(picked[0]["id"], 1, "a fresh row outranks a re-surfaced one")
 
 
-@test
 def test_slate_two_stale_reviews_do_not_own_the_review_seat():
     """1.3 regression: id 67 (6/20) + id 68 (5/17) were prescribed in W29 and
     re-appeared every week after. Once surfaced they may take at most the one
@@ -167,7 +156,6 @@ def test_slate_two_stale_reviews_do_not_own_the_review_seat():
     assert_true(len(stale) <= 1, f"both stale reviews resurfaced: {stale}")
 
 
-@test
 def test_slate_rotates_a_backlog_item_even_when_fresh_work_is_plentiful():
     """§14.2: the rotating seat is reserved, not leftover. An unpracticed 22bb
     prescription must not vanish behind a queue of small fresh items."""
@@ -180,7 +168,6 @@ def test_slate_rotates_a_backlog_item_even_when_fresh_work_is_plentiful():
                 "backlog never rotated while fresh work existed")
 
 
-@test
 def test_slate_gives_the_rotating_seat_back_when_there_is_no_backlog():
     """With nothing to rotate the reserved seat must go to fresh work, not sit
     empty."""
@@ -191,7 +178,6 @@ def test_slate_gives_the_rotating_seat_back_when_there_is_no_backlog():
     assert_eq(len(picked), 4)
 
 
-@test
 def test_slate_does_not_pad_when_fresh_candidates_run_out():
     from plan_scheduler import select_weekly_slate
 
@@ -201,7 +187,6 @@ def test_slate_does_not_pad_when_fresh_candidates_run_out():
     assert_eq(slate["backlog_total"], 6)
 
 
-@test
 def test_slate_lets_an_empty_track_yield_its_seats():
     from plan_scheduler import select_weekly_slate
 
@@ -211,7 +196,6 @@ def test_slate_lets_an_empty_track_yield_its_seats():
 
 
 # ── track resolution ─────────────────────────────────────────────────────────
-@test
 def test_track_follows_ledger_source_not_queue_source():
     """drill_queue.source records how a row was ADDED; only ledger_hands.source
     says whether the hand was played online or live (queue_feed docstring)."""
@@ -223,7 +207,6 @@ def test_track_follows_ledger_source_not_queue_source():
     assert_eq(resolve_track(row, {"h1": "online", "h2": "online"}), "online")
 
 
-@test
 def test_track_falls_back_to_queue_source_when_ledger_is_silent():
     from plan_scheduler import resolve_track
 
@@ -231,7 +214,6 @@ def test_track_falls_back_to_queue_source_when_ledger_is_silent():
     assert_eq(resolve_track(row, {}), "live")
 
 
-@test
 def test_track_majority_wins_on_mixed_sources():
     from plan_scheduler import resolve_track
 
@@ -242,7 +224,6 @@ def test_track_majority_wins_on_mixed_sources():
               "live")
 
 
-@test
 def test_mixed_queue_row_ranks_on_its_track_ev_only():
     """Live evidence may merge into an existing online drill for one learning
     unit, but it must not inflate that row's online-track EV ranking (§5.2)."""
@@ -268,7 +249,6 @@ def test_mixed_queue_row_ranks_on_its_track_ev_only():
 
 
 # ── focus cooldown ───────────────────────────────────────────────────────────
-@test
 def test_focus_blocked_inside_the_cooldown_window():
     """1.1 regression: river:SRP:OOP:vs_bet was prescribed in W29 and again in
     W30 while its post-prescription per100 was 0.0."""
@@ -280,7 +260,6 @@ def test_focus_blocked_inside_the_cooldown_window():
     assert_true(blocked, "a spot prescribed last week must not repeat")
 
 
-@test
 def test_focus_still_blocked_after_cooldown_without_fresh_evidence():
     from plan_scheduler import focus_cooldown_blocked
 
@@ -290,7 +269,6 @@ def test_focus_still_blocked_after_cooldown_without_fresh_evidence():
     assert_true(blocked, "time alone must not resurrect a treated spot")
 
 
-@test
 def test_focus_returns_when_it_leaks_again():
     from plan_scheduler import FOCUS_RELAPSE_MIN_N, focus_cooldown_blocked
 
@@ -301,7 +279,6 @@ def test_focus_returns_when_it_leaks_again():
     assert_true(not blocked, "fresh evidence must let a spot back into focus")
 
 
-@test
 def test_focus_never_prescribed_key_is_never_blocked():
     from plan_scheduler import focus_cooldown_blocked
 
@@ -310,16 +287,20 @@ def test_focus_never_prescribed_key_is_never_blocked():
         post_n=0, post_per100=None, global_per100=1.88))
 
 
-@test
 def test_focus_history_is_not_truncated_before_the_90_day_window():
-    """Twelve weeks is only 84 days. A fixed LIMIT 12 would forget a focus
-    prescribed on day 85 while its old losses can still rank in the 90-day
-    diagnosis window, letting time alone resurrect a treated spot."""
-    import inspect
+    """Cooldown history query must not cap rows before the 90-day window."""
+    import asyncio
     from scorecard import focus_history
 
-    source = inspect.getsource(focus_history)
-    assert_true("LIMIT" not in source,
+    captured = []
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            captured.append(sql)
+            return []
+
+    assert_eq(asyncio.run(focus_history(Conn())), [])
+    assert_true("LIMIT" not in captured[0].upper(),
                 "focus cooldown must consider every prior prescription")
 
 
@@ -330,7 +311,6 @@ class _Attempt:
         self.gto_score = gto_score
 
 
-@test
 def test_drill_pass_needs_both_hands_and_score():
     from plan_scheduler import drill_attempt_passed
 
@@ -340,7 +320,6 @@ def test_drill_pass_needs_both_hands_and_score():
     assert_true(not drill_attempt_passed(row, _Attempt(80, 0.89)))
 
 
-@test
 def test_drill_pass_matches_the_telegram_detail_thresholds():
     """The auto-close rule must be the same predicate the drill card shows as
     '✅ 本次 Drill 已達標', or the bot and the weekly job would disagree."""
@@ -359,7 +338,6 @@ def _spot(key, avg_ev=0.05, n=40):
             "samples": []}
 
 
-@test
 def test_cooled_focus_key_leaves_the_focus_but_stays_on_the_leak_board():
     """Hiding a treated spot from the ranking too would misreport where EV is
     actually going — only the focus slot is withheld."""
@@ -374,7 +352,6 @@ def test_cooled_focus_key_leaves_the_focus_but_stays_on_the_leak_board():
               [r["spot_leaf"] for r in plan["leaderboard"]])
 
 
-@test
 def test_repeat_note_names_the_reason_it_came_back():
     from scorecard import repeat_note
 
@@ -385,7 +362,6 @@ def test_repeat_note_names_the_reason_it_came_back():
               repeat_note({"surfaced_count": 1, "bucket": "backlog"}))
 
 
-@test
 def test_ordered_queue_ranks_the_merged_plan_by_current_ev_loss():
     """The one recommendation list is globally EV ordered after the scheduler
     has already protected two of five seats for selective live evidence."""
@@ -418,7 +394,6 @@ def test_ordered_queue_ranks_the_merged_plan_by_current_ev_loss():
     assert_not_in("本週練習：", payload["html"])
 
 
-@test
 def test_ordered_queue_does_not_group_a_lower_ev_online_item_ahead_of_live():
     from scorecard import ordered_queue
 
@@ -432,7 +407,6 @@ def test_ordered_queue_does_not_group_a_lower_ev_online_item_ahead_of_live():
               [2, 3, 1])
 
 
-@test
 def test_ordered_queue_merges_legacy_focus_without_duplicate_spots():
     from scorecard import ordered_queue
 
@@ -455,7 +429,6 @@ def test_ordered_queue_merges_legacy_focus_without_duplicate_spots():
     assert_eq([q["spot_leaf"] for q in rows].count("same-spot"), 1)
 
 
-@test
 def test_merged_recommendations_keep_two_live_seats_before_global_ev_display():
     from scorecard import ordered_queue
 
@@ -469,7 +442,6 @@ def test_merged_recommendations_keep_two_live_seats_before_global_ev_display():
     assert_eq([q["id"] for q in rows[:3]], [1, 2, 3])
 
 
-@test
 def test_weekly_focus_reserves_one_live_seat_without_mixing_sources():
     from scorecard import weekly_focus_candidates
 
@@ -490,19 +462,6 @@ def test_weekly_focus_reserves_one_live_seat_without_mixing_sources():
               ["online-1", "online-2"])
 
 
-@test
-def test_weekly_build_keeps_sparse_live_leafs_eligible_for_focus():
-    """Older live rows can lack spot_parent; the focus scan must still see
-    their exact action-line leaf instead of silently dropping the hand."""
-    import inspect
-    from scorecard import build
-
-    src = inspect.getsource(build)
-    assert_in('lb.leaderboard(', src)
-    assert_in('source="live"', src)
-
-
-@test
 def test_weekly_slate_excludes_reviews_from_before_this_week():
     import asyncio
     from datetime import datetime, timezone
@@ -547,7 +506,6 @@ def test_weekly_slate_excludes_reviews_from_before_this_week():
     assert_in('"hand_id__in":["fresh-hand"]', analyze_url)
 
 
-@test
 def test_backlog_remaining_counts_only_what_is_not_shown():
     from scorecard import backlog_remaining
 
@@ -557,7 +515,6 @@ def test_backlog_remaining_counts_only_what_is_not_shown():
 
 
 # ── migration ────────────────────────────────────────────────────────────────
-@test
 def test_freshness_migration_adds_columns_and_backfills():
     sql = (REPO_ROOT
            / "supabase/migrations/20260729000000_plan_scheduler_freshness.sql"

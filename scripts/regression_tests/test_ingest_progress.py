@@ -11,12 +11,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from regression_tests.harness import assert_eq, assert_in, assert_true, test
+from regression_tests.harness import assert_eq, assert_in, assert_true
 
 
 # ── Pure formatters ────────────────────────────────────────────────────────
 
-@test
 def test_parse_progress_extracts_done_total():
     from src.ingest_runner import parse_progress
     assert_eq(parse_progress("  list scan: 100/1241 (12 new)"), (100, 1241),
@@ -29,7 +28,6 @@ def test_parse_progress_extracts_done_total():
               "list-only sweep x/total")
 
 
-@test
 def test_parse_list_scan_new_count():
     from src.ingest_runner import parse_list_scan_new_count
     assert_eq(parse_list_scan_new_count("  list scan: 1000/2701 (555 new)"), 555,
@@ -38,7 +36,6 @@ def test_parse_list_scan_new_count():
               "non-list-scan lines have no new-hand count")
 
 
-@test
 def test_parse_progress_none_without_denominator():
     from src.ingest_runner import parse_progress
     assert_eq(parse_progress("  list sweep: 320 new..."), None,
@@ -48,7 +45,6 @@ def test_parse_progress_none_without_denominator():
               "non-fraction sweep line")
 
 
-@test
 def test_render_bar_boundaries():
     from src.ingest_runner import render_bar
     assert_eq(render_bar(0, 10, width=10), "░" * 10, "0%")
@@ -59,14 +55,12 @@ def test_render_bar_boundaries():
     assert_eq(len(render_bar(0, 0, width=8)), 8, "zero total is safe")
 
 
-@test
 def test_format_eta_none_until_data():
     from src.ingest_runner import format_eta
     assert_eq(format_eta(0, 241, 0.0), None, "no elapsed, no rate")
     assert_eq(format_eta(0, 241, 5.0), None, "nothing done yet")
 
 
-@test
 def test_format_eta_seconds_and_minutes():
     from src.ingest_runner import format_eta
     # 100 done in 50s -> 2/s; 100 remaining -> ~50s
@@ -77,7 +71,6 @@ def test_format_eta_seconds_and_minutes():
     assert_true(eta is not None and "分" in eta, f"minutes bucket: {eta}")
 
 
-@test
 def test_render_status_denominatorless_stage_has_no_bar():
     from src.ingest_runner import render_status
     text = render_status("攝取中", None, 3.0, {}, running_count=320)
@@ -87,7 +80,6 @@ def test_render_status_denominatorless_stage_has_no_bar():
     assert_in("已發現", text, "count wording says discovered, not fully ingested")
 
 
-@test
 def test_progress_stage_label_translates_machine_lines():
     from src.ingest_runner import progress_stage_label
     assert_eq(progress_stage_label("攝取中", "  list scan: 100/1241 (12 new)"),
@@ -102,7 +94,6 @@ def test_progress_stage_label_translates_machine_lines():
               "下載/寫入完整分析", "detail write label")
 
 
-@test
 def test_render_status_detail_stage_has_bar_and_eta():
     from src.ingest_runner import render_status
     text = render_status("攝取中", (120, 240), 60.0, {})
@@ -112,7 +103,6 @@ def test_render_status_detail_stage_has_bar_and_eta():
     assert_true("剩約" in text, "eta present")
 
 
-@test
 def test_render_status_list_scan_shows_new_count_separately():
     from src.ingest_runner import render_status
     text = render_status("比對 GTOW 新手牌清單", (1000, 2701), 30.0, {},
@@ -121,7 +111,6 @@ def test_render_status_list_scan_shows_new_count_separately():
     assert_in("已發現 555 筆新手牌", text, "new-hand count is separate")
 
 
-@test
 def test_render_status_summary_hides_tiny_stages():
     from src.ingest_runner import render_status
     text = render_status("重建 sessions", None, 60.0, {
@@ -152,7 +141,6 @@ class _FakeBot:
         self.edits.append(text)
 
 
-@test
 def test_live_status_debounces_rapid_same_stage_updates():
     from src.ingest_runner import _LiveStatus
 
@@ -171,7 +159,6 @@ def test_live_status_debounces_rapid_same_stage_updates():
     assert_eq(len(edits), 2, f"debounced to 2 edits, got {len(edits)}: {edits}")
 
 
-@test
 def test_live_status_stage_change_bypasses_debounce():
     from src.ingest_runner import _LiveStatus
 
@@ -188,7 +175,6 @@ def test_live_status_stage_change_bypasses_debounce():
     assert_eq(len(edits), 2, f"stage change bypasses debounce: {edits}")
 
 
-@test
 def test_live_status_substage_change_bypasses_debounce():
     """The top-level stage may remain 攝取中 while the real sub-stage changes
     from list scan to detail fetch; that must render immediately."""
@@ -208,7 +194,6 @@ def test_live_status_substage_change_bypasses_debounce():
     assert_in("下載/寫入完整分析", edits[1], "detail fetch rendered")
 
 
-@test
 def test_live_status_does_not_flap_between_detail_fetch_and_write():
     """Detail is processed in fetch/write chunks; the UI should render one
     stable stage instead of alternating labels every batch."""
@@ -227,7 +212,6 @@ def test_live_status_does_not_flap_between_detail_fetch_and_write():
     assert_eq(live._stage, "下載/寫入完整分析", "stable detail stage")
 
 
-@test
 def test_live_status_swallows_not_modified():
     from src.ingest_runner import _LiveStatus
 
@@ -271,7 +255,6 @@ class _FakeDB:
         return "tok"
 
 
-@test
 def test_process_next_sends_live_bar_and_settles():
     """Extension-path run: no pre-registered message, so the runner sends its
     own, edits it with a real bar during the detail sweep, then settles it."""
@@ -340,7 +323,6 @@ def test_process_next_sends_live_bar_and_settles():
                 f"settle edit present: {bot.edits}")
 
 
-@test
 def test_pass_surfaces_detail_write_as_heartbeat_progress():
     """The DB-write phase between 200-hand detail-fetch batches must refresh
     progress too; otherwise Telegram appears stuck even while rows are writing."""
@@ -376,7 +358,6 @@ def test_pass_surfaces_detail_write_as_heartbeat_progress():
                 f"detail write raw passed through: {seen}")
 
 
-@test
 def test_load_list_rows_reads_each_monthly_archive_once():
     """Detail prep must not reopen/rescan the same monthly gzip once per hand.
 
@@ -423,7 +404,6 @@ def test_load_list_rows_reads_each_monthly_archive_once():
 
 # ── full-history import mode ────────────────────────────────────────────────
 
-@test
 def test_run_pipeline_full_mode_backfills_directly():
     """mode='full' runs --backfill straight away (no --incremental first) and
     marks the result as a full import."""
@@ -455,7 +435,6 @@ def test_run_pipeline_full_mode_backfills_directly():
     assert_true(any("--backfill" in a for a in calls), "backfill ran")
 
 
-@test
 def test_run_pipeline_full_mode_no_new_hands_message():
     """A full import that finds nothing new says so (not the incremental
     'GTOW still processing' hint)."""
@@ -484,7 +463,6 @@ def test_run_pipeline_full_mode_no_new_hands_message():
     assert_true("稍後再點一次" not in result, "no incremental-only hint in full mode")
 
 
-@test
 def test_process_next_threads_mode_to_pipeline():
     """process_next passes the claimed row's mode through to run_pipeline, and a
     full import bypasses the 24h already-swept guard."""

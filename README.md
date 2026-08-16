@@ -108,6 +108,18 @@ GTOW Analyze / 線下手牌入帳
 
 ## 快速開始
 
+### 自行啟動 Bot
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python -m src.main_gemini
+```
+
+最小環境是 `BOT_TOKEN`、`GEMINI_API_KEY` 與 `OPENAI_API_KEY`。Gemini 負責文字／圖片解析；OpenAI (`OPENAI_COACH_MODEL`) 負責 initial coaching 與 follow-up。
+
 ### 綁定 GTO Wizard
 
 1. 到 [GitHub Releases](https://github.com/a00012025/ai-poker-wizard/releases) 下載最新版 Extension。

@@ -6,13 +6,10 @@ Pure HTTP calls — no browser needed.
 import os
 import threading
 import time
-import sys
-from pathlib import Path
 
 import requests
 
 # Allow importing gto_token from same directory
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_token import TokenExpiredError
 from gto_credentials import (
     access_is_expired,

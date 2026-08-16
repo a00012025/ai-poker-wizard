@@ -4,6 +4,7 @@
 Flow: user message → Gemini parse → deterministic GTO analysis → GPT-5.6 coach
 Follow-ups: evidence plan → bounded tool calls → verified GPT-5.6 explanation
 """
+
 import asyncio
 import contextvars
 import copy
@@ -38,22 +39,24 @@ class _RequestIdFilter(logging.Filter):
         record.request_id = request_id_var.get()
         return True
 
+
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_SCRIPTS_DIR = _PROJECT_ROOT / "scripts"
 _LOG_DIR = _PROJECT_ROOT / "logs"
 _FOLLOWUP_TIMEOUT_SECONDS = 180
 
-# Allow importing from scripts/
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
 from coach_prompts import (  # noqa: F401 — re-exported for existing importers
-    PARSE_PROMPT, IMAGE_PARSE_PROMPT, HERO_HAND_ONLY_PROMPT, COACH_SYSTEM,
-    FOLLOWUP_REQUEST, INITIAL_COACH_SYSTEM,
-    _TERM_REPLACEMENTS, _normalize_terms, _GROUNDING_PATTERNS,
+    PARSE_PROMPT,
+    IMAGE_PARSE_PROMPT,
+    HERO_HAND_ONLY_PROMPT,
+    COACH_SYSTEM,
+    INITIAL_COACH_SYSTEM,
+    _TERM_REPLACEMENTS,
+    _normalize_terms,
+    _GROUNDING_PATTERNS,
     _needs_solver_grounding,
 )
 from card_display import cards_to_emoji
@@ -64,352 +67,12 @@ from coach_teaching import (
     render_prompt_block as render_teaching_prompt_block,
 )
 from coach_evidence import (
-    COACH_FACTS_TOOL,
     display_exact_cards,
     normalize_emoji_cards,
-    tool_spec_from_declaration,
 )
-from coach_runtime import run_evidence_chat
-
-QUERY_NEXT_ACTIONS_DECLARATION = types.FunctionDeclaration(
-    name="query_next_actions",
-    description=(
-        "查詢某個決策點的所有可用動作及其 code。"
-        "在建構假設情境（override actions）之前必須先呼叫此工具，以獲取正確的 action code（如 R3.6 而非猜測的 R1.2）。"
-        "回傳每個可用動作的 code、betsize 和 betsize_by_pot。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "street": types.Schema(
-                type=types.Type.STRING,
-                enum=["preflop", "flop", "turn", "river"],
-                description="要查詢哪條街的可用動作",
-            ),
-            "effective_bb": types.Schema(
-                type=types.Type.NUMBER,
-                description="有效籌碼深度（bb 數）。不同深度的 solver sizing 不同。不指定則使用目前手牌的深度。",
-            ),
-            "actions_so_far": types.Schema(
-                type=types.Type.STRING,
-                description="這條街到目前為止的動作序列（如果要查詢街中某個後續決策點）。例如查詢 flop 上 SB bet 後 BB 的選項，傳入 'R3.6'。留空表示查詢該街第一個行動者的選項。",
-            ),
-            "preflop_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "覆蓋 preflop 動作序列（同 query_gto 的格式）。"
-                    "用於查詢不同 preflop 路線下的可用動作。"
-                ),
-            ),
-            "board_override": types.Schema(
-                type=types.Type.STRING,
-                description="假設不同的 board。",
-            ),
-            "flop_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description="假設不同的翻牌動作（查詢 turn/river 時使用）。",
-            ),
-            "turn_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description="假設不同的轉牌動作（查詢 river 時使用）。",
-            ),
-            "num_players": types.Schema(
-                type=types.Type.INTEGER,
-                description="桌上人數（6-9）。ICM 查詢時必須指定。",
-            ),
-            "icm_phase": types.Schema(
-                type=types.Type.STRING,
-                enum=["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
-                      "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"],
-                description=(
-                    "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip EV。"
-                    "常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, FT=決賽桌。"
-                ),
-            ),
-            "player_stacks": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "ICM 各位置籌碼（bb），用逗號分隔，按座位順序（UTG 到 BB）。"
-                    "例如 8 人桌全部 20bb: '20,20,20,20,20,20,20,20'。"
-                    "不指定則預設所有人相同籌碼（= effective_bb）。"
-                ),
-            ),
-        },
-        required=["street"],
-    ),
-)
-
-QUERY_GTO_DECLARATION = types.FunctionDeclaration(
-    name="query_gto",
-    description=(
-        "查詢 GTO solver 策略數據。可以查詢目前手牌中任何位置在任何街的完整範圍或特定手牌策略。"
-        "也可以修改 board 或 actions 來查詢假設情境。"
-        "重要：使用 override actions 時，必須先用 query_next_actions 取得正確的 action code。"
-        "查詢不同位置的 preflop 策略時，用 preflop_actions_override 指定到該位置行動前的動作序列。"
-        "Raise size 不需要精確，系統會自動校正到最接近的 solver sizing（例如 R2 會自動校正為 R2.1）。"
-        "\n\n用戶描述獨立情境（不基於已有手牌）時，必須同時提供："
-        "effective_bb、preflop_actions_override、board_override，以及 flop/turn/river_actions_override。"
-        "Board 必須帶花色（例如 QhTd3c），如果用戶沒指定花色就用 rainbow（不同花色）。"
-        "Action 格式：X=check, C=call, F=fold, R{pot%}=bet/raise（如 R1.15 = ~33% pot bet）。"
-        "查詢 turn 時，board_override 必須包含 turn 牌（4 張牌，例如 QhTd3c3s）。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "street": types.Schema(
-                type=types.Type.STRING,
-                enum=["preflop", "flop", "turn", "river"],
-                description="要查詢哪條街的策略",
-            ),
-            "decision_index": types.Schema(
-                type=types.Type.INTEGER,
-                description=(
-                    "同一條街 Hero 的第幾次決策（1-based）。例如 Hero check-raise 後再面對 "
-                    "3bet，後一個決策是 2。查 played line 時優先用此欄位避免抓到第一個 node。"
-                ),
-            ),
-            "position": types.Schema(
-                type=types.Type.STRING,
-                description="要查詢哪個位置的範圍或策略（例如 BB, CO, BTN）。不指定則回傳當前行動者的整體策略。",
-            ),
-            "hand": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "查詢特定手牌的策略。不指定則回傳該位置的完整範圍概覽。\n"
-                    "Postflop 查詢時，如果用戶指定了花色（如 Ah8h），必須傳入完整花色（如 Ah8h 而非 A8s），"
-                    "因為不同花色在有同花/同花聽牌的牌面上策略差異極大。\n"
-                    "例如 board Jc4d3s5d: Ad8d（方塊花聽）96% bet vs Ah8h（無聽牌）97% check。\n"
-                    "Preflop 查詢用簡化格式即可：66, AKs, QTo。"
-                ),
-            ),
-            "include_range": types.Schema(
-                type=types.Type.BOOLEAN,
-                description=(
-                    "問題在問完整 range、哪些牌或哪些 combos 時設為 true。"
-                    "即使同時傳 hand 以保留 Hero exact combo，也會一併回傳完整"
-                    " action-by-action range 並產生 13x13 range 圖。"
-                ),
-            ),
-            "effective_bb": types.Schema(
-                type=types.Type.NUMBER,
-                description=(
-                    "有效籌碼深度（bb 數）。當用戶問的情境深度與目前手牌不同時必須指定。"
-                    "例如用戶問 '30bb effective' 就傳 30。系統會自動選擇最近的 solver 深度。"
-                    "不指定則使用目前手牌的深度。"
-                ),
-            ),
-            "preflop_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "覆蓋 preflop 動作序列。格式：每個位置一個動作，按 UTG-UTG+1-LJ-HJ-CO-BTN-SB-BB 順序，用 - 分隔。"
-                    "F=Fold, C=Call, RX=Raise to X, AI=All-in。Raise size 不用精確，系統會自動校正。"
-                    "例如查詢 BB 面對 UTG+1 open 的策略：傳入 F-R2-F-F-F-F-F。"
-                    "例如查詢 UTG+1 open 後 BB 3bet 後 UTG+1 的決策：傳入 F-R2-F-F-F-F-F-AI。"
-                ),
-            ),
-            "board_override": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "指定 board 牌面（帶花色）。獨立情境查詢時必須提供。"
-                    "Flop 查詢傳 3 張（如 QhTd3c），turn 查詢傳 4 張（如 QhTd3c3s），river 查詢傳 5 張。"
-                    "也可用於覆蓋已有手牌的 board。"
-                ),
-            ),
-            "flop_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "翻牌動作序列。格式：X=check, C=call, F=fold, R{size}=bet/raise。\n"
-                    "size 可以是絕對 bb 數（如 R3.7）或底池百分比（如 R50%）。系統會自動轉換百分比為正確的 bb 數。\n"
-                    "推薦使用百分比格式，避免因 ante 導致底池計算錯誤。\n"
-                    "例如 LJ bet 50% pot, BTN call = R50%-C。\n"
-                    "查詢 flop 時：填到要查詢的決策點之前的動作。\n"
-                    "查詢 turn 時：填完整的 flop 動作。"
-                ),
-            ),
-            "turn_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "轉牌動作序列。格式同上（支援 R50% 百分比格式）。"
-                    "查詢 turn 某位置策略時，填到該位置行動前。"
-                ),
-            ),
-            "river_actions_override": types.Schema(
-                type=types.Type.STRING,
-                description="假設不同的河牌動作序列。格式同上（支援 R50% 百分比格式）。",
-            ),
-            "num_players": types.Schema(
-                type=types.Type.INTEGER,
-                description="桌上人數（6-9）。ICM 查詢時必須指定。",
-            ),
-            "icm_phase": types.Schema(
-                type=types.Type.STRING,
-                enum=["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
-                      "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"],
-                description=(
-                    "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip EV。"
-                    "常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, FT=決賽桌。"
-                ),
-            ),
-            "player_stacks": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "ICM 各位置籌碼（bb），用逗號分隔，按座位順序（UTG 到 BB）。"
-                    "例如 8 人桌全部 20bb: '20,20,20,20,20,20,20,20'。"
-                    "不指定則預設所有人相同籌碼（= effective_bb）。"
-                ),
-            ),
-        },
-        required=["street"],
-    ),
-)
-
-LOOKUP_HAND_DECLARATION = types.FunctionDeclaration(
-    name="lookup_hand",
-    description=(
-        "根據 Hand ID 從用戶的手牌歷史中查詢手牌資料。"
-        "用戶提到某個 Hand ID（如 H42 或 TM5600279272）時，使用此工具撈取手牌 JSON。"
-        "可用於跨對話引用之前分析過的手牌。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "hand_id": types.Schema(
-                type=types.Type.STRING,
-                description="手牌 ID（如 H42 或 TM5600279272）",
-            ),
-        },
-        required=["hand_id"],
-    ),
-)
-
-EVALUATE_HAND_DECLARATION = types.FunctionDeclaration(
-    name="evaluate_hand",
-    description=(
-        "判斷手牌在牌面上的確切牌型（成手牌 + 聽牌）。"
-        "牌型判斷是 100% 確定性的，必須用此工具驗證，絕對不要自行推算。"
-        "board 可省略，會自動使用當前最新牌面。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "hand": types.Schema(
-                type=types.Type.STRING,
-                description="手牌 (如 KQo, AhKh, T7s, 66)",
-            ),
-            "board": types.Schema(
-                type=types.Type.STRING,
-                description="牌面 (如 8hTc2sAc)，省略則用當前最新牌面",
-            ),
-        },
-        required=["hand"],
-    ),
-)
-
-# The strategy/range grounding gate must force a solver query, not the local
-# postflop hand evaluator.  Keeping this separate from the full declaration
-# list prevents Gemini from expanding a preflop range question into one
-# evaluate_hand call per candidate combo (H3815).
-_SOLVER_GROUNDING_TOOL_NAMES = ("query_gto", "query_next_actions")
-
-
-# ── Training-loop Tool Declarations (ledger-backed; EV-weighted only) ──
-# The frequency-era deviations tools (query_my_leaks / query_my_stats) were
-# retired per North Star §7.3 — weakness/stats questions route to
-# query_ledger_summary below.
-
-GET_TRAINING_PLAN_DECLARATION = types.FunctionDeclaration(
-    name="get_training_plan",
-    description=(
-        "取得本週訓練計畫（週日 21:00 自動生成的記分卡）：焦點 spot（EV loss 排序）"
-        "+ GTOW Trainer drill 連結 + 上週焦點回讀 + 現場手牌練習佇列。"
-        "當用戶問「我該練什麼」「給我訓練計畫」「本週計畫」時使用。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={},
-        required=[],
-    ),
-)
-
-GET_PROGRESS_DECLARATION = types.FunctionDeclaration(
-    name="get_progress",
-    description=(
-        "查詢每週 EV loss 趨勢（bb/100 決策，帶樣本數 n）。可選按 spot 大類"
-        "（RFI/vsOpen/vs3bet/…/flop/turn/river）或精確 spot_leaf 過濾。"
-        "當用戶問「我有進步嗎」「XX 有改善嗎」時使用。"
-        "注意：技能趨勢是月尺度，單週波動不是訊號。"
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "category": types.Schema(
-                type=types.Type.STRING,
-                description="spot 大類，如 vs3bet、flop（可選）",
-            ),
-            "spot_leaf": types.Schema(
-                type=types.Type.STRING,
-                description="精確 action-line spot leaf（可選）",
-            ),
-            "weeks": types.Schema(
-                type=types.Type.INTEGER,
-                description="查詢最近幾週（預設 8）",
-            ),
-        },
-        required=[],
-    ),
-)
-
-QUERY_LEDGER_SUMMARY_DECLARATION = types.FunctionDeclaration(
-    name="query_ledger_summary",
-    description=(
-        "查詢全量帳本（GTOW Analyzer 評分的線上 MTT 決策，action-line 分類）的 "
-        "EV loss 聚合。可按 spot 大類（RFI/vsOpen/vsRaiseCall/vs3bet/"
-        "vs4bet/vsSqueeze/flop/turn/river）或 hero 位置類（EP/MP/LP/SB/BB）或天數過濾。"
-        "回傳 EV loss/100 決策、總損失、樣本數 n、excluded 數與 top spot。"
-        "使用者問『我最大的弱點 / 什麼地方打最差 / 我的統計 / 我哪裡漏 EV / "
-        "某類 spot 表現如何 / 我 3bet pot 打得怎樣』時用這個。"
-    ),
-    parameters=types.Schema(type=types.Type.OBJECT, properties={
-        "category": types.Schema(type=types.Type.STRING,
-            description="spot 大類，如 vs3bet、flop、vsRaiseCall"),
-        "hero_cat": types.Schema(type=types.Type.STRING,
-            description="hero 位置類：EP/MP/LP/SB/BB"),
-        "days": types.Schema(type=types.Type.INTEGER, description="回看天數，省略=全期"),
-    }, required=[]),
-)
-
-QUERY_LEDGER_HANDS_DECLARATION = types.FunctionDeclaration(
-    name="query_ledger_hands",
-    description=(
-        "列出帳本中符合條件的具體手牌（EV loss 排序），附 GTOW Analyze 復盤連結。"
-        "使用者要看『哪幾手 / 最貴的手 / 某類 spot 的實例』時用這個。"
-    ),
-    parameters=types.Schema(type=types.Type.OBJECT, properties={
-        "category": types.Schema(type=types.Type.STRING, description="spot 大類"),
-        "min_ev_loss": types.Schema(type=types.Type.NUMBER, description="bb 門檻，預設 0.5"),
-        "days": types.Schema(type=types.Type.INTEGER, description="預設 90"),
-        "limit": types.Schema(type=types.Type.INTEGER, description="預設 5，最大 10"),
-    }, required=[]),
-)
-
-
-def _coach_tool_specs(db_enabled: bool) -> list:
-    """One provider-neutral registry for every coaching evidence tool."""
-    specs = [
-        COACH_FACTS_TOOL,
-        tool_spec_from_declaration(QUERY_NEXT_ACTIONS_DECLARATION),
-        tool_spec_from_declaration(QUERY_GTO_DECLARATION),
-        tool_spec_from_declaration(EVALUATE_HAND_DECLARATION),
-    ]
-    if db_enabled:
-        specs.extend([
-            tool_spec_from_declaration(LOOKUP_HAND_DECLARATION, requires_db=True),
-            tool_spec_from_declaration(GET_TRAINING_PLAN_DECLARATION, requires_db=True),
-            tool_spec_from_declaration(GET_PROGRESS_DECLARATION, requires_db=True),
-            tool_spec_from_declaration(QUERY_LEDGER_SUMMARY_DECLARATION, requires_db=True),
-            tool_spec_from_declaration(QUERY_LEDGER_HANDS_DECLARATION, requires_db=True),
-        ])
-    return specs
+from coach_runtime import ChatWorkflow, WorkflowDeps
+from coach_tools import coach_tool_specs
+from position_constants import POSITION_ORDER, POSITION_ORDERS
 
 
 class GeminiSessionManager:
@@ -419,41 +82,42 @@ class GeminiSessionManager:
             raise ValueError("GEMINI_API_KEY 環境變數未設定")
 
         self.client = genai.Client(api_key=api_key)
-        self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
-        self.image_parse_model = os.getenv("GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest")
+        self.image_parse_model = os.getenv(
+            "GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest"
+        )
         openai_key = os.getenv("OPENAI_API_KEY")
-        # Missing OpenAI configuration must fail loudly/honestly; it must not
-        # silently select a different coaching model. Gemini coaching remains
-        # available only through an explicit rollback override.
-        default_narrator = "openai"
-        self.coach_narrator_provider = os.getenv(
-            "COACH_PROVIDER",
-            os.getenv("COACH_NARRATOR_PROVIDER", default_narrator),
-        ).strip().lower()
         self.coach_narrator_model = os.getenv(
-            "OPENAI_COACH_MODEL", "gpt-5.6-terra",
+            "OPENAI_COACH_MODEL",
+            "gpt-5.6-terra",
         )
         self.coach_narrator_reasoning = os.getenv(
-            "OPENAI_COACH_REASONING_EFFORT", "low",
+            "OPENAI_COACH_REASONING_EFFORT",
+            "low",
         )
-        self.coach_narrator_max_output_tokens = int(os.getenv(
-            "OPENAI_COACH_MAX_OUTPUT_TOKENS", "900",
-        ))
-        self.coach_max_tool_calls = int(os.getenv(
-            "OPENAI_COACH_MAX_TOOL_CALLS", "4",
-        ))
-        self.coach_max_evidence_rounds = int(os.getenv(
-            "OPENAI_COACH_MAX_EVIDENCE_ROUNDS", "2",
-        ))
-        self._openai_narrator_client = None
-        if self.coach_narrator_provider == "openai" and openai_key:
+        self.coach_narrator_max_output_tokens = int(
+            os.getenv(
+                "OPENAI_COACH_MAX_OUTPUT_TOKENS",
+                "900",
+            )
+        )
+        self.coach_max_tool_calls = int(
+            os.getenv(
+                "OPENAI_COACH_MAX_TOOL_CALLS",
+                "4",
+            )
+        )
+        self.coach_max_evidence_rounds = int(
+            os.getenv(
+                "OPENAI_COACH_MAX_EVIDENCE_ROUNDS",
+                "2",
+            )
+        )
+        self._openai_coach_client = None
+        if openai_key:
             from openai import AsyncOpenAI
 
-            self._openai_narrator_client = AsyncOpenAI(api_key=openai_key)
-        # Compatibility name while the parsing/session god-file is split.
-        # New coaching code should use this provider-neutral alias.
-        self._openai_coach_client = self._openai_narrator_client
+            self._openai_coach_client = AsyncOpenAI(api_key=openai_key)
         self.max_turns = "N/A"  # for bot.py compat
         self.histories: Dict[int, List[types.Content]] = {}
         self.hand_contexts: Dict[int, dict] = {}
@@ -507,19 +171,32 @@ class GeminiSessionManager:
     @staticmethod
     def _accumulate_usage(acc: dict, usage: dict):
         """Add usage dict into accumulator."""
-        for key in ("prompt_tokens", "completion_tokens", "cached_tokens",
-                     "thinking_tokens", "total_tokens"):
+        for key in (
+            "prompt_tokens",
+            "completion_tokens",
+            "cached_tokens",
+            "thinking_tokens",
+            "total_tokens",
+        ):
             acc[key] = acc.get(key, 0) + usage.get(key, 0)
         acc["api_calls"] = acc.get("api_calls", 0) + 1
 
-    async def _save_usage(self, chat_id: int, request_type: str, model: str,
-                           acc: dict, latency_ms: int | None = None):
+    async def _save_usage(
+        self,
+        chat_id: int,
+        request_type: str,
+        model: str,
+        acc: dict,
+        latency_ms: int | None = None,
+    ):
         """Save accumulated token usage to DB."""
         if not self.db or not acc.get("api_calls"):
             return
         try:
             await self.db.log_token_usage(
-                chat_id=chat_id, request_type=request_type, model=model,
+                chat_id=chat_id,
+                request_type=request_type,
+                model=model,
                 prompt_tokens=acc.get("prompt_tokens", 0),
                 completion_tokens=acc.get("completion_tokens", 0),
                 cached_tokens=acc.get("cached_tokens", 0),
@@ -536,8 +213,8 @@ class GeminiSessionManager:
         if user_id and refresh_token:
             from gto_credentials import get_user_credentials
             from gto_api import set_user_token
-            credentials = get_user_credentials(
-                user_id, fallback_refresh=refresh_token)
+
+            credentials = get_user_credentials(user_id, fallback_refresh=refresh_token)
             set_user_token(
                 credentials.access_token,
                 credentials.client_id,
@@ -548,11 +225,12 @@ class GeminiSessionManager:
     def _clear_user_token():
         """Clear thread-local GTO token."""
         from gto_api import clear_user_token
+
         clear_user_token()
 
-    async def _ensure_hand_context(self, chat_id: int,
-                                   user_id: int | None = None,
-                                   refresh_token: str | None = None) -> bool:
+    async def _ensure_hand_context(
+        self, chat_id: int, user_id: int | None = None, refresh_token: str | None = None
+    ) -> bool:
         """Rehydrate the in-memory follow-up context from the DB if missing.
 
         ``self.hand_contexts`` lives only in process memory, so a bot
@@ -575,82 +253,97 @@ class GeminiSessionManager:
         try:
             last = await self.db.get_last_hand(chat_id)
         except Exception as e:
-            self._logger.warning(
-                f"[chat={chat_id}] get_last_hand failed: {e}")
+            self._logger.warning(f"[chat={chat_id}] get_last_hand failed: {e}")
             return False
         if not last:
             return False
         hand_json = last["hand"]
         hand_id = last.get("hand_id")
         try:
-            def _analyze_with_token():
-                self._setup_user_token(user_id, refresh_token)
-                try:
-                    from analyze_hand import analyze_hand_full
-                    return analyze_hand_full(hand_json)
-                finally:
-                    self._clear_user_token()
-
-            context = await asyncio.to_thread(_analyze_with_token)
+            context = await self.analyze_parsed_hand(
+                chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
+            )
         except Exception as e:
             self._logger.warning(
                 f"[chat={chat_id}] rehydrate analyze_hand_full failed "
-                f"({hand_id}): {e}")
+                f"({hand_id}): {e}"
+            )
             return False
-        self.hand_contexts[chat_id] = context
         if hand_id:
             self.last_hand_ids[chat_id] = hand_id
         self._logger.info(
             f"[chat={chat_id}] Rehydrated hand context from DB "
-            f"({hand_id}) after missing in-memory state")
+            f"({hand_id}) after missing in-memory state"
+        )
         return True
 
-    def _try_coach_facts(self, chat_id: int, user_text: str,
-                         user_id: int | None = None,
-                         refresh_token: str | None = None) -> str | None:
-        """Deterministic grounded answer for P0/P1 follow-up intents.
+    async def _analyze_parsed_hand_context(
+        self,
+        chat_id: int,
+        hand: dict,
+        *,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+    ) -> dict:
+        """Run deterministic solver analysis behind the per-user auth boundary."""
 
-        Routes the question through scripts/coach_facts (classify -> fetch the
-        right spot-solution node(s) -> grounded narrate -> hard verify). Returns
-        the answer string, or None to fall back to the tool-calling path
-        ('other'/unknown intents, no cached hand, or any failure).
-
-        Synchronous + blocking (Gemini classify/narrate + cached solver fetch);
-        the async caller runs it via asyncio.to_thread.
-        """
-        ctx = self.hand_contexts.get(chat_id)
-        if not ctx or not ctx.get("solutions"):
-            return None
-        try:
-            import coach_facts
-        except Exception as e:
-            self._logger.warning(f"[chat={chat_id}] coach_facts import failed: {e}")
-            return None
-        try:
+        def analyze():
             self._setup_user_token(user_id, refresh_token)
             try:
-                answer, facts = coach_facts.answer_followup_ex(coach_facts.Ctx(
-                    question=user_text, hand_context=ctx,
-                    user_id=user_id, refresh_token=refresh_token,
-                ))
+                from analyze_hand import analyze_hand_full
+
+                context = analyze_hand_full(hand)
+                self._prepare_initial_teaching_digest(context)
+                return context
             finally:
                 self._clear_user_token()
-        except Exception as e:
-            self._logger.warning(f"[chat={chat_id}] coach_facts failed: {e}")
-            return None
-        if answer:
-            self._logger.info(
-                f"[chat={chat_id}] coach_facts grounded answer ({len(answer)} chars)")
-            # Range/strategy intents describe a node's distribution; draw the
-            # 13x13 grid so range answers come with a chart like the tool path.
-            self._queue_grounded_range_chart(chat_id, facts)
-            # Point the GTO Wizard button at the exact node this answer is
-            # grounded on (e.g. hero's turn decision) so the link's
-            # frequencies match the prose — not the played-line river node.
-            node_street = (getattr(facts, "meta", {}) or {}).get("node_street")
-            if node_street:
-                ctx["_followup_node_street"] = node_street
-        return answer
+
+        context = await asyncio.to_thread(analyze)
+        self.hand_contexts[chat_id] = context
+        self.pending_images.pop(chat_id, None)
+        return context
+
+    async def analyze_parsed_hand(
+        self,
+        chat_id: int,
+        hand: dict,
+        *,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+    ) -> dict:
+        return await self._evidence_workflow().prepare_hand(
+            chat_id,
+            hand,
+            user_id=user_id,
+            refresh_token=refresh_token,
+        )
+
+    async def coach_parsed_hand(
+        self,
+        chat_id: int,
+        context: dict,
+        *,
+        hand_description: str,
+        user_text: str,
+        source_instruction: str,
+        on_status=None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+        usage_acc: dict | None = None,
+        disable_tools: bool = False,
+    ) -> str:
+        return await self._evidence_workflow().coach_hand(
+            chat_id,
+            context,
+            hand_description=hand_description,
+            user_text=user_text,
+            source_instruction=source_instruction,
+            on_status=on_status,
+            user_id=user_id,
+            refresh_token=refresh_token,
+            usage_acc=usage_acc,
+            disable_tools=disable_tools,
+        )
 
     def _queue_grounded_range_chart(self, chat_id: int, facts) -> None:
         """Queue a range grid for a grounded coach_facts answer, if chartable.
@@ -671,6 +364,7 @@ class GeminiSessionManager:
             return
         try:
             from range_image import generate_range_grid
+
             game = sol.get("game", {})
             st = game.get("current_street", {}).get("type", "").capitalize()
             board = game.get("board", "")
@@ -687,23 +381,29 @@ class GeminiSessionManager:
             if chat_id not in self.pending_images:
                 self.pending_images[chat_id] = []
             self.pending_images[chat_id].append((img, caption))
-            self._logger.info(
-                f"[chat={chat_id}] queued grounded range chart ({title})")
+            self._logger.info(f"[chat={chat_id}] queued grounded range chart ({title})")
         except Exception as e:
-            self._logger.warning(
-                f"[chat={chat_id}] grounded range chart failed: {e}")
+            self._logger.warning(f"[chat={chat_id}] grounded range chart failed: {e}")
 
-    async def _save_snapshot(self, hand_id: str, chat_id: int,
-                              source_type: str, user_input: str | None,
-                              image_data: bytes | None,
-                              parsed_json: dict, context: dict,
-                              *, classifier_conf: float | None = None):
+    async def _save_snapshot(
+        self,
+        hand_id: str,
+        chat_id: int,
+        source_type: str,
+        user_input: str | None,
+        image_data: bytes | None,
+        parsed_json: dict,
+        context: dict,
+        *,
+        classifier_conf: float | None = None,
+    ):
         """Fire-and-forget: save analysis snapshot to DB."""
         if not self.db or not hand_id:
             return
         try:
             await self.db.save_snapshot(
-                hand_id=hand_id, chat_id=chat_id,
+                hand_id=hand_id,
+                chat_id=chat_id,
                 source_type=source_type,
                 user_input=user_input[:2000] if user_input else None,
                 image_data=image_data,
@@ -715,19 +415,28 @@ class GeminiSessionManager:
         except Exception as e:
             self._logger.warning(f"[chat={chat_id}] Failed to save snapshot: {e}")
 
-    async def _update_snapshot_coaching(self, hand_id: str, chat_id: int,
-                                         coaching_text: str):
+    async def _update_snapshot_coaching(
+        self, hand_id: str, chat_id: int, coaching_text: str
+    ):
         """Fire-and-forget: update coaching text in snapshot."""
         if not self.db or not hand_id:
             return
         try:
             await self.db.update_snapshot_coaching(hand_id, coaching_text)
         except Exception as e:
-            self._logger.warning(f"[chat={chat_id}] Failed to update snapshot coaching: {e}")
+            self._logger.warning(
+                f"[chat={chat_id}] Failed to update snapshot coaching: {e}"
+            )
 
-    async def _cross_check_ocr_vs_gemini(self, chat_id: int, image_bytes: bytes,
-                                           mime_type: str, user_text: str,
-                                           ocr_hand: dict, ocr_conf: float):
+    async def _cross_check_ocr_vs_gemini(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        mime_type: str,
+        user_text: str,
+        ocr_hand: dict,
+        ocr_conf: float,
+    ):
         """Medium-tier safety net: call Gemini on the same image, compare
         hero/board cards, and log any disagreement as a labeled example for
         future classifier retraining. Fire-and-forget; never raises.
@@ -744,10 +453,15 @@ class GeminiSessionManager:
                 self.client.aio.models.generate_content(
                     model=self.image_parse_model,
                     contents=[
-                        types.Content(role="user", parts=[
-                            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                            types.Part(text=prompt_text),
-                        ]),
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_bytes(
+                                    data=image_bytes, mime_type=mime_type
+                                ),
+                                types.Part(text=prompt_text),
+                            ],
+                        ),
                     ],
                     config=types.GenerateContentConfig(
                         temperature=0,
@@ -758,13 +472,16 @@ class GeminiSessionManager:
             )
             text = response.text or ""
             m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-            gemini_hand = (json.loads(m.group(1)) if m else json.loads(text.strip())).get("hand")
+            gemini_hand = (
+                json.loads(m.group(1)) if m else json.loads(text.strip())
+            ).get("hand")
             if not gemini_hand:
                 return
             self._normalize_cards(gemini_hand)
         except Exception as e:
             self._logger.warning(
-                f"[chat={chat_id}] cross-check Gemini call failed: {e}")
+                f"[chat={chat_id}] cross-check Gemini call failed: {e}"
+            )
             return
 
         disagreement = self._cards_disagreement(ocr_hand, gemini_hand)
@@ -788,11 +505,16 @@ class GeminiSessionManager:
             )
         except Exception as e:
             self._logger.warning(
-                f"[chat={chat_id}] Failed to log classifier disagreement: {e}")
+                f"[chat={chat_id}] Failed to log classifier disagreement: {e}"
+            )
 
     async def _gemini_hero_hand_only(
-        self, chat_id: int, image_bytes: bytes, mime_type: str,
-        ocr_hand: dict, hints: dict | None = None,
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        mime_type: str,
+        ocr_hand: dict,
+        hints: dict | None = None,
         usage_acc: dict | None = None,
     ) -> str | None:
         """Cards-only Gemini call: returns hero_hand string or None.
@@ -829,17 +551,19 @@ class GeminiSessionManager:
                     self.client.aio.models.generate_content(
                         model=self.image_parse_model,
                         contents=[
-                            types.Content(role="user", parts=[
-                                types.Part.from_bytes(
-                                    data=hero_image_bytes,
-                                    mime_type=hero_mime_type),
-                                types.Part(text=prompt_text),
-                            ]),
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_bytes(
+                                        data=hero_image_bytes, mime_type=hero_mime_type
+                                    ),
+                                    types.Part(text=prompt_text),
+                                ],
+                            ),
                         ],
                         config=types.GenerateContentConfig(
                             temperature=0,
-                            thinking_config=types.ThinkingConfig(
-                                thinking_budget=2048),
+                            thinking_config=types.ThinkingConfig(thinking_budget=2048),
                         ),
                     ),
                     timeout=180,
@@ -848,7 +572,7 @@ class GeminiSessionManager:
             except genai_errors.ServerError as e:
                 if attempt == 2:
                     raise
-                backoff = 2 ** attempt
+                backoff = 2**attempt
                 self._logger.warning(
                     f"[chat={chat_id}] Cards-only Gemini transient error "
                     f"(attempt {attempt + 1}/3): {e}. Retrying in {backoff}s"
@@ -882,8 +606,12 @@ class GeminiSessionManager:
             return None
         ranks = set("23456789TJQKA")
         suits = set("cdhs")
-        if (hero_hand[0] not in ranks or hero_hand[2] not in ranks
-                or hero_hand[1] not in suits or hero_hand[3] not in suits):
+        if (
+            hero_hand[0] not in ranks
+            or hero_hand[2] not in ranks
+            or hero_hand[1] not in suits
+            or hero_hand[3] not in suits
+        ):
             self._logger.warning(
                 f"[chat={chat_id}] Cards-only Gemini returned non-card chars: "
                 f"{hero_hand!r}"
@@ -933,7 +661,11 @@ class GeminiSessionManager:
                     pad_y = max(2, int(crop.shape[0] * 0.08))
                     pad_x = max(2, int(crop.shape[1] * 0.08))
                     c = cv2.copyMakeBorder(
-                        crop, pad_y, pad_y, pad_x, pad_x,
+                        crop,
+                        pad_y,
+                        pad_y,
+                        pad_x,
+                        pad_x,
                         borderType=cv2.BORDER_CONSTANT,
                         value=(255, 255, 255),
                     )
@@ -945,7 +677,11 @@ class GeminiSessionManager:
                         if c.shape[0] < max_h:
                             extra = max_h - c.shape[0]
                             c = cv2.copyMakeBorder(
-                                c, 0, extra, 0, 0,
+                                c,
+                                0,
+                                extra,
+                                0,
+                                0,
                                 borderType=cv2.BORDER_CONSTANT,
                                 value=(255, 255, 255),
                             )
@@ -958,8 +694,7 @@ class GeminiSessionManager:
 
             # Conservative fallback crop: bottom-center hero area of the table.
             h, w = table.shape[:2]
-            hero = table[int(h * 0.55):int(h * 0.98),
-                         int(w * 0.24):int(w * 0.72)]
+            hero = table[int(h * 0.55) : int(h * 0.98), int(w * 0.24) : int(w * 0.72)]
             if hero.size:
                 ok, enc = cv2.imencode(".png", hero)
                 if ok:
@@ -969,9 +704,7 @@ class GeminiSessionManager:
         return image_bytes, fallback_mime_type
 
     @staticmethod
-    def _merge_ocr_with_gemini_hero_hand(
-        ocr_hand: dict, gemini_hero_hand: str
-    ) -> dict:
+    def _merge_ocr_with_gemini_hero_hand(ocr_hand: dict, gemini_hero_hand: str) -> dict:
         """Take OCR's full hand parse, replace only hero_hand.
 
         Used when card_conf < threshold but structural_conf is high enough
@@ -1012,10 +745,8 @@ class GeminiSessionManager:
 
         diagnostics = ocr_result.get("diagnostics") or {}
         physics_issues = diagnostics.get("preflop_physics_issues") or []
-        allowed_physics = (
-            diagnostics.get("preflop_forced_collapse_repairs")
-            and all(str(issue).startswith("too_few_initial_actions")
-                    for issue in physics_issues)
+        allowed_physics = diagnostics.get("preflop_forced_collapse_repairs") and all(
+            str(issue).startswith("too_few_initial_actions") for issue in physics_issues
         )
         if diagnostics.get("structural_risk_issues"):
             return False
@@ -1029,9 +760,7 @@ class GeminiSessionManager:
         player_conf = float(parts.get("player_tracking") or 0.0)
         original_hero = hand.get("hero_hand")
         changed = bool(
-            gemini_hero_hand
-            and original_hero
-            and gemini_hero_hand != original_hero
+            gemini_hero_hand and original_hero and gemini_hero_hand != original_hero
         )
 
         if changed:
@@ -1040,9 +769,7 @@ class GeminiSessionManager:
             )
 
         street_counts = diagnostics.get("street_entries_count") or {}
-        street_pre_counts = (
-            diagnostics.get("street_entries_pre_collapse_count") or {}
-        )
+        street_pre_counts = diagnostics.get("street_entries_pre_collapse_count") or {}
         hidden_street_fragments = sum(
             max(
                 0,
@@ -1183,10 +910,7 @@ class GeminiSessionManager:
             confidence_abstain_with_ocr
             and hero_hand_present
             and not cards_need_fallback
-            and (
-                not gemini_hero_hand
-                or gemini_hero_hand == original_hero_hand
-            )
+            and (not gemini_hero_hand or gemini_hero_hand == original_hero_hand)
         )
 
     @staticmethod
@@ -1251,24 +975,32 @@ class GeminiSessionManager:
             g_board = g.get("board", g.get("card", ""))
             if o_board != g_board:
                 diffs.setdefault("streets", {})[str(i)] = {
-                    "ocr": o_board, "gemini": g_board,
+                    "ocr": o_board,
+                    "gemini": g_board,
                 }
         return diffs or None
 
-    async def _extract_deviations(self, chat_id: int, hand_id: str | None,
-                                    hand_json: dict, context: dict):
+    async def extract_deviations(
+        self, chat_id: int, hand_id: str | None, hand_json: dict, context: dict
+    ):
         """Fire-and-forget deviation capture — delegates to
         scripts/deviation_extract.extract_deviations (god-file split)."""
         from deviation_extract import extract_deviations
-        await extract_deviations(self.db, self._logger, chat_id, hand_id,
-                                 hand_json, context)
 
-    async def send_message(self, chat_id: int, user_text: str,
-                           on_status: Callable[[str], Any] | None = None,
-                           user_id: int | None = None,
-                           refresh_token: str | None = None,
-                           send_gto_callback: Callable[[str], Any] | None = None,
-                           force_followup: bool = False) -> str:
+        await extract_deviations(
+            self.db, self._logger, chat_id, hand_id, hand_json, context
+        )
+
+    async def send_message(
+        self,
+        chat_id: int,
+        user_text: str,
+        on_status: Callable[[str], Any] | None = None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+        send_gto_callback: Callable[[str], Any] | None = None,
+        force_followup: bool = False,
+    ) -> str:
         """Main entry: parse hand → GTO analysis → coaching, or chat with tools.
 
         Args:
@@ -1297,13 +1029,22 @@ class GeminiSessionManager:
         async def _answer_followup() -> str:
             await _status("查詢中...")
             result = await self._run_followup_chat(
-                chat_id, user_text, on_status=on_status,
-                user_id=user_id, refresh_token=refresh_token,
-                usage_acc=usage_acc)
+                chat_id,
+                user_text,
+                on_status=on_status,
+                user_id=user_id,
+                refresh_token=refresh_token,
+                usage_acc=usage_acc,
+            )
             elapsed = time.time() - t0
             self._logger.info(f"[chat={chat_id}] Chat response in {elapsed:.1f}s")
-            await self._save_usage(chat_id, "follow_up", self.model,
-                                   usage_acc, int(elapsed * 1000))
+            await self._save_usage(
+                chat_id,
+                "follow_up",
+                self.coach_narrator_model,
+                usage_acc,
+                int(elapsed * 1000),
+            )
             return result
 
         try:
@@ -1314,12 +1055,18 @@ class GeminiSessionManager:
             # depth/action line (H3865).
             if force_followup:
                 if chat_id not in self.hand_contexts:
-                    await self._ensure_hand_context(
-                        chat_id, user_id, refresh_token)
+                    await self._ensure_hand_context(chat_id, user_id, refresh_token)
                 return await _answer_followup()
 
             # Check for FT switch request on previous hand
-            ft_switch_keywords = {"決賽桌分析", "FT分析", "用ICM", "用icm", "切換決賽桌", "final table分析"}
+            ft_switch_keywords = {
+                "決賽桌分析",
+                "FT分析",
+                "用ICM",
+                "用icm",
+                "切換決賽桌",
+                "final table分析",
+            }
             stripped = user_text.strip().lower()
             if any(kw.lower() in stripped for kw in ft_switch_keywords):
                 ctx = self.hand_contexts.get(chat_id)
@@ -1338,37 +1085,31 @@ class GeminiSessionManager:
                     if not refresh_token:
                         return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
                     await _status("切換到 ICM 決賽桌模式，重新查詢 GTO 策略...")
-                    self._setup_user_token(user_id, refresh_token)
-                    try:
-                        from analyze_hand import analyze_hand_full
-                        context = analyze_hand_full(hand_json)
-                        self._prepare_initial_teaching_digest(context)
-                    finally:
-                        self._clear_user_token()
-                    gto_data = context["text"]
-                    self.hand_contexts[chat_id] = context
-                    self.pending_images.pop(chat_id, None)
-
-                    teaching_block = self._initial_teaching_block(context)
-                    coaching_prompt = (
-                        f"用戶要求切換到 ICM 決賽桌模式重新分析。\n\n"
-                        f"GTO Solver 數據（ICM 模式）：\n{gto_data}\n\n"
-                        f"請分析 hero 在 ICM 決賽桌下的最佳策略，並與之前的 Chip EV 分析做比較。\n\n"
-                        f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
+                    context = await self.analyze_parsed_hand(
+                        chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
                     )
-                    result = await self._verified_initial_coaching(
-                        chat_id, coaching_prompt, context, user_text,
-                        on_status=on_status, user_id=user_id,
-                        refresh_token=refresh_token, usage_acc=usage_acc,
+                    result = await self.coach_parsed_hand(
+                        chat_id,
+                        context,
+                        hand_description=user_text,
+                        user_text=user_text,
+                        source_instruction=(
+                            "用戶要求切換到 ICM 決賽桌模式重新分析；請分析 Hero "
+                            "在 ICM 下的最佳策略，並與之前的 Chip EV 分析比較。"
+                        ),
+                        on_status=on_status,
+                        user_id=user_id,
+                        refresh_token=refresh_token,
+                        usage_acc=usage_acc,
                     )
-                    result, followups = self._extract_followups(result)
-                    if followups:
-                        ctx = self.hand_contexts.get(chat_id)
-                        if ctx is not None:
-                            ctx["followup_questions"] = followups
                     elapsed = time.time() - t0
-                    await self._save_usage(chat_id, "hand_analysis", self.model,
-                                           usage_acc, int(elapsed * 1000))
+                    await self._save_usage(
+                        chat_id,
+                        "hand_analysis",
+                        "mixed:gemini+openai",
+                        usage_acc,
+                        int(elapsed * 1000),
+                    )
                     return result
 
             # Rehydrate the last analyzed hand from the DB when the in-memory
@@ -1377,18 +1118,21 @@ class GeminiSessionManager:
             # after a deploy reply "I need to know which hand" (H3515).  Doing
             # it before parse also restores the _parse_hand guard so the
             # follow-up isn't misparsed into a fake hand.
-            if (chat_id not in self.hand_contexts
-                    and not self._text_looks_like_hand(user_text)):
+            if chat_id not in self.hand_contexts and not self._text_looks_like_hand(
+                user_text
+            ):
                 await self._ensure_hand_context(chat_id, user_id, refresh_token)
 
             # Step 1: Parse hand from user message (Flash — fast)
             await _status("解析手牌中...")
             hand_json = await asyncio.wait_for(
-                self._parse_hand(chat_id, user_text, usage_acc=usage_acc), timeout=60,
+                self._parse_hand(chat_id, user_text, usage_acc=usage_acc),
+                timeout=60,
             )
             if hand_json:
                 hand_json = await self._reparse_if_rules_invalid(
-                    chat_id, user_text, hand_json, usage_acc)
+                    chat_id, user_text, hand_json, usage_acc
+                )
             t_parse = time.time()
 
             # A follow-up can mention a concrete combo plus an action and look
@@ -1397,8 +1141,7 @@ class GeminiSessionManager:
             # is not a new hand, take one last chance to restore the previous
             # snapshot before entering the tool-backed chat path.
             if hand_json is None and chat_id not in self.hand_contexts:
-                await self._ensure_hand_context(
-                    chat_id, user_id, refresh_token)
+                await self._ensure_hand_context(chat_id, user_id, refresh_token)
 
             if hand_json:
                 self._logger.info(
@@ -1412,10 +1155,15 @@ class GeminiSessionManager:
                 if self.db:
                     try:
                         hand_id = await self.db.save_hand_returning_id(
-                            chat_id, hand_json, source_type="text",
-                            user_input=user_text[:2000])
+                            chat_id,
+                            hand_json,
+                            source_type="text",
+                            user_input=user_text[:2000],
+                        )
                     except Exception as e:
-                        self._logger.warning(f"[chat={chat_id}] Failed to save hand: {e}")
+                        self._logger.warning(
+                            f"[chat={chat_id}] Failed to save hand: {e}"
+                        )
 
                 # Step 2: Require user token
                 if not refresh_token:
@@ -1423,23 +1171,20 @@ class GeminiSessionManager:
 
                 # Step 3: Run GTO analysis and cache context
                 await _status("查詢 GTO 策略中...")
-                self._setup_user_token(user_id, refresh_token)
-                try:
-                    from analyze_hand import analyze_hand_full
-                    context = analyze_hand_full(hand_json)
-                    self._prepare_initial_teaching_digest(context)
-                finally:
-                    self._clear_user_token()
+                context = await self.analyze_parsed_hand(
+                    chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
+                )
                 gto_data = context["text"]
-                self.hand_contexts[chat_id] = context
                 if hand_id:
                     self.last_hand_ids[chat_id] = hand_id
-                self.pending_images.pop(chat_id, None)
                 # Save snapshot (fire-and-forget)
                 import asyncio as _aio
-                _aio.create_task(self._save_snapshot(
-                    hand_id, chat_id, "text", user_text,
-                    None, hand_json, context))
+
+                _aio.create_task(
+                    self._save_snapshot(
+                        hand_id, chat_id, "text", user_text, None, hand_json, context
+                    )
+                )
                 hard_stop = self._hard_validation_stop_message(context)
                 if hard_stop:
                     # Do not turn an impossible parse into a confident solver
@@ -1447,20 +1192,22 @@ class GeminiSessionManager:
                     # correction, but remove the bad context and stop before
                     # GTO summary, deviation capture, or the coaching model.
                     self.hand_contexts.pop(chat_id, None)
-                    _aio.create_task(self._update_snapshot_coaching(
-                        hand_id, chat_id, hard_stop))
-                    result = (
-                        f"📋 `{hand_id}`\n\n{hard_stop}"
-                        if hand_id else hard_stop
+                    _aio.create_task(
+                        self._update_snapshot_coaching(hand_id, chat_id, hard_stop)
                     )
+                    result = f"📋 `{hand_id}`\n\n{hard_stop}" if hand_id else hard_stop
                     await self._save_usage(
-                        chat_id, "hand_analysis", self.model, usage_acc,
+                        chat_id,
+                        "hand_analysis",
+                        "mixed:gemini+openai",
+                        usage_acc,
                         int((time.time() - t0) * 1000),
                     )
                     return result
                 # Extract deviations for leak detection (fire-and-forget)
-                _aio.create_task(self._extract_deviations(
-                    chat_id, hand_id, hand_json, context))
+                _aio.create_task(
+                    self.extract_deviations(chat_id, hand_id, hand_json, context)
+                )
 
                 t_analyze = time.time()
                 self._logger.info(
@@ -1477,19 +1224,31 @@ class GeminiSessionManager:
                 # response from the cached solver data: exact stack order,
                 # explicit approximation details, action frequencies, and the
                 # range breakdown without free-form hallucination risk.
-                if context.get("no_hero_hand") and context.get("is_icm") and not hand_json.get("streets"):
+                if (
+                    context.get("no_hero_hand")
+                    and context.get("is_icm")
+                    and not hand_json.get("streets")
+                ):
                     result = self._format_icm_range_coach_response(context, gto_data)
-                    context["followup_questions"] = self._build_icm_range_followups(context)
-                    _aio.create_task(self._update_snapshot_coaching(
-                        hand_id, chat_id, result))
+                    context["followup_questions"] = self._build_icm_range_followups(
+                        context
+                    )
+                    _aio.create_task(
+                        self._update_snapshot_coaching(hand_id, chat_id, result)
+                    )
                     if hand_id:
                         result = f"📋 `{hand_id}`\n\n{result}"
                     _vwarn = (context.get("validation") or {}).get("user_warning")
                     if _vwarn:
                         result += f"\n\n{_vwarn}"
                     t_total = time.time()
-                    await self._save_usage(chat_id, "hand_analysis", self.model,
-                                           usage_acc, int((t_total - t0) * 1000))
+                    await self._save_usage(
+                        chat_id,
+                        "hand_analysis",
+                        "mixed:gemini+openai",
+                        usage_acc,
+                        int((t_total - t0) * 1000),
+                    )
                     return result
 
                 # Split response: send the structured per-street GTO summary
@@ -1532,32 +1291,26 @@ class GeminiSessionManager:
                         "策略重點自然解釋。若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
-                teaching_block = self._initial_teaching_block(context)
-                solver_prompt_data = (
-                    "逐街 solver 結果已由系統顯示；本段以 deterministic 教學骨架為唯一教練事實。"
-                    if teaching_block and not context.get("no_hero_hand") else gto_data
-                )
-                coaching_prompt = (
-                    f"用戶描述：\n{user_text}\n\n"
-                    f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
-                    f"{coaching_instruction}\n\n{teaching_block}\n\n{FOLLOWUP_REQUEST}"
-                )
                 # Verified generation (retries transient 503/500 internally;
                 # routes the verdict through the coach_facts claim verifier)
-                result = await self._verified_initial_coaching(
-                    chat_id, coaching_prompt, context, user_text,
-                    on_status=on_status, user_id=user_id,
-                    refresh_token=refresh_token, usage_acc=usage_acc,
+                result = await self.coach_parsed_hand(
+                    chat_id,
+                    context,
+                    hand_description=user_text,
+                    user_text=user_text,
+                    source_instruction=coaching_instruction,
+                    on_status=on_status,
+                    user_id=user_id,
+                    refresh_token=refresh_token,
+                    usage_acc=usage_acc,
                 )
-                result, followups = self._extract_followups(result)
-                if followups:
-                    ctx = self.hand_contexts.get(chat_id)
-                    if ctx is not None:
-                        ctx["followup_questions"] = followups
                 # Update snapshot with coaching text
-                _coaching_only = result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
-                _aio.create_task(self._update_snapshot_coaching(
-                    hand_id, chat_id, _coaching_only))
+                _coaching_only = (
+                    result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
+                )
+                _aio.create_task(
+                    self._update_snapshot_coaching(hand_id, chat_id, _coaching_only)
+                )
                 if hand_id:
                     result = f"📋 `{hand_id}`\n\n{result}"
                 _vwarn = (context.get("validation") or {}).get("user_warning")
@@ -1570,8 +1323,13 @@ class GeminiSessionManager:
                     f"coach={t_total - t_analyze:.1f}s "
                     f"total={t_total - t0:.1f}s"
                 )
-                await self._save_usage(chat_id, "hand_analysis", self.model,
-                                       usage_acc, int((t_total - t0) * 1000))
+                await self._save_usage(
+                    chat_id,
+                    "hand_analysis",
+                    "mixed:gemini+openai",
+                    usage_acc,
+                    int((t_total - t0) * 1000),
+                )
                 return result
             else:
                 # Not a hand — chat (with tools if hand context exists)
@@ -1579,22 +1337,36 @@ class GeminiSessionManager:
 
         except asyncio.TimeoutError:
             self._logger.error(f"[chat={chat_id}] Model API timeout")
-            await self._save_usage(chat_id, "error", self.model, usage_acc,
-                                   int((time.time() - t0) * 1000))
+            await self._save_usage(
+                chat_id,
+                "error",
+                "mixed:gemini+openai",
+                usage_acc,
+                int((time.time() - t0) * 1000),
+            )
             raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Error: {e}", exc_info=True)
-            await self._save_usage(chat_id, "error", self.model, usage_acc,
-                                   int((time.time() - t0) * 1000))
+            await self._save_usage(
+                chat_id,
+                "error",
+                "mixed:gemini+openai",
+                usage_acc,
+                int((time.time() - t0) * 1000),
+            )
             raise
 
-    async def send_image_message(self, chat_id: int, image_bytes: bytes,
-                                    mime_type: str = "image/jpeg",
-                                    user_text: str = "",
-                                    status_callback=None,
-                                    send_gto_callback=None,
-                                    user_id: int | None = None,
-                                    refresh_token: str | None = None) -> str:
+    async def send_image_message(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        mime_type: str = "image/jpeg",
+        user_text: str = "",
+        status_callback=None,
+        send_gto_callback=None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+    ) -> str:
         """Main entry for image-based hand analysis: parse screenshot → GTO → coaching.
 
         status_callback: optional async callable(str) to update user-facing status.
@@ -1620,22 +1392,40 @@ class GeminiSessionManager:
         try:
             # Step 1: Parse hand from screenshot
             await _update_status("🔍 正在辨識截圖中的手牌...")
-            hand_json = await self._parse_hand_from_image(chat_id, image_bytes, mime_type,
-                                                          user_text=user_text,
-                                                          usage_acc=usage_acc)
+            hand_json = await self._parse_hand_from_image(
+                chat_id,
+                image_bytes,
+                mime_type,
+                user_text=user_text,
+                usage_acc=usage_acc,
+            )
             t_parse = time.time()
 
             if not hand_json:
                 self._logger.info(f"[chat={chat_id}] No hand found in image")
                 if user_text.strip():
-                    result = await self._chat(chat_id, user_text,
-                                              user_id=user_id, refresh_token=refresh_token,
-                                              usage_acc=usage_acc)
-                    await self._save_usage(chat_id, "image_analysis", self.image_parse_model,
-                                           usage_acc, int((time.time() - t0) * 1000))
+                    result = await self._chat(
+                        chat_id,
+                        user_text,
+                        user_id=user_id,
+                        refresh_token=refresh_token,
+                        usage_acc=usage_acc,
+                    )
+                    await self._save_usage(
+                        chat_id,
+                        "image_analysis",
+                        self.image_parse_model,
+                        usage_acc,
+                        int((time.time() - t0) * 1000),
+                    )
                     return result
-                await self._save_usage(chat_id, "image_analysis", self.image_parse_model,
-                                       usage_acc, int((time.time() - t0) * 1000))
+                await self._save_usage(
+                    chat_id,
+                    "image_analysis",
+                    self.image_parse_model,
+                    usage_acc,
+                    int((time.time() - t0) * 1000),
+                )
                 return "無法從截圖中辨識出撲克手牌。請確認截圖是手牌回放畫面（包含底部動作面板）。"
 
             self._logger.info(
@@ -1654,13 +1444,18 @@ class GeminiSessionManager:
             if self.db:
                 try:
                     hand_id = await self.db.save_hand_returning_id(
-                        chat_id, hand_json, source_type="image",
-                        user_input=(user_text[:2000] if user_text else "[screenshot]"))
+                        chat_id,
+                        hand_json,
+                        source_type="image",
+                        user_input=(user_text[:2000] if user_text else "[screenshot]"),
+                    )
                 except Exception as e:
-                    self._logger.warning(f"[chat={chat_id}] Failed to save image hand: {e}")
+                    self._logger.warning(
+                        f"[chat={chat_id}] Failed to save image hand: {e}"
+                    )
 
             # Step 2: Require user token
-            eff_bb = hand_json.get('effective_bb')
+            eff_bb = hand_json.get("effective_bb")
             eff_str = f"({eff_bb:.0f}bb)" if eff_bb else ""
             await _update_status(
                 f"📊 辨識完成：{hand_json['hero_position']} {cards_to_emoji(hand_json['hero_hand'])} "
@@ -1670,40 +1465,46 @@ class GeminiSessionManager:
                 return "請先使用 /settoken 綁定你的 GTO Wizard 帳號。"
 
             # Step 3: GTO analysis
-            self._setup_user_token(user_id, refresh_token)
-            try:
-                from analyze_hand import analyze_hand_full
-                context = analyze_hand_full(hand_json)
-                self._prepare_initial_teaching_digest(context)
-            finally:
-                self._clear_user_token()
+            context = await self.analyze_parsed_hand(
+                chat_id, hand_json, user_id=user_id, refresh_token=refresh_token
+            )
             gto_data = context["text"]
-            self.hand_contexts[chat_id] = context
             if hand_id:
                 self.last_hand_ids[chat_id] = hand_id
             # Save snapshot with image bytes (fire-and-forget)
             import asyncio as _aio
-            _aio.create_task(self._save_snapshot(
-                hand_id, chat_id, "image", user_text or "[screenshot]",
-                image_bytes, hand_json, context,
-                classifier_conf=ocr_conf_for_hand))
+
+            _aio.create_task(
+                self._save_snapshot(
+                    hand_id,
+                    chat_id,
+                    "image",
+                    user_text or "[screenshot]",
+                    image_bytes,
+                    hand_json,
+                    context,
+                    classifier_conf=ocr_conf_for_hand,
+                )
+            )
             hard_stop = self._hard_validation_stop_message(context)
             if hard_stop:
                 self.hand_contexts.pop(chat_id, None)
-                _aio.create_task(self._update_snapshot_coaching(
-                    hand_id, chat_id, hard_stop))
-                result = (
-                    f"📋 `{hand_id}`\n\n{hard_stop}"
-                    if hand_id else hard_stop
+                _aio.create_task(
+                    self._update_snapshot_coaching(hand_id, chat_id, hard_stop)
                 )
+                result = f"📋 `{hand_id}`\n\n{hard_stop}" if hand_id else hard_stop
                 await self._save_usage(
-                    chat_id, "image_analysis", self.model, usage_acc,
+                    chat_id,
+                    "image_analysis",
+                    "mixed:gemini+openai",
+                    usage_acc,
                     int((time.time() - t0) * 1000),
                 )
                 return result
             # Extract deviations for leak detection (fire-and-forget)
-            _aio.create_task(self._extract_deviations(
-                chat_id, hand_id, hand_json, context))
+            _aio.create_task(
+                self.extract_deviations(chat_id, hand_id, hand_json, context)
+            )
 
             t_analyze = time.time()
             self._logger.info(
@@ -1728,7 +1529,7 @@ class GeminiSessionManager:
                     )
 
             # Step 4: Coaching with user's caption/question
-            eff_bb2 = hand_json.get('effective_bb')
+            eff_bb2 = hand_json.get("effective_bb")
             eff_str2 = f"({eff_bb2:.0f}bb)" if eff_bb2 else ""
             hand_desc = (
                 f"Hero {hand_json['hero_position']}"
@@ -1756,34 +1557,29 @@ class GeminiSessionManager:
                     "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
                     "策略重點自然解釋。"
                 )
-            teaching_block = self._initial_teaching_block(context)
-            solver_prompt_data = (
-                "逐街 solver 結果已由系統顯示；本段以 deterministic 教學骨架為唯一教練事實。"
-                if teaching_block and not context.get("no_hero_hand") else gto_data
-            )
-            coaching_prompt = (
-                f"用戶上傳了撲克截圖，已從截圖中解析出手牌：\n{hand_desc}\n\n"
-                f"用戶留言：{user_q}\n\n"
-                f"GTO Solver 資料狀態：\n{solver_prompt_data}\n\n"
-                f"{img_coaching_instruction}\n\n"
-                f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
-            )
             # Verified generation (retries transient 503/500 internally;
             # routes the verdict through the coach_facts claim verifier)
-            result = await self._verified_initial_coaching(
-                chat_id, coaching_prompt, context, user_q,
-                user_id=user_id, refresh_token=refresh_token,
-                usage_acc=usage_acc, disable_tools=True,
+            result = await self.coach_parsed_hand(
+                chat_id,
+                context,
+                hand_description=hand_desc,
+                user_text=user_q,
+                source_instruction=(
+                    "用戶上傳了撲克截圖，請使用已解析的穩定手牌資料。"
+                    + img_coaching_instruction
+                ),
+                user_id=user_id,
+                refresh_token=refresh_token,
+                usage_acc=usage_acc,
+                disable_tools=True,
             )
-            result, followups = self._extract_followups(result)
-            if followups:
-                ctx = self.hand_contexts.get(chat_id)
-                if ctx is not None:
-                    ctx["followup_questions"] = followups
             # Update snapshot with coaching text
-            _coaching_only = result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
-            _aio.create_task(self._update_snapshot_coaching(
-                hand_id, chat_id, _coaching_only))
+            _coaching_only = (
+                result.removeprefix(f"📋 `{hand_id}`\n\n") if hand_id else result
+            )
+            _aio.create_task(
+                self._update_snapshot_coaching(hand_id, chat_id, _coaching_only)
+            )
             if hand_id:
                 result = f"📋 `{hand_id}`\n\n{result}"
 
@@ -1804,25 +1600,44 @@ class GeminiSessionManager:
                 f"[chat={chat_id}] Image done: parse={t_parse - t0:.1f}s "
                 f"gto={t_analyze - t_parse:.1f}s total={t_total - t0:.1f}s"
             )
-            await self._save_usage(chat_id, "image_analysis", self.model,
-                                   usage_acc, int((t_total - t0) * 1000))
+            await self._save_usage(
+                chat_id,
+                "image_analysis",
+                "mixed:gemini+openai",
+                usage_acc,
+                int((t_total - t0) * 1000),
+            )
             return result
 
         except asyncio.TimeoutError:
             self._logger.error(f"[chat={chat_id}] Image Gemini API timeout")
-            await self._save_usage(chat_id, "image_analysis", self.model, usage_acc,
-                                   int((time.time() - t0) * 1000))
+            await self._save_usage(
+                chat_id,
+                "image_analysis",
+                "mixed:gemini+openai",
+                usage_acc,
+                int((time.time() - t0) * 1000),
+            )
             raise RuntimeError("Gemini API 回應超時，請稍後再試。")
         except Exception as e:
             self._logger.error(f"[chat={chat_id}] Image error: {e}", exc_info=True)
-            await self._save_usage(chat_id, "image_analysis", self.model, usage_acc,
-                                   int((time.time() - t0) * 1000))
+            await self._save_usage(
+                chat_id,
+                "image_analysis",
+                "mixed:gemini+openai",
+                usage_acc,
+                int((time.time() - t0) * 1000),
+            )
             raise
 
-    async def _parse_hand_from_image(self, chat_id: int, image_bytes: bytes,
-                                       mime_type: str = "image/jpeg",
-                                       user_text: str = "",
-                                       usage_acc: dict | None = None) -> dict | None:
+    async def _parse_hand_from_image(
+        self,
+        chat_id: int,
+        image_bytes: bytes,
+        mime_type: str = "image/jpeg",
+        user_text: str = "",
+        usage_acc: dict | None = None,
+    ) -> dict | None:
         """Parse hand from a screenshot image with a tiered confidence gate.
 
         Three tiers (configurable via OCR_FAST_TIER_MIN / OCR_MEDIUM_TIER_MIN):
@@ -1836,7 +1651,9 @@ class GeminiSessionManager:
         Confidence 0.1..medium: OCR's partial hand/hints are still passed
         into the Gemini prompt to anchor the parse.
         """
-        self._logger.debug(f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)")
+        self._logger.debug(
+            f"[chat={chat_id}] Parsing hand from image ({len(image_bytes)} bytes)"
+        )
 
         FAST_TIER_MIN = float(os.getenv("OCR_FAST_TIER_MIN", "0.95"))
         MEDIUM_TIER_MIN = float(os.getenv("OCR_MEDIUM_TIER_MIN", "0.80"))
@@ -1854,6 +1671,7 @@ class GeminiSessionManager:
         if ocr_enabled:
             try:
                 from ocr.n8_parser import parse_n8_screenshot
+
                 ocr_result = parse_n8_screenshot(image_bytes)
                 ocr_conf = ocr_result.get("confidence", 0.0)
                 card_conf = ocr_result.get("card_confidence", 0.0)
@@ -1873,8 +1691,7 @@ class GeminiSessionManager:
                     and ocr_result["hand"].get("preflop_actions")
                 )
                 hero_hand_present = bool(
-                    ocr_result.get("hand")
-                    and ocr_result["hand"].get("hero_hand")
+                    ocr_result.get("hand") and ocr_result["hand"].get("hero_hand")
                 )
                 hand_ok = struct_ok and hero_hand_present
 
@@ -1892,24 +1709,16 @@ class GeminiSessionManager:
                 # we'd skip straight to full Gemini parse, which itself
                 # has failed on those screenshots — the cards-only prompt
                 # is more focused and reliable.
-                cards_need_fallback = (
-                    not hero_hand_present or card_conf < MIN_CARD_CONF
-                )
-                confidence_abstain_with_ocr = (
-                    hand_ok and ocr_conf < MEDIUM_TIER_MIN
-                )
-                if struct_ok and (
-                    cards_need_fallback or confidence_abstain_with_ocr
-                ):
+                cards_need_fallback = not hero_hand_present or card_conf < MIN_CARD_CONF
+                confidence_abstain_with_ocr = hand_ok and ocr_conf < MEDIUM_TIER_MIN
+                if struct_ok and (cards_need_fallback or confidence_abstain_with_ocr):
                     parts = ocr_result.get("confidence_parts") or {}
                     structural_conf = (
                         parts.get("pot_consistency", 0.0)
                         + parts.get("player_tracking", 0.0)
                         + parts.get("ocr_confidence", 0.0)
                     ) / 3.0
-                    STRUCTURAL_MIN = float(
-                        os.getenv("OCR_STRUCTURAL_MIN", "0.80")
-                    )
+                    STRUCTURAL_MIN = float(os.getenv("OCR_STRUCTURAL_MIN", "0.80"))
                     ABSTAIN_STRUCTURAL_MIN = float(
                         os.getenv("OCR_ABSTAIN_STRUCTURAL_MIN", "0.50")
                     )
@@ -1945,14 +1754,14 @@ class GeminiSessionManager:
                             worst_street = s
                     postflop_collapse_ok = max_postflop_loss <= POSTFLOP_LOSS_MAX
                     cards_only_attempt_ok = structural_conf >= required_structural_min
-                    if (structural_conf >= required_structural_min
-                            and (postflop_collapse_ok or confidence_abstain_with_ocr)):
+                    if structural_conf >= required_structural_min and (
+                        postflop_collapse_ok or confidence_abstain_with_ocr
+                    ):
                         if not hero_hand_present:
                             reason = "hero_hand missing"
                         elif cards_need_fallback:
                             reason = (
-                                f"card_conf={card_conf:.2f} < "
-                                f"{MIN_CARD_CONF:.2f}"
+                                f"card_conf={card_conf:.2f} < " f"{MIN_CARD_CONF:.2f}"
                             )
                         else:
                             reason = (
@@ -1969,7 +1778,9 @@ class GeminiSessionManager:
                         gemini_hero_hand = None
                         try:
                             gemini_hero_hand = await self._gemini_hero_hand_only(
-                                chat_id, image_bytes, mime_type,
+                                chat_id,
+                                image_bytes,
+                                mime_type,
                                 ocr_hand=ocr_result["hand"],
                                 hints=ocr_result.get("hints"),
                                 usage_acc=usage_acc,
@@ -2053,14 +1864,17 @@ class GeminiSessionManager:
                     # Fire-and-forget cross-check — user sees OCR result
                     # immediately; disagreements become training data.
                     import asyncio as _aio
-                    _aio.create_task(self._cross_check_ocr_vs_gemini(
-                        chat_id=chat_id,
-                        image_bytes=image_bytes,
-                        mime_type=mime_type,
-                        user_text=user_text,
-                        ocr_hand=hand,
-                        ocr_conf=float(ocr_conf),
-                    ))
+
+                    _aio.create_task(
+                        self._cross_check_ocr_vs_gemini(
+                            chat_id=chat_id,
+                            image_bytes=image_bytes,
+                            mime_type=mime_type,
+                            user_text=user_text,
+                            ocr_hand=hand,
+                            ocr_conf=float(ocr_conf),
+                        )
+                    )
                     return hand
 
                 if 0.1 <= ocr_conf and ocr_result.get("hints"):
@@ -2096,7 +1910,9 @@ class GeminiSessionManager:
         # Include partial hand from OCR if available
         if safe_partial:
             partial_str = json.dumps(safe_partial, ensure_ascii=False, default=str)
-            prompt_text += f"\n\nOCR 解析結果（需要你驗證和補充，特別是 hero_hand）：{partial_str}"
+            prompt_text += (
+                f"\n\nOCR 解析結果（需要你驗證和補充，特別是 hero_hand）：{partial_str}"
+            )
 
         # Retry on transient Gemini server errors (503 UNAVAILABLE, 500 INTERNAL, 429)
         response = None
@@ -2107,10 +1923,15 @@ class GeminiSessionManager:
                     self.client.aio.models.generate_content(
                         model=self.image_parse_model,
                         contents=[
-                            types.Content(role="user", parts=[
-                                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                                types.Part(text=prompt_text),
-                            ]),
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_bytes(
+                                        data=image_bytes, mime_type=mime_type
+                                    ),
+                                    types.Part(text=prompt_text),
+                                ],
+                            ),
                         ],
                         config=types.GenerateContentConfig(
                             temperature=0,
@@ -2124,7 +1945,7 @@ class GeminiSessionManager:
                 last_err = e
                 if attempt == 2:
                     raise
-                backoff = 2 ** attempt
+                backoff = 2**attempt
                 self._logger.warning(
                     f"[chat={chat_id}] Gemini image parse transient error "
                     f"(attempt {attempt + 1}/3): {e}. Retrying in {backoff}s"
@@ -2143,7 +1964,12 @@ class GeminiSessionManager:
         try:
             result = json.loads(json_str)
             hand = result.get("hand")
-            if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+            if (
+                hand
+                and hand.get("hero_position")
+                and hand.get("preflop_actions")
+                and hand.get("hero_hand")
+            ):
                 self._normalize_cards(hand)
                 self._fix_folded_players_guarded(hand, chat_id)
                 # Remove extra keys the vision model sometimes adds
@@ -2158,8 +1984,13 @@ class GeminiSessionManager:
                 if ocr_result and ocr_result.get("hand"):
                     ocr_hand = ocr_result["hand"]
                     diffs = []
-                    for key in ["hero_hand", "hero_position", "players_at_table",
-                                "preflop_actions", "effective_bb"]:
+                    for key in [
+                        "hero_hand",
+                        "hero_position",
+                        "players_at_table",
+                        "preflop_actions",
+                        "effective_bb",
+                    ]:
                         ov = ocr_hand.get(key)
                         gv = hand.get(key)
                         if ov and gv and str(ov) != str(gv):
@@ -2211,6 +2042,7 @@ class GeminiSessionManager:
         # Range-only requests (no hero hand) still use the legacy builder.
         try:
             from live_flow import parse_simple_preflop_block
+
             played_hand = parse_simple_preflop_block(text)
         except (ImportError, ValueError):
             played_hand = None
@@ -2218,7 +2050,12 @@ class GeminiSessionManager:
             played_hand["no_hero_hand"] = False
             return played_hand
 
-        has_icm = "icm" in low or "決賽桌" in text or "final table" in low or re.search(r"\bft\b", low)
+        has_icm = (
+            "icm" in low
+            or "決賽桌" in text
+            or "final table" in low
+            or re.search(r"\bft\b", low)
+        )
         position_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
         named_stack_patterns = (
             rf"\b({position_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*(\d+(?:\.\d+)?)\s*bb\b",
@@ -2227,8 +2064,13 @@ class GeminiSessionManager:
         has_named_stacks = any(re.search(p, low, re.I) for p in named_stack_patterns)
         has_stack = "stack" in low or "籌碼" in text or has_named_stacks
         asks_range = (
-            "range" in low or "範圍" in text or "open" in low or "raise" in low
-            or "all in" in low or "all-in" in low or "全下" in text
+            "range" in low
+            or "範圍" in text
+            or "open" in low
+            or "raise" in low
+            or "all in" in low
+            or "all-in" in low
+            or "全下" in text
         )
         if not (has_icm and has_stack and asks_range):
             return None
@@ -2242,7 +2084,8 @@ class GeminiSessionManager:
         )
         full_stacks = (
             [float(x) for x in re.findall(r"\d+(?:\.\d+)?", stack_match.group(1))]
-            if stack_match else None
+            if stack_match
+            else None
         )
         if full_stacks is not None and not (2 <= len(full_stacks) <= 9):
             return None
@@ -2250,9 +2093,13 @@ class GeminiSessionManager:
         # "剩餘 7 人" means 7 players are seated only when the user says FT.
         # A phrase like "ICM 30%" is tournament phase, not table size; default
         # ordinary tournament decisions to the project's 8-max tree.
-        n_match = re.search(r"(?:剩(?:餘|下)?|剩餘|剩下)?\s*(\d)\s*(?:人|players?)", text, re.I)
-        players_at_table = int(n_match.group(1)) if n_match else (
-            len(full_stacks) if full_stacks else 8
+        n_match = re.search(
+            r"(?:剩(?:餘|下)?|剩餘|剩下)?\s*(\d)\s*(?:人|players?)", text, re.I
+        )
+        players_at_table = (
+            int(n_match.group(1))
+            if n_match
+            else (len(full_stacks) if full_stacks else 8)
         )
         if full_stacks is not None and players_at_table != len(full_stacks):
             players_at_table = len(full_stacks)
@@ -2274,11 +2121,18 @@ class GeminiSessionManager:
         hero_match = re.search(r"hero\s*" + pos_pattern, low, re.I)
         if not hero_match:
             # Fall back to "HJ open range" without the word hero.
-            hero_match = re.search(pos_pattern + r"\s*(?:open|raise|range|範圍)", low, re.I)
+            hero_match = re.search(
+                pos_pattern + r"\s*(?:open|raise|range|範圍)", low, re.I
+            )
         if not hero_match:
             return None
 
-        raw_pos = (hero_match.group(1) or hero_match.group(0)).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+        raw_pos = (
+            (hero_match.group(1) or hero_match.group(0))
+            .upper()
+            .replace("UTG1", "UTG+1")
+            .replace("UTG2", "UTG+2")
+        )
         raw_pos = raw_pos.split()[0]
         if raw_pos not in position_order:
             return None
@@ -2291,13 +2145,23 @@ class GeminiSessionManager:
             stacks = [None] * players_at_table
             # Position-first form: "BTN has 14bb" / "HJ 28bb".
             for match in re.finditer(named_stack_patterns[0], low, re.I):
-                pos = match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                pos = (
+                    match.group(1)
+                    .upper()
+                    .replace("UTG1", "UTG+1")
+                    .replace("UTG2", "UTG+2")
+                )
                 if pos in position_order:
                     stacks[position_order.index(pos)] = float(match.group(2))
             # Stack-first form: "28bb HJ".  This also captures
             # "hero has 28bb HJ", which is common shorthand.
             for match in re.finditer(named_stack_patterns[1], low, re.I):
-                pos = match.group(2).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                pos = (
+                    match.group(2)
+                    .upper()
+                    .replace("UTG1", "UTG+1")
+                    .replace("UTG2", "UTG+2")
+                )
                 if pos in position_order:
                     stacks[position_order.index(pos)] = float(match.group(1))
             if sum(s is not None for s in stacks) < 2:
@@ -2312,15 +2176,23 @@ class GeminiSessionManager:
         # folded and HJ raises in the complete hand line; analyze_hand.py will
         # query the node before HJ acts.
         actions = ["F"] * players_at_table
-        action_after_pos = low[hero_match.end(): hero_match.end() + 40]
+        action_after_pos = low[hero_match.end() : hero_match.end() + 40]
         is_open_query = "open" in action_after_pos or "open" in low
         if is_open_query:
             actions[hero_idx] = "R2"
         else:
             raiser_match = re.search(pos_pattern + r"\s*(?:open|raise|加注)", low, re.I)
             if raiser_match:
-                raiser_pos = raiser_match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
-                if raiser_pos in position_order and position_order.index(raiser_pos) < hero_idx:
+                raiser_pos = (
+                    raiser_match.group(1)
+                    .upper()
+                    .replace("UTG1", "UTG+1")
+                    .replace("UTG2", "UTG+2")
+                )
+                if (
+                    raiser_pos in position_order
+                    and position_order.index(raiser_pos) < hero_idx
+                ):
                     actions[position_order.index(raiser_pos)] = "R2"
 
         # Preserve a named shove and the hero's response as a continuation
@@ -2334,20 +2206,29 @@ class GeminiSessionManager:
                 if mention_i + 1 < len(mentioned_positions)
                 else min(len(low), pos_match.start() + 80)
             )
-            segment = low[pos_match.start():segment_end]
+            segment = low[pos_match.start() : segment_end]
             if not re.search(r"(?:all[ -]?in|shove|jam|全下)", segment):
                 continue
             if "/" in segment or "range" in segment or "範圍" in segment:
                 continue  # requested options, not a played shove
-            pos = pos_match.group(1).upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+            pos = (
+                pos_match.group(1)
+                .upper()
+                .replace("UTG1", "UTG+1")
+                .replace("UTG2", "UTG+2")
+            )
             shover_idx = position_order.index(pos)
             shove_stack = stacks[shover_idx]
-            actions[shover_idx] = f"AI{shove_stack:g}" if shove_stack is not None else "AI"
+            actions[shover_idx] = (
+                f"AI{shove_stack:g}" if shove_stack is not None else "AI"
+            )
             if shove_stack is not None:
                 effective_bb = min(float(hero_stack), float(shove_stack))
             break
         action_line = "-".join(actions)
-        if shover_idx is not None and re.search(r"hero\s*(?:call|跟注)|(?:call|跟注)\s*hero", low):
+        if shover_idx is not None and re.search(
+            r"hero\s*(?:call|跟注)|(?:call|跟注)\s*hero", low
+        ):
             action_line += "-C"
 
         hand_match = re.search(
@@ -2362,7 +2243,11 @@ class GeminiSessionManager:
         else:
             hero_hand = hero_hand.upper()
 
-        phase = "FT" if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low)) else "BUBBLE"
+        phase = (
+            "FT"
+            if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low))
+            else "BUBBLE"
+        )
         pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
         if pct_match:
             pct = int(pct_match.group(1))
@@ -2405,6 +2290,7 @@ class GeminiSessionManager:
         try:
             from hand_validator import validate_hand
             import copy
+
             before_ok = validate_hand(hand).ok
             snapshot = copy.deepcopy(hand) if before_ok else None
         except Exception:
@@ -2415,7 +2301,8 @@ class GeminiSessionManager:
             if before_ok and snapshot is not None and not validate_hand(hand).ok:
                 self._logger.error(
                     f"[chat={chat_id}] _fix_folded_players corrupted a valid parse "
-                    f"(rules now broken) — reverting to the pre-processing version")
+                    f"(rules now broken) — reverting to the pre-processing version"
+                )
                 hand.clear()
                 hand.update(snapshot)
         except Exception:
@@ -2424,23 +2311,13 @@ class GeminiSessionManager:
     @staticmethod
     def _fix_folded_players(hand: dict):
         """Remove actions from players who folded in earlier streets."""
-        POSITION_ORDERS = {
-            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            5: ["HJ", "CO", "BTN", "SB", "BB"],
-            4: ["CO", "BTN", "SB", "BB"],
-            3: ["BTN", "SB", "BB"],
-            2: ["SB", "BB"],
-        }
         n = hand.get("players_at_table", 8)
         pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
 
         # Track who folded preflop
         folded = set()
         preflop_parts = hand.get("preflop_actions", "").split("-")
-        for i, act in enumerate(preflop_parts[:len(pos_order)]):
+        for i, act in enumerate(preflop_parts[: len(pos_order)]):
             if act.upper() == "F":
                 folded.add(pos_order[i])
 
@@ -2468,7 +2345,7 @@ class GeminiSessionManager:
                     later_depends = any(
                         (b.get("action", "") or "").upper().startswith(("C", "R"))
                         or (b.get("action", "") or "").upper() in ("AI", "ALLIN")
-                        for b in actions[idx + 1:]
+                        for b in actions[idx + 1 :]
                         if b.get("position", "") not in folded
                     )
                     if not (is_aggressive and later_depends):
@@ -2501,16 +2378,19 @@ class GeminiSessionManager:
             # calls a.get("position")) doesn't choke on the raw strings.
             # Regression: 8h5h BB screenshot — un-normalized list raised
             # 'str' object has no attribute 'get' → bogus "無法辨識" reply.
-            elif (isinstance(acts, list) and acts
-                    and all(isinstance(a, str) for a in acts)):
+            elif (
+                isinstance(acts, list)
+                and acts
+                and all(isinstance(a, str) for a in acts)
+            ):
                 street["actions"] = GeminiSessionManager._parse_street_actions_string(
                     "-".join(acts), hand
                 )
 
     @staticmethod
     def _parse_street_actions_string(
-            actions_str: str, hand: dict,
-            active_positions: list[str] | None = None) -> list[dict]:
+        actions_str: str, hand: dict, active_positions: list[str] | None = None
+    ) -> list[dict]:
         """Convert flat action string (e.g. 'X-X-R1.52-C') to structured actions.
 
         Uses postflop position order: SB first, then BB, then positions in order, BTN last.
@@ -2526,15 +2406,17 @@ class GeminiSessionManager:
         preflop_parts = preflop.split("-")
         if active_positions is None:
             active_positions = []
-            for i, act in enumerate(preflop_parts[:len(pos_order)]):
+            for i, act in enumerate(preflop_parts[: len(pos_order)]):
                 if act.upper() != "F":
                     active_positions.append(pos_order[i])
 
         # Postflop order: SB first, BB next, then others in order, BTN last
         postflop_order = []
-        betting_order = (["BB", "SB"] if n == 2 else
-                         ["SB", "BB"]
-                         + [p for p in pos_order if p not in ("SB", "BB")])
+        betting_order = (
+            ["BB", "SB"]
+            if n == 2
+            else ["SB", "BB"] + [p for p in pos_order if p not in ("SB", "BB")]
+        )
         for pos in betting_order:
             if pos in active_positions:
                 postflop_order.append(pos)
@@ -2592,16 +2474,14 @@ class GeminiSessionManager:
         """Extract one explicit preflop action from a position's text span."""
         low = segment.lower()
         allin = re.search(
-            r"(?:all\s*-?\s*in|allin|shove|jam|全下)"
-            r"(?:\s*(\d+(?:\.\d+)?)\s*bb?)?",
+            r"(?:all\s*-?\s*in|allin|shove|jam|全下)" r"(?:\s*(\d+(?:\.\d+)?)\s*bb?)?",
             low,
         )
         if allin:
             return f"AI{float(allin.group(1)):g}" if allin.group(1) else "AI"
         if re.search(r"\b(?:raise|open)\b|加注", low):
             size = re.search(
-                r"(?:raise(?:\s+to)?|open(?:\s+to)?|加注(?:到)?)"
-                r"\s*(\d+(?:\.\d+)?)",
+                r"(?:raise(?:\s+to)?|open(?:\s+to)?|加注(?:到)?)" r"\s*(\d+(?:\.\d+)?)",
                 low,
             )
             return f"R{float(size.group(1)):g}" if size else "R2"
@@ -2648,9 +2528,13 @@ class GeminiSessionManager:
         duplicate = False
         for idx, match in enumerate(matches):
             position = match.group(1).upper()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(preflop_line)
+            end = (
+                matches[idx + 1].start()
+                if idx + 1 < len(matches)
+                else len(preflop_line)
+            )
             action = GeminiSessionManager._text_position_action(
-                preflop_line[match.end():end]
+                preflop_line[match.end() : end]
             )
             if not action:
                 continue
@@ -2683,8 +2567,7 @@ class GeminiSessionManager:
             return None
         card_compact = re.sub(r"\s+", "", card_text)
         card_parts = [
-            re.escape(card_compact[i:i + 2])
-            for i in range(0, len(card_compact), 2)
+            re.escape(card_compact[i : i + 2]) for i in range(0, len(card_compact), 2)
         ]
         card_pattern = r"\s*".join(card_parts)
         line_re = re.compile(
@@ -2744,7 +2627,8 @@ class GeminiSessionManager:
         pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
         first_round = str(hand.get("preflop_actions") or "").split("-")
         can_act = [
-            position for position, action in zip(pos_order, first_round)
+            position
+            for position, action in zip(pos_order, first_round)
             if action.upper() != "F"
         ]
 
@@ -2792,7 +2676,8 @@ class GeminiSessionManager:
                 else model_token_string
             )
             street["actions"] = GeminiSessionManager._parse_street_actions_string(
-                token_string, hand, active_positions=can_act)
+                token_string, hand, active_positions=can_act
+            )
             for action in street["actions"]:
                 code = str(action.get("action") or "").upper()
                 if code == "F" or code.startswith("AI"):
@@ -2810,28 +2695,40 @@ class GeminiSessionManager:
         # Effective BB mentioned (e.g., "30bb", "有效 50bb", "effective 40")
         # Require word boundary + 1-3 digits so "H2672 BB" (hand id ref) doesn't
         # match as "2672 bb".
-        has_bb = bool(re.search(r'\b\d{1,3}\s*bb\b', t, re.I)) or '有效' in t or 'effective' in t
+        has_bb = (
+            bool(re.search(r"\b\d{1,3}\s*bb\b", t, re.I))
+            or "有效" in t
+            or "effective" in t
+        )
         if has_bb:
             return True
         # Board cards (3+ cards with suits, e.g., "Js6h5s", "J♠6♥5♠")
-        has_board = bool(re.search(r'[akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣]', t))
+        has_board = bool(
+            re.search(
+                r"[akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣][akqjt2-9][cdhs♠♥♦♣]", t
+            )
+        )
         if has_board:
             return True
         # Specific hand + action (e.g., "TT raise", "AKs open", "66 call").
         # Bare digit pairs without an s/o suffix are only valid as same-rank
         # pairs (22-99); otherwise tournament stack lists like "37,15,42"
         # get mistaken for hands.
-        has_hand = bool(re.search(
-            r'\b(?:'
-            r'[akqjt][akqjt2-9][so]?'      # at least one face rank
-            r'|22|33|44|55|66|77|88|99'    # numeric pair
-            r'|[2-9][2-9][so]'             # numeric non-pair requires s/o
-            r')\b',
-            t,
-        ))
-        has_action = bool(re.search(
-            r'\b(raise|call|fold|open|3bet|4bet|limp|all.?in|shove|jam)\b', t, re.I
-        )) or bool(re.search(r'(加注|跟注|棄牌|全下)', t))
+        has_hand = bool(
+            re.search(
+                r"\b(?:"
+                r"[akqjt][akqjt2-9][so]?"  # at least one face rank
+                r"|22|33|44|55|66|77|88|99"  # numeric pair
+                r"|[2-9][2-9][so]"  # numeric non-pair requires s/o
+                r")\b",
+                t,
+            )
+        )
+        has_action = bool(
+            re.search(
+                r"\b(raise|call|fold|open|3bet|4bet|limp|all.?in|shove|jam)\b", t, re.I
+            )
+        ) or bool(re.search(r"(加注|跟注|棄牌|全下)", t))
         if has_hand and has_action:
             return True
         return False
@@ -2849,8 +2746,7 @@ class GeminiSessionManager:
         candidates = {
             match.group(1).upper() + match.group(2).upper() + match.group(3).lower()
             for match in re.finditer(
-                r"(?<![A-Za-z0-9])([2-9TJQKA])([2-9TJQKA])([so])"
-                r"(?![A-Za-z0-9])",
+                r"(?<![A-Za-z0-9])([2-9TJQKA])([2-9TJQKA])([so])" r"(?![A-Za-z0-9])",
                 user_text or "",
                 re.I,
             )
@@ -2860,7 +2756,9 @@ class GeminiSessionManager:
         literal = next(iter(candidates))
         parsed = str(hand.get("hero_hand") or "").strip()
         parsed_match = re.fullmatch(
-            r"([2-9TJQKA])([2-9TJQKA])([so])", parsed, re.I,
+            r"([2-9TJQKA])([2-9TJQKA])([so])",
+            parsed,
+            re.I,
         )
         if not parsed_match:
             return None
@@ -2870,9 +2768,13 @@ class GeminiSessionManager:
         hand["hero_hand"] = literal
         return literal
 
-    async def _parse_hand(self, chat_id: int, user_text: str,
-                           usage_acc: dict | None = None,
-                           feedback_hint: str = "") -> dict | None:
+    async def _parse_hand(
+        self,
+        chat_id: int,
+        user_text: str,
+        usage_acc: dict | None = None,
+        feedback_hint: str = "",
+    ) -> dict | None:
         """Parse user's natural language into hand JSON. Uses Flash for speed.
 
         ``feedback_hint`` (rules-validator Channel B) appends a precise
@@ -2928,7 +2830,12 @@ class GeminiSessionManager:
         try:
             result = json.loads(json_str)
             hand = result.get("hand")
-            if hand and hand.get("hero_position") and hand.get("preflop_actions") and hand.get("hero_hand"):
+            if (
+                hand
+                and hand.get("hero_position")
+                and hand.get("preflop_actions")
+                and hand.get("hero_hand")
+            ):
                 repaired_hand = self._repair_text_hero_hand_literal(hand, user_text)
                 if repaired_hand:
                     self._logger.warning(
@@ -2942,13 +2849,15 @@ class GeminiSessionManager:
                 self._fix_folded_players_guarded(hand, chat_id)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:
-            self._logger.warning(f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}")
+            self._logger.warning(
+                f"[chat={chat_id}] JSON parse failed: {e}\nRaw: {json_str[:300]}"
+            )
 
         return None
 
     async def _reparse_if_rules_invalid(
-        self, chat_id: int, user_text: str, hand_json: dict,
-        usage_acc: dict | None) -> dict:
+        self, chat_id: int, user_text: str, hand_json: dict, usage_acc: dict | None
+    ) -> dict:
         """Rules-validator Channel B: one re-parse if the text parse breaks the rules.
 
         Feeds the precise violation (street + orphan-call/act-after-fold/...) back
@@ -2965,11 +2874,15 @@ class GeminiSessionManager:
         feedback = to_parser_feedback(report)
         self._logger.warning(
             f"[chat={chat_id}] Text parse broke poker rules, re-parsing once: "
-            f"{[i.code for i in report.hard]}")
+            f"{[i.code for i in report.hard]}"
+        )
         try:
             retry = await asyncio.wait_for(
-                self._parse_hand(chat_id, user_text, usage_acc=usage_acc,
-                                 feedback_hint=feedback), timeout=60)
+                self._parse_hand(
+                    chat_id, user_text, usage_acc=usage_acc, feedback_hint=feedback
+                ),
+                timeout=60,
+            )
         except Exception as e:
             self._logger.warning(f"[chat={chat_id}] Channel-B re-parse failed: {e}")
             return hand_json
@@ -2978,8 +2891,7 @@ class GeminiSessionManager:
             return retry
         return hand_json
 
-    async def _run_followup_chat(self, chat_id: int, user_text: str,
-                                 **kwargs) -> str:
+    async def _run_followup_chat(self, chat_id: int, user_text: str, **kwargs) -> str:
         """Bound a complete follow-up, including every tool-call round.
 
         Individual model calls already time out, but a multi-round tool loop
@@ -2992,69 +2904,54 @@ class GeminiSessionManager:
             timeout=_FOLLOWUP_TIMEOUT_SECONDS,
         )
 
-    async def _chat(self, chat_id: int, user_text: str,
-                     on_status: Callable[[str], Any] | None = None,
-                     user_id: int | None = None,
-                     refresh_token: str | None = None,
-                     usage_acc: dict | None = None) -> str:
-        """Run a follow-up through the configured evidence-first coach."""
-        coach_client = getattr(
-            self, "_openai_coach_client",
-            getattr(self, "_openai_narrator_client", None),
-        )
-        if getattr(self, "coach_narrator_provider", "openai") == "openai":
-            if coach_client is not None:
-                self._logger.debug(
-                    "[chat=%s] Evidence-first follow-up (model=%s): %s",
-                    chat_id, self.coach_narrator_model, user_text[:300],
-                )
-                try:
-                    return await self._chat_with_openai_evidence(
-                        chat_id, user_text, on_status=on_status,
-                        user_id=user_id, refresh_token=refresh_token,
-                        usage_acc=usage_acc,
-                    )
-                except Exception as exc:
-                    self._logger.error(
-                        "[chat=%s] OpenAI evidence coach failed without unsafe "
-                        "model fallback: %s", chat_id, exc, exc_info=True,
-                    )
-                    return (
-                        "目前教練模型暫時無法完成查詢；我不會在沒有驗證資料時猜測 "
-                        "range、頻率或 EV，請稍後再試。"
-                    )
+    async def _chat(
+        self,
+        chat_id: int,
+        user_text: str,
+        on_status: Callable[[str], Any] | None = None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+        usage_acc: dict | None = None,
+    ) -> str:
+        """Run a follow-up through the evidence-first OpenAI coach."""
+        if getattr(self, "_openai_coach_client", None) is None:
             self._logger.error(
-                "[chat=%s] COACH_PROVIDER=openai but OpenAI client is unavailable",
+                "[chat=%s] OpenAI coach client is unavailable",
                 chat_id,
             )
             return (
                 "目前未設定 GPT 教練模型；我不會改用另一個模型猜測 "
                 "range、頻率或 EV。"
             )
-
-        if getattr(self, "coach_narrator_provider", "") != "gemini":
-            self._logger.error(
-                "[chat=%s] Unknown COACH_PROVIDER=%s",
-                chat_id, self.coach_narrator_provider,
-            )
-            return "教練模型設定無效；在設定修正前我不會猜測策略。"
-
         self._logger.debug(
-            f"[chat={chat_id}] Legacy Gemini tool chat (model={self.model}): "
-            f"{user_text[:300]}"
+            "[chat=%s] Evidence-first follow-up (model=%s): %s",
+            chat_id,
+            self.coach_narrator_model,
+            user_text[:300],
         )
-        for attempt in range(3):
-            try:
-                return await self._chat_with_tools(
-                    chat_id, user_text, on_status=on_status,
-                    user_id=user_id, refresh_token=refresh_token,
-                    usage_acc=usage_acc)
-            except genai_errors.ServerError as e:
-                if attempt == 2:
-                    raise
-                self._logger.warning(
-                    f"[chat={chat_id}] Follow-up retry {attempt+1}/3: {e}")
-                await asyncio.sleep(2 * (attempt + 1))
+        try:
+            return await self._evidence_workflow().run(
+                chat_id,
+                user_text,
+                on_status=on_status,
+                user_id=user_id,
+                refresh_token=refresh_token,
+                usage_acc=usage_acc,
+                request_id=request_id_var.get(),
+                tool_specs=coach_tool_specs(bool(getattr(self, "db", None))),
+            )
+        except Exception as exc:
+            self._logger.error(
+                "[chat=%s] OpenAI evidence coach failed without unsafe model "
+                "fallback: %s",
+                chat_id,
+                exc,
+                exc_info=True,
+            )
+            return (
+                "目前教練模型暫時無法完成查詢；我不會在沒有驗證資料時猜測 "
+                "range、頻率或 EV，請稍後再試。"
+            )
 
     @staticmethod
     def _content_text(content: Any) -> str:
@@ -3063,7 +2960,9 @@ class GeminiSessionManager:
         parts = getattr(content, "parts", None) or []
         return "\n".join(part.text for part in parts if getattr(part, "text", None))
 
-    def _append_accepted_history(self, chat_id: int, user_text: str, answer: str) -> None:
+    def _append_accepted_history(
+        self, chat_id: int, user_text: str, answer: str
+    ) -> None:
         """Persist only verified user-visible turns, never drafts/tool chatter."""
         if not hasattr(self, "histories"):
             self.histories = {}
@@ -3123,7 +3022,8 @@ class GeminiSessionManager:
             )
         street_counts: dict[str, int] = {}
         for spot, solution in zip(
-                ctx.get("hero_spots") or [], ctx.get("solutions") or []):
+            ctx.get("hero_spots") or [], ctx.get("solutions") or []
+        ):
             if not solution:
                 continue
             street = spot.get("street") or "unknown"
@@ -3148,25 +3048,26 @@ class GeminiSessionManager:
         if usage_acc is None or usage is None:
             return
         details = getattr(usage, "output_tokens_details", None)
-        self._accumulate_usage(usage_acc, {
-            "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
-            "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
-            "thinking_tokens": getattr(details, "reasoning_tokens", 0) or 0,
-            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
-        })
+        self._accumulate_usage(
+            usage_acc,
+            {
+                "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+                "thinking_tokens": getattr(details, "reasoning_tokens", 0) or 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+            },
+        )
 
     async def _openai_response(self, *, usage_acc: dict | None = None, **kwargs):
-        client = getattr(
-            self, "_openai_coach_client",
-            getattr(self, "_openai_narrator_client", None),
-        )
+        client = getattr(self, "_openai_coach_client", None)
         if client is None:
             raise RuntimeError("OpenAI coach is not configured")
         last_error = None
         for attempt in range(3):
             try:
                 response = await asyncio.wait_for(
-                    client.responses.create(**kwargs), timeout=120,
+                    client.responses.create(**kwargs),
+                    timeout=120,
                 )
                 self._accumulate_openai_usage(usage_acc, response)
                 return response
@@ -3177,8 +3078,9 @@ class GeminiSessionManager:
                 await asyncio.sleep(2 * (attempt + 1))
         raise last_error or RuntimeError("OpenAI response failed")
 
-    def _execute_query_coach_facts(self, chat_id: int, user_text: str,
-                                   args: dict) -> str:
+    def _execute_query_coach_facts(
+        self, chat_id: int, user_text: str, args: dict
+    ) -> str:
         ctx = self.hand_contexts.get(chat_id)
         if not ctx:
             return "此對話沒有已分析手牌，無法定位 solver node。"
@@ -3201,11 +3103,19 @@ class GeminiSessionManager:
             ctx["_followup_node_street"] = node_street
         return facts.render()
 
-    async def _execute_coach_tool(self, chat_id: int, user_text: str,
-                                  name: str, args: dict, *, on_status=None,
-                                  user_id: int | None = None,
-                                  refresh_token: str | None = None) -> str:
+    async def _execute_coach_tool(
+        self,
+        chat_id: int,
+        user_text: str,
+        name: str,
+        args: dict,
+        *,
+        on_status=None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+    ) -> str:
         """Central execution boundary shared by every GPT coaching tool."""
+
         async def _status(message: str):
             if on_status:
                 result = on_status(message)
@@ -3249,32 +3159,72 @@ class GeminiSessionManager:
     def _tool_status(result: str) -> str:
         lowered = (result or "").lower()
         missing_markers = (
-            "找不到", "沒有 solver", "沒有已分析", "無法定位", "無法查詢",
-            "查詢失敗", "error", "no solution", "沒有可用資料",
+            "找不到",
+            "沒有 solver",
+            "沒有已分析",
+            "無法定位",
+            "無法查詢",
+            "查詢失敗",
+            "error",
+            "no solution",
+            "沒有可用資料",
         )
-        return "missing" if any(marker in lowered for marker in missing_markers) else "ok"
-
-    async def _chat_with_openai_evidence(self, chat_id: int, user_text: str,
-                                         on_status=None,
-                                         user_id: int | None = None,
-                                         refresh_token: str | None = None,
-                                         usage_acc: dict | None = None) -> str:
-        """Compatibility boundary for the extracted GPT coaching runtime."""
-        return await run_evidence_chat(
-            self,
-            chat_id,
-            user_text,
-            on_status=on_status,
-            user_id=user_id,
-            refresh_token=refresh_token,
-            usage_acc=usage_acc,
-            request_id=request_id_var.get(),
-            tool_specs=_coach_tool_specs(bool(self.db)),
+        return (
+            "missing" if any(marker in lowered for marker in missing_markers) else "ok"
         )
 
+    def _clear_followup_node_street(self, chat_id: int) -> None:
+        context = self.hand_contexts.get(chat_id)
+        if context is not None:
+            context.pop("_followup_node_street", None)
 
-    async def _call_openai_narrator(self, prompt: str, system: str,
-                                    usage_acc: dict | None = None) -> str:
+    def _record_coach_tool_call(self, *, chat_id: int, **payload) -> None:
+        db = getattr(self, "db", None)
+        if not db:
+            return
+        asyncio.create_task(
+            db.save_tool_call(
+                chat_id=chat_id,
+                hand_id=getattr(self, "last_hand_ids", {}).get(chat_id),
+                **payload,
+            )
+        )
+
+    def _evidence_workflow(self) -> ChatWorkflow:
+        workflow = getattr(self, "_chat_workflow", None)
+        if workflow is None:
+            workflow = ChatWorkflow(
+                WorkflowDeps(
+                    get_hand_context=lambda chat_id: self.hand_contexts.get(chat_id),
+                    clear_followup_node_street=self._clear_followup_node_street,
+                    build_evidence_context=self._build_compact_evidence_context,
+                    history_for_evidence=self._history_for_evidence,
+                    evaluate_hand=self._execute_evaluate_hand,
+                    execute_tool=self._execute_coach_tool,
+                    model_response=self._openai_response,
+                    accept_history=self._append_accepted_history,
+                    record_tool_call=self._record_coach_tool_call,
+                    tool_status=self._tool_status,
+                    model=getattr(self, "coach_narrator_model", "gpt-5.6-terra"),
+                    max_tool_calls=getattr(self, "coach_max_tool_calls", 4),
+                    max_evidence_rounds=getattr(self, "coach_max_evidence_rounds", 2),
+                    reasoning=getattr(self, "coach_narrator_reasoning", "low"),
+                    max_output_tokens=getattr(
+                        self, "coach_narrator_max_output_tokens", 900
+                    ),
+                    logger=getattr(self, "_logger", logging.getLogger(__name__)),
+                    analyze_hand=self._analyze_parsed_hand_context,
+                    build_teaching_block=self._initial_teaching_block,
+                    generate_initial=self._verified_initial_coaching,
+                    extract_followups=self.extract_followups,
+                )
+            )
+            self._chat_workflow = workflow
+        return workflow
+
+    async def _call_openai_narrator(
+        self, prompt: str, system: str, usage_acc: dict | None = None
+    ) -> str:
         """Call the low-cost OpenAI narrator on an already grounded card."""
         response = await self._openai_response(
             model=self.coach_narrator_model,
@@ -3287,38 +3237,42 @@ class GeminiSessionManager:
         )
         return response.output_text or ""
 
-    async def _generate_initial_narrator(self, chat_id: int, prompt: str, *,
-                                           digest: dict | None,
-                                           on_status=None,
-                                           user_id: int | None = None,
-                                           refresh_token: str | None = None,
-                                           usage_acc: dict | None = None,
-                                           disable_tools: bool = False,
-                                           system_override: str | None = None) -> str:
+    async def _generate_initial_narrator(
+        self,
+        chat_id: int,
+        prompt: str,
+        *,
+        digest: dict | None,
+        on_status=None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+        usage_acc: dict | None = None,
+        disable_tools: bool = False,
+        system_override: str | None = None,
+    ) -> str:
         """Use GPT for coaching; degrade to deterministic facts, not another LLM."""
-        coach_client = getattr(
-            self, "_openai_coach_client",
-            getattr(self, "_openai_narrator_client", None),
-        )
-        if (getattr(self, "coach_narrator_provider", "openai") == "openai"
-                and coach_client is not None):
+        if getattr(self, "_openai_coach_client", None) is not None:
             try:
                 result = await self._call_openai_narrator(
                     prompt,
-                    system_override or (INITIAL_COACH_SYSTEM if digest else COACH_SYSTEM),
+                    system_override
+                    or (INITIAL_COACH_SYSTEM if digest else COACH_SYSTEM),
                     usage_acc,
                 )
                 if result.strip():
                     result = display_exact_cards(_normalize_terms(result))
                     self._logger.debug(
                         "[chat=%s] Initial narrator response (model=%s, %s chars)",
-                        chat_id, self.coach_narrator_model, len(result),
+                        chat_id,
+                        self.coach_narrator_model,
+                        len(result),
                     )
                     return result
             except Exception as exc:
                 self._logger.warning(
                     "[chat=%s] OpenAI narrator failed; using deterministic fallback: %s",
-                    chat_id, exc,
+                    chat_id,
+                    exc,
                 )
             if digest:
                 try:
@@ -3329,31 +3283,26 @@ class GeminiSessionManager:
                 "目前教練模型暫時無法完成解釋；已有 solver 數據仍會保留，"
                 "但我不會改用另一個模型猜測策略。"
             )
+        if digest:
+            try:
+                return render_teaching_fallback(digest)
+            except Exception:
+                return "已有 solver 事實卡，但教練模型目前未設定。"
+        return "目前未設定 GPT 教練模型，無法產生教練解釋。"
 
-        if getattr(self, "coach_narrator_provider", "gemini") == "openai":
-            if digest:
-                try:
-                    return render_teaching_fallback(digest)
-                except Exception:
-                    return "已有 solver 事實卡，但教練模型目前未設定。"
-            return "目前未設定 GPT 教練模型，無法產生教練解釋。"
-
-        if getattr(self, "coach_narrator_provider", "") != "gemini":
-            return "教練模型設定無效；在設定修正前我不會猜測策略。"
-
-        # Explicit legacy mode only; this branch exists for controlled rollback.
-        return await self._chat_with_tools(
-            chat_id, prompt, on_status=on_status,
-            user_id=user_id, refresh_token=refresh_token,
-            usage_acc=usage_acc, force_tool_eligible=False,
-            disable_tools=disable_tools, system_override=system_override,
-        )
-    async def _verified_initial_coaching(self, chat_id: int, coaching_prompt: str,
-                                          context: dict, user_text: str, *,
-                                          on_status=None, user_id: int | None = None,
-                                          refresh_token: str | None = None,
-                                          usage_acc: dict | None = None,
-                                          disable_tools: bool = False) -> str:
+    async def _verified_initial_coaching(
+        self,
+        chat_id: int,
+        coaching_prompt: str,
+        context: dict,
+        user_text: str,
+        *,
+        on_status=None,
+        user_id: int | None = None,
+        refresh_token: str | None = None,
+        usage_acc: dict | None = None,
+        disable_tools: bool = False,
+    ) -> str:
         """Generate and fact-audit the initial coaching verdict.
 
         The audit is scoped to the deterministic teaching skeleton.  It leaves
@@ -3370,10 +3319,15 @@ class GeminiSessionManager:
                     self.histories = {}
                 history_before_draft = list(self.histories.get(chat_id, []))
                 draft = await self._generate_initial_narrator(
-                    chat_id, coaching_prompt, digest=digest,
-                    on_status=on_status, user_id=user_id,
-                    refresh_token=refresh_token, usage_acc=usage_acc,
-                    disable_tools=disable_tools, system_override=narrator_system,
+                    chat_id,
+                    coaching_prompt,
+                    digest=digest,
+                    on_status=on_status,
+                    user_id=user_id,
+                    refresh_token=refresh_token,
+                    usage_acc=usage_acc,
+                    disable_tools=disable_tools,
+                    system_override=narrator_system,
                 )
                 if not digest:
                     self.histories[chat_id] = history_before_draft
@@ -3399,7 +3353,8 @@ class GeminiSessionManager:
                     f"{', '.join(audit.violations)}"
                 )
                 original_followups = [
-                    line for line in draft.splitlines()
+                    line
+                    for line in draft.splitlines()
                     if line.strip().startswith("FOLLOWUP:")
                 ][:3]
                 repair_prompt = (
@@ -3417,17 +3372,25 @@ class GeminiSessionManager:
                 # the audit just rejected.
                 self.histories[chat_id] = history_before_draft
                 repaired = await self._generate_initial_narrator(
-                    chat_id, repair_prompt, digest=digest,
-                    on_status=on_status, user_id=user_id,
-                    refresh_token=refresh_token, usage_acc=usage_acc,
-                    disable_tools=disable_tools, system_override=narrator_system,
+                    chat_id,
+                    repair_prompt,
+                    digest=digest,
+                    on_status=on_status,
+                    user_id=user_id,
+                    refresh_token=refresh_token,
+                    usage_acc=usage_acc,
+                    disable_tools=disable_tools,
+                    system_override=narrator_system,
                 )
                 repaired_audit = audit_teaching_draft(
-                    repaired, digest, source_texts=[user_text],
+                    repaired,
+                    digest,
+                    source_texts=[user_text],
                 )
                 if repaired_audit.ok:
                     repaired_followups = [
-                        line for line in repaired.splitlines()
+                        line
+                        for line in repaired.splitlines()
                         if line.strip().startswith("FOLLOWUP:")
                     ]
                     if original_followups and not repaired_followups:
@@ -3441,7 +3404,8 @@ class GeminiSessionManager:
                 )
                 fallback = render_teaching_fallback(digest)
                 followups = [
-                    line for line in repaired.splitlines()
+                    line
+                    for line in repaired.splitlines()
                     if line.strip().startswith("FOLLOWUP:")
                 ][:3] or original_followups
                 if followups:
@@ -3453,20 +3417,24 @@ class GeminiSessionManager:
                 if attempt == 2:
                     raise
                 self._logger.warning(
-                    f"[chat={chat_id}] Coaching retry {attempt+1}/3: {e}")
+                    f"[chat={chat_id}] Coaching retry {attempt+1}/3: {e}"
+                )
                 await asyncio.sleep(2 * (attempt + 1))
+        raise RuntimeError("initial coaching failed without a result")
 
     @staticmethod
     def _prepare_initial_teaching_digest(context: dict) -> dict | None:
         """Fetch selected response nodes while the per-user token is active."""
         try:
+
             def _response_loader(params: dict):
                 from gto_api import get_spot_solution
 
                 return get_spot_solution(**params)
 
             digest = context.get("_teaching_digest") or build_teaching_digest(
-                context, response_loader=_response_loader,
+                context,
+                response_loader=_response_loader,
             )
         except Exception as exc:
             logging.getLogger(__name__).warning(
@@ -3492,279 +3460,6 @@ class GeminiSessionManager:
         context["_teaching_digest"] = digest
         return render_teaching_prompt_block(digest)
 
-    async def _chat_with_tools(self, chat_id: int, user_text: str,
-                                on_status: Callable[[str], Any] | None = None,
-                                user_id: int | None = None,
-                                refresh_token: str | None = None,
-                                usage_acc: dict | None = None,
-                                force_tool_eligible: bool = True,
-                                disable_tools: bool = False,
-                                system_override: str | None = None) -> str:
-        """Chat with GTO tools for data-driven follow-up answers.
-
-        force_tool_eligible: when True (the follow-up path), strategy/range
-        questions are detected by _needs_solver_grounding and the first
-        generation round is hard-forced to a solver tool call (Gemini
-        tool_config mode=ANY). Coaching/FT-switch callers pass False so the
-        initial analysis isn't disturbed (its data is already computed).
-        """
-        # Drop any per-answer GTO-Wizard node override from a previous reply so
-        # it can't leak onto this one; _try_coach_facts re-sets it when this
-        # answer is grounded on a specific node.
-        _ctx = self.hand_contexts.get(chat_id)
-        if _ctx is not None:
-            _ctx.pop("_followup_node_street", None)
-
-        declarations = [
-            QUERY_NEXT_ACTIONS_DECLARATION,
-            QUERY_GTO_DECLARATION,
-            EVALUATE_HAND_DECLARATION,
-        ]
-        if self.db:
-            declarations.append(LOOKUP_HAND_DECLARATION)
-            # Training-loop tools (require DB) — all ledger-backed, EV-weighted
-            declarations.extend([
-                GET_TRAINING_PLAN_DECLARATION,
-                GET_PROGRESS_DECLARATION,
-                QUERY_LEDGER_SUMMARY_DECLARATION,
-                QUERY_LEDGER_HANDS_DECLARATION,
-            ])
-        tool = types.Tool(function_declarations=declarations)
-
-        # Build system prompt with hand context
-        hand_summary = self._build_hand_summary(chat_id)
-        system = system_override or (COACH_SYSTEM + "\n\n" + hand_summary)
-
-        history = self.histories.get(chat_id, [])
-        messages = list(history) + [
-            types.Content(role="user", parts=[types.Part(text=user_text)]),
-        ]
-
-        result_text = ""
-        max_rounds = 8
-        tools_called = 0
-
-        # Intent gate: hard-force a solver tool call on round 0 for
-        # strategy/range/hypothetical follow-ups so the model can't answer
-        # from poker theory. Played-line range queries resolve against the
-        # cached solution (no extra API latency). After the first tool runs
-        # we revert to AUTO so the model synthesizes the grounded answer.
-        force_tools = (
-            force_tool_eligible
-            and not disable_tools
-            and _needs_solver_grounding(user_text)
-        )
-        if force_tools:
-            self._logger.info(
-                f"[chat={chat_id}] Solver-grounding gate matched — "
-                f"forcing tool call on round 0 (mode=ANY)"
-            )
-
-        async def _status(msg: str):
-            if on_status:
-                r = on_status(msg)
-                if asyncio.iscoroutine(r):
-                    await r
-
-        # Deterministic grounded path for P0/P1 follow-up intents (coach_facts).
-        # Only when we have a cached analyzed hand and the grounding gate matched.
-        # 'other'/unknown intents return None -> keep the existing tool loop below.
-        if force_tools:
-            grounded = await asyncio.to_thread(
-                self._try_coach_facts, chat_id, user_text, user_id, refresh_token)
-            if grounded:
-                grounded = _normalize_terms(grounded)
-                history = self.histories.get(chat_id, [])
-                history.append(types.Content(role="user",
-                                             parts=[types.Part(text=user_text)]))
-                history.append(types.Content(role="model",
-                                             parts=[types.Part(text=grounded)]))
-                self.histories[chat_id] = history[-20:]
-                return grounded
-
-        for round_num in range(max_rounds):
-            gen_kwargs = dict(
-                system_instruction=system,
-                tools=[] if disable_tools else [tool],
-            )
-            # Hard-force only until the first tool has actually executed;
-            # subsequent rounds use AUTO so the model can return prose.
-            if force_tools and tools_called == 0 and not disable_tools:
-                gen_kwargs["tool_config"] = types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(
-                        mode=types.FunctionCallingConfigMode.ANY,
-                        allowed_function_names=_SOLVER_GROUNDING_TOOL_NAMES,
-                    )
-                )
-            response = await asyncio.wait_for(
-                self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=messages,
-                    config=types.GenerateContentConfig(**gen_kwargs),
-                ),
-                timeout=120,
-            )
-            if usage_acc is not None:
-                self._accumulate_usage(usage_acc, self._extract_usage(response))
-
-            # Check for function calls in response
-            candidate = response.candidates[0]
-            parts = (candidate.content and candidate.content.parts) or []
-            function_calls = [
-                p for p in parts
-                if p.function_call
-            ]
-
-            # Extract any text parts from this response (model may return text + tool calls together)
-            text_parts = [p.text for p in parts if p.text]
-            if text_parts:
-                result_text = "\n".join(text_parts)
-
-            if not function_calls:
-                # Model returned no function calls
-                if round_num == 0 and not result_text.strip():
-                    # Empty on first round — retry with explicit tool hint
-                    finish = getattr(candidate, "finish_reason", "unknown")
-                    self._logger.warning(
-                        f"[chat={chat_id}] Empty response on round 0 "
-                        f"(finish_reason={finish}), retrying with tool hint"
-                    )
-                    messages.append(types.Content(role="user", parts=[types.Part(text=(
-                        "請使用 query_gto 工具查詢用戶問題所需的 GTO 策略數據。"
-                        "例如查詢某位置在某條街的範圍，用 street 和 position 參數。"
-                    ))]))
-                    continue
-                break
-
-            # Execute tool calls and build response
-            messages.append(candidate.content)
-
-            for fc in function_calls:
-                fn_name = fc.function_call.name
-                args = dict(fc.function_call.args) if fc.function_call.args else {}
-                self._logger.info(
-                    f"[chat={chat_id}] Tool call #{round_num+1}: "
-                    f"{fn_name}({json.dumps(args, ensure_ascii=False)})"
-                )
-
-                t_tool = time.time()
-
-                if fn_name == "lookup_hand":
-                    await _status("查詢手牌歷史...")
-                    tool_result = await self._execute_lookup_hand(chat_id, args)
-                elif fn_name == "evaluate_hand":
-                    # Local deterministic eval — no API call needed
-                    await _status("判斷牌型...")
-                    tool_result = self._execute_evaluate_hand(chat_id, args)
-                elif fn_name in ("get_training_plan", "get_progress"):
-                    await _status("查詢訓練數據...")
-                    tool_result = await self._execute_leak_tool(chat_id, fn_name, args, user_id)
-                elif fn_name in ("query_ledger_summary", "query_ledger_hands"):
-                    await _status("查詢帳本...")
-                    tool_result = await self._execute_ledger_tool(fn_name, args)
-                else:
-                    # GTO API tools — need status + token
-                    pos = args.get("position", "")
-                    street = args.get("street", "")
-                    icm = args.get("icm_phase", "")
-                    tool_desc = f"查詢 {pos} {street}" if pos else f"查詢 {street} 策略"
-                    if icm:
-                        tool_desc += f" (ICM {icm})"
-                    await _status(tool_desc + "...")
-
-                    self._setup_user_token(user_id, refresh_token)
-                    try:
-                        if fn_name == "query_next_actions":
-                            tool_result = self._execute_query_next_actions(chat_id, args)
-                        else:
-                            tool_result = self._execute_query_gto(chat_id, args)
-                    finally:
-                        self._clear_user_token()
-                elapsed = time.time() - t_tool
-                self._logger.debug(
-                    f"[chat={chat_id}] Tool result ({elapsed:.1f}s, {len(tool_result)} chars):\n"
-                    f"{tool_result[:500]}"
-                )
-                tools_called += 1
-
-                # Persist the tool call for debugging (fire-and-forget).
-                if self.db:
-                    try:
-                        asyncio.create_task(self.db.save_tool_call(
-                            chat_id=chat_id,
-                            request_id=request_id_var.get(),
-                            hand_id=self.last_hand_ids.get(chat_id),
-                            tool_name=fn_name,
-                            tool_args=args,
-                            tool_result=tool_result,
-                            latency_ms=int(elapsed * 1000),
-                        ))
-                    except Exception as e:
-                        self._logger.debug(f"[chat={chat_id}] save_tool_call dispatch failed: {e}")
-
-                messages.append(types.Content(
-                    role="user",
-                    parts=[types.Part.from_function_response(
-                        name=fn_name,
-                        response={"data": tool_result},
-                    )],
-                ))
-
-        if not result_text.strip():
-            self._logger.warning(
-                f"[chat={chat_id}] Empty response after {round_num + 1} rounds "
-                f"({tools_called} tool calls), requesting final answer"
-            )
-            if tools_called > 0:
-                # Tools were called — ask model to summarize the results
-                messages.append(types.Content(role="user", parts=[types.Part(text=(
-                    "請根據以上工具查詢結果，給出完整的分析回覆。"
-                    "不要包含任何 JSON 或原始數據，只用自然語言回覆。"
-                ))]))
-            else:
-                # No tools were called — ask model to try answering directly
-                messages.append(types.Content(role="user", parts=[types.Part(text=(
-                    "請直接回答用戶的問題。如果需要 GTO 數據支持，"
-                    "根據系統提示中的手牌資訊描述你所知道的策略。\n"
-                    "重要：不要模擬工具呼叫、不要輸出 JSON、不要包含原始數據。"
-                    "只用自然語言簡潔回覆。"
-                ))]))
-            await _status("生成回覆中...")
-            response = await asyncio.wait_for(
-                self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=messages,
-                    config=types.GenerateContentConfig(system_instruction=system),
-                ),
-                timeout=120,
-            )
-            if usage_acc is not None:
-                self._accumulate_usage(usage_acc, self._extract_usage(response))
-            result_text = _normalize_terms(
-                response.text or "抱歉，分析過程中出現問題，請重新傳送手牌。"
-            )
-
-        self._logger.debug(f"[chat={chat_id}] Chat+tools response ({len(result_text)} chars):\n{result_text}")
-
-        # ── Phase-2 reserved interface: post-answer grounding re-check ──
-        # If a later phase enables it: when the gate matched but the answer
-        # still enumerates hand-class → action with tools_called == 0 (model
-        # ignored a forced call / gate missed), reject and re-ask with a
-        # forced tool call. Intentionally a no-op for now.
-        #
-        #   if force_tools and tools_called == 0 \
-        #           and self._answer_enumerates_hand_actions(result_text):
-        #       result_text = await self._regrounded_retry(
-        #           chat_id, user_text, messages, system, usage_acc)
-
-        # Update history (user text only, not tool calls)
-        history = self.histories.get(chat_id, [])
-        history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
-        history.append(types.Content(role="model", parts=[types.Part(text=result_text)]))
-        self.histories[chat_id] = history[-20:]
-
-        return result_text
-
     def _build_standalone_context(self, args: dict) -> dict | None:
         """Build a minimal hand context from tool args when no cached context exists.
 
@@ -3785,6 +3480,7 @@ class GeminiSessionManager:
         icm_phase = args.get("icm_phase")
         if icm_phase:
             from icm_modes import find_icm_params
+
             num_players = args.get("num_players", 8)
             stacks_str = args.get("player_stacks", "")
             if stacks_str:
@@ -3845,7 +3541,9 @@ class GeminiSessionManager:
             result = eval_hand(hand, board)
         except (ValueError, KeyError) as e:
             return f"無法判斷牌型：{e}。請確認 hand 格式（如 AKo, Th8c）。"
-        return f"{cards_to_emoji(hand)} 在 {cards_to_emoji(board)}: {result['full_label']}"
+        return (
+            f"{cards_to_emoji(hand)} 在 {cards_to_emoji(board)}: {result['full_label']}"
+        )
 
     async def _execute_lookup_hand(self, chat_id: int, args: dict) -> str:
         """Look up a hand by ID from the user's history."""
@@ -3864,34 +3562,47 @@ class GeminiSessionManager:
         if not self.db or not self.db.pool:
             return "暫時無法查詢帳本，請稍後再試"
         from ledger_service import query_ledger_summary, query_ledger_hands
+
         if fn_name == "query_ledger_summary":
             days = int(args["days"]) if args.get("days") else None
-            s = await query_ledger_summary(self.db.pool, category=args.get("category"),
-                                           hero_cat=args.get("hero_cat"), days=days)
+            s = await query_ledger_summary(
+                self.db.pool,
+                category=args.get("category"),
+                hero_cat=args.get("hero_cat"),
+                days=days,
+            )
             if not s["n"]:
                 return "帳本裡沒有符合條件的決策資料。"
             scope = f"（最近 {days} 天）" if days else "（全期）"
-            lines = [f"📒 帳本 EV loss{scope}：{s['per100']:.2f} bb/100 決策 · "
-                     f"總損失 {s['total_bb']:.1f}bb · n={s['n']} · excluded {s['excluded_n']}"]
+            lines = [
+                f"📒 帳本 EV loss{scope}：{s['per100']:.2f} bb/100 決策 · "
+                f"總損失 {s['total_bb']:.1f}bb · n={s['n']} · excluded {s['excluded_n']}"
+            ]
             if s["top_spots"]:
                 lines.append("\ntop 漏 EV 的 spot（EV 排序，帶 n）：")
                 for i, t in enumerate(s["top_spots"][:5], 1):
-                    lines.append(f"{i}. `{t['spot']}` -{t['total_bb']:.1f}bb "
-                                 f"（{t['per100']:.2f}bb/100, n={t['n']}）")
+                    lines.append(
+                        f"{i}. `{t['spot']}` -{t['total_bb']:.1f}bb "
+                        f"（{t['per100']:.2f}bb/100, n={t['n']}）"
+                    )
             return "\n".join(lines)
         # query_ledger_hands
         hands = await query_ledger_hands(
-            self.db.pool, category=args.get("category"),
+            self.db.pool,
+            category=args.get("category"),
             min_ev_loss=float(args.get("min_ev_loss", 0.5)),
             days=int(args["days"]) if args.get("days") else 90,
-            limit=int(args.get("limit", 5)))
+            limit=int(args.get("limit", 5)),
+        )
         if not hands:
             return "帳本裡沒有符合條件的手牌。"
         lines = ["📒 符合的手牌（EV loss 排序）："]
         for h in hands:
-            lines.append(f"· {h['played_at']} {cards_to_emoji(h['hero_hand'])} {h['position'] or ''} "
-                         f"{cards_to_emoji(h['boards'] or '')} — `{h['spot']}` -{h['ev_loss_bb']:.2f}bb "
-                         f"（{h['correctness']}）· [Analyze]({h['review_url']})")
+            lines.append(
+                f"· {h['played_at']} {cards_to_emoji(h['hero_hand'])} {h['position'] or ''} "
+                f"{cards_to_emoji(h['boards'] or '')} — `{h['spot']}` -{h['ev_loss_bb']:.2f}bb "
+                f"（{h['correctness']}）· [Analyze]({h['review_url']})"
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -3902,20 +3613,28 @@ class GeminiSessionManager:
             lines.append(data["headline"])
         for i, f in enumerate(data.get("focus", []), 1):
             lines.append(f"\n重點 {i}: {f['desc']}")
-            lines.append(f"  {f['per100']:.2f} bb/100 · n={f['n']} · `{f['spot_leaf']}`")
+            lines.append(
+                f"  {f['per100']:.2f} bb/100 · n={f['n']} · `{f['spot_leaf']}`"
+            )
             if f.get("drill_url"):
                 lines.append(f"  → [GTOW Trainer 練這個]({f['drill_url']})")
-        for r in (data.get("readback") or []):
-            if r.get("current_per100") is not None and r.get("prescribed_per100") is not None:
+        for r in data.get("readback") or []:
+            if (
+                r.get("current_per100") is not None
+                and r.get("prescribed_per100") is not None
+            ):
                 lines.append(
                     f"\n上週焦點 `{r['spot_leaf']}`：{r['prescribed_per100']:.1f} → "
-                    f"{r['current_per100']:.1f} bb/100（n={r['n']}，{r['note']}）")
+                    f"{r['current_per100']:.1f} bb/100（n={r['n']}，{r['note']}）"
+                )
         dq = data.get("drill_queue") or []
         if dq:
             lines.append("\n📥 現場手牌練習佇列：")
             for q in dq:
-                lines.append(f"· {q.get('label') or q.get('spot_leaf')}"
-                             f"（{q.get('n_sources', 1)} 手，漏 {(q.get('total_ev_loss_bb') or 0):.1f}bb）")
+                lines.append(
+                    f"· {q.get('label') or q.get('spot_leaf')}"
+                    f"（{q.get('n_sources', 1)} 手，漏 {(q.get('total_ev_loss_bb') or 0):.1f}bb）"
+                )
         return "\n".join(lines)
 
     @staticmethod
@@ -3928,12 +3647,15 @@ class GeminiSessionManager:
         for p in series:
             lines.append(f"  {p['week']}: {p['per100']:.2f} bb/100 (n={p['n']})")
         lines.append("")
-        lines.append("技能趨勢是月尺度：單週樣本波動大，連續 4 週同向才算訊號；"
-                     "不足 4 週先不下結論。")
+        lines.append(
+            "技能趨勢是月尺度：單週樣本波動大，連續 4 週同向才算訊號；"
+            "不足 4 週先不下結論。"
+        )
         return "\n".join(lines)
 
-    async def _execute_leak_tool(self, chat_id: int, fn_name: str,
-                                  args: dict, user_id: int | None) -> str:
+    async def _execute_leak_tool(
+        self, chat_id: int, fn_name: str, args: dict, user_id: int | None
+    ) -> str:
         """Training-loop tools over the ledger (EV-weighted, always with n).
 
         The frequency-era deviations tools (query_my_leaks / query_my_stats,
@@ -3945,18 +3667,25 @@ class GeminiSessionManager:
         try:
             if fn_name == "get_training_plan":
                 from ledger_service import fetch_latest_scorecard
+
                 row = await fetch_latest_scorecard(self.db.pool)
                 if not row:
-                    return ("本週訓練計畫還沒生成（每週日 21:00 自動產生）。"
-                            "可以先用 query_ledger_summary 看目前最漏的 spot。")
+                    return (
+                        "本週訓練計畫還沒生成（每週日 21:00 自動產生）。"
+                        "可以先用 query_ledger_summary 看目前最漏的 spot。"
+                    )
                 return self._render_training_plan(row["week"], row["data"])
 
             if fn_name == "get_progress":
                 from ledger_service import query_progress_series
+
                 weeks = int(args.get("weeks", 8))
                 series = await query_progress_series(
-                    self.db.pool, category=args.get("category"),
-                    spot_leaf=args.get("spot_leaf"), weeks=weeks)
+                    self.db.pool,
+                    category=args.get("category"),
+                    spot_leaf=args.get("spot_leaf"),
+                    weeks=weeks,
+                )
                 if not series:
                     return "沒有符合條件的決策資料。"
                 scope = args.get("spot_leaf") or args.get("category") or "整體"
@@ -3971,7 +3700,11 @@ class GeminiSessionManager:
     def _execute_query_gto(self, chat_id: int, args: dict) -> str:
         """Execute a query_gto tool call. Returns formatted solver data."""
         from gto_api import get_spot_solution, get_next_actions, find_closest_action
-        from gto_formatter import format_action_summary, format_hand_detail, format_range_overview
+        from gto_formatter import (
+            format_action_summary,
+            format_hand_detail,
+            format_range_overview,
+        )
 
         from gto_api import nearest_depth as _nearest_depth
         from gto_api import nearest_cash_depth as _nearest_cash_depth
@@ -4004,15 +3737,16 @@ class GeminiSessionManager:
         # LLM often pads with trailing F's (e.g. F-R2-F-F-F-F-F-F for LJ's spot)
         # which means everyone folded = no solution. Strip to just before target position.
         if preflop_override and position and street == "preflop":
-            POSITION_ORDER_8 = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
             try:
-                target_idx = POSITION_ORDER_8.index(position)
+                target_idx = POSITION_ORDER.index(position)
                 pf_parts = preflop_override.split("-")
                 if len(pf_parts) > target_idx:
                     # Check if everything after target_idx is F (all folded past target)
                     tail = pf_parts[target_idx:]
                     if all(t == "F" for t in tail):
-                        preflop_override = "-".join(pf_parts[:target_idx]) if target_idx > 0 else ""
+                        preflop_override = (
+                            "-".join(pf_parts[:target_idx]) if target_idx > 0 else ""
+                        )
                         self._logger.debug(
                             f"[chat={chat_id}] Truncated preflop to position {position}: "
                             f"{args.get('preflop_actions_override')} → {preflop_override or '(empty)'}"
@@ -4030,7 +3764,8 @@ class GeminiSessionManager:
         if (
             preflop_override
             and ctx_preflop
-            and street != "preflop"  # preflop uses its own position-based handling below
+            and street
+            != "preflop"  # preflop uses its own position-based handling below
         ):
             ctx_len = len([p for p in ctx_preflop.split("-") if p])
             override_parts = [p for p in preflop_override.split("-") if p]
@@ -4047,11 +3782,24 @@ class GeminiSessionManager:
         # Cash games use integer depth (100.0), MTT uses .125 suffix (100.125).
         if effective_bb and not args.get("icm_phase"):
             is_cash = ctx.get("gametype", "").startswith("Cash")
-            depth_override = _nearest_cash_depth(effective_bb) if is_cash else _nearest_depth(effective_bb)
+            depth_override = (
+                _nearest_cash_depth(effective_bb)
+                if is_cash
+                else _nearest_depth(effective_bb)
+            )
         else:
             depth_override = None
 
-        has_override = any([preflop_override, board_override, flop_override, turn_override, river_override, depth_override])
+        has_override = any(
+            [
+                preflop_override,
+                board_override,
+                flop_override,
+                turn_override,
+                river_override,
+                depth_override,
+            ]
+        )
 
         # Fix B: cache hit when overrides match the played line.
         # The LLM often echoes back the full played line as "overrides" when
@@ -4063,8 +3811,11 @@ class GeminiSessionManager:
             cached_spot = self._find_cached_spot(ctx, street, decision_index)
             if cached_spot and self._overrides_match_played_line(
                 cached_spot.get("params", {}),
-                preflop_override, board_override,
-                flop_override, turn_override, river_override,
+                preflop_override,
+                board_override,
+                flop_override,
+                turn_override,
+                river_override,
                 depth_override,
             ):
                 solution = self._find_cached_solution(ctx, street, decision_index)
@@ -4073,7 +3824,10 @@ class GeminiSessionManager:
                         f"[chat={chat_id}] Overrides match played line; using cached {street} solution"
                     )
                     result_text = self._format_solution(
-                        solution, position, hand, include_range=include_range,
+                        solution,
+                        position,
+                        hand,
+                        include_range=include_range,
                     )
                     if position and include_range:
                         self._queue_query_range_chart(chat_id, solution, position)
@@ -4084,16 +3838,25 @@ class GeminiSessionManager:
             solution = self._find_cached_solution(ctx, street, decision_index)
             if solution:
                 result_text = self._format_solution(
-                    solution, position, hand, include_range=include_range,
+                    solution,
+                    position,
+                    hand,
+                    include_range=include_range,
                 )
                 if position and include_range:
                     self._queue_query_range_chart(chat_id, solution, position)
                 return result_text
 
         # Build API params from context + overrides
-        params = self._build_query_params(ctx, street, board_override,
-                                          flop_override, turn_override, river_override,
-                                          preflop_override=preflop_override)
+        params = self._build_query_params(
+            ctx,
+            street,
+            board_override,
+            flop_override,
+            turn_override,
+            river_override,
+            preflop_override=preflop_override,
+        )
         if not params:
             return f"無法建構 {street} 的查詢參數。"
 
@@ -4102,8 +3865,14 @@ class GeminiSessionManager:
             params["depth"] = depth_override
 
         # Normalize any raise codes in override actions
-        params = self._normalize_override_actions(params, street, flop_override, turn_override, river_override,
-                                                  preflop_override=preflop_override)
+        params = self._normalize_override_actions(
+            params,
+            street,
+            flop_override,
+            turn_override,
+            river_override,
+            preflop_override=preflop_override,
+        )
 
         self._logger.debug(
             f"[chat={chat_id}] query_gto API params: {json.dumps(params, ensure_ascii=False)}"
@@ -4127,8 +3896,14 @@ class GeminiSessionManager:
             # self-correct (e.g. realize preflop length was wrong).
             debug_params = {
                 k: params.get(k)
-                for k in ("preflop_actions", "board", "flop_actions",
-                          "turn_actions", "river_actions", "depth")
+                for k in (
+                    "preflop_actions",
+                    "board",
+                    "flop_actions",
+                    "turn_actions",
+                    "river_actions",
+                    "depth",
+                )
                 if params.get(k) not in (None, "")
             }
             return (
@@ -4150,7 +3925,6 @@ class GeminiSessionManager:
                 pf = params.get("preflop_actions", "")
                 pf_parts = [p for p in pf.split("-") if p] if pf else []
                 if len(pf_parts) < 8:
-                    POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
                     try:
                         target_idx = POSITION_ORDER.index(position)
                     except ValueError:
@@ -4173,7 +3947,10 @@ class GeminiSessionManager:
                         return f"{street} 沒有 solver 數據（可能是無效的 board 或 actions 組合）。"
 
         result_text = self._format_solution(
-            solution, position, hand, include_range=include_range,
+            solution,
+            position,
+            hand,
+            include_range=include_range,
         )
 
         # A full-range request still needs its grid when ``hand`` is also
@@ -4183,8 +3960,9 @@ class GeminiSessionManager:
 
         return result_text
 
-    def _queue_query_range_chart(self, chat_id: int, solution: dict,
-                                 position: str) -> None:
+    def _queue_query_range_chart(
+        self, chat_id: int, solution: dict, position: str
+    ) -> None:
         """Queue the query_gto range grid for cached and freshly fetched nodes."""
         try:
             from range_image import generate_range_grid
@@ -4208,11 +3986,13 @@ class GeminiSessionManager:
                 f"[chat={chat_id}] Failed to render {position} range chart: {exc}"
             )
 
-    def _find_cached_solution(self, ctx: dict, street: str,
-                              decision_index: int | None = None) -> dict | None:
+    def _find_cached_solution(
+        self, ctx: dict, street: str, decision_index: int | None = None
+    ) -> dict | None:
         """Find a cached solution for a street and optional nth Hero decision."""
         matches = [
-            sol for spot, sol in zip(ctx["hero_spots"], ctx["solutions"])
+            sol
+            for spot, sol in zip(ctx["hero_spots"], ctx["solutions"])
             if spot["street"] == street and sol is not None
         ]
         if matches:
@@ -4220,11 +4000,13 @@ class GeminiSessionManager:
             return matches[index] if index < len(matches) else None
         return None
 
-    def _find_cached_spot(self, ctx: dict, street: str,
-                          decision_index: int | None = None) -> dict | None:
+    def _find_cached_spot(
+        self, ctx: dict, street: str, decision_index: int | None = None
+    ) -> dict | None:
         """Find a cached spot for a street and optional nth Hero decision."""
         matches = [
-            spot for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", []))
+            spot
+            for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", []))
             if spot.get("street") == street and sol is not None
         ]
         if matches:
@@ -4273,7 +4055,9 @@ class GeminiSessionManager:
                 return False
 
         if board_override is not None:
-            if (board_override or "").lower() != (cached_params.get("board", "") or "").lower():
+            if (board_override or "").lower() != (
+                cached_params.get("board", "") or ""
+            ).lower():
                 return False
 
         for key, ov in (
@@ -4288,12 +4072,16 @@ class GeminiSessionManager:
 
         return True
 
-    def _build_query_params(self, ctx: dict, street: str,
-                            board_override: str | None,
-                            flop_override: str | None,
-                            turn_override: str | None,
-                            river_override: str | None,
-                            preflop_override: str | None = None) -> dict | None:
+    def _build_query_params(
+        self,
+        ctx: dict,
+        street: str,
+        board_override: str | None,
+        flop_override: str | None,
+        turn_override: str | None,
+        river_override: str | None,
+        preflop_override: str | None = None,
+    ) -> dict | None:
         """Build API params for a query, using context + optional overrides."""
         states = ctx.get("street_states", {})
         base = states.get(street)
@@ -4345,18 +4133,32 @@ class GeminiSessionManager:
             stacks=stacks,
             preflop_actions=preflop_actions,
             board=board_override or base["board"],
-            flop_actions=flop_override if flop_override is not None else base["flop_actions"],
-            turn_actions=turn_override if turn_override is not None else base["turn_actions"],
-            river_actions=river_override if river_override is not None else base["river_actions"],
+            flop_actions=(
+                flop_override if flop_override is not None else base["flop_actions"]
+            ),
+            turn_actions=(
+                turn_override if turn_override is not None else base["turn_actions"]
+            ),
+            river_actions=(
+                river_override if river_override is not None else base["river_actions"]
+            ),
         )
 
-    def _normalize_override_actions(self, params: dict, street: str,
-                                     flop_override: str | None,
-                                     turn_override: str | None,
-                                     river_override: str | None,
-                                     preflop_override: str | None = None) -> dict:
+    def _normalize_override_actions(
+        self,
+        params: dict,
+        street: str,
+        flop_override: str | None,
+        turn_override: str | None,
+        river_override: str | None,
+        preflop_override: str | None = None,
+    ) -> dict:
         """Normalize raise codes in overridden action strings."""
-        from gto_api import get_next_actions, find_closest_action, find_closest_action_by_pot_pct
+        from gto_api import (
+            get_next_actions,
+            find_closest_action,
+            find_closest_action_by_pot_pct,
+        )
 
         # Normalize preflop override (walk through each position's action)
         if preflop_override:
@@ -4378,7 +4180,11 @@ class GeminiSessionManager:
                         avail = resp["next_actions"]["available_actions"]
                         if code == "AI":
                             allin_code = next(
-                                (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                                (
+                                    a["action"]["code"]
+                                    for a in avail
+                                    if a["action"].get("allin")
+                                ),
                                 code,
                             )
                             corrected.append(allin_code)
@@ -4432,7 +4238,11 @@ class GeminiSessionManager:
                         avail = resp["next_actions"]["available_actions"]
                         if code in ("AI", "RAI"):
                             allin_code = next(
-                                (a["action"]["code"] for a in avail if a["action"].get("allin")),
+                                (
+                                    a["action"]["code"]
+                                    for a in avail
+                                    if a["action"].get("allin")
+                                ),
                                 code,
                             )
                             corrected.append(allin_code)
@@ -4467,10 +4277,20 @@ class GeminiSessionManager:
 
         return params
 
-    def _format_solution(self, solution: dict, position: str | None,
-                         hand: str | None, *, include_range: bool = False) -> str:
+    def _format_solution(
+        self,
+        solution: dict,
+        position: str | None,
+        hand: str | None,
+        *,
+        include_range: bool = False,
+    ) -> str:
         """Format a spot-solution based on what was requested."""
-        from gto_formatter import format_action_summary, format_hand_detail, format_range_by_action
+        from gto_formatter import (
+            format_action_summary,
+            format_hand_detail,
+            format_range_by_action,
+        )
 
         parts = [format_action_summary(solution)]
 
@@ -4523,7 +4343,11 @@ class GeminiSessionManager:
             depth = ctx["depth"]
         elif effective_bb:
             is_cash = ctx.get("gametype", "").startswith("Cash")
-            depth = _nearest_cash_depth(effective_bb) if is_cash else _nearest_depth(effective_bb)
+            depth = (
+                _nearest_cash_depth(effective_bb)
+                if is_cash
+                else _nearest_depth(effective_bb)
+            )
         else:
             depth = ctx["depth"]
 
@@ -4541,11 +4365,13 @@ class GeminiSessionManager:
         if street != "preflop":
             params["board"] = board_override or base.get("board", "")
             params["flop_actions"] = (
-                flop_override if flop_override is not None
+                flop_override
+                if flop_override is not None
                 else base.get("flop_actions", "")
             )
             params["turn_actions"] = (
-                turn_override if turn_override is not None
+                turn_override
+                if turn_override is not None
                 else base.get("turn_actions", "")
             )
             params["river_actions"] = ""
@@ -4553,7 +4379,11 @@ class GeminiSessionManager:
         # Normalize raise codes (R2 → R2.1, AI → correct code)
         if preflop_override:
             params = self._normalize_override_actions(
-                params, street, flop_override, turn_override, None,
+                params,
+                street,
+                flop_override,
+                turn_override,
+                None,
                 preflop_override=preflop_override,
             )
 
@@ -4595,8 +4425,9 @@ class GeminiSessionManager:
             r"下注|加注|全下",
             ql,
         )
-        if (any(term in q for term in ("什麼情況", "什么情况", "何時", "何时"))
-                and ("mix" in ql or "混合" in q or len(set(action_terms)) >= 2)):
+        if any(term in q for term in ("什麼情況", "什么情况", "何時", "何时")) and (
+            "mix" in ql or "混合" in q or len(set(action_terms)) >= 2
+        ):
             return False
 
         hypothetical = re.search(r"如果|假設|假如|what\s*if|\bif\b", q, re.I)
@@ -4607,36 +4438,53 @@ class GeminiSessionManager:
             return True
 
         normalized = normalize_emoji_cards(q)
-        has_exact_card = bool(re.search(
-            r"(?:turn|river|轉牌|转牌|河牌)[^，,。；;]{0,18}"
-            r"(?<![A-Za-z0-9])[2-9TJQKA][cdhs](?![A-Za-z0-9])",
-            normalized,
-            re.I,
-        ))
-        has_hero_action = bool(re.search(
-            r"(?:我|hero|i\b)[^，,。；;]{0,18}"
-            r"(?:跟注|call|過牌|过牌|check)",
-            ql,
-            re.I,
-        ))
-        has_actor_bet = bool(re.search(
-            r"\b(?:utg(?:\+?[12])?|lj|hj|co|btn|sb|bb)\b"
-            r"[^，,。；;]{0,18}(?:下注|加注|bet|raise|all[- ]?in|全下)",
-            ql,
-            re.I,
-        ))
+        has_exact_card = bool(
+            re.search(
+                r"(?:turn|river|轉牌|转牌|河牌)[^，,。；;]{0,18}"
+                r"(?<![A-Za-z0-9])[2-9TJQKA][cdhs](?![A-Za-z0-9])",
+                normalized,
+                re.I,
+            )
+        )
+        has_hero_action = bool(
+            re.search(
+                r"(?:我|hero|i\b)[^，,。；;]{0,18}" r"(?:跟注|call|過牌|过牌|check)",
+                ql,
+                re.I,
+            )
+        )
+        has_actor_bet = bool(
+            re.search(
+                r"\b(?:utg(?:\+?[12])?|lj|hj|co|btn|sb|bb)\b"
+                r"[^，,。；;]{0,18}(?:下注|加注|bet|raise|all[- ]?in|全下)",
+                ql,
+                re.I,
+            )
+        )
         has_size = bool(
             re.search(r"\d{1,3}\s*%|\d+(?:\.\d+)?\s*bb", ql, re.I)
-            or any(token in q for token in (
-                "四分之一", "三分之一", "半池", "半個底池", "半个底池",
-                "三分之二", "四分之三", "滿池", "满池", "全池", "超池",
-            ))
+            or any(
+                token in q
+                for token in (
+                    "四分之一",
+                    "三分之一",
+                    "半池",
+                    "半個底池",
+                    "半个底池",
+                    "三分之二",
+                    "四分之三",
+                    "滿池",
+                    "满池",
+                    "全池",
+                    "超池",
+                )
+            )
             or bool(re.search(r"all[- ]?in|全下", ql, re.I))
         )
         return all((has_exact_card, has_hero_action, has_actor_bet, has_size))
 
     @staticmethod
-    def _extract_followups(text: str) -> tuple[str, list[str]]:
+    def extract_followups(text: str) -> tuple[str, list[str]]:
         """Strip FOLLOWUP: lines from response, return (clean_text, questions)."""
         followups: list[str] = []
         clean_lines: list[str] = []
@@ -4663,16 +4511,7 @@ class GeminiSessionManager:
     @staticmethod
     def _position_order(num_players: int) -> list[str]:
         """Return the preflop position order used by parser/analyzer."""
-        return {
-            9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-            5: ["HJ", "CO", "BTN", "SB", "BB"],
-            4: ["CO", "BTN", "SB", "BB"],
-            3: ["BTN", "SB", "BB"],
-            2: ["SB", "BB"],
-        }.get(num_players, [])
+        return list(POSITION_ORDERS.get(num_players, []))
 
     @staticmethod
     def _format_stack_list(stacks: list[Any]) -> str:
@@ -4716,7 +4555,9 @@ class GeminiSessionManager:
     @staticmethod
     def _find_preflop_solution(context: dict) -> tuple[dict | None, dict | None]:
         """Return the cached preflop spot + solution for no-hero range coaching."""
-        for spot, solution in zip(context.get("hero_spots", []), context.get("solutions", [])):
+        for spot, solution in zip(
+            context.get("hero_spots", []), context.get("solutions", [])
+        ):
             if spot and spot.get("street") == "preflop" and solution:
                 return spot, solution
         return None, None
@@ -4760,7 +4601,9 @@ class GeminiSessionManager:
                 combos = float(combos_by_action.get(code, 0))
                 if combos < 0.01:
                     continue
-                action_groups.setdefault(code, []).append((hand_name, float(freq), combos))
+                action_groups.setdefault(code, []).append(
+                    (hand_name, float(freq), combos)
+                )
 
         if not action_groups:
             return ""
@@ -4771,7 +4614,9 @@ class GeminiSessionManager:
         ):
             group.sort(key=lambda hand: -hand[2])
             total = sum(hand[2] for hand in group)
-            lines.append(f"- {_action_label(code, solution)}（{total:.0f} combos）: {_compress_range(group)}")
+            lines.append(
+                f"- {_action_label(code, solution)}（{total:.0f} combos）: {_compress_range(group)}"
+            )
         if any("~" in line for line in lines):
             lines.append("(~ = 該組已併入 >90% 高頻手牌，非 100% 純頻)")
         return "\n".join(lines)
@@ -4797,7 +4642,9 @@ class GeminiSessionManager:
         """
         hand = context.get("hand") or {}
         hero_pos = hand.get("hero_position") or context.get("hero_position", "Hero")
-        num_players = int(hand.get("players_at_table") or len(hand.get("player_stacks") or []) or 0)
+        num_players = int(
+            hand.get("players_at_table") or len(hand.get("player_stacks") or []) or 0
+        )
         pos_order = GeminiSessionManager._position_order(num_players)
 
         user_stacks = hand.get("player_stacks") or []
@@ -4823,19 +4670,29 @@ class GeminiSessionManager:
 
         spot, solution = GeminiSessionManager._find_preflop_solution(context)
         solver_pos = (spot or {}).get("solver_hero_pos", hero_pos)
-        action_mix = GeminiSessionManager._format_action_mix(solution) if solution else ""
-        nonfold_ranges = GeminiSessionManager._format_nonfold_ranges(solution, solver_pos) if solution else ""
+        action_mix = (
+            GeminiSessionManager._format_action_mix(solution) if solution else ""
+        )
+        nonfold_ranges = (
+            GeminiSessionManager._format_nonfold_ranges(solution, solver_pos)
+            if solution
+            else ""
+        )
 
         top_nonfold = ""
         if solution:
             nonfold_actions = [
-                a for a in solution.get("action_solutions", [])
+                a
+                for a in solution.get("action_solutions", [])
                 if a.get("action", {}).get("code") != "F"
             ]
             if nonfold_actions:
-                best = max(nonfold_actions, key=lambda a: float(a.get("total_frequency", 0)))
+                best = max(
+                    nonfold_actions, key=lambda a: float(a.get("total_frequency", 0))
+                )
                 code = best.get("action", {}).get("code", "")
                 from gto_formatter import _action_label
+
                 top_nonfold = (
                     f"主要可玩動作是 {_action_label(code, solution)}，"
                     f"總頻率 {float(best.get('total_frequency', 0)) * 100:.1f}%。"
@@ -4872,14 +4729,21 @@ class GeminiSessionManager:
         if action_mix:
             lines.extend(["", "📊 Solver 策略", action_mix])
         if top_nonfold:
-            lines.extend(["", f"重點：{top_nonfold}ICM 壓力下，這裡不是用一般 Chip EV 的寬 open，而是先保留能承受後位反擊的核心牌。"])
+            lines.extend(
+                [
+                    "",
+                    f"重點：{top_nonfold}ICM 壓力下，這裡不是用一般 Chip EV 的寬 open，而是先保留能承受後位反擊的核心牌。",
+                ]
+            )
         if nonfold_ranges:
             lines.extend(["", f"✅ {hero_pos} 可玩範圍", nonfold_ranges])
 
-        lines.extend([
-            "",
-            "實戰上可以這樣記：先照 solver 的主要 raise range 開局；像低對子、弱 Kxs/Qxs、弱 offsuit broadway 這類邊界牌，因為本次 solver stack 近似差異不小，不要把混頻數字當成絕對精準。"
-        ])
+        lines.extend(
+            [
+                "",
+                "實戰上可以這樣記：先照 solver 的主要 raise range 開局；像低對子、弱 Kxs/Qxs、弱 offsuit broadway 這類邊界牌，因為本次 solver stack 近似差異不小，不要把混頻數字當成絕對精準。",
+            ]
+        )
 
         if not solution and fallback_text:
             lines.extend(["", "Solver 原始摘要：", fallback_text])
@@ -4935,11 +4799,14 @@ class GeminiSessionManager:
                 break
             board = state["board"]
             acts = final.get(f"{street_name}_actions", "")
-            lines.append(f"- {street_name.capitalize()}: board={cards_to_emoji(board)} | actions={acts}")
+            lines.append(
+                f"- {street_name.capitalize()}: board={cards_to_emoji(board)} | actions={acts}"
+            )
 
         # Include range breakdown from cached solutions to prevent hallucination.
         # Gemini tends to fabricate range compositions instead of using tools.
         from gto_formatter import format_range_by_action
+
         hero_pos = ctx.get("hero_position", "")
         for spot, sol in zip(ctx.get("hero_spots", []), ctx.get("solutions", [])):
             if sol is None:

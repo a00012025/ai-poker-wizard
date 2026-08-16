@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -20,7 +19,6 @@ from typing import Iterator
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_token import TokenExpiredError
 from gto_credentials import (
     access_is_expired,

@@ -1,47 +1,21 @@
 #!/usr/bin/env python3
-"""Regression test suite for core analysis logic.
-
-Usage:
-    python scripts/regression_test.py          # Run all tests
-    python scripts/regression_test.py -v       # Verbose output
-    python scripts/regression_test.py -k chip  # Run tests matching "chip"
-
-Requires a valid GTO Wizard token and network access for API-backed cases.
-The test cases live in ``scripts/regression_tests/`` and remain executable
-through this compatibility entry point.
-
-Token source: API-backed cases run on the OWNER's DB-synced GTOW refresh token
-(``users.gto_refresh_token``), injected via ``GTOW_REFRESH_TOKEN`` before the
-run. This shares the owner's live GTOW session (the browser/extension keeps that
-row fresh), sharing the browser/extension session. Set ``GTOW_REFRESH_TOKEN``
-yourself to override; the bootstrap is a no-op then.
-"""
+"""Pytest compatibility entry point for the regression suite."""
 
 import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPTS_DIR.parent
-load_dotenv(REPO_ROOT / ".env")
+def main() -> int:
+    import pytest
 
-sys.path.insert(0, str(SCRIPTS_DIR))
-sys.path.insert(0, str(REPO_ROOT / "src"))
-sys.path.insert(0, str(REPO_ROOT))
+    args = sys.argv[1:] or ["scripts/regression_tests"]
+    os.chdir(REPO_ROOT)
+    return pytest.main(args)
 
-
-from gto_owner_token import bootstrap_owner_db_token  # noqa: E402
-
-bootstrap_owner_db_token()
-
-from regression_tests import load_all  # noqa: E402
-from regression_tests.harness import run_tests  # noqa: E402
-
-load_all()
 
 if __name__ == "__main__":
-    success = run_tests()
-    sys.exit(0 if success else 1)
+    raise SystemExit(main())

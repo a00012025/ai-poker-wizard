@@ -9,14 +9,13 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 # ──────────────────────────────────────────────────────────────────────────
 # coach_facts: grounded follow-up answers (P0 B/C/D/E + P1 F/G/H/I + verifier)
@@ -32,7 +31,6 @@ def _load_coach_ctx():
     return cf, hctx, hero, villain
 
 
-@test
 def test_coach_facts_class_groups():
     """coach_facts: class->combo-index grouping covers all 1326 and 169 classes."""
     import coach_facts as cf
@@ -44,7 +42,6 @@ def test_coach_facts_class_groups():
     assert_eq(len(groups["AKo"]), 12, "AKo has 12 combos")
 
 
-@test
 def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
     """H3817: in HJ-vs-BTN HU, bare postflop actions are written in action
     order. HJ is OOP, so ``2c b9 call / Kc b12 fold`` means Hero leads both
@@ -82,7 +79,6 @@ def test_h3817_text_hu_unlabelled_actions_follow_postflop_order():
     )
 
 
-@test
 def test_text_action_tokens_track_folds_across_streets():
     """Text action replay removes a folded seat before the next street."""
     import gemini_session as gs
@@ -105,7 +101,6 @@ def test_text_action_tokens_track_folds_across_streets():
     )
 
 
-@test
 def test_text_action_tokens_heads_up_bb_acts_first_postflop():
     """At a true two-player table, BB is OOP and acts before SB/BTN."""
     import gemini_session as gs
@@ -124,7 +119,6 @@ def test_text_action_tokens_heads_up_bb_acts_first_postflop():
     )
 
 
-@test
 def test_h3870_text_repairs_short_preflop_and_missing_flop_check():
     """H3870: source shorthand is authoritative when Flash drops a seat token
     and the leading flop check.  The BB hero must remain in the hand; otherwise
@@ -165,7 +159,6 @@ Jd all in fold"""
     )
 
 
-@test
 def test_h3874_text_repairs_explicit_suited_class_suffix():
     """H3874: an explicit ``kts`` literal must beat Flash's ``KTo`` drift."""
     import gemini_session as gs
@@ -184,7 +177,6 @@ def test_h3874_text_repairs_explicit_suited_class_suffix():
     assert_eq(hand["hero_hand"], "KTs")
 
 
-@test
 def test_h3874_full_range_query_keeps_hand_detail_and_queues_chart():
     """A range follow-up may include ``hand`` without losing range text/image."""
     from gemini_session import GeminiSessionManager
@@ -209,7 +201,6 @@ def test_h3874_full_range_query_keeps_hand_detail_and_queues_chart():
     assert_true(len(pending[0][0]) > 100, "queued chart is a real PNG")
 
 
-@test
 def test_coach_facts_extract_tokens():
     """coach_facts: extract_combo_tokens finds hands in Chinese prose, skips noise."""
     import coach_facts as cf
@@ -233,7 +224,6 @@ def test_coach_facts_extract_tokens():
                 "lowercase English 'at' not a hand")
 
 
-@test
 def test_expand_range_tokens():
     """coach_facts: compressed range notation expands to member classes so the
     initial-verdict whitelist covers interior members (Q3s in Q2s-Q4s)."""
@@ -250,7 +240,6 @@ def test_expand_range_tokens():
     assert_eq(cf._expand_range_tokens("下注 2-3 bb 都可以"), set())
 
 
-@test
 def test_initial_coaching_does_not_block_heuristic_combo_examples():
     """H3689: initial coaching no longer runs the coarse combo whitelist.
 
@@ -263,15 +252,16 @@ def test_initial_coaching_does_not_block_heuristic_combo_examples():
     from gemini_session import GeminiSessionManager as GSM
 
     manager = object.__new__(GSM)
-    # This unit test stubs the legacy narrator directly. Production defaults
-    # to OpenAI and must never silently fall back to this path.
-    manager.coach_narrator_provider = "gemini"
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
+    manager._logger = __import__("logging").getLogger("initial-coach-test")
+    manager.histories = {}
     draft = "Flop 上 JJ 很難讓比你好的牌（Kx、TT）棄牌，所以 check back 較好。"
 
-    async def fake_chat_with_tools(self, chat_id, user_text, **kwargs):
+    async def fake_narrator(self, prompt, system, usage_acc=None):
         return draft
 
-    manager._chat_with_tools = py_types.MethodType(fake_chat_with_tools, manager)
+    manager._call_openai_narrator = py_types.MethodType(fake_narrator, manager)
     result = asyncio.run(manager._verified_initial_coaching(
         1, "prompt", {"text_compact": "♠ BTN JJ | 40bb MTT"}, "H3689"))
 
@@ -280,7 +270,6 @@ def test_initial_coaching_does_not_block_heuristic_combo_examples():
     assert_not_in("本次 GTO 資料卡未驗證", result)
 
 
-@test
 def test_coach_facts_canonical_forms():
     """coach_facts: canonical_forms normalizes order + derives class from a combo."""
     import coach_facts as cf
@@ -289,7 +278,6 @@ def test_coach_facts_canonical_forms():
     assert_in("KT", cf.canonical_forms("TK"))  # rank order normalized
 
 
-@test
 def test_coach_facts_digest_helpers():
     """coach_facts: acting_position + category_action_table from a real node."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -301,7 +289,6 @@ def test_coach_facts_digest_helpers():
     assert_true(abs(sum(actions.values()) - 1.0) < 0.05, "per-category actions sum ~1")
 
 
-@test
 def test_coach_facts_rep_classes():
     """coach_facts: rep_classes_for_category returns in-range classes of that category."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -312,7 +299,6 @@ def test_coach_facts_rep_classes():
     assert_in(cls, cf._class_to_combo_indices(), "rep is a real 169 class")
 
 
-@test
 def test_coach_facts_fetch_why_action():
     """coach_facts: fetch_why_action builds grounded card with hero combo facts."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -323,7 +309,6 @@ def test_coach_facts_fetch_why_action():
     assert_true(any("%" in ln for ln in facts.lines), "card has numbers")
 
 
-@test
 def test_coach_facts_target_hand():
     """coach_facts: a named hand in the question overrides hero's hand."""
     import coach_facts as cf
@@ -333,7 +318,6 @@ def test_coach_facts_target_hand():
     assert_true(cf._target_hand_from_question(cf.Ctx("我這手牌算強嗎", {})) is None)
 
 
-@test
 def test_coach_facts_prefer_first_street():
     """coach_facts: why-action defaults to the first postflop street, not the river."""
     import coach_facts as cf
@@ -344,7 +328,6 @@ def test_coach_facts_prefer_first_street():
     assert_eq(cf._hero_spot_and_sol(ctx, None, prefer="last")[1]["game"]["board"], "TURN")
 
 
-@test
 def test_coach_facts_why_named_hand():
     """coach_facts: fetch_why_action answers about a named hand from the acting range."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -355,7 +338,6 @@ def test_coach_facts_why_named_hand():
     assert_true(any("solver 動作" in ln for ln in facts.lines), "shows action frequencies")
 
 
-@test
 def test_coach_facts_hero_specific_combo():
     """coach_facts: hero's SPECIFIC combo (AdKd) beats the normalized class (AKs).
 
@@ -370,7 +352,6 @@ def test_coach_facts_hero_specific_combo():
     assert_eq(cf._hero_hand(hc3), "QQ", "no raw hand -> ctx value")
 
 
-@test
 def test_coach_facts_why_action_labels_exact_combo_not_only_its_class():
     """Suit-specific strategy evidence names the combo and its 169 class."""
     import coach_facts as cf
@@ -386,7 +367,6 @@ def test_coach_facts_why_action_labels_exact_combo_not_only_its_class():
         assert_not_in(f"  {cf.gf.normalize_hand_name(raw_combo)}：", facts.render())
 
 
-@test
 def test_coach_facts_low_weight_node_sentinel():
     """coach_facts: a combo barely in range (off-strategy line) is not reported
     as '0% equity' — _hero_eq_vs_range returns None and the combo is low_weight."""
@@ -409,7 +389,6 @@ def test_coach_facts_low_weight_node_sentinel():
                 "degenerate node -> no misleading equity")
 
 
-@test
 def test_coach_facts_sizing_allows_size_numbers():
     """coach_facts: numeric audit must not flag legit pot-size %s in a sizing card."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -422,7 +401,6 @@ def test_coach_facts_sizing_allows_size_numbers():
             assert_in(int(m.group(1)), facts.numbers, f"{m.group(1)}% must be a fact number")
 
 
-@test
 def test_coach_facts_fetch_hand_strength():
     """coach_facts: fetch_hand_strength reports equity + percentile."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -432,7 +410,6 @@ def test_coach_facts_fetch_hand_strength():
     assert_true(len(facts.numbers) >= 1, "numbers captured for audit")
 
 
-@test
 def test_coach_facts_fetch_fold_equity():
     """coach_facts: fold-equity uses villain response node, all examples grounded."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -449,7 +426,6 @@ def test_coach_facts_fetch_fold_equity():
     )
 
 
-@test
 def test_coach_facts_zero_reach_exact_combo_does_not_inherit_class_actions():
     """A missing exact suit must not borrow its 169-class action mix."""
     import coach_facts as cf
@@ -484,7 +460,6 @@ def test_coach_facts_zero_reach_exact_combo_does_not_inherit_class_actions():
     assert_eq(aggregate["actions"]["F"], 0.833)
 
 
-@test
 def test_coach_facts_fetch_villain_range():
     """coach_facts: villain-range composes range composition + hero equity."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -499,7 +474,6 @@ def test_coach_facts_fetch_villain_range():
             assert_in(tok, facts.allowed_claims, f"{tok} must be grounded")
 
 
-@test
 def test_villain_range_ignores_wrong_decision_index_and_selects_facing_node():
     """A planner cannot relabel Hero's earlier node as villain's bet range."""
     import coach_facts as cf
@@ -540,7 +514,6 @@ def test_villain_range_ignores_wrong_decision_index_and_selects_facing_node():
     )
 
 
-@test
 def test_coach_facts_combo_parser_ignores_bare_labeled_percentile():
     """A narrator writing 'percentile 94' must not invent a 94 hand class."""
     import coach_facts as cf
@@ -554,7 +527,6 @@ def test_coach_facts_combo_parser_ignores_bare_labeled_percentile():
     assert_in("94", cf.extract_combo_tokens("94 應該 fold"))
 
 
-@test
 def test_coach_facts_verifier():
     """coach_facts: verifier passes grounded prose, flags ungrounded combos."""
     import coach_facts as cf
@@ -571,7 +543,6 @@ def test_coach_facts_verifier():
 
 # ── H3639: villain calling-range facing hero's (hypothetical) bet ──────────
 
-@test
 def test_coach_facts_hero_bet_size_from_question():
     """coach_facts: parse the hero bet size a follow-up posits (半池 → 0.5)."""
     import coach_facts as cf
@@ -583,7 +554,6 @@ def test_coach_facts_hero_bet_size_from_question():
                 "no size named → None")
 
 
-@test
 def test_coach_facts_deterministic_intent_reroutes_calling_range():
     """coach_facts: 'his calling range facing MY bet' → fold_equity, not villain_range."""
     import coach_facts as cf
@@ -597,7 +567,6 @@ def test_coach_facts_deterministic_intent_reroutes_calling_range():
     assert_true(cf._deterministic_intent("我這手牌多強？") is None)
 
 
-@test
 def test_coach_facts_closest_bet_code():
     """coach_facts: snap a requested pot ratio to a real bet code; off-tree → None."""
     import coach_facts as cf
@@ -614,7 +583,6 @@ def test_coach_facts_closest_bet_code():
     assert_true(cf._closest_bet_code(sol, 3.0) is None, "no bet within tolerance")
 
 
-@test
 def test_coach_facts_attach_chart_rejects_nonactor():
     """coach_facts: never chart a position that isn't the node's actor (blank grid)."""
     import coach_facts as cf
@@ -627,7 +595,6 @@ def test_coach_facts_attach_chart_rejects_nonactor():
     assert_eq(f2.meta.get("chart", {}).get("position"), "BB")
 
 
-@test
 def test_coach_facts_villain_calling_range_hypothetical_node():
     """coach_facts: hero checked the turn; 'calling range facing my half-pot bet'
     fetches the hypothetical hero-bet node (turn_actions X-R4.15), reads the
@@ -709,7 +676,6 @@ def test_coach_facts_villain_calling_range_hypothetical_node():
                 "villain chart attached at the response node")
 
 
-@test
 def test_coach_facts_verifier_board():
     """coach_facts: verifier whitelists board cards + hero hand + board pairs."""
     import coach_facts as cf
@@ -719,7 +685,6 @@ def test_coach_facts_verifier_board():
                 "board cards + hero combo allowed")
 
 
-@test
 def test_coach_facts_registry():
     """coach_facts: registry covers all P0/P1 intent labels."""
     import coach_facts as cf
@@ -729,7 +694,6 @@ def test_coach_facts_registry():
         assert_in(need, ids)
 
 
-@test
 def test_coach_facts_template():
     """coach_facts: deterministic template is fully grounded."""
     import coach_facts as cf
@@ -742,7 +706,6 @@ def test_coach_facts_template():
         assert_in(tok, facts.allowed_claims)
 
 
-@test
 def test_coach_facts_other_fallback():
     """coach_facts: answer_followup returns None for 'other' intent (caller falls back)."""
     import coach_facts as cf
@@ -754,7 +717,6 @@ def test_coach_facts_other_fallback():
         cf._set_intent_classifier(None)
 
 
-@test
 def test_coach_facts_golden_invented():
     """coach_facts golden: invented combos flagged unless grounded (KTo-bet case)."""
     import coach_facts as cf
@@ -773,7 +735,6 @@ def test_coach_facts_golden_invented():
     assert_true(cf.verify_claims(good, facts, board).ok, "category + grounded example passes")
 
 
-@test
 def test_coach_facts_golden_outs():
     """coach_facts golden: A3-vs-Q9 invented draw combos flagged."""
     import coach_facts as cf
@@ -783,7 +744,6 @@ def test_coach_facts_golden_outs():
     assert_true(not v.ok and "KJs" in v.violations, "invented draws flagged")
 
 
-@test
 def test_coach_facts_sizing():
     """coach_facts P1: fetch_sizing lists solver bet sizes + frequencies."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -792,7 +752,6 @@ def test_coach_facts_sizing():
     assert_true(any("%" in ln for ln in facts.lines), "sizes have freqs")
 
 
-@test
 def test_coach_facts_range_shift():
     """coach_facts P1: range_shift needs >=2 streets, degrades gracefully."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -801,7 +760,6 @@ def test_coach_facts_range_shift():
                 "single-street fixture -> None or valid range_shift")
 
 
-@test
 def test_coach_facts_hypothetical():
     """coach_facts P1: hypothetical maps requested size to on-tree, rejects off-tree."""
     cf, hctx, hero, villain = _load_coach_ctx()
@@ -811,7 +769,6 @@ def test_coach_facts_hypothetical():
     assert_true(far is None or far.note, "off-tree flagged")
 
 
-@test
 def test_coach_facts_future_turn_hypothetical_discovers_size_then_exact_strategy():
     """A generated one-street hypothetical must reach exact-combo strategy.
 
@@ -902,7 +859,6 @@ def test_coach_facts_future_turn_hypothetical_discovers_size_then_exact_strategy
     assert_in("棄牌 100%", rendered)
 
 
-@test
 def test_coach_facts_node_url():
     """coach_facts P1: node_url parses GTO Wizard link params."""
     import coach_facts as cf
@@ -913,7 +869,6 @@ def test_coach_facts_node_url():
     assert_eq(p["flop_actions"], "X-R1.4")
 
 
-@test
 def test_coach_facts_numeric_audit():
     """coach_facts P1: numeric audit flags grossly wrong percentages."""
     import coach_facts as cf
@@ -926,39 +881,39 @@ def test_coach_facts_numeric_audit():
     assert_true(not bad.ok and 35 in bad.number_violations, "gross-mismatch flagged")
 
 
-@test
 def test_session_routes_coach_facts():
     """gemini_session: follow-up routes through coach_facts when grounded."""
     import coach_facts as cf
     called = {}
 
-    def fake_answer_ex(ctx):
+    def fake_fetch(ctx, intent, **kwargs):
         called["q"] = ctx.question
-        return "GROUNDED_ANSWER", None
+        return cf.Facts(intent="why_action", title="t", lines=["GROUNDED_ANSWER"])
 
-    orig = cf.answer_followup_ex
-    cf.answer_followup_ex = fake_answer_ex
+    orig = cf.fetch_followup_facts
+    cf.fetch_followup_facts = fake_fetch
     try:
         from gemini_session import GeminiSessionManager
-        mgr = GeminiSessionManager()
-        mgr.hand_contexts[1] = {"hero_position": "CO", "hero_hand": "KsJh",
-                                "solutions": [{"x": 1}], "hero_spots": []}
-        out = mgr._try_coach_facts(1, "為什麼這手牌下注？")
-        assert_eq(out, "GROUNDED_ANSWER")
+        mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+        mgr.hand_contexts = {1: {"hero_position": "CO", "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}}
+        mgr.pending_images = {}
+        out = mgr._execute_query_coach_facts(1, "為什麼這手牌下注？", {"intent": "why_action"})
+        assert_in("GROUNDED_ANSWER", out)
         assert_in("下注", called["q"])
     finally:
-        cf.answer_followup_ex = orig
+        cf.fetch_followup_facts = orig
 
 
-@test
 def test_session_coach_facts_no_ctx():
-    """gemini_session: _try_coach_facts returns None without cached hand."""
+    """gemini_session: query_coach_facts fails honestly without cached hand."""
     from gemini_session import GeminiSessionManager
-    mgr = GeminiSessionManager()
-    assert_true(mgr._try_coach_facts(999, "為什麼下注") is None)
+    mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+    mgr.hand_contexts = {}
+    out = mgr._execute_query_coach_facts(999, "為什麼下注", {"intent": "why_action"})
+    assert_in("沒有已分析手牌", out)
 
 
-@test
 def test_coach_facts_live_smoke():
     """coach_facts live: narrated answer is grounded (skips without GEMINI_API_KEY)."""
     if not os.getenv("GEMINI_API_KEY"):
@@ -975,7 +930,6 @@ def test_coach_facts_live_smoke():
     assert_true(v.ok, f"live answer grounded (violations={v.violations})")
 
 
-@test
 def test_classify_ev_impact_preflop_uses_absolute_bb():
     """Preflop EV impact is judged in absolute bb (≤0.05bb = negligible)."""
     from gto_formatter import classify_ev_impact
@@ -988,7 +942,6 @@ def test_classify_ev_impact_preflop_uses_absolute_bb():
                 "preflop 0.20bb is not negligible")
 
 
-@test
 def test_classify_ev_impact_postflop_is_pot_relative():
     """Postflop the same bb loss is graded against the pot, not in absolute bb."""
     from gto_formatter import classify_ev_impact
@@ -1007,7 +960,6 @@ def test_classify_ev_impact_postflop_is_pot_relative():
     assert_true(not fb["negligible"], "no-pot fallback uses the bb threshold")
 
 
-@test
 def test_ev_loss_detail_preflop_negligible_high_freq_call():
     """H3510-style: SB 55 Call 97% vs all-in ~0.02bb apart → negligible mix.
 
@@ -1049,7 +1001,6 @@ def test_ev_loss_detail_preflop_negligible_high_freq_call():
     assert_true(d["pot_frac"] is None, "preflop carries no pot fraction")
 
 
-@test
 def test_format_ev_magnitude_splits_preflop_and_postflop():
     """Magnitude string is bare bb preflop, bb + %pot postflop."""
     from gto_formatter import format_ev_magnitude
@@ -1062,7 +1013,6 @@ def test_format_ev_magnitude_splits_preflop_and_postflop():
     assert_in("0.30bb", post, "postflop magnitude includes the bb figure")
 
 
-@test
 def test_ensure_hand_context_rehydrates_from_db_after_restart():
     """Follow-up after a bot restart rebuilds the lost in-memory hand context.
 
@@ -1101,6 +1051,7 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
     try:
         s = GeminiSessionManager.__new__(GeminiSessionManager)
         s.hand_contexts = {}
+        s.pending_images = {}
         s.last_hand_ids = {}
         s.db = _FakeDB()
         s._setup_user_token = lambda *a, **k: calls.append(
@@ -1136,7 +1087,6 @@ def test_ensure_hand_context_rehydrates_from_db_after_restart():
         analyze_hand.analyze_hand_full = orig
 
 
-@test
 def test_empty_parse_rehydrates_ambiguous_followup_after_restart():
     """A hand-like follow-up gets a second recovery chance after parse=null.
 
@@ -1152,6 +1102,7 @@ def test_empty_parse_rehydrates_ambiguous_followup_after_restart():
     s = GeminiSessionManager.__new__(GeminiSessionManager)
     s.hand_contexts = {}
     s.model = "test-model"
+    s.coach_narrator_model = "test-coach"
     s._logger = logging.getLogger("regression-rehydrate-after-empty-parse")
     calls = []
 
@@ -1187,7 +1138,6 @@ def test_empty_parse_rehydrates_ambiguous_followup_after_restart():
     assert_eq(calls, ["parse", "rehydrate", "followup"])
 
 
-@test
 def test_explicit_followup_bypasses_hand_parser_for_hand_like_question():
     """H3865: a generated button is follow-up intent, even if its text looks
     like a complete hand description (ATo + limp + all-in).
@@ -1202,6 +1152,7 @@ def test_explicit_followup_bypasses_hand_parser_for_hand_like_question():
     s = GeminiSessionManager.__new__(GeminiSessionManager)
     s.hand_contexts = {42: {"hand": {"effective_bb": 14}}}
     s.model = "test-model"
+    s.coach_narrator_model = "test-coach"
     s._logger = logging.getLogger("regression-h3865-explicit-followup")
     calls = []
 
@@ -1233,7 +1184,6 @@ def test_explicit_followup_bypasses_hand_parser_for_hand_like_question():
     assert_eq(calls, ["followup"])
 
 
-@test
 def test_ensure_hand_context_noop_without_token_or_db():
     """Rehydrate is best-effort: no token or no DB → leave context empty."""
     import asyncio as _asyncio
@@ -1262,7 +1212,6 @@ def test_ensure_hand_context_noop_without_token_or_db():
                 "no DB → returns False")
 
 
-@test
 def test_attach_chart_only_when_solution_and_position():
     """coach_facts._attach_chart records (solution, position) only for the ACTOR."""
     import coach_facts as cf
@@ -1280,7 +1229,6 @@ def test_attach_chart_only_when_solution_and_position():
     assert_true(f.meta["chart"]["solution"] is sol, "solution recorded")
 
 
-@test
 def test_coach_facts_fetchers_attach_chart_meta():
     """Range/strategy fetchers carry chart meta so the caller can draw the grid.
 
@@ -1311,7 +1259,6 @@ def test_coach_facts_fetchers_attach_chart_meta():
               "fold_equity charts the acting villain")
 
 
-@test
 def test_answer_followup_ex_returns_facts_with_chart():
     """answer_followup_ex returns (text, facts); answer_followup stays text-only."""
     import coach_facts as cf
@@ -1336,9 +1283,8 @@ def test_answer_followup_ex_returns_facts_with_chart():
         cf._set_intent_classifier(None)
 
 
-@test
 def test_session_queues_grounded_range_chart():
-    """_try_coach_facts queues a range grid when the grounded facts are chartable."""
+    """query_coach_facts queues a range grid when grounded facts are chartable."""
     import coach_facts as cf
     _, hctx, hero, _ = _load_coach_ctx()
     actor = hero["game"]["active_position"]
@@ -1346,18 +1292,20 @@ def test_session_queues_grounded_range_chart():
     facts = cf.Facts(intent="sizing", title="t", lines=["x"],
                      meta={"chart": {"solution": hero, "position": actor}})
 
-    def fake_ex(ctx):
-        return "GROUNDED", facts
+    def fake_ex(ctx, intent, **kwargs):
+        return facts
 
-    orig = cf.answer_followup_ex
-    cf.answer_followup_ex = fake_ex
+    orig = cf.fetch_followup_facts
+    cf.fetch_followup_facts = fake_ex
     try:
         from gemini_session import GeminiSessionManager
-        mgr = GeminiSessionManager()
-        mgr.hand_contexts[5] = {"hero_position": actor, "hero_hand": "KsJh",
-                                "solutions": [{"x": 1}], "hero_spots": []}
-        out = mgr._try_coach_facts(5, "下注尺寸要多大")
-        assert_eq(out, "GROUNDED", "grounded answer returned")
+        mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+        mgr.hand_contexts = {5: {"hero_position": actor, "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}}
+        mgr.pending_images = {}
+        mgr._logger = __import__("logging").getLogger("coach-facts-test")
+        out = mgr._execute_query_coach_facts(5, "下注尺寸要多大", {"intent": "sizing"})
+        assert_in("x", out, "grounded answer returned")
         pending = mgr.pending_images.get(5) or []
         assert_eq(len(pending), 1, "one range chart queued")
         img_bytes, caption = pending[0]
@@ -1365,37 +1313,36 @@ def test_session_queues_grounded_range_chart():
                     "queued a real PNG")
         assert_in("📊", caption, "chart caption present")
         assert_in(actor, caption, "caption names the charted position")
-        mgr._try_coach_facts(5, "同一個 node 再查一次")
+        mgr._execute_query_coach_facts(5, "同一個 node 再查一次", {"intent": "sizing"})
         assert_eq(len(mgr.pending_images.get(5) or []), 1,
                   "same actor/street/board chart is queued only once per reply")
     finally:
-        cf.answer_followup_ex = orig
+        cf.fetch_followup_facts = orig
 
 
-@test
 def test_session_no_chart_when_facts_not_chartable():
     """No chart queued when the grounded facts carry no chart meta."""
     import coach_facts as cf
 
-    def fake_ex(ctx):
-        return "ANSWER", cf.Facts(intent="hand_strength", title="t", lines=["x"])
+    def fake_ex(ctx, intent, **kwargs):
+        return cf.Facts(intent="hand_strength", title="t", lines=["ANSWER"])
 
-    orig = cf.answer_followup_ex
-    cf.answer_followup_ex = fake_ex
+    orig = cf.fetch_followup_facts
+    cf.fetch_followup_facts = fake_ex
     try:
         from gemini_session import GeminiSessionManager
-        mgr = GeminiSessionManager()
-        mgr.hand_contexts[6] = {"hero_position": "CO", "hero_hand": "KsJh",
-                                "solutions": [{"x": 1}], "hero_spots": []}
-        out = mgr._try_coach_facts(6, "我這手牌算強嗎")
-        assert_eq(out, "ANSWER")
+        mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+        mgr.hand_contexts = {6: {"hero_position": "CO", "hero_hand": "KsJh",
+                                "solutions": [{"x": 1}], "hero_spots": []}}
+        mgr.pending_images = {}
+        out = mgr._execute_query_coach_facts(6, "我這手牌算強嗎", {"intent": "hand_strength"})
+        assert_in("ANSWER", out)
         assert_true(not mgr.pending_images.get(6),
                     "hand_strength is not chartable → no image queued")
     finally:
-        cf.answer_followup_ex = orig
+        cf.fetch_followup_facts = orig
 
 
-@test
 def test_attach_node_records_street():
     """coach_facts._attach_node records the grounded street, skips empties."""
     import coach_facts as cf
@@ -1406,7 +1353,6 @@ def test_attach_node_records_street():
     assert_eq(f.meta["node_street"], "turn", "street recorded")
 
 
-@test
 def test_coach_facts_hero_intents_attach_node_street():
     """Hero-decision intents tag the street so the link can match the prose.
 
@@ -1423,7 +1369,6 @@ def test_coach_facts_hero_intents_attach_node_street():
                 "sizing tags the flop node")
 
 
-@test
 def test_build_node_url_for_street_targets_the_named_street():
     """build_node_url_for_street links to hero's decision on that street only.
 
@@ -1461,31 +1406,30 @@ def test_build_node_url_for_street_targets_the_named_street():
                 "no hero decision on a street -> None (caller falls back)")
 
 
-@test
 def test_session_sets_followup_node_street_from_facts():
-    """_try_coach_facts records facts.meta['node_street'] on the ctx for the link."""
+    """query_coach_facts records facts.meta['node_street'] on the ctx for the link."""
     import coach_facts as cf
 
-    def fake_ex(ctx):
-        return "ANS", cf.Facts(intent="why_action", title="t", lines=["x"],
-                               meta={"node_street": "turn"})
+    def fake_ex(ctx, intent, **kwargs):
+        return cf.Facts(intent="why_action", title="t", lines=["ANS"],
+                        meta={"node_street": "turn"})
 
-    orig = cf.answer_followup_ex
-    cf.answer_followup_ex = fake_ex
+    orig = cf.fetch_followup_facts
+    cf.fetch_followup_facts = fake_ex
     try:
         from gemini_session import GeminiSessionManager
-        mgr = GeminiSessionManager()
-        mgr.hand_contexts[8] = {"hero_position": "SB", "hero_hand": "Th9h",
-                                "solutions": [{"x": 1}], "hero_spots": []}
-        out = mgr._try_coach_facts(8, "我 turn 下注範圍應該長怎樣")
-        assert_eq(out, "ANS")
+        mgr = GeminiSessionManager.__new__(GeminiSessionManager)
+        mgr.hand_contexts = {8: {"hero_position": "SB", "hero_hand": "Th9h",
+                                "solutions": [{"x": 1}], "hero_spots": []}}
+        mgr.pending_images = {}
+        out = mgr._execute_query_coach_facts(8, "我 turn 下注範圍應該長怎樣", {"intent": "why_action"})
+        assert_in("ANS", out)
         assert_eq(mgr.hand_contexts[8].get("_followup_node_street"), "turn",
                   "node street recorded so the GTO link targets the turn node")
     finally:
-        cf.answer_followup_ex = orig
+        cf.fetch_followup_facts = orig
 
 
-@test
 def test_build_streets_sole_villain_overrides_position_mislabel():
     """Heads-up: the lone live opponent owns every opponent action (H3517).
 
@@ -1518,7 +1462,6 @@ def test_build_streets_sole_villain_overrides_position_mislabel():
     assert_true(turn[0].get("allin"), "all-in flag preserved")
 
 
-@test
 def test_build_streets_keeps_multiway_inference():
     """3-way: no sole villain → keep the existing per-row position inference."""
     from ocr.n8_parser import _build_streets
@@ -1538,7 +1481,6 @@ def test_build_streets_keeps_multiway_inference():
     assert_eq(poss[2], "CO", "hero action keeps hero position")
 
 
-@test
 def test_fix_folded_players_keeps_mislabeled_aggressor_not_orphan_call():
     """_fix_folded_players must not strip a 'folded' player's bet a call needs.
 
@@ -1562,7 +1504,6 @@ def test_fix_folded_players_keeps_mislabeled_aggressor_not_orphan_call():
     assert_eq(acts[0]["action"], "R4.5")
 
 
-@test
 def test_fix_folded_players_still_drops_passive_ghost():
     """Genuine ghost actions by a folded player are still removed."""
     from gemini_session import GeminiSessionManager
@@ -1582,7 +1523,6 @@ def test_fix_folded_players_still_drops_passive_ghost():
     assert_true("BB" in poss and "UTG+1" in poss, "real actions preserved")
 
 
-@test
 def test_flag_possible_ft_purple_asks_not_assumes():
     """Purple felt flags possible_ft (ask the user); it must not auto-set ICM/FT.
 
@@ -1608,7 +1548,6 @@ def test_flag_possible_ft_purple_asks_not_assumes():
     assert_true("possible_ft" not in icm, "explicit ICM not downgraded to a hint")
 
 
-@test
 def test_image_parse_prompt_purple_does_not_auto_ft():
     """The image-parse prompt must ask on purple, not auto-commit to ICM/FT."""
     from gemini_session import IMAGE_PARSE_PROMPT
@@ -1619,7 +1558,6 @@ def test_image_parse_prompt_purple_does_not_auto_ft():
                   "prompt no longer auto-sets ICM/FT from purple felt")
 
 
-@test
 def test_coach_facts_exact_combo_strategy_beats_169_class_average():
     """Suit-sensitive exact combo frequencies must not inherit the class average."""
     import coach_facts as cf
@@ -1652,7 +1590,6 @@ def test_coach_facts_exact_combo_strategy_beats_169_class_average():
     assert_eq(round(facts["actions"]["R4.3"], 2), 0.21)
 
 
-@test
 def test_coach_facts_same_street_selects_actual_later_allin_decision():
     """A flop back-jam question must not read Hero's earlier cbet node."""
     import coach_facts as cf
@@ -1679,7 +1616,6 @@ def test_coach_facts_same_street_selects_actual_later_allin_decision():
                 "invalid explicit node identity must not fall back to another decision")
 
 
-@test
 def test_coach_facts_facing_bet_labels_raise_not_bet():
     """R6.8 at a fold/call/raise node is 'raise to', never an opening bet."""
     import coach_facts as cf
@@ -1691,7 +1627,6 @@ def test_coach_facts_facing_bet_labels_raise_not_bet():
     assert_not_in("下注6.8", rendered)
 
 
-@test
 def test_query_gto_cached_decision_index_selects_nth_same_street_node():
     """query_gto cache lookup exposes strict same-street decision identity."""
     from gemini_session import GeminiSessionManager

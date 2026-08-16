@@ -1,8 +1,9 @@
 # Regression test layout
 
-`scripts/regression_test.py` remains the stable CLI entry point. It loads these
-modules in the order listed by `TEST_MODULES` in `__init__.py`, then executes the
-shared registry in `harness.py`.
+`scripts/regression_test.py` remains the stable CLI entry point. It delegates to
+pytest, which discovers plain `test_*` functions in this directory.
+The default suite is offline; run `pytest -m gtow` for checks that need live or
+prewarmed GTO Wizard solver data.
 
 Choose the module that owns the behavior under test:
 
@@ -19,9 +20,9 @@ Choose the module that owns the behavior under test:
 - `test_ledger.py` — ledger ingestion, fidelity, taxonomy, and scorecards
 - `test_live_flow.py` — live import, queue, review, and drill workflows
 
-Import `@test` and assertion helpers from `regression_tests.harness`. To add a
-new domain module, also append it to `TEST_MODULES`; module order is intentional
-because it preserves the historical test output order.
+Use plain pytest test functions (`def test_*`) and import assertion helpers from
+`regression_tests.harness` when useful. New `test_*.py` modules are discovered
+automatically.
 
 The existing commands are unchanged:
 

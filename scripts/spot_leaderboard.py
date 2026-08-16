@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import json
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -22,7 +21,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 from gtow_trainer_url import (CAT_POSITIONS, MTT_DEPTHS, DEPTH_BAND_DEPTHS,
                               PREFLOP_CATS, drill_url_for_spot)  # noqa: F401 — PREFLOP_CATS re-exported
 from action_bias import LOSSY_MIN_BB, dominant_action_bias

@@ -1,5 +1,5 @@
 # src/main_gemini.py
-"""Entry point using Gemini API (fast, no Claude CLI subprocess)."""
+"""Telegram entry point for Gemini parsing and GPT coaching."""
 import logging
 import os
 import sys
@@ -75,7 +75,6 @@ async def _weekly_scorecard_job(context):
             row = await conn.fetchrow(
                 "SELECT week, data_json FROM scorecards ORDER BY created_at DESC LIMIT 1")
         data = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else row["data_json"]
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         from scorecard import weekly_tg_payload
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         payload = weekly_tg_payload(row["week"], data)
@@ -203,7 +202,8 @@ def main():
     session_manager = GeminiSessionManager(db=db)
     bot = PokerWizardBot(token=bot_token, session_manager=session_manager, db=db)
 
-    print(f"Model: {session_manager.model}")
+    print(f"Parser: {session_manager.parse_model}; "
+          f"Coach: {session_manager.coach_narrator_model}")
     print("Starting Telegram Bot...")
     bot.run(post_init=post_init, post_shutdown=post_shutdown)
 

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Capture frozen GTOW Analyze fixtures for ledger regression tests."""
 import json
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gtow_analyze_api import iter_all_hands, hand_detail
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "gtow"

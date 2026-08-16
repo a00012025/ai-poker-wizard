@@ -13,7 +13,6 @@ from regression_tests.harness import (
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
 
 
@@ -57,7 +56,6 @@ class _FakeStore:
             return self.bundle
 
 
-@test
 def test_browser_access_is_used_until_actual_expiry_without_refreshing():
     """A browser access token remains authoritative until its real JWT exp."""
     from gto_credentials import CredentialProvider, SessionBundle
@@ -89,7 +87,6 @@ def test_browser_access_is_used_until_actual_expiry_without_refreshing():
     assert_eq(store.refresh_calls, 0)
 
 
-@test
 def test_expired_access_refreshes_once_with_one_stable_keypair():
     """Concurrent expired readers single-flight and persist one backend keypair."""
     from gto_credentials import CredentialProvider, SessionBundle
@@ -132,7 +129,6 @@ def test_expired_access_refreshes_once_with_one_stable_keypair():
     assert_eq(store.bundle.access_source, "backend_refresh")
 
 
-@test
 def test_unexpired_401_is_not_allowed_to_force_refresh():
     """A 401 cannot manufacture a second session while JWT exp is still valid."""
     from gto_credentials import access_is_expired
@@ -142,7 +138,6 @@ def test_unexpired_401_is_not_allowed_to_force_refresh():
     assert_true(access_is_expired(token, access_exp=5000, now=5000.0))
 
 
-@test
 def test_unexpired_401_can_reload_new_browser_access_without_refresh():
     """A replacement browser bundle recovers 401 without creating a session."""
     from gto_credentials import CredentialProvider, SessionBundle
@@ -167,7 +162,6 @@ def test_unexpired_401_can_reload_new_browser_access_without_refresh():
     assert_eq(store.refresh_calls, 0)
 
 
-@test
 def test_subprocess_auth_uses_user_identity_not_refresh_secret():
     """Live and ingest children receive GTOW_USER_ID, never a refresh token."""
     bot = (REPO_ROOT / "src/telegram_bot/bot.py").read_text()
@@ -187,7 +181,6 @@ def test_subprocess_auth_uses_user_identity_not_refresh_secret():
     assert_not_in('"GTOW_REFRESH_TOKEN":', pipeline_body)
 
 
-@test
 def test_session_bundle_migration_is_private_and_single_flight():
     """The DB contract stores the bundle privately and serializes refreshes."""
     migration = (

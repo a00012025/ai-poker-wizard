@@ -27,7 +27,6 @@ import traceback
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ocr.calibration import (  # noqa: E402
     expected_calibration_error,

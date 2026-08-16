@@ -27,7 +27,6 @@ import traceback
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hh_parser import parse_hand, _split_hands  # noqa: E402
 
 HAND_ID_RE = re.compile(r"#(TM\d+)")

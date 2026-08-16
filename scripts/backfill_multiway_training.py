@@ -23,7 +23,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 
 from gto_owner_token import bootstrap_owner_db_token
 from live_flow import training_hand_for_postflop

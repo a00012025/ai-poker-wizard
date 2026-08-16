@@ -9,13 +9,10 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
 
 # ── HH Parser Tests ──
@@ -83,7 +80,6 @@ e1f388aa: folds
 Total pot 1,520 | Rake 0"""
 
 
-@test
 def test_hh_parser_preflop_basic():
     """HH Parser: parses preflop-only hand correctly."""
     from hh_parser import parse_hand
@@ -99,7 +95,6 @@ def test_hh_parser_preflop_basic():
     assert_true("streets" not in result or len(result.get("streets", [])) == 0)
 
 
-@test
 def test_hh_parser_fold_excluded():
     """HH Parser: hero fold excluded by default."""
     from hh_parser import parse_hand
@@ -107,7 +102,6 @@ def test_hh_parser_fold_excluded():
     assert_true(result is None, "fold hand should be excluded")
 
 
-@test
 def test_hh_parser_fold_included():
     """HH Parser: hero fold included with include_folds=True."""
     from hh_parser import parse_hand
@@ -120,7 +114,6 @@ def test_hh_parser_fold_included():
     assert_eq(parts[1], "F", "Hero HJ folds")
 
 
-@test
 def test_hh_parser_postflop_streets():
     """HH Parser: postflop actions parsed from fold hand (other players)."""
     from hh_parser import parse_hand
@@ -170,7 +163,6 @@ Uncalled bet (9,760) returned to Hero
 Total pot 1,120 | Rake 0"""
 
 
-@test
 def test_hh_parser_effective_stack_min():
     """HH Parser: effective_bb is min of hero and opponent stacks in pot."""
     from hh_parser import parse_hand
@@ -185,7 +177,6 @@ def test_hh_parser_effective_stack_min():
                 f"effective_bb should be ~10, got {result['effective_bb']}")
 
 
-@test
 def test_hh_parser_subtracts_ante():
     """HH Parser: ante is deducted from chip counts so stacks reflect the
     post-ante state going into the betting round (same convention as the
@@ -240,7 +231,6 @@ bravo: folds
 Total pot 530 | Rake 0"""
 
 
-@test
 def test_hh_parser_partial_ante_allin():
     """HH Parser: short stack that all-in'd on the ante gets 0 post-ante chips;
     everyone else gets the full header ante subtracted."""
@@ -253,7 +243,6 @@ def test_hh_parser_partial_ante_allin():
     assert_true(19.9 in stacks, f"alpha not at 19.9bb post-ante: {stacks}")
 
 
-@test
 def test_card_split_no_hand_leakage():
     """A hand_id appearing in train must not appear in val or test."""
     from ocr.classifier.split import build_split
@@ -275,7 +264,6 @@ def test_card_split_no_hand_leakage():
                 f"test frac off: {len(test_ids)/total}")
 
 
-@test
 def test_card_split_tournament_balanced():
     """Every tournament with >=10 hands appears in all three splits."""
     import json
@@ -302,7 +290,6 @@ def test_card_split_tournament_balanced():
 
 # ── 169 Hand Index Tests ──
 
-@test
 def test_169_hand_index_count():
     """169 Index: generates exactly 169 unique hand names."""
     from hh_deviation_check import HANDS_169, HAND_TO_169
@@ -310,14 +297,12 @@ def test_169_hand_index_count():
     assert_eq(len(HAND_TO_169), 169)
 
 
-@test
 def test_169_hand_index_ascii_sorted():
     """169 Index: hand names are sorted by ASCII comparison."""
     from hh_deviation_check import HANDS_169
     assert_eq(HANDS_169, sorted(HANDS_169))
 
 
-@test
 def test_169_hand_index_premiums():
     """169 Index: premium hands map to correct indices."""
     from hh_deviation_check import HAND_TO_169
@@ -329,7 +314,6 @@ def test_169_hand_index_premiums():
                 "AA index should be less than KK (A < K in ASCII)")
 
 
-@test
 def test_169_hand_index_offsuit_before_suited():
     """169 Index: offsuit comes before suited for same ranks (o < s in ASCII)."""
     from hh_deviation_check import HAND_TO_169
@@ -340,7 +324,6 @@ def test_169_hand_index_offsuit_before_suited():
 
 # ── Preflop 8-max Conversion Tests ──
 
-@test
 def test_convert_preflop_8max_6p():
     """8max convert: 6-player prepends 2 folds."""
     from hh_deviation_check import _convert_preflop_to_8max
@@ -348,7 +331,6 @@ def test_convert_preflop_8max_6p():
     assert_eq(result, "F-F-R2-F-F-F-F-C")
 
 
-@test
 def test_convert_preflop_8max_8p():
     """8max convert: 8-player unchanged."""
     from hh_deviation_check import _convert_preflop_to_8max
@@ -358,7 +340,6 @@ def test_convert_preflop_8max_8p():
 
 # ── Deviation Report Format Tests ──
 
-@test
 def test_deviation_report_no_deviations():
     """Report: no deviations produces clean message."""
     from hh_deviation_report import format_deviation_report
@@ -378,7 +359,6 @@ def test_deviation_report_no_deviations():
     assert_not_in("嚴重", report)
 
 
-@test
 def test_deviation_report_severe():
     """Report: severe deviation (0% GTO) categorized correctly."""
     from hh_deviation_report import format_deviation_report
@@ -400,7 +380,6 @@ def test_deviation_report_severe():
     assert_in("Fold", report)
 
 
-@test
 def test_deviation_report_mixed_severity():
     """Report: multiple severity levels categorized separately."""
     from hh_deviation_report import format_deviation_report
@@ -436,7 +415,6 @@ def test_deviation_report_mixed_severity():
 
 # ── HH Deviation Check E2E (API) ──
 
-@test
 def test_hh_check_hand_preflop():
     """HH Check: check_hand returns deviations for known bad play."""
     from hh_deviation_check import check_hand
@@ -457,7 +435,6 @@ def test_hh_check_hand_preflop():
                 f"86o call should be ~0% GTO, got {devs[0]['hero_freq']:.1%}")
 
 
-@test
 def test_hh_check_hand_correct_play():
     """HH Check: check_hand shows high frequency for correct play."""
     from hh_deviation_check import check_hand
@@ -477,7 +454,6 @@ def test_hh_check_hand_correct_play():
                 f"AKs open should be >90% GTO, got {devs[0]['hero_freq']:.1%}")
 
 
-@test
 def test_hh_check_hand_second_decision_queries_after_intervening_fold():
     """BTN's squeeze response must be queried after CO folds, not at CO's node."""
     import hh_deviation_check as hdc
@@ -525,7 +501,6 @@ def test_hh_check_hand_second_decision_queries_after_intervening_fold():
     )
 
 
-@test
 def test_hh_check_hand_second_decision_detects_earlier_seat_fourbet():
     """UTG's continuation 4-bet must create LJ's second decision node."""
     import hh_deviation_check as hdc
@@ -574,7 +549,6 @@ def test_hh_check_hand_second_decision_detects_earlier_seat_fourbet():
     assert_eq(devs[1]["approximation"], "cold_callers_folded_hu")
 
 
-@test
 def test_deviation_report_low_ev_shown():
     """Report: low EV deviations are still shown (no EV filter)."""
     from hh_deviation_report import format_deviation_report
@@ -596,7 +570,6 @@ def test_deviation_report_low_ev_shown():
     assert_in("93s", report)
 
 
-@test
 def test_deviation_report_tiny_ev_not_filtered():
     """Report: very low EV hands (like K5o EV=0.01bb) still show deviations."""
     from hh_deviation_report import format_deviation_report
@@ -623,7 +596,6 @@ def test_deviation_report_tiny_ev_not_filtered():
     assert_in("Call", report)
 
 
-@test
 def test_deviation_report_severe_category():
     """Report: 0% freq deviations appear in severe category."""
     from hh_deviation_report import format_deviation_report
@@ -643,7 +615,6 @@ def test_deviation_report_severe_category():
     assert_in("嚴重偏差", report)
 
 
-@test
 def test_deviation_report_format_structure():
     """Report: new format has street name, 建議 on new line, clean numbers."""
     from hh_deviation_report import format_deviation_report
@@ -670,7 +641,6 @@ def test_deviation_report_format_structure():
     assert_not_in("→ 應", report)
 
 
-@test
 def test_check_hand_includes_ev():
     """HH Check: check_hand returns hero_ev in deviation dicts."""
     from hh_deviation_check import check_hand
@@ -693,7 +663,6 @@ def test_check_hand_includes_ev():
                     f"AKs open EV should be positive, got {devs[0]['hero_ev']}")
 
 
-@test
 def test_hh_e2e_parse_check_report():
     """HH E2E: parse hand → check deviations → format report."""
     from hh_parser import parse_hand
@@ -728,7 +697,6 @@ def test_hh_e2e_parse_check_report():
 
 # ── Combo index + postflop suit-specific tests ──
 
-@test
 def test_combo_index_for_hand():
     """Combo index: combo_index_for_hand maps specific combos to correct 1326 index."""
     from gto_formatter import combo_index_for_hand as _combo_index_for_hand
@@ -756,7 +724,6 @@ def test_combo_index_for_hand():
     assert_eq(_combo_index_for_hand("AhAh"), None, "same card should return None")
 
 
-@test
 def test_postflop_combo_specific_lookup():
     """HH Check: postflop uses exact combo (Ah6h) not aggregated A6s on flush-draw board."""
     from hh_deviation_check import check_hand
@@ -805,7 +772,6 @@ def test_postflop_combo_specific_lookup():
 
 # ── Table size inference + padding tests ──
 
-@test
 def test_num_players_inferred_from_preflop():
     """Table size: 6-player with players_at_table=6 pads correctly."""
     from analyze_hand import analyze_hand_full
@@ -826,7 +792,6 @@ def test_num_players_inferred_from_preflop():
     assert_true("找不到 BB" not in text, "Should find BB preflop data with 6-player padding")
 
 
-@test
 def test_multiway_preflop_default_8max():
     """Table size: incomplete preflop actions default to 8-max for MTTGeneral."""
     from analyze_hand import analyze_hand_full
@@ -843,7 +808,6 @@ def test_multiway_preflop_default_8max():
     assert_true("HJ" not in text, "Should NOT map raiser to HJ (wrong 6-max padding)")
 
 
-@test
 def test_num_players_8p_no_padding():
     """Table size: 8-player hand needs no padding."""
     from analyze_hand import analyze_hand_full
@@ -860,7 +824,6 @@ def test_num_players_8p_no_padding():
     assert_true("找不到 BB" not in text, "Should find BB preflop data for 8-player")
 
 
-@test
 def test_num_players_from_players_at_table():
     """Table size: players_at_table field takes priority over preflop count."""
     from analyze_hand import analyze_hand_full
@@ -878,7 +841,6 @@ def test_num_players_from_players_at_table():
     assert_true("找不到 BB" not in text, "Should find BB data with players_at_table=6")
 
 
-@test
 def test_num_players_field_pads_correctly():
     """Table size: num_players field (from hh_parser) triggers correct padding."""
     from analyze_hand import analyze_hand_full
@@ -901,7 +863,6 @@ def test_num_players_field_pads_correctly():
     assert_not_in("64.2%", text)
 
 
-@test
 def test_postflop_allin_action_matching():
     """Action matching: near-all-in bet matches RAI, not Call."""
     from gto_api import find_closest_action_postflop
@@ -917,7 +878,6 @@ def test_postflop_allin_action_matching():
     assert_eq(result, "RAI")
 
 
-@test
 def test_postflop_pct_bet_still_detected():
     """Action matching: percentage-based bet still detected when far from all-in."""
     from gto_api import find_closest_action_postflop
@@ -934,7 +894,6 @@ def test_postflop_pct_bet_still_detected():
     assert_eq(result, "R6.6")
 
 
-@test
 def test_find_action_by_pot_pct_maps_real_50pct_to_solver_61pct():
     """Action matching: when solver's normalized preflop inflates the pot
     (e.g. 35bb MTT where user's R2 becomes R2.2), a real 50%-pot river
@@ -978,7 +937,6 @@ def test_find_action_by_pot_pct_maps_real_50pct_to_solver_61pct():
               f"bet_size=50 (interpreted as 50% pot) should match R6 (61%); got {result}")
 
 
-@test
 def test_find_closest_action_by_explicit_pot_fraction():
     """An explicit live ``25%``/``50%`` matches GTOW's nearest
     ``betsize_by_pot`` branch without requiring a reconstructed BB pot."""
@@ -1000,7 +958,6 @@ def test_find_closest_action_by_explicit_pot_fraction():
     assert_eq(find_closest_action_by_pot_fraction(available, 0.50), "R4.8")
 
 
-@test
 def test_unsized_preflop_raise_uses_only_unambiguous_solver_branch():
     """A bare preflop ``R`` can advance only when GTOW offers exactly one
     non-all-in raise; multiple raise sizes remain unresolved."""
@@ -1055,7 +1012,6 @@ def test_unsized_preflop_raise_uses_only_unambiguous_solver_branch():
         hdc.get_next_actions = old_hdc
 
 
-@test
 def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
     """Live grading must advance a villain's 25%-pot action through the
     nearest GTOW branch even when the action JSON has no absolute BB size."""
@@ -1112,7 +1068,6 @@ def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
     ), solution_calls)
 
 
-@test
 def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
     """When hero's bb amount equals an available betsize exactly, return it
     even if pot-pct conversion would tie at a midpoint.
@@ -1147,7 +1102,6 @@ def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
     assert_eq(_find_action_by_pot_pct(available, 1.3, 2.0), "R2")
 
 
-@test
 def test_find_action_by_pot_pct_dead_money_pot_ignores_exact_betsize():
     """In a multiway dead-money pot the exact-betsize shortcut must NOT fire.
 

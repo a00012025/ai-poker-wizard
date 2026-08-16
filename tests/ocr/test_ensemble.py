@@ -7,12 +7,9 @@ empty label, force the caller to fall back to Gemini or abstain.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr.classifier.ensemble import predict_with_ensemble
 

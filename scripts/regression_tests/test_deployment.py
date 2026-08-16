@@ -5,12 +5,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .harness import SCRIPTS_DIR, assert_eq, assert_in, assert_true, test
+from .harness import SCRIPTS_DIR, assert_eq, assert_in, assert_true
 
 
-@test
 def test_deploy_resolves_supabase_shim_companion_and_rejects_version_drift():
     """Deploys must not depend on a manually exported Supabase binary path.
+
+import pytest
+
+pytestmark = pytest.mark.integration
 
     Regression for the 2026-07-13 production deploy: the `supabase` shim was
     installed in ~/.local/bin while `supabase-go` lived in
