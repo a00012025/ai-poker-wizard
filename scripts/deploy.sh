@@ -40,6 +40,11 @@ supabase db push
 # a mixed-schema training focus.
 python scripts/backfill_spots.py
 
+# Canonicalize every historical/open drill row after taxonomy migrations.
+# The command is transactional and refuses to commit if any visible source
+# decision cannot be resolved, so stale queue data never survives a deploy.
+python scripts/audit_queue_granularity.py --fix
+
 # Token 同步是本版 Bot 公開功能；缺少 secret 時禁止部署半套版本。
 : "${GTOW_SYNC_PEPPER:?GTOW_SYNC_PEPPER 未設定，停止部署}"
 if (( ${#GTOW_SYNC_PEPPER} < 32 )); then

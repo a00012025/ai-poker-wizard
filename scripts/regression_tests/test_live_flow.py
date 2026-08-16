@@ -2115,6 +2115,13 @@ def test_enqueue_live_candidates_promotes_severe_post_clear_error():
             raise AssertionError(sql)
 
         async def fetchrow(self, sql, *args):
+            if "FROM ledger_decisions d" in sql:
+                return {
+                    "gtow_hand_id": args[0], "street": args[1],
+                    "decision_idx": args[2], "spot_leaf": "UTG_RFI",
+                    "spot_category": "RFI", "eff_stack": "short",
+                    "taken_code": "F", "best_code": "R",
+                }
             if "FROM ledger_decisions" in sql:
                 self.evidence_since = args[1]
                 return {"n": 1, "total_ev": 1.2, "max_ev": 1.2}
@@ -2749,7 +2756,8 @@ def test_trainer_refresh_merges_pending_scope_collision():
     async def fake_normalize(_conn, entries):
         return entries
 
-    async def fake_rebuild(_conn, _entries):
+    async def fake_rebuild(_conn, _entries, depths=None):
+        assert_eq(depths, list(qf.depths_for_scope("all")))
         return ("https://trainer?depth_list="
                 "10.125%2C12.125%2C14.125%2C17.125%2C20.125")
 
@@ -5005,7 +5013,8 @@ def test_remove_source_hand_recomputes_or_clears_open_rows():
     rebuilt_calls = []
     orig_rebuild = qf.queue_drill_url_from_sources
 
-    async def fake_rebuild(_conn, kept):
+    async def fake_rebuild(_conn, kept, depths=None):
+        assert_eq(depths, list(qf.depths_for_scope("all")))
         rebuilt_calls.append(list(kept))
         return "https://rebuilt.example/drill" if kept else None
 
@@ -5021,15 +5030,18 @@ def test_remove_source_hand_recomputes_or_clears_open_rows():
             return [
                 {"id": 1, "kind": "drill", "added_by": "auto",
                  "drill_url": "https://old.example/drill",
+                 "depth_scope": "all",
                  "source_hands": json.dumps([
                      {"hand_id": "old-hand", "ev_loss_bb": 0.25},
                      {"hand_id": "keep-hand", "ev_loss_bb": 0.35},
                  ])},
                 {"id": 2, "kind": "drill", "added_by": "live",
                  "drill_url": "https://old-empty.example/drill",
+                 "depth_scope": "all",
                  "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.4}]},
                 {"id": 3, "kind": "drill", "added_by": "manual",
                  "drill_url": "https://manual.example/drill",
+                 "depth_scope": "all",
                  "source_hands": [{"hand_id": "old-hand", "ev_loss_bb": 0.7}]},
             ]
 

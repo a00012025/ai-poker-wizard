@@ -75,6 +75,7 @@ WHERE source='online' AND {_IN_SESSION}
 # Descriptive top-N (NO queue min-N gate — a session digest, not the auto-scan).
 _TOP_SPOTS_SQL = f"""
 SELECT spot_leaf, spot_category,
+       {qf._PRESCRIPTION_SCOPE_SQL} prescription_scope,
        count(*) n, sum(ev_loss_bb) total_ev, avg(ev_loss_bb) avg_ev,
        mode() WITHIN GROUP (ORDER BY hero_cat)    hero_cat,
        mode() WITHIN GROUP (ORDER BY villain_cat) villain_cat,
@@ -84,10 +85,11 @@ SELECT spot_leaf, spot_category,
            'hand_id', gtow_hand_id, 'street', street,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
            'taken_code', taken_code, 'best_code', best_code,
+           'eff_stack', eff_stack,
            'src', source) ORDER BY played_at) source_hands
 FROM ledger_decisions
 WHERE {qf._HONEST} AND ev_loss_bb >= {LOSSY_MIN_BB} AND {_IN_SESSION}
-GROUP BY spot_leaf, spot_category
+GROUP BY spot_leaf, spot_category, {qf._PRESCRIPTION_SCOPE_SQL}
 ORDER BY sum(ev_loss_bb) DESC
 LIMIT {TOP_SPOTS}
 """
@@ -189,7 +191,11 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
         row = dict(r)
         entries = qf._as_list(row["source_hands"])
         bias = qf.dominant_action_bias(entries)
-        url = await qf.queue_drill_url_from_sources(conn, entries, depths=None)
+        # Broad preflop shortcuts can span all depths. Exact/custom Trainer
+        # spots are grouped by stack band in SQL so their evidence matches the
+        # representative source URL.
+        url = await qf.queue_drill_url_from_sources(
+            conn, entries, depths=qf.depths_for_scope(row["prescription_scope"]))
         desc = drill_desc(row, bias)
         if await _entries_are_all_real_hu(conn, entries):
             desc = _mark_hu_pot(desc)

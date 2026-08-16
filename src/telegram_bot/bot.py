@@ -2465,10 +2465,16 @@ class PokerWizardBot:
                         )
                         return
                     if not item["drill_url"]:
-                        from queue_feed import _as_list, queue_drill_url_from_sources
+                        from queue_feed import (
+                            _as_list,
+                            depths_for_scope,
+                            queue_drill_url_from_sources,
+                        )
 
                         rebuilt_url = await queue_drill_url_from_sources(
-                            conn, _as_list(item["source_hands"])
+                            conn,
+                            _as_list(item["source_hands"]),
+                            depths=depths_for_scope(item["depth_scope"]),
                         )
                         if rebuilt_url:
                             item = await conn.fetchrow(
@@ -3000,7 +3006,12 @@ class PokerWizardBot:
         if not dec:
             await query.answer("找不到這個決策。")
             return
-        from queue_feed import manual_drill_item, enqueue, queue_drill_url_from_sources
+        from queue_feed import (
+            depths_for_scope,
+            enqueue,
+            manual_drill_item,
+            queue_drill_url_from_sources,
+        )
         from html import escape as _esc
 
         async with self.db.pool.acquire() as conn:
@@ -3014,6 +3025,7 @@ class PokerWizardBot:
                         "src": "manual",
                     }
                 ],
+                depths=depths_for_scope(dec["eff_stack"] or "all"),
             )
             item = manual_drill_item(dict(dec), drill_url=url)
             await enqueue(conn, [item])

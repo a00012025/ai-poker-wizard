@@ -29,6 +29,7 @@ from live_flow import training_hand_for_postflop
 from queue_feed import (
     _as_list,
     _source_decisions,
+    depths_for_scope,
     normalize_source_entries,
     queue_drill_url_from_sources,
 )
@@ -177,7 +178,11 @@ async def backfill(conn, *, dry_run: bool = True) -> dict:
                 )
                 continue
             representative = decisions[-1]
-            rebuilt = await queue_drill_url_from_sources(conn, normalized)
+            rebuilt = await queue_drill_url_from_sources(
+                conn,
+                normalized,
+                depths=depths_for_scope(queue["depth_scope"]),
+            )
             scope = drill_depth_scope(
                 {
                     "drill_url": rebuilt,
