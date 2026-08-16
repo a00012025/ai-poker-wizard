@@ -162,6 +162,7 @@ def _resolve_one_raise(
     actual_pot: float = 0.0,
     target_pct: float | None = None,
     target_pct_explicit: bool = False,
+    force_allin: bool = False,
     stacks: str = "",
 ) -> str:
     """Call next_actions at the current node and snap target_size to R* code.
@@ -191,6 +192,11 @@ def _resolve_one_raise(
         raise ValueError(
             f"no raise options at this node (target={target_size}) — off-tree"
         )
+    if force_allin:
+        code = next((a["action"]["code"] for a in raises
+                     if a["action"].get("allin")), None)
+        if code:
+            return code
     if target_pct_explicit and target_pct is not None:
         code = find_closest_action_by_pot_fraction(raises, target_pct)
     elif actual_pot > 0:
@@ -331,8 +337,9 @@ def _resolve_street_codes(
         # plus ``size``.  It is semantically the same wager as ``R{size}`` and
         # must be resolved through GTOW before URL validation; emitting raw B
         # makes GTOW discard the entire custom history.
-        if action.startswith("R") or action == "B":
-            target = float(act.get("size") or action[1:] or 0)
+        if action.startswith(("R", "AI")) or action == "B":
+            raw_size = action[2:] if action.startswith("AI") else action[1:]
+            target = float(act.get("size") or raw_size or 0)
             actor_prev = street_investments.get(pos, 0.0)
             call_needed = max(0.0, outstanding_bet - actor_prev)
             target_pct = act.get("pot_fraction")
@@ -355,6 +362,7 @@ def _resolve_street_codes(
                 actual_pot=actual_pot,
                 target_pct=target_pct,
                 target_pct_explicit=target_pct_explicit,
+                force_allin=action.startswith("AI"),
             )
             out_tokens.append(code)
         else:
