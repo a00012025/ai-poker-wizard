@@ -811,47 +811,20 @@ async def fetch_drill_queue(conn, exclude_ids=None, since=None) -> dict:
     return select_weekly_slate(rows)
 
 
-def focus_queue_item(focus: dict) -> dict | None:
-    """Build an idempotent drill_queue item for a weekly focus prescription."""
-    if not focus.get("spot_leaf"):
-        return None
-    sources = [{
-        "hand_id": s.get("gtow_hand_id"),
-        "street": s.get("street"),
-        "decision_idx": s.get("decision_idx"),
-        "ev_loss_bb": float(s.get("ev_loss_bb") or 0.0),
-        "src": focus.get("source", "online"),
-    } for s in (focus.get("samples") or []) if s.get("gtow_hand_id")]
-    if not sources:
-        return None
-    return {
-        "kind": "drill", "added_by": "scorecard_focus",
-        "source": focus.get("source", "online"),
-        "spot_leaf": focus["spot_leaf"],
-        "spot_category": focus.get("spot_category"),
-        "label": focus.get("desc") or focus["spot_leaf"],
-        "drill_url": focus["drill_url"],
-        "total_ev_loss_bb": round(sum(s["ev_loss_bb"] for s in sources), 4),
-        "source_hands": sources,
-    }
-
-
 async def bind_focus_queue_items(conn, focus: list[dict]) -> list[int]:
-    """Ensure every actionable focus uses the existing Drill detail flow."""
-    from queue_feed import enqueue_one
+    """Bind focuses already admitted by the queue's scan/promotion gates."""
     from spot_naming import drill_depth_scope
+
     ids = []
     for prescription in focus:
-        item = focus_queue_item(prescription)
-        if not item:
+        if not prescription.get("spot_leaf"):
             continue
-        await enqueue_one(conn, item)
         row = await conn.fetchrow(
             "SELECT id FROM drill_queue WHERE spot_leaf=$1 AND depth_scope=$2 "
             "AND kind='drill' "
             "AND status IN ('pending','prescribed') "
             "ORDER BY (status='pending') DESC, last_added DESC LIMIT 1",
-            item["spot_leaf"], drill_depth_scope(item))
+            prescription["spot_leaf"], drill_depth_scope(prescription))
         if row:
             queue_id = int(row["id"])
             prescription["queue_id"] = queue_id
