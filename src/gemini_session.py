@@ -2971,6 +2971,19 @@ class GeminiSessionManager:
         history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
         self.histories[chat_id] = history[-20:]
 
+    def history_checkpoint(self, chat_id: int) -> tuple[Any, ...]:
+        """Snapshot accepted history before an adapter starts delivery."""
+        return tuple(getattr(self, "histories", {}).get(chat_id, ()))
+
+    def restore_history(self, chat_id: int, checkpoint: tuple[Any, ...]) -> None:
+        """Discard a turn that never reached the user."""
+        if not hasattr(self, "histories"):
+            self.histories = {}
+        if checkpoint:
+            self.histories[chat_id] = list(checkpoint)
+        else:
+            self.histories.pop(chat_id, None)
+
     def _history_for_evidence(self, chat_id: int) -> str:
         rows = []
         for content in self.histories.get(chat_id, [])[-10:]:

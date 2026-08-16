@@ -483,6 +483,15 @@ class PokerWizardBot:
             self._user_locks[chat_id] = asyncio.Lock()
         return self._user_locks[chat_id]
 
+    def _history_checkpoint(self, chat_id: int):
+        checkpoint = getattr(self.session_manager, "history_checkpoint", None)
+        return checkpoint(chat_id) if callable(checkpoint) else None
+
+    def _restore_history(self, chat_id: int, checkpoint) -> None:
+        restore = getattr(self.session_manager, "restore_history", None)
+        if checkpoint is not None and callable(restore):
+            restore(chat_id, checkpoint)
+
     def _user_label(self, update: Update) -> str:
         u = update.effective_user
         chat = update.effective_chat
@@ -952,6 +961,8 @@ class PokerWizardBot:
             gto_sent = True
 
         t0 = time.time()
+        history_checkpoint = self._history_checkpoint(chat_id)
+        delivered = False
         try:
             async with _TypingLoop(update.message.chat):
                 response = await self.session_manager.send_message(
@@ -971,6 +982,7 @@ class PokerWizardBot:
                 await status_msg.delete()
 
             if not response or not response.strip():
+                self._restore_history(chat_id, history_checkpoint)
                 self.log.warning(f"[{label}] Empty response from session manager")
                 if not gto_sent:
                     await update.message.reply_text(
@@ -986,11 +998,14 @@ class PokerWizardBot:
             await _send_reply(
                 update.message, response, self.log, label, reply_markup=markup
             )
+            delivered = True
 
             # Send range grid images
             await self._send_pending_range_images(update, chat_id, label)
 
         except Exception as e:
+            if not delivered:
+                self._restore_history(chat_id, history_checkpoint)
             elapsed = time.time() - t0
             self.log.error(f"[{label}] Error after {elapsed:.1f}s: {e}", exc_info=True)
             from gto_token import TokenExpiredError
@@ -1027,6 +1042,8 @@ class PokerWizardBot:
             return
 
         t0 = time.time()
+        history_checkpoint = self._history_checkpoint(chat_id)
+        delivered = False
         _typing = _TypingLoop(update.message.chat)
         await _typing.__aenter__()
         try:
@@ -1103,11 +1120,17 @@ class PokerWizardBot:
                         chunk, reply_markup=markup if not sent_markup else None
                     )
                 sent_markup = True
+                delivered = True
+
+            if not delivered:
+                self._restore_history(chat_id, history_checkpoint)
 
             # Flush any range images queued by tool calls during this turn.
             await self._send_pending_range_images(update, chat_id, label)
 
         except Exception as e:
+            if not delivered:
+                self._restore_history(chat_id, history_checkpoint)
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
 
@@ -1165,11 +1188,12 @@ class PokerWizardBot:
                             ctx["_range_img_sent"] = True
 
             # Send queued images from tool calls (query_gto with position, no hand)
-            pending = self.session_manager.pending_images.pop(chat_id, [])
+            pending = self.session_manager.pending_images.get(chat_id, [])
             if pending:
                 # Only send the last one
                 img_bytes, caption = pending[-1]
                 await chat.send_photo(photo=img_bytes, caption=caption)
+                self.session_manager.pending_images.pop(chat_id, None)
         except Exception as e:
             self.log.warning(f"[{label}] Range image failed: {e}")
 
@@ -1267,6 +1291,7 @@ class PokerWizardBot:
             # often exceed it and used to be truncated before execution.
             button_map = {str(i): q for i, q in enumerate(questions)}
             ctx["_followup_buttons"] = button_map
+            ctx["_followup_answered"] = set()
 
             keyboard = [
                 [InlineKeyboardButton(q, callback_data=f"fq:{i}")]
@@ -1347,44 +1372,47 @@ class PokerWizardBot:
             return
         chat_id = update.effective_chat.id
         key_or_question = data[3:]
-        ctx = self.session_manager.hand_contexts.get(chat_id, {})
+        ctx = self.session_manager.hand_contexts.setdefault(chat_id, {})
         question = (ctx.get("_followup_buttons", {}) or {}).get(
             key_or_question, key_or_question
         )
+        inflight = ctx.setdefault("_followup_inflight", set())
+        answered = ctx.setdefault("_followup_answered", set())
+        if key_or_question in inflight or key_or_question in answered:
+            return
+        inflight.add(key_or_question)
         user_id = update.effective_user.id
         label = f"followup-{chat_id}"
         self.log.info(f"[{label}] Button: {question}")
-
-        # Remove buttons from original message
+        history_checkpoint = self._history_checkpoint(chat_id)
+        delivered = False
+        status_msg = None
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
-        # Send question as a visible "user" message so it appears in chat
-        await context.bot.send_message(
-            chat_id,
-            f"💬 {question}",
-            read_timeout=10,
-            write_timeout=10,
-            connect_timeout=10,
-        )
+            await context.bot.send_message(
+                chat_id,
+                f"💬 {question}",
+                read_timeout=10,
+                write_timeout=10,
+                connect_timeout=10,
+            )
+            raw_status = await context.bot.send_message(
+                chat_id,
+                "⏳ 查詢中...",
+                read_timeout=10,
+                write_timeout=10,
+                connect_timeout=10,
+            )
+            status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
 
-        # Process the question
-        raw_status = await context.bot.send_message(
-            chat_id,
-            "⏳ 查詢中...",
-            read_timeout=10,
-            write_timeout=10,
-            connect_timeout=10,
-        )
-        status_msg = _ResilientStatus(raw_status, log=self.log, label=label)
+            async def _on_status(msg: str):
+                await status_msg.edit_text(f"⏳ {msg}")
 
-        async def _on_status(msg: str):
-            await status_msg.edit_text(f"⏳ {msg}")
-
-        refresh_token = await self._get_user_refresh_token(user_id)
-        try:
+            refresh_token = await self._get_user_refresh_token(user_id)
             response = await self.session_manager.send_message(
                 chat_id,
                 question,
@@ -1422,17 +1450,29 @@ class PokerWizardBot:
                             write_timeout=30,
                             connect_timeout=30,
                         )
+                delivered = True
+                answered.add(key_or_question)
+            else:
+                self._restore_history(chat_id, history_checkpoint)
 
             # Flush any range images queued by tool calls during this turn.
             # Without this, images get stranded and bleed into the next message.
             await self._send_pending_range_images(update, chat_id, label)
         except Exception as e:
+            if not delivered:
+                self._restore_history(chat_id, history_checkpoint)
             self.log.error(f"[{label}] Error: {e}", exc_info=True)
             try:
-                await status_msg.delete()
+                if status_msg:
+                    await status_msg.delete()
             except Exception:
                 pass
-            await context.bot.send_message(chat_id, "抱歉，處理問題時出錯了。")
+            try:
+                await context.bot.send_message(chat_id, "抱歉，處理問題時出錯了。")
+            except Exception:
+                pass
+        finally:
+            inflight.discard(key_or_question)
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle uploaded photos (poker screenshots for GTO analysis)."""
@@ -1536,6 +1576,9 @@ class PokerWizardBot:
         Used by both _handle_photo_inner (image-as-photo) and the image
         branch of _handle_document_inner (image-as-file).
         """
+        chat_id = update.effective_chat.id
+        history_checkpoint = self._history_checkpoint(chat_id)
+        delivered = False
         gto_sent = False
 
         async def send_gto_summary(text: str):
@@ -1552,7 +1595,7 @@ class PokerWizardBot:
         try:
             async with _TypingLoop(update.message.chat):
                 response = await self.session_manager.send_image_message(
-                    chat_id=update.effective_chat.id,
+                    chat_id=chat_id,
                     image_bytes=image_bytes,
                     mime_type=mime_type,
                     user_text=caption,
@@ -1569,6 +1612,7 @@ class PokerWizardBot:
                 await status_msg.delete()
 
             if not response or not response.strip():
+                self._restore_history(chat_id, history_checkpoint)
                 if not gto_sent:
                     await update.message.reply_text("抱歉，無法分析截圖，請重新發送。")
                 return
@@ -1581,6 +1625,7 @@ class PokerWizardBot:
             await _send_reply(
                 update.message, response, self.log, label, reply_markup=markup
             )
+            delivered = True
 
             # Send range grid images
             await self._send_pending_range_images(
@@ -1588,6 +1633,8 @@ class PokerWizardBot:
             )
 
         except Exception as e:
+            if not delivered:
+                self._restore_history(chat_id, history_checkpoint)
             elapsed = time.time() - t0
             from gto_token import TokenExpiredError
 
@@ -3829,6 +3876,7 @@ async def _send_reply(
         is_last = i == len(chunks) - 1
         markup = reply_markup if is_last else None
         sent = False
+        last_error = None
         # Try Markdown first
         try:
             await message.reply_text(
@@ -3840,9 +3888,11 @@ async def _send_reply(
                 connect_timeout=30,
             )
             sent = True
-        except telegram.error.TimedOut:
+        except telegram.error.TimedOut as exc:
+            last_error = exc
             log.warning(f"[{label}] Markdown send timed out")
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             log.warning(f"[{label}] Markdown parse failed")
         # Fallback to plain text with retries
         if not sent:
@@ -3858,7 +3908,8 @@ async def _send_reply(
                     )
                     sent = True
                     break
-                except telegram.error.TimedOut:
+                except telegram.error.TimedOut as exc:
+                    last_error = exc
                     delay = 2 * (attempt + 1)
                     log.warning(
                         f"[{label}] Plain text send timed out (attempt {attempt+1}/3), retry in {delay}s"
@@ -3866,6 +3917,7 @@ async def _send_reply(
                     await asyncio.sleep(delay)
         if not sent:
             log.error(f"[{label}] Failed to send message after all retries")
+            raise last_error or RuntimeError("Telegram reply delivery failed")
 
 
 def _strip_markdown(text: str) -> str:

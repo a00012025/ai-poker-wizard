@@ -1,0 +1,7 @@
+[run]
+branch = True
+source = coach_runtime
+
+[report]
+fail_under = 95
+show_missing = True
