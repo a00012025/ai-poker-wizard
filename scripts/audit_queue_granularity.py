@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import asyncpg
@@ -265,6 +266,7 @@ async def audit_and_repair(conn, *, fix: bool = False) -> dict:
         "unresolved": [], "committed": False,
     }
     open_groups: dict[tuple[str, str], dict] = {}
+    open_row_groups: dict[int, dict] = {}
     cleared_plans = []
 
     tx = conn.transaction()
@@ -290,6 +292,7 @@ async def audit_and_repair(conn, *, fix: bool = False) -> dict:
             groups, rejected = partition_queue_sources(row, pairs)
             summary["out_of_scope_sources_removed"] += len(rejected)
             if is_open:
+                open_row_groups[row["id"]] = groups
                 for key, group_pairs in groups.items():
                     target = open_groups.setdefault(key, {"pairs": [], "origins": set()})
                     target["pairs"].extend(group_pairs)
@@ -341,10 +344,19 @@ async def audit_and_repair(conn, *, fix: bool = False) -> dict:
                 moving_pending_ids)
         retired = sorted(open_ids - used_ids)
         if retired:
+            retired_at = datetime.now(timezone.utc)
             await conn.execute(
                 "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
                 "clear_reason='scope_dedupe' WHERE id=ANY($1::bigint[])",
                 retired)
+            for queue_id in retired:
+                groups = open_row_groups.get(queue_id) or {}
+                if groups:
+                    cleared_plans.append(({
+                        **rows_by_id[queue_id],
+                        "cleared_at": retired_at,
+                        "clear_reason": "scope_dedupe",
+                    }, groups))
             summary["rows_retired"] += len(retired)
 
         for key, group in open_groups.items():

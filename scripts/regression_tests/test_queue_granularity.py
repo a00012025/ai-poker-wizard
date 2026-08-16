@@ -218,6 +218,82 @@ def test_queue_audit_does_not_create_tiny_auto_split_items():
     assert repair_group_is_admissible(explicit, rows) is True
 
 
+def test_queue_audit_canonicalizes_retired_open_row_in_same_transaction(monkeypatch):
+    import audit_queue_granularity as audit
+
+    row = {
+        "id": 7, "kind": "drill", "status": "prescribed",
+        "spot_leaf": "BB_vsRaiseCall_OOP", "spot_category": "vsRaiseCall",
+        "depth_scope": "short", "added_by": "auto",
+        "source_hands": [{"hand_id": "ep"}, {"hand_id": "mp"}],
+    }
+    entries = [
+        {"hand_id": "ep", "src": "online", "ev_loss_bb": 0.5},
+        {"hand_id": "mp", "src": "online", "ev_loss_bb": 0.4},
+    ]
+    decisions = [
+        {"spot_leaf": "BB_vsRaiseCall_vEP_OOP",
+         "spot_category": "vsRaiseCall", "eff_stack": "short"},
+        {"spot_leaf": "BB_vsRaiseCall_vMP_OOP",
+         "spot_category": "vsRaiseCall", "eff_stack": "short"},
+    ]
+    writes = []
+
+    async def fake_resolved(_conn, _row):
+        return list(zip(entries, decisions)), entries
+
+    async def fake_group(_conn, key, group, _rows, **_kwargs):
+        return {
+            "spot_leaf": key[0], "spot_category": "vsRaiseCall",
+            "label": key[0], "drill_url": "https://trainer",
+            "depth_scope": key[1],
+            "source_hands": [entry for entry, _decision in group["pairs"]],
+            "n_sources": len(group["pairs"]), "total_ev_loss_bb": 0.5,
+            "bias": None, "preserved_url": False,
+        }
+
+    async def fake_write(_conn, queue_id, item, template, status):
+        writes.append((queue_id, item["spot_leaf"], status,
+                       template.get("clear_reason"), template.get("cleared_at")))
+        return queue_id or 100 + len(writes), True
+
+    class Tx:
+        _state = "started"
+
+        async def start(self):
+            pass
+
+        async def rollback(self):
+            self._state = "rolledback"
+
+        async def commit(self):
+            self._state = "committed"
+
+    class Conn:
+        def transaction(self):
+            return Tx()
+
+        async def fetch(self, _sql):
+            return [row]
+
+        async def execute(self, *_args):
+            pass
+
+    monkeypatch.setattr(audit, "_resolved_pairs", fake_resolved)
+    monkeypatch.setattr(audit, "_canonical_group", fake_group)
+    monkeypatch.setattr(audit, "_write_group", fake_write)
+
+    summary = asyncio.run(audit.audit_and_repair(Conn(), fix=False))
+
+    assert summary["rows_retired"] == 1
+    assert [(queue_id, leaf, status) for queue_id, leaf, status, *_ in writes] == [
+        (7, "BB_vsRaiseCall_vEP_OOP", "cleared"),
+        (None, "BB_vsRaiseCall_vMP_OOP", "cleared"),
+    ]
+    assert all(reason == "scope_dedupe" and cleared_at is not None
+               for *_prefix, reason, cleared_at in writes)
+
+
 def test_queue_granularity_migration_and_deploy_audit_contract():
     migration = REPO_ROOT / "supabase/migrations/20260816090000_queue_granularity.sql"
     assert migration.exists()
