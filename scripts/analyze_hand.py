@@ -24,12 +24,9 @@ import argparse
 import json
 import os
 import re
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import (
     get_spot_solution, get_next_actions,
     find_closest_action, find_closest_action_by_pot_fraction,
@@ -47,7 +44,7 @@ from gto_formatter import (
 )
 from card_display import cards_to_emoji
 
-POSITION_ORDER = ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+from position_constants import POSITION_ORDER, POSITION_ORDERS
 
 
 class EffectiveStackUnknownError(ValueError):
@@ -69,19 +66,6 @@ MULTIWAY_SPR_MAX_REDUCTION = float(os.getenv("MULTIWAY_SPR_MAX_REDUCTION", "0.75
 # fallback (hero recast as opener). The preflop real-node override only applies
 # to the real-structure branch, where preflop and postflop stay consistent.
 MULTIWAY_REAL_STRUCTURE_MARKER = "保留真實下注結構"
-
-# Position orders by table size (GTO Wizard convention)
-POSITION_ORDERS = {
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    2: ["SB", "BB"],
-}
-
 
 def _nearest_depth_for_gametype(bb: float, gametype: str) -> float:
     """Snap tournament depth; AVAILABLE_DEPTHS includes HU short-stack trees."""

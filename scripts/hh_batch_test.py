@@ -8,12 +8,10 @@ Usage:
 """
 
 import json
-import sys
 import time
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hh_parser import parse_directory, parse_file
 from analyze_hand import analyze_hand_full
 

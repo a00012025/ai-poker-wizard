@@ -3,12 +3,10 @@ Gemini reparse agrees with the stored OCR parse on hero_hand AND board
 AND hero_position. Disagreement on ANY of the three rejects the record."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr.classifier.gemini_agreement_backfill import (
     _key_fields,

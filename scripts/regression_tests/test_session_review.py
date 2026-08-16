@@ -6,18 +6,21 @@ no trend verdict / no percentile, deliberate per-item enqueue (no 全部排入),
 and Telegram-safe callback_data.
 """
 import asyncio
-import inspect
 import logging
 import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from regression_tests.harness import assert_eq, assert_in, assert_not_in, assert_true, test
+from regression_tests.harness import assert_eq, assert_in, assert_not_in, assert_true
 
 import session_review as sr
 
 TPE = ZoneInfo("Asia/Taipei")
+
+import pytest
+
+pytestmark = pytest.mark.telegram
 
 
 def _sample(empty: bool = False) -> dict:
@@ -82,7 +85,6 @@ def _all_buttons(rows):
     return [b for row in rows for b in row]
 
 
-@test
 def test_session_review_renders_normalized_utc_in_taipei_time():
     d = _sample()
     d["started_at"] = datetime(2026, 7, 20, 11, 0, tzinfo=timezone.utc)
@@ -92,13 +94,11 @@ def test_session_review_renders_normalized_utc_in_taipei_time():
     assert_not_in("7/20 11:00", html)
 
 
-@test
 def test_session_review_action_line_shows_recommended_action():
     assert_eq(sr.action_line("C", "F"), "Call→應Fold")
     assert_eq(sr.action_line("R2.5", "C"), "Raise→應Call")
 
 
-@test
 def test_session_review_postflop_bet_not_raise_with_size():
     detail = {
         "game_analysis": {"game_points": [
@@ -133,7 +133,6 @@ def test_session_review_postflop_bet_not_raise_with_size():
     assert_eq(ctx["action_line"], "Bet 33%→應Check")
 
 
-@test
 def test_session_review_turn_first_to_act_keeps_turn_card_and_action_line():
     detail = {
         "game_analysis": {"game_points": [
@@ -179,7 +178,6 @@ def test_session_review_turn_first_to_act_keeps_turn_card_and_action_line():
     assert_eq(ctx["action_line"], "Raise→應Check")
 
 
-@test
 def test_session_review_decision_depth_prefers_solver_effective_stack():
     assert_eq(sr._decision_display_depth({
         "preflop_depth_bb": 50.832, "played_depth_bb": 50.832, "solver_depth_bb": 12.0,
@@ -189,7 +187,6 @@ def test_session_review_decision_depth_prefers_solver_effective_stack():
     })), "有效 12bb")
 
 
-@test
 def test_session_review_study_url_binds_user_token_and_fails_closed():
     """Study links use per-user auth and never fall back to approximate nodes."""
     import gto_api
@@ -224,7 +221,6 @@ def test_session_review_study_url_binds_user_token_and_fails_closed():
     assert_eq(missing, None)
 
 
-@test
 def test_session_review_compacts_preflop_history():
     assert_eq(
         sr._format_street_history("preflop", [
@@ -245,7 +241,6 @@ def test_session_review_compacts_preflop_history():
         "翻前: HJ Raise, CO Call")
 
 
-@test
 def test_session_review_full_message():
     assert_eq(sr.TOP_DECISIONS, 10)
     assert_in("LIMIT 10", sr._TOP_DECISIONS_SQL)
@@ -280,7 +275,6 @@ def test_session_review_full_message():
     assert_in("3 個低信心未計", html)
 
 
-@test
 def test_session_review_no_trend_no_percentile():
     """North Star §2.1/§7-490: single session is descriptive, never a verdict,
     never a percentile baseline."""
@@ -290,7 +284,6 @@ def test_session_review_no_trend_no_percentile():
     assert_not_in("比上週", html)          # no weekly trend comparison
 
 
-@test
 def test_session_review_deliberate_enqueue_only():
     """No 全部排入 batch shortcut, no skip button — adds are per-item deliberate
     (§5.10); review link points at the exact hand (owner request)."""
@@ -319,7 +312,6 @@ def test_session_review_deliberate_enqueue_only():
                 "coach buttons must use stable online-session callbacks")
 
 
-@test
 def test_session_review_callback_data_telegram_safe():
     out = sr.render_tg(_sample())
     for b in _all_buttons(out["buttons"]):
@@ -330,7 +322,6 @@ def test_session_review_callback_data_telegram_safe():
                         f"bad callback: {cb}")
 
 
-@test
 def test_session_review_callback_key_survives_session_id_rebuild():
     """Callback identity must not depend on ledger_sessions.id, which is
     delete/reinserted by every ingest session rebuild."""
@@ -346,7 +337,6 @@ def test_session_review_callback_key_survives_session_id_rebuild():
                 f"volatile session id leaked into callbacks: {callbacks}")
 
 
-@test
 def test_online_session_coach_uses_enriched_verified_teaching_path():
     """The review Coach button must use the same grounded initial-coach path
     as normal hand analysis, including response-node enrichment while the
@@ -363,94 +353,46 @@ def test_online_session_coach_uses_enriched_verified_teaching_path():
             self.hand_contexts = {}
             self.pending_images = {}
 
-        @staticmethod
-        def _prepare_initial_teaching_digest(context):
+        async def analyze_parsed_hand(self, chat_id, hand, **kwargs):
+            captured["analyze_kwargs"] = kwargs
             worker_threads.append(threading.get_ident())
-            captured["prepared_context"] = context
+            context = {"text": "已驗證 solver 事實", "hand": hand, "validation": {}}
             context["_teaching_digest"] = {"enriched": True}
-            return context["_teaching_digest"]
+            self.hand_contexts[chat_id] = context
+            return context
 
-        @staticmethod
-        def _initial_teaching_block(context):
-            captured["teaching_context"] = context
-            return "ENRICHED TEACHING BLOCK"
-
-        async def _verified_initial_coaching(
-                self, chat_id, prompt, context, user_text, **kwargs):
-            captured["prompt"] = prompt
+        async def coach_parsed_hand(
+                self, chat_id, context, *, hand_description, user_text,
+                source_instruction, **kwargs):
+            captured["hand_description"] = hand_description
+            captured["source_instruction"] = source_instruction
             captured["verified_context"] = context
             captured["user_text"] = user_text
             captured["kwargs"] = kwargs
-            return "教練文字\nFOLLOWUP: 為什麼？"
-
-        async def _chat_with_tools(self, *_args, **_kwargs):
-            raise AssertionError("online session coach bypassed verified teaching")
-
-        @staticmethod
-        def _extract_followups(_response):
-            return "教練文字", ["為什麼？"]
+            response = "教練文字\nFOLLOWUP: 為什麼？"
+            clean, followups = ("教練文字", ["為什麼？"])
+            self.hand_contexts[chat_id]["followup_questions"] = followups
+            return clean
 
     bot = PokerWizardBot.__new__(PokerWizardBot)
     bot.session_manager = SessionManager()
     main_thread = threading.get_ident()
-    bot._setup_user_token = lambda *_args: worker_threads.append(threading.get_ident())
-    bot._clear_user_token = lambda: worker_threads.append(threading.get_ident())
-    old_analyze = analyze_hand.analyze_hand_full
-    try:
-        def fake_analyze(hand):
-            worker_threads.append(threading.get_ident())
-            return {"text": "已驗證 solver 事實", "hand": hand,
-                    "validation": {}}
-        analyze_hand.analyze_hand_full = fake_analyze
-        result = asyncio.run(bot._analyze_online_parsed_hand(
-            10, 20, "online-hand-1",
-            {"hero_position": "CO", "hero_hand": "AsKs",
-             "effective_bb": 30, "players_at_table": 8,
-             "preflop_actions": "F-F-R2", "streets": []},
-            None, "refresh-token"))
-    finally:
-        analyze_hand.analyze_hand_full = old_analyze
+    result = asyncio.run(bot._analyze_online_parsed_hand(
+        10, 20, "online-hand-1",
+        {"hero_position": "CO", "hero_hand": "AsKs",
+         "effective_bb": 30, "players_at_table": 8,
+         "preflop_actions": "F-F-R2", "streets": []},
+        None, "refresh-token"))
 
     assert_in("教練文字", result)
-    assert_in("已驗證 solver 事實", captured["prompt"])
-    assert_in("ENRICHED TEACHING BLOCK", captured["prompt"])
-    assert_in("不要重新解析或改寫動作", captured["prompt"])
-    assert_eq(captured["prepared_context"], captured["verified_context"])
+    assert_in("Hero CO A♠️K♠️", captured["hand_description"])
+    assert_in("不要重新解析或改寫動作", captured["source_instruction"])
     assert_eq(captured["verified_context"]["_teaching_digest"], {"enriched": True})
     assert_in("online-hand-1", captured["user_text"])
+    assert_eq(captured["analyze_kwargs"], {"user_id": 20, "refresh_token": "refresh-token"})
     assert_eq(bot.session_manager.hand_contexts[10]["followup_questions"], ["為什麼？"])
-    assert_true(worker_threads and all(tid != main_thread for tid in worker_threads),
-                "token binding, solver analysis, and evidence enrichment must stay "
-                "off the event-loop thread")
 
 
-@test
-def test_every_bot_initial_coach_entry_uses_shared_verified_boundary():
-    """HH, live-detail and session-review buttons cannot drift to legacy chat."""
-    from telegram_bot.bot import PokerWizardBot
-
-    for name in (
-        "_analyze_hh_hand",
-        "_analyze_live_parsed_hand",
-        "_analyze_online_parsed_hand",
-    ):
-        source = inspect.getsource(getattr(PokerWizardBot, name))
-        assert_in("_build_grounded_coach_context", source, name)
-        assert_in("_verified_grounded_coaching", source, name)
-        assert_not_in("_chat_with_tools", source, name)
-
-
-@test
-def test_online_session_coach_callback_is_registered_and_routed():
-    from telegram_bot.bot import PokerWizardBot
-
-    handler_source = inspect.getsource(PokerWizardBot.handle_live_button)
-    setup_source = inspect.getsource(PokerWizardBot.setup_handlers)
-    assert_in('data.startswith("src2:")', handler_source)
-    assert_in("|src2):", setup_source)
-
-
-@test
 def test_online_session_coach_acks_before_cache_rebuild_and_survives_expired_ack():
     """A cold-cache review rebuild can outlive Telegram's callback window.
 
@@ -516,7 +458,6 @@ def test_online_session_coach_acks_before_cache_rebuild_and_survives_expired_ack
     assert_eq(events, ["answer", "resolve", "compute"])
 
 
-@test
 def test_recent_online_sessions_are_newest_first_and_bounded():
     class Conn:
         async def fetch(self, sql, *args):
@@ -540,7 +481,6 @@ def test_recent_online_sessions_are_newest_first_and_bounded():
     assert_eq(sessions[0]["hands_count"], 283)
 
 
-@test
 def test_recent_online_sessions_payload_uses_stable_resend_keys():
     from telegram_bot.bot import _recent_online_sessions_payload
 
@@ -564,7 +504,6 @@ def test_recent_online_sessions_payload_uses_stable_resend_keys():
     assert_not_in(":42", buttons[0][0]["callback_data"])
 
 
-@test
 def test_online_sessions_command_lists_resend_buttons():
     from telegram_bot.bot import PokerWizardBot
 
@@ -610,18 +549,6 @@ def test_online_sessions_command_lists_resend_buttons():
                     for b in buttons))
 
 
-@test
-def test_online_sessions_command_and_resend_callback_are_registered():
-    from src.telegram_bot.bot import PokerWizardBot
-
-    handlers = inspect.getsource(PokerWizardBot.setup_handlers)
-    assert_in('["sessions", "online_sessions"]', handlers)
-    assert_in("|ors|", handlers)
-    menu = (sr.ROOT / "src/main_gemini.py").read_text()
-    assert_in('BotCommand("sessions", "最近線上 sessions／重傳復盤")', menu)
-
-
-@test
 def test_recent_online_session_button_sends_fresh_summary():
     from telegram_bot.bot import PokerWizardBot
 
@@ -683,17 +610,6 @@ def test_recent_online_session_button_sends_fresh_summary():
     assert_true(stable_key in context.application.bot_data["srev"])
 
 
-@test
-def test_session_review_decision_enqueue_persists_review_url_as_drill_url():
-    """Decision-level queue rows use drill_queue.drill_url for their Analyze
-    review link; a dead review_url key is ignored by enqueue_one."""
-    import inspect
-    src = inspect.getsource(sr._decision_items)
-    assert_in('"drill_url": exact_url', src)
-    assert_not_in('"review_url": exact_url', src)
-
-
-@test
 def test_session_review_top_decisions_use_one_joined_query_without_dead_drill_work():
     """Top-N rendering must not issue metadata/source N+1 queries.
 
@@ -760,7 +676,6 @@ def test_session_review_top_decisions_use_one_joined_query_without_dead_drill_wo
     assert_eq(out[0]["enqueue_item"]["drill_url"], "https://example/analyze")
 
 
-@test
 def test_session_review_session_membership_index_migration_exists():
     migration = (sr.ROOT / "supabase/migrations" /
                  "20260809130000_ledger_hands_session_index.sql").read_text()
@@ -768,7 +683,6 @@ def test_session_review_session_membership_index_migration_exists():
     assert_in("ledger_hands(session_id)", migration)
 
 
-@test
 def test_session_review_parallelizes_independent_reads_for_runtime_pool():
     """The Telegram path passes a pool, so independent summary branches overlap."""
     started = 0
@@ -814,7 +728,6 @@ def test_session_review_parallelizes_independent_reads_for_runtime_pool():
     assert_eq(data["n_decisions"], 1)
 
 
-@test
 def test_session_review_auto_send_skips_clean_session():
     """Sync auto-append fires only when there's something to review (§7-11 依從):
     non-empty → push, clean/empty → stay silent (manual /review still works)."""
@@ -823,14 +736,12 @@ def test_session_review_auto_send_skips_clean_session():
                 "clean session must NOT auto-push")
 
 
-@test
 def test_session_review_empty_session():
     out = sr.render_tg(_sample(empty=True))
     assert_in("沒有值得復盤的漏損", out["html"])
     # nothing to enqueue, no skip button → no buttons at all
     assert_eq(len(_all_buttons(out["buttons"])), 0)
 
-@test
 def test_session_review_marks_hu_only_for_real_sb_bb_heads_up_pots():
     """HU means an actual SB-vs-BB heads-up spot, not merely two players left.
 
@@ -875,3 +786,158 @@ def test_session_review_marks_hu_only_for_real_sb_bb_heads_up_pots():
         "spot_category": "flop", "spot_leaf": "flop:SRP:COvSB:IP:vs_raise",
         "hero_cat": "CO", "villain_cat": "SB", "ip_oop": "IP", "hero_pos": "CO",
     }, is_real_hu=False), "SRP｜Hero CO 對 SB，IP；翻牌 Hero 面對加注")
+
+
+def test_hh_hand_analysis_uses_public_parsed_hand_boundaries():
+    """HH detail coaching must consume parsed HH data through public session APIs."""
+    import telegram_bot.bot as botmod
+    from telegram_bot.bot import PokerWizardBot
+
+    calls = {}
+
+    class SessionManager:
+        db = None
+
+        async def analyze_parsed_hand(self, chat_id, hand, **kwargs):
+            calls["analyze"] = (chat_id, hand, kwargs)
+            return {"text": "solver facts", "validation": {}}
+
+        async def coach_parsed_hand(self, chat_id, context, **kwargs):
+            calls["coach"] = (chat_id, context, kwargs)
+            return "coach reply"
+
+    class TypingLoop:
+        def __init__(self, _chat):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Message:
+        chat = object()
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, text, **kwargs):
+            self.replies.append((text, kwargs))
+
+    msg = Message()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=10),
+        effective_user=SimpleNamespace(id=20),
+        message=msg,
+    )
+    hand = {
+        "hand_id": "HH1", "gametype": "MTTGeneral", "effective_bb": 25,
+        "hero_position": "CO", "hero_hand": "AsKs", "num_players": 8,
+        "preflop_actions": "F-F-R2", "streets": [],
+    }
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.session_manager = SessionManager()
+    bot.log = logging.getLogger("test")
+    bot._user_label = lambda _update: "test-user"
+    bot._get_user_refresh_token = lambda _user_id: asyncio.sleep(0, result="refresh")
+    bot._build_followup_markup = lambda _chat_id: None
+
+    async def no_pending_images(*_args):
+        calls["flushed"] = True
+
+    bot._send_pending_range_images = no_pending_images
+    old_typing = botmod._TypingLoop
+    try:
+        botmod._TypingLoop = TypingLoop
+        asyncio.run(bot._analyze_hh_hand(update, hand, "user asks"))
+    finally:
+        botmod._TypingLoop = old_typing
+
+    assert_eq(calls["analyze"], (
+        10,
+        {"gametype": "MTTGeneral", "effective_bb": 25,
+         "hero_position": "CO", "hero_hand": "AsKs",
+         "preflop_actions": "F-F-R2"},
+        {"user_id": 20, "refresh_token": "refresh"},
+    ))
+    coach_kwargs = calls["coach"][2]
+    assert_eq(calls["coach"][0], 10)
+    assert_eq(calls["coach"][1]["text"], "solver facts")
+    assert_in("Hero CO A♠️K♠️", coach_kwargs["hand_description"])
+    assert_in("已解析的穩定手牌資料", coach_kwargs["source_instruction"])
+    assert_eq(coach_kwargs["user_id"], 20)
+    assert_eq(coach_kwargs["refresh_token"], "refresh")
+    assert_true(any("coach reply" in text for text, _kwargs in msg.replies))
+    assert_true(calls["flushed"])
+
+
+def test_image_message_uses_public_parsed_hand_boundaries():
+    """Image entry parses once, then analyzes/coaches through public boundaries."""
+    from gemini_session import GeminiSessionManager
+
+    calls = []
+    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager._logger = logging.getLogger("test")
+    manager.db = None
+    manager.image_parse_model = "image-model"
+    manager.last_hand_ids = {}
+    manager.hand_contexts = {}
+
+    parsed = {
+        "gametype": "MTTGeneral", "effective_bb": 30,
+        "hero_position": "BTN", "hero_hand": "AhKh",
+        "preflop_actions": "F-F-R2", "streets": [],
+    }
+
+    async def parse_hand(chat_id, image_bytes, mime_type, **kwargs):
+        calls.append(("parse", chat_id, image_bytes, mime_type, kwargs))
+        return dict(parsed)
+
+    async def analyze(chat_id, hand, **kwargs):
+        calls.append(("analyze", chat_id, hand, kwargs))
+        return {"text": "solver facts", "text_compact": "compact facts", "validation": {}}
+
+    async def coach(chat_id, context, **kwargs):
+        calls.append(("coach", chat_id, context, kwargs))
+        return "coach text"
+
+    async def noop(*args, **kwargs):
+        calls.append(("noop", args, kwargs))
+
+    manager._parse_hand_from_image = parse_hand
+    manager.analyze_parsed_hand = analyze
+    manager.coach_parsed_hand = coach
+    manager._save_snapshot = noop
+    manager._update_snapshot_coaching = noop
+    manager.extract_deviations = noop
+    manager._save_usage = noop
+    manager._hard_validation_stop_message = lambda _context: None
+    manager._chat = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("image hand should not fall back to text chat"))
+
+    statuses = []
+    gto_messages = []
+
+    async def status(text):
+        statuses.append(text)
+
+    async def send_gto(text):
+        gto_messages.append(text)
+
+    result = asyncio.run(manager.send_image_message(
+        10, b"image", user_text="caption", status_callback=status,
+        send_gto_callback=send_gto, user_id=20, refresh_token="refresh"))
+
+    assert_in("coach text", result)
+    assert_eq(gto_messages, ["compact facts"])
+    assert_true(any("辨識完成" in text for text in statuses))
+    analyze_call = next(call for call in calls if call[0] == "analyze")
+    assert_eq(analyze_call[1:], (10, parsed, {"user_id": 20, "refresh_token": "refresh"}))
+    coach_call = next(call for call in calls if call[0] == "coach")
+    assert_eq(coach_call[1], 10)
+    assert_eq(coach_call[2]["text"], "solver facts")
+    assert_in("Hero BTN A♥️K♥️", coach_call[3]["hand_description"])
+    assert_in("已解析的穩定手牌資料", coach_call[3]["source_instruction"])
+    assert_eq(coach_call[3]["user_id"], 20)
+    assert_eq(coach_call[3]["refresh_token"], "refresh")

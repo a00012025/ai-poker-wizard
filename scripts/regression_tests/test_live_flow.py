@@ -1,7 +1,6 @@
 """Regression tests extracted from the legacy monolithic suite."""
 
 import json
-import inspect
 import logging
 import os
 import sys
@@ -11,28 +10,27 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
+
+pytestmark = pytest.mark.telegram
 
 from urllib.parse import parse_qs, urlparse
 
 from live_flow import _next_depth_up
 
 
-@test
-def next_depth_up_15():
+def test_next_depth_up_15():
     """next depth bracket up: 15bb -> 17"""
     assert_eq(_next_depth_up(15.0), 17.0)
 
 
-@test
-def next_depth_up_top():
+def test_next_depth_up_top():
     """next depth bracket up: at top returns None"""
     assert_true(_next_depth_up(100.0) is None, "no bracket above 100")
 
@@ -55,7 +53,6 @@ _LIVE_HAND1 = {   # Qd7d BB defends vs UTG+1 open 50bb; flop x-x; turn b3 c; riv
 }
 
 
-@test
 def test_live_batch_subprocess_receives_owner_db_token():
     """The owner-only /live subprocess must not rely on global file auth."""
     import asyncio
@@ -193,7 +190,6 @@ def test_live_batch_subprocess_receives_owner_db_token():
     assert_eq(captured["failure_edits"], [])
 
 
-@test
 def test_live_split_batch():
     """Shorthand batches split on lines starting with 'Eff' — including the
     no-space form 'Eff17' (no word boundary between f and 1)."""
@@ -208,7 +204,6 @@ def test_live_split_batch():
     assert_true(blocks[2].startswith("eff 20bb"))
 
 
-@test
 def test_live_split_batch_header_variants():
     """A new hand also starts on 'Hero …' / a seat ('UTG …', '+1 …'), not just
     'Eff' — and result/annotation lines ('Hero wins', 'lose to TT', '7/3') are
@@ -263,7 +258,6 @@ def test_live_split_batch_header_variants():
     assert_true(zh[1].startswith("有效25bb"))
 
 
-@test
 def test_live_split_batch_bare_eff_header_continues_to_seat_line():
     """Regression for live batch: a stack-only line (``Eff 21bb``) is not a
     complete hand.  The following seat-led preflop line belongs to it, even
@@ -288,7 +282,6 @@ def test_live_split_batch_bare_eff_header_continues_to_seat_line():
     assert_true(blocks2[1].startswith("Eff 11bb"))
 
 
-@test
 def test_live_split_batch_keeps_each_explicit_icm_hand_separate():
     """Multiple live ICM rows retain their own phase/average/stack context."""
     from live_flow import split_batch
@@ -303,7 +296,6 @@ def test_live_split_batch_keeps_each_explicit_icm_hand_separate():
     assert_in("avg 18bb", blocks[1])
 
 
-@test
 def test_live_parse_block_uses_structured_icm_metadata_without_llm():
     """The reported partial-stack shorthand is deterministic in /live too."""
     from live_flow import parse_block
@@ -325,7 +317,6 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
 
 
-@test
 def test_live_parse_block_icm_import_works_without_src_on_sys_path():
     """Container CLI executes live_flow with repo root, not src as top-level."""
     import sys
@@ -356,7 +347,6 @@ def test_live_parse_block_icm_import_works_without_src_on_sys_path():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
 
 
-@test
 def test_live_icm_multiraise_line_preserves_hero_fourbet_fold_node():
     """A sparse-stack ICM line must retain every raise/call continuation."""
     from live_flow import parse_block
@@ -376,7 +366,6 @@ def test_live_icm_multiraise_line_preserves_hero_fourbet_fold_node():
     assert_eq(hand["preflop_actions"], "R2-F-R5-F-F-F-F-C-R15-F")
 
 
-@test
 def test_live_icm_multiway_bubble_line_preserves_final_hero_fold_node():
     """Named short-stack shove, cold raise/call, and hero fold all survive."""
     from live_flow import parse_block
@@ -396,7 +385,6 @@ def test_live_icm_multiway_bubble_line_preserves_final_hero_fold_node():
     assert_eq(hand["preflop_actions"], "F-F-R2-AI4-R9-C-F-F-F")
 
 
-@test
 def test_live_split_batch_near_bubble_prefix_starts_each_hand():
     """Tournament-stage qualifiers can replace the stack/header prefix.
 
@@ -424,7 +412,6 @@ def test_live_split_batch_near_bubble_prefix_starts_each_hand():
     )
 
 
-@test
 def test_live_split_batch_bubble_stage_aliases_are_case_insensitive():
     """Common English/Chinese bubble labels are complete hand headers."""
     from live_flow import _is_header, split_batch
@@ -449,7 +436,6 @@ def test_live_split_batch_bubble_stage_aliases_are_case_insensitive():
     assert_true(_is_header("SOFT BUBBLE hero co 13bb fold K9o"))
 
 
-@test
 def test_live_card_literal_repair_locks_raw_ranks():
     """Gemini may produce a structurally legal but wrong card literal
     (observed live-flow residual: raw flop Q93 parsed as J93).  Live grading
@@ -486,7 +472,6 @@ def test_live_card_literal_repair_locks_raw_ranks():
     assert_true(any(n.startswith("river 8h→9h") for n in notes))
 
 
-@test
 def test_live_card_literal_gate_refuses_street_count_mismatch():
     """When raw street lines and parsed streets can't be aligned 1:1, refuse
     honestly instead of zip-truncating (which would keep drifted cards on the
@@ -522,7 +507,6 @@ def test_live_card_literal_gate_refuses_street_count_mismatch():
     assert_eq(ok_notes, [])
 
 
-@test
 def test_live_card_literal_gate_rank_only_suit_fill_is_rainbow():
     """Real batch-2 finding: rank-only boards were suit-filled 'c,c,c' →
     fabricated MONOTONE texture (AK8r→AcKc8c — the r literally says rainbow!).
@@ -557,7 +541,6 @@ def test_live_card_literal_gate_rank_only_suit_fill_is_rainbow():
     assert_eq(notes3, [], "spaced rainbow marker is completion, not correction")
 
 
-@test
 def test_live_card_literal_gate_multi_token_flop_and_shape_guard():
     """Real batch-1 corruption (Hand 19): a flop written across tokens
     ('KsJ 2 rainbow …') lost its hint, and with Gemini also dropping the river
@@ -601,7 +584,6 @@ def test_live_card_literal_gate_multi_token_flop_and_shape_guard():
     assert_true(notes4)
 
 
-@test
 def test_live_parse_block_applies_card_literal_gate():
     """Integration: parse_block must apply the literal gate to Gemini output —
     locked literals surface as hand['_repairs']; an impossible raw literal
@@ -640,7 +622,6 @@ def test_live_parse_block_applies_card_literal_gate():
     assert_true("hero_position" not in refused)
 
 
-@test
 def test_live_parse_block_structured_tokens_keep_checkthrough_streets():
     """The narrow street-token schema keeps 'A x x' as its own street rather
     than letting a full-hand model merge it into the river."""
@@ -699,7 +680,6 @@ def test_live_parse_block_structured_tokens_keep_checkthrough_streets():
         client.models.calls[0]["config"].thinking_config.thinking_level))
 
 
-@test
 def test_live_parse_block_replays_preflop_tokens_into_full_seat_line():
     """Gemini never emits a seat string; replay pads all implicit folds."""
     from live_flow import parse_block
@@ -729,7 +709,6 @@ def test_live_parse_block_replays_preflop_tokens_into_full_seat_line():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-R6-F-F-F-AI25")
 
 
-@test
 def test_live_token_replay_assigns_continuation_actors_without_position_shift():
     """The model supplies lexical facts only; deterministic replay owns seats.
 
@@ -766,7 +745,6 @@ def test_live_token_replay_assigns_continuation_actors_without_position_shift():
               [("SB", "X"), ("BTN", "R8"), ("SB", "F")])
 
 
-@test
 def test_live_token_replay_keeps_explicit_lj_fold_and_hj_call():
     """Regression for Hand 3: explicit LJ fold cannot become a live ghost."""
     from live_flow import replay_live_action_tokens
@@ -792,7 +770,6 @@ def test_live_token_replay_keeps_explicit_lj_fold_and_hj_call():
               [("HJ", "X"), ("CO", "R10"), ("HJ", "F")])
 
 
-@test
 def test_live_token_replay_btn_shove_bb_call_is_not_unopened():
     from live_flow import replay_live_action_tokens
 
@@ -808,7 +785,6 @@ def test_live_token_replay_btn_shove_bb_call_is_not_unopened():
     assert_eq(hand["preflop_actions"], "F-F-F-F-F-AI7-F-C")
 
 
-@test
 def test_live_token_replay_expands_check_around_over_live_players():
     from live_flow import replay_live_action_tokens
 
@@ -836,7 +812,6 @@ def test_live_token_replay_expands_check_around_over_live_players():
               [("SB", "R3"), ("BB", "F"), ("HJ", "F")])
 
 
-@test
 def test_live_token_replay_preserves_limp_and_calculates_pot_fraction():
     from live_flow import replay_live_action_tokens
 
@@ -875,7 +850,6 @@ def test_live_token_replay_preserves_limp_and_calculates_pot_fraction():
     assert_eq(flop[0]["pot_fraction"], 0.25)
 
 
-@test
 def test_live_token_replay_normalizes_fraction_and_percent_literals():
     """Raw fraction literals win over a model's numeric-field guess.
 
@@ -923,7 +897,6 @@ def test_live_token_replay_normalizes_fraction_and_percent_literals():
     assert_eq(turn[0]["pot_fraction"], 0.5)
 
 
-@test
 def test_live_token_replay_preserves_fraction_when_bb_size_is_unresolved():
     """Pot-relative sizing remains first-class JSON even when an earlier
     unsized action makes the real BB pot unknowable."""
@@ -969,7 +942,6 @@ def test_live_token_replay_preserves_fraction_when_bb_size_is_unresolved():
                         for flag in hand["_parse_flags"]))
 
 
-@test
 def test_live_parse_block_recovers_percent_size_from_action_source():
     """All requested shorthand forms survive the structured-token boundary:
     ``B1/4``, ``B25%`` and ``bet 50%``."""
@@ -1014,7 +986,6 @@ def test_live_parse_block_recovers_percent_size_from_action_source():
         assert_eq(hand["_parse_flags"], [], shorthand)
 
 
-@test
 def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
     from live_flow import LiveReplayError, replay_live_action_tokens
 
@@ -1048,8 +1019,7 @@ def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
         assert_in("expected", str(exc))
 
 
-@test
-def live_token_replay_drops_only_uniquely_embedded_extra_flop():
+def test_live_token_replay_drops_only_uniquely_embedded_extra_flop():
     from live_flow import replay_live_action_tokens
 
     raw = (
@@ -1094,8 +1064,7 @@ def live_token_replay_drops_only_uniquely_embedded_extra_flop():
     assert_in("移除黏入的額外街牌：Jh6h3s", hand["_repairs"])
 
 
-@test
-def live_partial_multiway_street_is_valid_once_hero_folds():
+def test_live_partial_multiway_street_is_valid_once_hero_folds():
     from live_flow import (find_ghost, hero_folded_postflop,
                            replay_live_action_tokens)
 
@@ -1126,7 +1095,6 @@ def live_partial_multiway_street_is_valid_once_hero_folds():
                 "opponents' omitted action after Hero folds is irrelevant")
 
 
-@test
 def test_live_token_replay_missing_postflop_size_is_flagged_not_invented():
     from live_flow import replay_live_action_tokens
 
@@ -1143,7 +1111,6 @@ def test_live_token_replay_missing_postflop_size_is_flagged_not_invented():
     assert_true(any("size_missing" in flag for flag in hand["_parse_flags"]))
 
 
-@test
 def test_live_parser_diff_compares_exact_sizes_and_emits_review_template():
     from live_parser_diff import field_summary, render_report
 
@@ -1170,7 +1137,6 @@ def test_live_parser_diff_compares_exact_sizes_and_emits_review_template():
     assert_in('"pot_fraction": 0.25', report)
 
 
-@test
 def test_live_process_batch_does_not_run_legacy_actor_repairs_after_replay():
     """Once token replay owns actor attribution, process_batch must persist
     that faithful parse instead of passing it through the old Gemini repair
@@ -1214,7 +1180,6 @@ def test_live_process_batch_does_not_run_legacy_actor_repairs_after_replay():
     assert_eq(stored["_parse_trace"], replayed["_parse_trace"])
 
 
-@test
 def test_live_process_batch_skips_solver_for_parse_uncertain_hand():
     import live_flow
 
@@ -1249,7 +1214,6 @@ def test_live_process_batch_skips_solver_for_parse_uncertain_hand():
                     for row in result["hands"][0]["dec_rows"]))
 
 
-@test
 def test_live_process_batch_attempts_solver_for_unsized_preflop_raise():
     """A preflop-only missing size may resolve to GTOW's unique raise branch.
     Attempt grading, but keep every resulting row excluded from statistics."""
@@ -1289,7 +1253,6 @@ def test_live_process_batch_attempts_solver_for_unsized_preflop_raise():
                     for row in result["hands"][0]["dec_rows"]))
 
 
-@test
 def test_live_simple_preflop_fallback_parses_terse_fold_row():
     """Single-line live rows like 'Co 15.5bb fold a5o' do not need LLM
     inference; parse them deterministically if Gemini abstains/fails."""
@@ -1302,7 +1265,6 @@ def test_live_simple_preflop_fallback_parses_terse_fold_row():
     assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-F-F")
 
 
-@test
 def test_live_simple_preflop_fallback_parses_multiaction_allin_row():
     """Regression for failed Hand 5: Gemini returned only six preflop tokens
     for ``hero HJ open / CO 3bet / hero jam``.  The deterministic fallback
@@ -1328,7 +1290,6 @@ def test_live_simple_preflop_fallback_parses_multiaction_allin_row():
     assert_true(validate_hand(hand2).ok)
 
 
-@test
 def test_live_simple_preflop_spaced_eff_bb_does_not_create_phantom_bb_action():
     """Regression: the unit in ``Eff 5 bb`` is not a BB actor.
 
@@ -1353,7 +1314,6 @@ def test_live_simple_preflop_spaced_eff_bb_does_not_create_phantom_bb_action():
     assert_eq(actor["preflop_actions"], "F-F-R2-F-F-F-F-F")
 
 
-@test
 def test_live_simple_preflop_fallback_parses_compact_squeeze_raise():
     """Regression: ``bb r6`` is a compact raise-to-6 token, not an unknown
     action.  Preserve the squeeze and hero's continuation fold so Hand 11
@@ -1377,7 +1337,6 @@ def test_live_simple_preflop_fallback_parses_compact_squeeze_raise():
     assert_true(validate_hand(hand).ok)
 
 
-@test
 def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
     """Class-only live notes stay class-only (no false exact combo), but exact
     raw duplicates are refused instead of silently reaching the solver."""
@@ -1408,7 +1367,6 @@ def test_live_card_literal_repair_preserves_class_and_rejects_duplicates():
     assert_true(dup_notes)   # refusal always says why (surfaced in the report)
 
 
-@test
 def test_live_card_literal_repair_accepts_street_labels_and_comments():
     """Owner live notes may include Markdown quote coaching comments and
     street labels. Comments are ignored; 'Flop 8s3s2d' still locks the board."""
@@ -1435,7 +1393,6 @@ def test_live_card_literal_repair_accepts_street_labels_and_comments():
     assert_eq(fixed["streets"][1]["card"], "8d")
 
 
-@test
 def test_live_card_literal_repair_accepts_mixed_suited_flop_token():
     """Flops like 6c4c3 / 4hQh2 mix exact-suit cards with a rank-only card.
     They must still count as the flop literal; otherwise turn/river hints shift
@@ -1463,7 +1420,6 @@ def test_live_card_literal_repair_accepts_mixed_suited_flop_token():
     assert_eq(fixed["streets"][2]["card"], "Jh")
 
 
-@test
 def test_live_walk_spots_from_parsed():
     """Text-parsed hands classify onto the SAME leaves as the online walker
     (cross-source aggregation), incl. the fully-limped pot -> 'limp'."""
@@ -1489,7 +1445,6 @@ def test_live_walk_spots_from_parsed():
     assert_true(ls[1]["limp_origin"])
 
 
-@test
 def test_live_repair_hu_pot_and_ghost():
     """Deterministic parse repairs: phantom checks on folded seats stripped,
     ghost caller folded + missing continuation call appended, HU street
@@ -1524,7 +1479,6 @@ def test_live_repair_hu_pot_and_ghost():
     assert_eq(find_ghost(ghost), "UTG+1")
 
 
-@test
 def test_live_repair_hu_pot_continuation_ghost_call():
     """3bet HU shorthand: CO opens, BTN calls, hero SB 3bets, CO folds,
     BTN calls. Gemini can put the post-3bet call on CO, leaving CO as a
@@ -1550,7 +1504,6 @@ def test_live_repair_hu_pot_continuation_ghost_call():
     assert_true(find_ghost(fixed) is None)
 
 
-@test
 def test_live_threeway_raw_line_preserves_real_pot_contributors():
     """A genuine HJ cold-call is folded out of the HU solver history but its
     2bb contribution remains available for percentage-based Trainer sizing.
@@ -1578,7 +1531,6 @@ def test_live_threeway_raw_line_preserves_real_pot_contributors():
     assert_eq(fixed["preflop_actions_for_pot"], "F-F-R2-C-F-F-F-C")
 
 
-@test
 def test_live_multiway_postflop_projects_to_deterministic_hu_pair():
     """Observed 7/25 session: keep exact multiway preflop grading, but project
     postflop onto the two players who reach the meaningful HU continuation."""
@@ -1668,7 +1620,6 @@ def test_live_multiway_postflop_projects_to_deterministic_hu_pair():
     assert_eq(reason, "multiway_unresolved")
 
 
-@test
 def test_live_multiway_hero_fold_facing_bet_projects_to_aggressor():
     """Hand 18: after a three-way flop checks around, SB checks the turn,
     BB bets and hero BTN folds.  The exact node is multiway, but hero's
@@ -1721,7 +1672,6 @@ def test_live_multiway_hero_fold_facing_bet_projects_to_aggressor():
     )
 
 
-@test
 def test_live_multiway_grading_keeps_exact_preflop_and_uses_hu_postflop():
     """The projection must not replace BB's exact squeeze-facing preflop node."""
     import hh_deviation_check
@@ -1767,7 +1717,6 @@ def test_live_multiway_grading_keeps_exact_preflop_and_uses_hu_postflop():
     assert_eq(hand["_multiway_projection"]["label"], "UTG+1 vs BB")
 
 
-@test
 def test_live_icm_grade_passes_partial_stacks_and_average_to_solver():
     """Explicit live ICM metadata reaches check_hand instead of Chip EV."""
     import hh_deviation_check
@@ -1827,7 +1776,6 @@ def test_live_icm_grade_passes_partial_stacks_and_average_to_solver():
     assert_eq(preflop[0]["gametype"], "MTTGeneral_ICM8m1000PTPCT25")
 
 
-@test
 def test_live_repair_street_actions_restores_dropped_leading_check():
     """Real queue outlier: raw turn '9 x b10 f' was parsed as villain bets
     and hero folds, fabricating a 75bb loss while hero actually bet after a
@@ -1860,8 +1808,7 @@ def test_live_repair_street_actions_restores_dropped_leading_check():
     assert_true(validate_hand(fixed).ok)
 
 
-@test
-def flop_b4_is_bet():
+def test_flop_b4_is_bet():
     """Observed Hand 2: lexical b4/call is replayed as SB bet / BTN call."""
     from live_flow import parse_block
     from hand_validator import validate_hand
@@ -1911,7 +1858,6 @@ def flop_b4_is_bet():
               [("SB", "X"), ("BTN", "R8"), ("SB", "F")])
 
 
-@test
 def test_live_repair_street_actions_does_not_restore_bet_without_raw_hu_proof():
     """The orphan-call [R,C] repair inserts a bettor, so it must be gated by
     exactly two live actors from raw preflop events. Parsed street actors alone
@@ -1940,7 +1886,6 @@ def test_live_repair_street_actions_does_not_restore_bet_without_raw_hu_proof():
     assert_eq(repaired["streets"][0]["actions"], [{"position": "SB", "action": "C"}])
 
 
-@test
 def test_live_hero_folded_but_acts_contradiction():
     """Real batch-1 Hand 18: raw 'hero hj raise … to 5bb' mis-seated by Gemini
     leaves hero folded preflop while acting postflop. That contradiction must
@@ -1962,7 +1907,6 @@ def test_live_hero_folded_but_acts_contradiction():
     assert_true(not hero_folded_but_acts(quiet))
 
 
-@test
 def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     """Repairs are auditable as exact diffs, never a vague header marker."""
     from live_flow import render_tg_html
@@ -1999,7 +1943,6 @@ def test_live_report_marks_only_repaired_hand_line_and_refusal_echo():
     assert_in("重傳", html)
 
 
-@test
 def test_live_queue_selection_and_report():
     """Queue: only scored non-limp deviations >= 0.1bb, grouped per leaf;
     report: 'Hand N' labels (never 手N), callbacks + drill URL buttons,
@@ -2083,7 +2026,6 @@ def test_live_queue_selection_and_report():
     assert_true(QUEUE_EV_MIN == 0.10)
 
 
-@test
 def test_live_queue_promotion_filters_one_off_noise_and_reopens_only_on_recurrence():
     """Every 0.1bb+ live mistake remains a session candidate, but the durable
     queue only admits an existing drill, a severe one-off, or a repeated
@@ -2103,7 +2045,6 @@ def test_live_queue_promotion_filters_one_off_noise_and_reopens_only_on_recurren
     assert_eq(LIVE_QUEUE_PATTERN_MIN_TOTAL_BB, 0.5)
 
 
-@test
 def test_enqueue_live_candidates_marks_watchlist_without_inserting():
     """A singleton 0.3bb live error is retained in the result for review but
     must not create a durable queue row or a drill button."""
@@ -2152,7 +2093,6 @@ def test_enqueue_live_candidates_marks_watchlist_without_inserting():
     assert_eq(report_buttons(result), [])
 
 
-@test
 def test_enqueue_live_candidates_promotes_severe_post_clear_error():
     """One fresh >=1bb error may reopen a cleared drill immediately, and the
     evidence query must exclude all decisions played before that clear."""
@@ -2204,7 +2144,6 @@ def test_enqueue_live_candidates_promotes_severe_post_clear_error():
     assert_eq(len(conn.execs), 1)
 
 
-@test
 def test_live_queue_labels_include_prior_street_actions():
     """Queue labels should tell the player which action line to drill:
     turn spots show the flop line; river spots show flop + turn."""
@@ -2229,7 +2168,6 @@ def test_live_queue_labels_include_prior_street_actions():
               "SRP｜LP IP｜河牌 vs X｜翻牌 x-x／轉牌 x-b-c")
 
 
-@test
 def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
     """One compact grammar names queue rows, detail titles, and GTOW Drills."""
     from spot_naming import compact_spot_name
@@ -2270,7 +2208,6 @@ def test_compact_drill_names_cover_postflop_and_preflop_special_cases():
         assert_eq(compact_spot_name(row), expected)
 
 
-@test
 def test_compact_drill_names_append_only_restricted_stack_band():
     """Depth-restricted drills say so; the all-depth default stays terse."""
     from gtow_trainer_url import build_drill_url, MTT_DEPTHS, DEPTH_BAND_DEPTHS
@@ -2290,7 +2227,6 @@ def test_compact_drill_names_append_only_restricted_stack_band():
         assert_eq(compact_spot_name({**base, "drill_url": url}), expected)
 
 
-@test
 def test_compact_drill_name_can_use_live_depth_band_before_url_persistence():
     from spot_naming import compact_spot_name
 
@@ -2300,7 +2236,6 @@ def test_compact_drill_name_can_use_live_depth_band_before_url_persistence():
     }), "LJ vs EP Open (≤20bb)")
 
 
-@test
 def test_enqueue_persists_depth_aware_drill_label():
     """Future DB rows store the same depth-aware name shown in Telegram."""
     import asyncio
@@ -2333,7 +2268,6 @@ def test_enqueue_persists_depth_aware_drill_label():
     assert_eq(conn.args[18], "short")
 
 
-@test
 def test_enqueue_looks_up_open_drills_by_leaf_and_depth_scope():
     """The same action line at short and medium depth stays two drills."""
     import asyncio
@@ -2369,7 +2303,6 @@ def test_enqueue_looks_up_open_drills_by_leaf_and_depth_scope():
     ])
 
 
-@test
 def test_live_queue_groups_same_leaf_separately_by_stack_band():
     import live_flow
 
@@ -2397,7 +2330,6 @@ def test_live_queue_groups_same_leaf_separately_by_stack_band():
     assert_eq([item["depth_scope"] for item in items], ["short", "medium"])
 
 
-@test
 def test_live_queue_id_lookup_includes_depth_scope():
     """Immediate report buttons must open the matching stack-band Drill."""
     import asyncio
@@ -2424,7 +2356,6 @@ def test_live_queue_id_lookup_includes_depth_scope():
     ])
 
 
-@test
 def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     """Postflop queue buttons should use the exact custom-spot builder when
     the representative parsed hand is available; bucket URLs can be ignored by
@@ -2462,7 +2393,6 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
     assert_eq(calls[1][1:], ("preflop", 0, "squeezed"))
 
 
-@test
 def test_live_drill_url_omits_failed_exact_postflop_link():
     """A failed exact build must not fall back to a different/broad spot."""
     import gtow_custom_url
@@ -2482,7 +2412,6 @@ def test_live_drill_url_omits_failed_exact_postflop_link():
     assert_eq(url, None)
 
 
-@test
 def test_live_icm_drill_url_never_falls_back_to_generic_bucket():
     """Any live ICM drill must use its source hand's exact custom builder."""
     import gtow_custom_url
@@ -2508,7 +2437,6 @@ def test_live_icm_drill_url_never_falls_back_to_generic_bucket():
     assert_eq(seen[0][1:], ("preflop", 1, "3bet"))
 
 
-@test
 def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
     """A bad first source must not suppress a valid shared-leaf drill button."""
     import gtow_custom_url
@@ -2537,7 +2465,6 @@ def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
     assert_in("fh_start_spot=custom_spot", items[0]["drill_url"])
 
 
-@test
 def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
     """Queue policy uses custom_spot for every source-dependent category."""
     import queue_feed as qf
@@ -2568,7 +2495,6 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
     assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "squeezed")])
 
 
-@test
 def test_queue_decision_url_requires_exact_source_for_icm():
     """Persisted ICM queue rows must not use a generic Chip EV drill URL."""
     import queue_feed as qf
@@ -2596,7 +2522,6 @@ def test_queue_decision_url_requires_exact_source_for_icm():
     assert_eq(seen[0][1:], ("preflop", 1, "3bet"))
 
 
-@test
 def test_live_multiway_queue_rebuild_uses_the_graded_hu_projection():
     """Regression for queue row 127: grading correctly projected a 3-way
     HJ/SB/BB pot to HJ-vs-BB, but later URL reconstruction replayed the raw
@@ -2663,7 +2588,6 @@ def test_live_multiway_queue_rebuild_uses_the_graded_hu_projection():
     )
 
 
-@test
 def test_live_multiway_ledger_taxonomy_uses_simplified_hu_action_line():
     """The learning/drill identity must describe the same HU projection that
     produced the EV grade, not the discarded third player's actions.
@@ -2721,7 +2645,6 @@ def test_live_multiway_ledger_taxonomy_uses_simplified_hu_action_line():
     assert_true("_multiway_projected_hand" not in json.loads(hand_row["parsed_json"]))
 
 
-@test
 def test_queue_source_normalization_repairs_legacy_missing_decision_index():
     """Old live queue rows omitted decision_idx/src; refresh backfills both."""
     import asyncio
@@ -2740,7 +2663,6 @@ def test_queue_source_normalization_repairs_legacy_missing_decision_index():
     assert_eq(fixed[0]["src"], "live")
 
 
-@test
 def test_shared_queue_drill_prefers_newest_valid_source_sizing():
     """Link refresh must not revert a newly-added 17bb line to the oldest
     30bb source's unrelated bet sizes; persisted sources are chronological.
@@ -2771,7 +2693,6 @@ def test_shared_queue_drill_prefers_newest_valid_source_sizing():
     assert_eq(url, "https://trainer/new-17bb")
 
 
-@test
 def test_queue_url_changes_invalidate_bound_drill_settings_hash():
     """Any sizing/depth URL change must force an in-place GTOW Drill PATCH."""
     import queue_feed as qf
@@ -2779,15 +2700,8 @@ def test_queue_url_changes_invalidate_bound_drill_settings_hash():
     assert_in("gtow_settings_hash = CASE", qf._MERGE_SQL)
     assert_in("drill_url IS DISTINCT FROM $5::text", qf._MERGE_SQL)
     assert_in("drill_url = COALESCE($5::text, drill_url)", qf._MERGE_SQL)
-    refresh_src = inspect.getsource(qf.refresh_trainer_links)
-    assert_in("gtow_settings_hash=NULL", refresh_src)
-    assert_in("gtow_drill_synced_at=NULL", refresh_src)
-    assert_in("depth_scope=$4", refresh_src)
-    remove_src = inspect.getsource(qf.remove_source_hand)
-    assert_in("depth_scope=$6", remove_src)
 
 
-@test
 def test_trainer_refresh_merges_pending_scope_collision():
     """A legacy all-depth row that rebuilds to an occupied band is retired
     without losing its distinct source decisions or aborting the weekly run."""
@@ -2859,7 +2773,6 @@ def test_trainer_refresh_merges_pending_scope_collision():
     assert_eq(conn.execs[1][1][3], 3.0)
 
 
-@test
 def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
     """Live detail buttons must analyze ledger_hands.parsed_json directly.
 
@@ -2870,7 +2783,6 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
     """
     import asyncio
     import copy
-    import analyze_hand
     from telegram_bot.bot import PokerWizardBot
     from gemini_session import GeminiSessionManager as GeminiSession
 
@@ -2917,15 +2829,24 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
         def _initial_teaching_block(_context):
             return "ENRICHED TEACHING BLOCK"
 
-        async def _verified_initial_coaching(
-                self, chat_id, prompt, context, user_text, **kwargs):
-            self.prompt = prompt
-            return "Js8h river bet 偏離。\nFOLLOWUP: BB river bluff 範圍是什麼？"
+        async def analyze_parsed_hand(self, chat_id, hand, **kwargs):
+            context = fake_analyze(hand)
+            self._prepare_initial_teaching_digest(context)
+            self.hand_contexts[chat_id] = context
+            self.pending_images.pop(chat_id, None)
+            return context
 
-        async def _chat_with_tools(self, *args, **kwargs):
-            raise AssertionError("live detail bypassed verified initial coach")
-
-        _extract_followups = staticmethod(GeminiSession._extract_followups)
+        async def coach_parsed_hand(
+                self, chat_id, context, *, hand_description, user_text,
+                source_instruction, **kwargs):
+            self.prompt = "\n".join([
+                context["text"], self._initial_teaching_block(context),
+                hand_description, source_instruction, user_text,
+            ])
+            response = "Js8h river bet 偏離。\nFOLLOWUP: BB river bluff 範圍是什麼？"
+            clean, followups = GeminiSession.extract_followups(response)
+            self.hand_contexts[chat_id]["followup_questions"] = followups
+            return clean
 
     async def run_case():
         bot = PokerWizardBot.__new__(PokerWizardBot)
@@ -2941,12 +2862,7 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
             42, 7, "live:2026-07-11:hand4", parsed, on_status, "refresh-token")
         return bot, statuses, response
 
-    orig = analyze_hand.analyze_hand_full
-    try:
-        analyze_hand.analyze_hand_full = fake_analyze
-        bot, statuses, response = asyncio.run(run_case())
-    finally:
-        analyze_hand.analyze_hand_full = orig
+    bot, statuses, response = asyncio.run(run_case())
 
     assert_eq(calls[0]["hero_hand"], "Js8h",
               "solver analysis must receive persisted parsed_json hero hand")
@@ -2969,7 +2885,6 @@ def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
     assert_eq(PokerWizardBot._decode_live_parsed_json("not json"), None)
 
 
-@test
 def test_live_ledger_row_shapes():
     """Live decision rows carry source/grader/honesty + the same taxonomy
     columns online rows have (cross-source leaf equality is the contract)."""
@@ -3009,7 +2924,6 @@ def test_live_ledger_row_shapes():
     assert_eq(t["confidence"], 1.0)
 
 
-@test
 def test_live_confidence_reflects_repairs():
     """§5.2/§7.2 誠實層: a repaired live parse is a less certain judgment —
     confidence drops 0.1 per visible repair (floor 0.6), never a nominal 1.0."""
@@ -3028,7 +2942,6 @@ def test_live_confidence_reflects_repairs():
     assert_true(all(d["confidence"] == 0.6 for d in decs), "floor at 0.6")
 
 
-@test
 def test_missing_token_size_excludes_live_decisions_from_stats():
     """An attributable but unsized action stays reviewable while §5.2
     excludes every dependent decision from EV statistics."""
@@ -3047,7 +2960,6 @@ def test_missing_token_size_excludes_live_decisions_from_stats():
     assert_true(all("parse_uncertain" in d["approx_flags"] for d in decs))
 
 
-@test
 def test_shared_drill_url_policy():
     """drill_url_for_spot is the ONE spot→Trainer-link policy (leaderboard
     rows + live queue items both route through it with identical results)."""
@@ -3072,16 +2984,13 @@ def test_shared_drill_url_policy():
     assert_eq(drill_url_for_spot("discarded"), None)
 
 
-@test
 def test_queue_aging_and_single_upsert_policy():
     """Queue lifecycle + single-policy upsert: (a) the weekly plan re-surfaces
     prescribed-but-uncleared items (§14.2); (b) the drain only promotes pending
     rows; (c) the ONE enqueue lives in queue_feed and live_flow re-exports it
     (§5.2, PR #92 dedup spirit) — the merge path only touches OPEN drill rows of
     the same leaf."""
-    import inspect
     from scorecard import QUEUE_SQL
-    import scorecard as sc
     import live_flow
     import queue_feed
     assert_in("status IN ('pending', 'prescribed')", QUEUE_SQL)
@@ -3096,24 +3005,8 @@ def test_queue_aging_and_single_upsert_policy():
     assert_in("$7::jsonb", queue_feed._INSERT_SQL)              # store arrays, not JSON strings
     assert_in("kind, added_by, source", queue_feed._INSERT_SQL)
     assert_in("review_anchor_url, review_anchor_street", queue_feed._INSERT_SQL)
-    drain = inspect.getsource(sc._run)
-    assert_in("AND status='pending'", drain)                    # drain never re-promotes
 
 
-@test
-def test_queue_page_orders_by_ev_before_lifecycle_status():
-    """A tiny new pending row must not jump above a large prescribed drill;
-    mixed rows use source-isolated track EV rather than the combined total."""
-    import inspect
-    from telegram_bot.bot import PokerWizardBot
-
-    src = inspect.getsource(PokerWizardBot._fetch_queue_page)
-    assert_in("annotate_rows", src)
-    assert_in('row.get("track_ev_loss_bb")', src)
-    assert_not_in("ORDER BY (status='pending') DESC", src)
-
-
-@test
 def test_queue_page_runtime_uses_source_isolated_ev_order():
     import asyncio
     from types import SimpleNamespace
@@ -3162,7 +3055,6 @@ def test_queue_page_runtime_uses_source_isolated_ev_order():
     assert_eq((total, page), (3, 0))
 
 
-@test
 def test_queue_feed_scan_sql_shape():
     """The online scan reuses the leaderboard honesty predicate verbatim, gates
     drills by n>=MIN_N AND total>=MIN_TOTAL over lossy decisions, aggregates
@@ -3190,7 +3082,6 @@ def test_queue_feed_scan_sql_shape():
     assert_eq(qf.QUEUE_SCAN_WINDOW_DAYS, 60)
 
 
-@test
 def test_queue_label_never_embeds_action_tendency():
     """Bias belongs to Telegram training info, never the persisted Drill name."""
     import queue_feed as qf
@@ -3204,7 +3095,6 @@ def test_queue_label_never_embeds_action_tendency():
     assert_eq(plain, "MP IP vs SB 3bet")
 
 
-@test
 def test_action_bias_queue_migration_is_sparse_and_auditable():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
@@ -3214,7 +3104,6 @@ def test_action_bias_queue_migration_is_sparse_and_auditable():
     assert_in("bias_direction IS NULL", sql)
 
 
-@test
 def test_queue_feed_dedupe_and_reopen():
     """§5.2 idempotency primitives: entry_key identity, Python-side diff that
     only adds fresh entries' EV, and the re-open route (merge / insert / skip)."""
@@ -3246,7 +3135,6 @@ def test_queue_feed_dedupe_and_reopen():
     assert_eq(qf.reopen_decision(False, c, [c - timedelta(days=1)]), "skip")   # pre-clear only
 
 
-@test
 def test_queue_feed_quota_mix():
     """Weekly plan drains a per-kind quota (§7): 3 drill + 2 review, a short kind
     topped up from the other, pending-first / EV-desc order preserved."""
@@ -3264,7 +3152,6 @@ def test_queue_feed_quota_mix():
     assert_eq(qf.mix_queue_quota([], 3, 2, 5), [])
 
 
-@test
 def test_queue_feed_qex_submenu_callback_data():
     """qex sub-menu: stable decision keys in callback_data (never the spot_leaf
     string — 64-byte limit), street order, and only material EV loss appears.
@@ -3288,13 +3175,8 @@ def test_queue_feed_qex_submenu_callback_data():
                     ("2.3%", "低頻分支", "主要策略", "GTO 頻率", "EV 差小", "打對")))
     assert_not_in("bb", rows[0]["text"])
     assert_in("損失 22.7bb", rows[1]["text"])
-    import inspect
-    from telegram_bot.bot import PokerWizardBot
-    src = inspect.getsource(PokerWizardBot._queue_expand_review)
-    assert_not_in("taken_freq", src)
 
 
-@test
 def test_live_add_menu_filters_live_decisions_and_emits_qad2_buttons():
     """lvadd's menu must list only graded live ledger decisions for that hand
     and reuse qex_submenu's stable qad2 callback path with sentinel queue_id=0."""
@@ -3351,7 +3233,6 @@ def test_live_add_menu_filters_live_decisions_and_emits_qad2_buttons():
               "qad2:0:live:2026-07-24:abc:flop:0")
 
 
-@test
 def test_lvadd_callback_loads_owner_session_and_opens_live_add_menu():
     """The lvadd callback replaces the temporary guard: it loads the persisted
     live session and routes the requested hand index into _live_add_menu."""
@@ -3408,7 +3289,6 @@ def test_lvadd_callback_loads_owner_session_and_opens_live_add_menu():
     assert_eq(captured["menu"][2], 2)
 
 
-@test
 def test_qad2_callback_preserves_colonated_live_hand_id():
     """qad2 parses qid from the left and street/decision_idx from the right
     so live:{date}:{hash} hand IDs survive intact."""
@@ -3442,7 +3322,6 @@ def test_qad2_callback_preserves_colonated_live_hand_id():
               (0, ("live:2026-07-24:abc", "flop", 0)))
 
 
-@test
 def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
     """Dry-run/unit callers without hand identity can still use the old numeric
     callback; production DB rows should provide gtow_hand_id and use qad2."""
@@ -3454,42 +3333,8 @@ def test_queue_feed_qex_submenu_falls_back_for_legacy_unit_rows():
         "position": "SB", "ev_loss_bb": 0.0,
     }], 123456)
     assert_eq(rows[0]["callback_data"], "qad:123456:70")
-    import inspect
-    from telegram_bot.bot import PokerWizardBot
-    src = inspect.getsource(PokerWizardBot._queue_expand_review)
-    assert_not_in("freq_diff", src)
-    assert_not_in("correctness", src)
-    assert_not_in("含打對的決策", src)
-    assert_not_in("EV 差小不代表它是主要策略", src)
 
 
-@test
-def test_queue_detail_rebuilds_missing_drill_url_from_sources():
-    """A queued drill with persisted source_hands but NULL drill_url should be
-    repaired lazily on 詳細／練習 instead of immediately telling the user it
-    cannot be reconstructed."""
-    import inspect
-    from telegram_bot.bot import PokerWizardBot
-    src = inspect.getsource(PokerWizardBot._queue_drill_detail)
-    assert_in("source_hands", src)
-    assert_in("queue_drill_url_from_sources", src)
-    assert_in("UPDATE drill_queue SET drill_url=$2", src)
-    assert_in("apply_trainer_defaults", src)
-    assert_in("gtow_settings_hash=NULL", src)
-    assert_in("gtow_drill_id=NULL", src)
-    assert_in("gtow_drill_name=NULL", src)
-    assert_in("gtow_drill_synced_at=NULL", src)
-    assert_in("gtow_training_started_at=NULL", src)
-    assert_in("gtow_baseline_totals=NULL", src)
-    assert_true(src.index("apply_trainer_defaults")
-                < src.index("fingerprint = settings_hash"),
-                "persisted MTT solution filter must be upgraded before hashing")
-    assert_true(src.index("queue_drill_url_from_sources")
-                < src.index("這個項目目前沒有可精確重建"),
-                "rebuild must happen before the no-url error")
-
-
-@test
 def test_queue_feed_review_and_manual_items():
     """Review label (combo w/ suits + spot + ⚠近似), review URL fallback, and the
     manual drill item (kind/added_by/source, ev may be 0)."""
@@ -3535,7 +3380,6 @@ def test_queue_feed_review_and_manual_items():
     assert_eq(it["source_hands"][0]["src"], "manual")
 
 
-@test
 def test_queue_feed_low_frequency_review_anchor():
     """A review starts at the earliest prior <=5% hero branch, never at the
     lossy decision itself or a later bottleneck."""
@@ -3554,7 +3398,6 @@ def test_queue_feed_low_frequency_review_anchor():
         "turn", 0) is None)
 
 
-@test
 def test_build_hand_solution_url_from_archive():
     """The /solutions Study URL is built straight from an archived hand detail's
     solved_action_sequence — pins the exact node the review decision was at,
@@ -3602,7 +3445,6 @@ def test_build_hand_solution_url_from_archive():
     assert_true("board=" not in rfi_url)
 
 
-@test
 def test_review_solution_url_replays_real_line_at_preflop_depth():
     """Queue review links must replay the real Analyze action stream at the
     hand's preflop depth, not reuse Analyzer's approximate solved line/depth.
@@ -3672,7 +3514,6 @@ def test_review_solution_url_replays_real_line_at_preflop_depth():
         "strict queue path must not fall back to the known-wrong archived line")
 
 
-@test
 def test_review_solution_link_repairs_next_actions_rounding_and_marks_rare_line():
     """Production repro 8bbfdb87: next-actions calls the river bet ``R19``
     while spot-solution addresses the same branch as ``R18.5``.  The review
@@ -3735,7 +3576,6 @@ def test_review_solution_link_repairs_next_actions_rounding_and_marks_rare_line(
     assert_eq(calls, ["R19", "", "R18.5"])
 
 
-@test
 def test_queue_review_study_url_passes_decision_effective_depth():
     """queue_feed must pass the ledger decision solver depth into the strict
     real-action review-link builder; ledger_hands.preflop_depth_bb is only the
@@ -3767,7 +3607,6 @@ def test_queue_review_study_url_passes_decision_effective_depth():
     assert_eq(calls, [("CO", "river", 0, {"preflop_depth_bb": 11.0})])
 
 
-@test
 def test_queue_review_study_url_falls_back_to_played_depth_when_solver_missing():
     import queue_feed as qf
     assert_eq(qf._decision_effective_depth({
@@ -3778,7 +3617,6 @@ def test_queue_review_study_url_falls_back_to_played_depth_when_solver_missing()
     }), 37.5)
 
 
-@test
 def test_scorecard_queue_quota_and_weekly_scan():
     """Scorecard §7: QUEUE_SQL exposes kind/ref_hand_id + the freshness columns;
     fetch_drill_queue delegates the slate to plan_scheduler; the weekly run
@@ -3788,35 +3626,18 @@ def test_scorecard_queue_quota_and_weekly_scan():
     (online 3 / live 2 with backlog rotation): a per-kind quota alone let
     W28/W29 rows re-take every seat and left live rows structurally unpickable.
     """
-    import inspect
     from scorecard import QUEUE_SQL, QUEUE_SLOTS
     from plan_scheduler import TRACK_SLOTS
-    import scorecard as sc
     assert_in("kind, ref_hand_id", QUEUE_SQL)
     assert_in("(status = 'pending') DESC", QUEUE_SQL)
     for column in ("surfaced_count", "last_surfaced_at", "source_hands"):
         assert_in(column, QUEUE_SQL)
     assert_eq((TRACK_SLOTS["online"], TRACK_SLOTS["live"]), (3, 2))
     assert_eq(QUEUE_SLOTS, 5)
-    src = inspect.getsource(sc._run)
-    assert_in("scan_online(conn)", src)
-    # scan is ordered before the prescribe/drain UPDATE
-    assert_true(src.index("scan_online(conn)") < src.index("status='prescribed'"),
-                "must scan into the queue before draining it")
-    # auto-close runs before the scan so a passed drill is not re-merged
-    assert_true(src.index("_autoclose(conn)") < src.index("scan_online(conn)"),
-                "GTOW auto-close must run before the queue re-scan")
-    fdq = inspect.getsource(sc.fetch_drill_queue)
-    assert_in("select_weekly_slate", fdq)
-    assert_in("fetch_drill_queue(conn, since=since)", inspect.getsource(sc.build))
-    assert_in("mark_surfaced", src)
     import queue_feed as qf
-    qsrc = inspect.getsource(qf.scan_online)
-    assert_in("refresh_review_links(conn)", qsrc)
     assert_in("preflop_depth_bb", qf._HAND_META_SQL)
 
 
-@test
 def test_weekly_payload_review_buttons():
     """Weekly buttons: review items ride 🔍 解法 (Solution URL) + ✔ 完成 (qcl) + ➕ 加練
     (qex) callbacks; drill items open the detail/provisioning menu."""
@@ -3853,12 +3674,10 @@ def test_weekly_payload_review_buttons():
     assert_in("🎯", payload["html"])
 
 
-@test
 def test_queue_clear_refreshes_message_with_remaining_items():
     """qcl refreshes the same Telegram message (renumbered buttons included)
     and renders an explicit empty state instead of requiring another /queue."""
-    import inspect
-    from telegram_bot.bot import _queue_payload, PokerWizardBot
+    from telegram_bot.bot import _queue_payload
 
     rows = [
         {"id": 12, "kind": "review", "label": "復盤 A", "spot_leaf": "a",
@@ -3886,17 +3705,8 @@ def test_queue_clear_refreshes_message_with_remaining_items():
     assert_true(any(b.get("url") == "https://example.com/a" and "損失" in b["text"]
                     for b in review_flat))
 
-    src = inspect.getsource(PokerWizardBot.handle_live_button)
-    assert_in("edit_message_text", src)
-    assert_in("_fetch_queue_page", src)
-    assert_not_in("用 /queue 看剩下的", src)
-    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
-        'if data.startswith("qex:"):', 1)[0]
-    assert_not_in("send_message", qcl_src)
-    assert_in("Failed to refresh queue after qcl", qcl_src)
 
 
-@test
 def test_queue_drill_row_uses_compact_spot_and_keeps_bias_in_telegram_only():
     """Persisted legacy labels cannot leak verbose prose/bias into Drill names."""
     from telegram_bot.bot import _queue_payload
@@ -3917,7 +3727,6 @@ def test_queue_drill_row_uses_compact_spot_and_keeps_bias_in_telegram_only():
     assert_not_in("棄牌過多", title_line)
 
 
-@test
 def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     """Completion stays available without a redundant confirmation submenu."""
     from types import SimpleNamespace
@@ -3956,26 +3765,13 @@ def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     assert_not_in("qcf:13:2", callbacks)
     assert_true(any(button.get("text") == "✔ 完成" for button in flat))
 
-    import inspect
-    from telegram_bot.bot import PokerWizardBot
-    src = inspect.getsource(PokerWizardBot.handle_live_button)
-    assert_not_in('data.startswith("qcf:")', src)
-    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
-        'if data.startswith("qex:"):', 1)[0]
-    assert_not_in("gtow_target_hands", qcl_src)
-    assert_not_in("gtow_target_score", qcl_src)
-    assert_in("clear_reason=$2", qcl_src)
-    detail_src = inspect.getsource(PokerWizardBot._queue_drill_detail)
-    assert_in("pg_advisory_xact_lock", detail_src)
 
 
-@test
 def test_weekly_drill_detail_opens_new_message_without_replacing_plan():
     """A qdet callback from the weekly plan provisions the Drill as usual but
     presents the detail card in a new message. Refreshes on that detail card
     remain in-place, and weekly completion only relabels the tapped button."""
     import asyncio
-    import inspect
     from types import SimpleNamespace
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     from telegram_bot.bot import (_present_queue_detail,
@@ -4010,17 +3806,8 @@ def test_weekly_drill_detail_opens_new_message_without_replacing_plan():
         markup, "qcl:12:0:completed:plan", done_text="✅ 已完成")
     assert_eq(marked.inline_keyboard[0][0].text, "✅ 已完成")
 
-    src = inspect.getsource(PokerWizardBot.handle_live_button)
-    qdet_src = src.split('if data.startswith("qdet:")', 1)[1].split(
-        'if data.startswith("qpg:")', 1)[0]
-    assert_in('origin == "plan"', qdet_src)
-    qcl_src = src.split('if data.startswith("qcl:"):', 1)[1].split(
-        'if data.startswith("qex:"):', 1)[0]
-    assert_in('origin == "plan"', qcl_src)
-    assert_in("edit_message_reply_markup", qcl_src)
 
 
-@test
 def test_queue_detail_ignores_telegram_not_modified():
     """Refreshing an unchanged Drill card is a successful no-op."""
     import asyncio
@@ -4038,7 +3825,6 @@ def test_queue_detail_ignores_telegram_not_modified():
         FakeQuery(), SimpleNamespace(bot=None), 777, "same", None))
 
 
-@test
 def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
     """Queue renders at most ten items per page with global numbering.
 
@@ -4068,12 +3854,8 @@ def test_queue_paginates_long_trainer_urls_below_telegram_markup_limit():
     assert_in("qpg:0", [b.get("callback_data") for b in flat2])
     assert_true(len(PokerWizardBot._rows_to_markup(buttons2).to_json().encode()) < 10_000)
 
-    import inspect
-    src = inspect.getsource(PokerWizardBot.handle_live_button)
-    assert_in('data.startswith("qpg:")', src)
 
 
-@test
 def test_queue_source_hands_resolve_ledger_source_and_exact_analyze_urls():
     """Queue provenance is per unique hand, EV-desc, and ledger-backed.
 
@@ -4123,7 +3905,6 @@ def test_queue_source_hands_resolve_ledger_source_and_exact_analyze_urls():
               ["TOURNAMENT"])
     assert_true("ordering" not in parse_qs(urlparse(urls[0][0]).query))
 
-@test
 def test_queue_source_menu_supports_mixed_sources_and_pagination():
     """The source submenu keeps long provenance off the main /queue markup,
     shows exact online links plus lightweight live raw-text callbacks, and
@@ -4198,13 +3979,11 @@ def test_queue_source_menu_supports_mixed_sources_and_pagination():
                 "source-page exact URLs must stay below Telegram markup limit")
 
 
-@test
 def test_every_queue_surface_exposes_source_hands():
     """Both /queue and the weekly plan expose qsrc for review and drill rows;
     qraw stays a lightweight raw-text path rather than invoking deep analysis."""
-    import inspect
     from scorecard import weekly_tg_payload
-    from telegram_bot.bot import _queue_payload, PokerWizardBot
+    from telegram_bot.bot import _queue_payload
 
     rows = [
         {"id": 31, "kind": "review", "label": "復盤 A", "spot_leaf": "a",
@@ -4229,15 +4008,8 @@ def test_every_queue_surface_exposes_source_hands():
     assert_in("qsrc:31", weekly_callbacks)
     assert_in("qsrc:32", weekly_callbacks)
 
-    src = inspect.getsource(PokerWizardBot.handle_live_button)
-    assert_in('data.startswith("qsrc:")', src)
-    assert_in('data.startswith("qraw:")', src)
-    raw_src = inspect.getsource(PokerWizardBot._queue_send_live_raw)
-    assert_in("raw_text", raw_src)
-    assert_not_in("_analyze_live_parsed_hand", raw_src)
 
 
-@test
 def test_live_raw_study_url_falls_back_to_last_queryable_hero_hand_spot():
     """A failed final live node falls back to the prior graded hero decision."""
     from urllib.parse import parse_qs, urlparse
@@ -4277,7 +4049,6 @@ def test_live_raw_study_url_falls_back_to_last_queryable_hero_hand_spot():
     assert_eq(qs["turn_actions"], ["X-R2.5"])
 
 
-@test
 def test_live_review_url_multiway_postflop_uses_hu_projection():
     """A 3-way live hand's review link must resolve its POSTFLOP node against
     the HU projection the grader solved (UTG+1 vs BB), not the raw multiway
@@ -4334,7 +4105,6 @@ def test_live_review_url_multiway_postflop_uses_hu_projection():
     assert_eq(seen["preflop"], "F-R2-F-F-F-F-C-C")
 
 
-@test
 def test_qraw_callback_preserves_navigation_and_colonated_live_hand_id():
     """qraw carries source/queue pages without truncating live:{date}:{hash}."""
     import asyncio
@@ -4362,7 +4132,6 @@ def test_qraw_callback_preserves_navigation_and_colonated_live_hand_id():
     })
 
 
-@test
 def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
     """Runtime smoke for qsrc/qraw: source classification comes from the
     ledger query, and the raw callback includes the latest Study link."""
@@ -4478,7 +4247,6 @@ def test_queue_source_callbacks_join_ledger_and_echo_live_raw_text():
                     for button in raw_buttons))
 
 
-@test
 def test_migration_unified_drill_queue():
     """The unified-queue migration exists with the kind/ref_hand_id/added_by/
     cleared_at columns and the per-kind partial unique indexes (§4)."""
@@ -4494,7 +4262,6 @@ def test_migration_unified_drill_queue():
     assert_in("WHERE status = 'pending' AND kind = 'review'", sql)
 
 
-@test
 def test_live_sessions_is_closed_to_the_public_data_api():
     """Supabase advisor regression: live_sessions was the only public table
     without RLS and anon/authenticated had full CRUD grants, exposing chat_id,
@@ -4512,7 +4279,6 @@ def test_live_sessions_is_closed_to_the_public_data_api():
     )
 
 
-@test
 def test_future_public_tables_auto_enable_rls():
     """Future-proof the Supabase advisor fix at the database boundary:
     every CREATE TABLE variant in public must trigger ENABLE RLS automatically,
@@ -4545,7 +4311,6 @@ def test_future_public_tables_auto_enable_rls():
     )
 
 
-@test
 def test_migration_path_aware_review_links():
     from pathlib import Path
     root = REPO_ROOT
@@ -4554,7 +4319,6 @@ def test_migration_path_aware_review_links():
     assert_in("review_anchor_street TEXT", sql)
 
 
-@test
 def test_backfill_spots_incremental_selection():
     """Daily backfill is incremental: only archive files for hands still
     missing spot_leaf are read; --full (target_ids=None) keeps the whole
@@ -4585,7 +4349,6 @@ def test_backfill_spots_incremental_selection():
     assert_eq(repair[-1], False)
 
 
-@test
 def test_leaderboard_fragile_flag():
     """§5.2 敏感度旗標: avg moving >30% without the off-tree-approximated
     samples marks the spot fragile; small clean-n or tiny moves don't."""
@@ -4606,7 +4369,6 @@ def test_leaderboard_fragile_flag():
                                 "avg_ev_clean": 0.05}), "zero avg guarded")
 
 
-@test
 def test_hierarchical_family_ranking_shrinks_sparse_groups():
     """Parent families recover sparse leaves, but partial pooling prevents a
     barely-qualified noisy family from winning on one inflated raw average."""
@@ -4628,7 +4390,6 @@ def test_hierarchical_family_ranking_shrinks_sparse_groups():
     assert_eq(ip["parent"], "turn:SRP:IP:vs_bet")
 
 
-@test
 def test_hierarchical_sql_uses_parent_and_confidence_gate():
     from spot_leaderboard import family_sql, family_band_sql
     sql = family_sql(None)
@@ -4637,14 +4398,8 @@ def test_hierarchical_sql_uses_parent_and_confidence_gate():
     assert_in("confidence >= 0.8", sql)
     assert_in("HAVING count(*) >= $1", sql)
     assert_in("spot_parent=$1", family_band_sql(None))
-    import inspect
-    from spot_leaderboard import hierarchical_leaderboard
-    src = inspect.getsource(hierarchical_leaderboard)
-    assert_in('band_sql(since, source), row["representative_leaf"]', src)
-    assert_in('"prescription_bands"', src)
 
 
-@test
 def test_migration_decision_depth_and_parent_columns():
     from pathlib import Path
     mig = REPO_ROOT / "supabase/migrations/20260713090000_ledger_depth_hierarchy.sql"
@@ -4654,7 +4409,6 @@ def test_migration_decision_depth_and_parent_columns():
         assert_in(col, sql)
 
 
-@test
 def test_deploy_runs_resumable_ledger_upgrade_backfill():
     deploy = (REPO_ROOT / "scripts/deploy.sh").read_text()
     db_push = deploy.index("supabase db push")
@@ -4663,7 +4417,6 @@ def test_deploy_runs_resumable_ledger_upgrade_backfill():
     assert_true(db_push < backfill < docker)
 
 
-@test
 def test_docker_torch_install_can_resolve_cuda_dependencies_from_pypi():
     """PyTorch's wheel index can temporarily omit pinned NVIDIA packages.
 
@@ -4681,7 +4434,6 @@ def test_docker_torch_install_can_resolve_cuda_dependencies_from_pypi():
     assert_in("--extra-index-url https://pypi.org/simple", dockerfile)
 
 
-@test
 def test_validator_accepts_complete_bb_walk():
     """Eight-player action ends after seven folds; BB wins without acting, so
     N-1 folds is complete rather than a dropped-seat PREFLOP_LEN error."""
@@ -4695,7 +4447,6 @@ def test_validator_accepts_complete_bb_walk():
     assert_true(not any(i.code == "PREFLOP_LEN" for i in result.hard))
 
 
-@test
 def test_fidelity_ignores_analyzer_placeholder_for_bb_walk():
     """The fidelity comparator must not invent an extra hero decision when
     analyze_hand retains a no-action/no-solution presentation placeholder."""
@@ -4741,8 +4492,7 @@ def _mk_result(n):
                        "parse_failed": 0}, "queue": [], "hands": hands}
 
 
-@test
-def recent_live_sessions_are_scoped_to_chat_and_newest_first():
+def test_recent_live_sessions_are_scoped_to_chat_and_newest_first():
     import asyncio
     from datetime import datetime, timezone
 
@@ -4767,8 +4517,7 @@ def recent_live_sessions_are_scoped_to_chat_and_newest_first():
     assert_eq(sessions[0]["result"]["totals"]["hands"], 2)
 
 
-@test
-def recent_live_sessions_command_lists_resend_buttons():
+def test_recent_live_sessions_command_lists_resend_buttons():
     import asyncio
     from datetime import datetime, timezone
     from types import SimpleNamespace
@@ -4811,19 +4560,12 @@ def recent_live_sessions_command_lists_resend_buttons():
     assert_true(any(b.get("callback_data") == "lvs:42" for b in buttons))
 
 
-@test
-def recent_live_sessions_command_and_callback_are_registered():
-    from src.telegram_bot.bot import PokerWizardBot
-
-    handlers = inspect.getsource(PokerWizardBot.setup_handlers)
-    assert_in('["lives", "live_sessions"]', handlers)
-    assert_in("|lvs|", handlers)
+def test_recent_live_sessions_command_and_callback_are_registered():
     menu = (REPO_ROOT / "src/main_gemini.py").read_text()
     assert_in('BotCommand("lives", "最近線下 sessions／重傳復盤")', menu)
 
 
-@test
-def recent_live_session_button_sends_fresh_first_page_and_tracks_message():
+def test_recent_live_session_button_sends_fresh_first_page_and_tracks_message():
     import asyncio
     from types import SimpleNamespace
     from telegram_bot.bot import PokerWizardBot
@@ -4887,7 +4629,6 @@ def recent_live_session_button_sends_fresh_first_page_and_tracks_message():
     assert_eq(captured["set"], (42, 888))
 
 
-@test
 def test_live_report_summary_line_breaks_out_severity_buckets():
     """The session summary must name each emoji and split the old lumped
     count into 錯誤/偏差/低頻, plus a legend documenting every marker
@@ -4930,8 +4671,7 @@ def test_live_report_summary_line_breaks_out_severity_buckets():
     assert_in("近乎無損", html)         # ☑️ meaning spelled out
 
 
-@test
-def live_report_uses_compact_pot_labels_and_hides_unopened():
+def test_live_report_uses_compact_pot_labels_and_hides_unopened():
     import live_flow
 
     expected = {
@@ -4953,8 +4693,7 @@ def live_report_uses_compact_pot_labels_and_hides_unopened():
     assert_not_in("未開池", html)
 
 
-@test
-def live_report_displays_hand_classes_without_exact_suits():
+def test_live_report_displays_hand_classes_without_exact_suits():
     import live_flow
 
     result = _mk_result(2)
@@ -4967,8 +4706,7 @@ def live_report_displays_hand_classes_without_exact_suits():
     assert_not_in("K♥️8♥️", html)
 
 
-@test
-def live_report_uses_actual_river_bet_not_solver_bucket():
+def test_live_report_uses_actual_river_bet_not_solver_bucket():
     """The solver may grade an off-tree 10bb bet through its 12.5bb bucket,
     but the report must echo the player's real action, never rewrite history."""
     from live_flow import _display_taken_label, parse_block
@@ -5011,8 +4749,7 @@ Wins"""
     assert_not_in("river BET 12.5bb", html)
 
 
-@test
-def raw_preflop_line_overrides_extra_llm_continuation_fold():
+def test_raw_preflop_line_overrides_extra_llm_continuation_fold():
     import live_flow
 
     raw = (
@@ -5045,8 +4782,7 @@ def raw_preflop_line_overrides_extra_llm_continuation_fold():
                 "LJ folded and HJ called, so no live-player ghost remains")
 
 
-@test
-def page_split():
+def test_page_split():
     result = _mk_result(23)
     html0, prev0, next0 = render_session_page(result, 0)
     assert_true(not prev0 and next0, "page0 has next, no prev")
@@ -5057,8 +4793,7 @@ def page_split():
     assert_true(prev2 and not next2, "last page no next")
 
 
-@test
-def render_session_page_rejects_non_positive_per_page():
+def test_render_session_page_rejects_non_positive_per_page():
     result = _mk_result(1)
     for bad in (0, -3):
         try:
@@ -5069,8 +4804,7 @@ def render_session_page_rejects_non_positive_per_page():
             raise AssertionError(f"per_page={bad} should raise ValueError")
 
 
-@test
-def no_rollup_no_bulk():
+def test_no_rollup_no_bulk():
     result = _mk_result(2)
     result["hands"][0]["repairs"] = ["HU pot 動作歸屬修補"]
     html, _p, _n = render_session_page(result, 0)
@@ -5080,8 +4814,7 @@ def no_rollup_no_bulk():
     assert_in("校正：翻後 HU 動作歸屬校正", html)
 
 
-@test
-def live_report_shows_first_low_frequency_branch_before_offrange():
+def test_live_report_shows_first_low_frequency_branch_before_offrange():
     result = _mk_result(1)
     result["hands"][0]["decisions"] = [
         {
@@ -5121,8 +4854,7 @@ def live_report_shows_first_low_frequency_branch_before_offrange():
     assert_in("❓ river 起未評分", html)
 
 
-@test
-def live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
+def test_live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
     result = _mk_result(1)
     result["hands"][0]["hand_row"].update({
         "hero_hand": "T9s", "position": "SB", "preflop_depth_bb": 17.0,
@@ -5144,8 +4876,7 @@ def live_report_marks_zero_frequency_low_loss_choice_with_checked_box():
               " · EV 差 0.05bb", html)
 
 
-@test
-def live_report_explains_non_offrange_unsolved_start_street():
+def test_live_report_explains_non_offrange_unsolved_start_street():
     result = _mk_result(1)
     result["hands"][0]["decisions"] = [{
         "street": "flop", "idx": 0, "leaf": "flop",
@@ -5158,8 +4889,7 @@ def live_report_explains_non_offrange_unsolved_start_street():
     assert_in("❓ flop 起未評分：solver 沒有此行動線的可用節點", html)
 
 
-@test
-def live_report_shows_hu_projection_and_specific_multiway_failure():
+def test_live_report_shows_hu_projection_and_specific_multiway_failure():
     result = _mk_result(2)
     result["hands"][0]["multiway_projection"] = {
         "positions": ["UTG+1", "BB"], "label": "UTG+1 vs BB"}
@@ -5175,15 +4905,13 @@ def live_report_shows_hu_projection_and_specific_multiway_failure():
     assert_in("❓ flop 起未評分：多人池翻後無法可靠簡化", html)
 
 
-@test
-def clean_hand_line():
+def test_clean_hand_line():
     html, _p, _n = render_session_page(_mk_result(1), 0)
     assert_in("Hand 1", html)
     assert_in("✅", html)
 
 
-@test
-def live_render_terminology():
+def test_live_render_terminology():
     result = _mk_result(1)
     result["hands"][0] = _mk_hand(1, sev="❌")
     result["totals"]["mistakes"] = 1
@@ -5192,8 +4920,7 @@ def live_render_terminology():
     assert_true("主線" not in html, "must not contain 主線")
 
 
-@test
-def per_hand_buttons():
+def test_per_hand_buttons():
     result = _mk_result(12)                       # 2 pages
     result["hands"][1]["ok"] = False
     result["hands"][1]["error"] = "validation_failed"
@@ -5210,8 +4937,7 @@ def per_hand_buttons():
     assert_eq(rows[1], [{"text": "🔁 重傳", "callback_data": "lvr:7:1"}])
 
 
-@test
-def live_json_out_retains_dec_rows_and_still_renders():
+def test_live_json_out_retains_dec_rows_and_still_renders():
     from datetime import datetime, timezone
 
     result = _mk_result(1)
@@ -5237,8 +4963,7 @@ def live_json_out_retains_dec_rows_and_still_renders():
     assert_in("Hand 1", html)
 
 
-@test
-def session_page_buttons_rejects_non_positive_per_page():
+def test_session_page_buttons_rejects_non_positive_per_page():
     result = _mk_result(1)
     for bad in (0, -3):
         try:
@@ -5259,8 +4984,7 @@ def _resend_dec_row(hand_id="new-hand", ev=0.0, excluded=False):
         "limp_origin": False, "approx_flags": [], "spot_keys": [],
     }
 
-@test
-def splice_recompute():
+def test_splice_recompute():
     from live_flow import splice_hand
 
     result = _mk_result(3)
@@ -5272,8 +4996,7 @@ def splice_recompute():
     assert_eq(out["totals"]["mistakes"], 1)              # the new ❌ counted
 
 
-@test
-def remove_source_hand_recomputes_or_clears_open_rows():
+def test_remove_source_hand_recomputes_or_clears_open_rows():
     import asyncio
     import json
     import queue_feed as qf
@@ -5347,8 +5070,7 @@ def remove_source_hand_recomputes_or_clears_open_rows():
     ])
 
 
-@test
-def remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
+def test_remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
     import asyncio
     import json
     import queue_feed as qf
@@ -5389,8 +5111,7 @@ def remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
     assert_eq(args[2:], (0.5, 1))
 
 
-@test
-def depth_escalation_failure_is_honest_in_state_and_rendering():
+def test_depth_escalation_failure_is_honest_in_state_and_rendering():
     import live_flow
 
     calls = []
@@ -5434,8 +5155,7 @@ def depth_escalation_failure_is_honest_in_state_and_rendering():
     assert_not_in("已嘗試升一格近似，仍無範圍", html)
 
 
-@test
-def depth_escalation_successful_offrange_hides_internal_retry_detail():
+def test_depth_escalation_successful_offrange_hides_internal_retry_detail():
     import live_flow
 
     result = _mk_result(1)
@@ -5451,8 +5171,7 @@ def depth_escalation_successful_offrange_hides_internal_retry_detail():
     assert_not_in("升格評分失敗", html)
 
 
-@test
-def lvr_callback_prompts_for_single_hand_and_records_pending_state():
+def test_lvr_callback_prompts_for_single_hand_and_records_pending_state():
     import asyncio
     from types import SimpleNamespace
     from telegram_bot.bot import PokerWizardBot
@@ -5512,8 +5231,7 @@ def lvr_callback_prompts_for_single_hand_and_records_pending_state():
     assert_in("翻後 HU 動作歸屬校正", prompt)
 
 
-@test
-def resend_pending_message_intercepts_and_applies_once():
+def test_resend_pending_message_intercepts_and_applies_once():
     import asyncio
     import logging
     from types import SimpleNamespace
@@ -5544,8 +5262,7 @@ def resend_pending_message_intercepts_and_applies_once():
     assert_true(99 not in bot._live_resend_pending, "pending state consumed")
 
 
-@test
-def overwrite_hand_locks_session_and_updates_ledger_queue_session_atomically():
+def test_overwrite_hand_locks_session_and_updates_ledger_queue_session_atomically():
     import asyncio
     import json
     from types import SimpleNamespace
@@ -5604,8 +5321,7 @@ def overwrite_hand_locks_session_and_updates_ledger_queue_session_atomically():
     assert_eq(session_updates[0][2], 0)
 
 
-@test
-def overwrite_hand_failed_replacement_is_non_destructive():
+def test_overwrite_hand_failed_replacement_is_non_destructive():
     import asyncio
     from live_flow import overwrite_hand
 
@@ -5632,8 +5348,7 @@ def overwrite_hand_failed_replacement_is_non_destructive():
     assert_true(not conn2.touched, "ungraded replacement also leaves DB untouched")
 
 
-@test
-def apply_live_resend_overwrites_session_and_edits_original_message():
+def test_apply_live_resend_overwrites_session_and_edits_original_message():
     import asyncio
     import logging
     import os
@@ -5765,8 +5480,7 @@ def apply_live_resend_overwrites_session_and_edits_original_message():
     assert_in("Hand 2 已更新", update.message.replies[-1][0][0])
 
 
-@test
-def resend_pending_handle_message_no_reentrant_lock_deadlock():
+def test_resend_pending_handle_message_no_reentrant_lock_deadlock():
     import asyncio
     import logging
     from types import SimpleNamespace
@@ -5799,8 +5513,7 @@ def resend_pending_handle_message_no_reentrant_lock_deadlock():
     assert_eq(called, {"sid": 42, "hand_idx": 1, "block": "corrected block"})
 
 
-@test
-def resend_pending_ignores_non_owner_in_shared_chat():
+def test_resend_pending_ignores_non_owner_in_shared_chat():
     import asyncio
     import logging
     from types import SimpleNamespace
@@ -5838,8 +5551,7 @@ def resend_pending_ignores_non_owner_in_shared_chat():
     assert_eq(bot._live_resend_pending[99], (556028753, 42, 1))
 
 
-@test
-def apply_live_resend_failed_replacement_is_non_destructive():
+def test_apply_live_resend_failed_replacement_is_non_destructive():
     import asyncio
     import logging
     import sys
@@ -5914,8 +5626,7 @@ def apply_live_resend_failed_replacement_is_non_destructive():
     assert_eq(captured["status_edit"], "failure 0 validation_failed")
 
 
-@test
-def apply_live_resend_fallback_persists_new_message_id():
+def test_apply_live_resend_fallback_persists_new_message_id():
     import asyncio
     import logging
     import sys

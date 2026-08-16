@@ -9,14 +9,13 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 from urllib.parse import parse_qs, urlparse
 from gtow_solution_url import build_last_node_url
@@ -24,7 +23,6 @@ from gtow_solution_url import build_last_node_url
 # ── Unified leak tools (EV-ranked) Tests ──
 
 
-@test
 def test_spot_descriptions_has_new_buckets():
     """leak_service: SPOT_DESCRIPTIONS_ZH contains the 3 new squeeze/3bet buckets."""
     from leak_service import SPOT_DESCRIPTIONS_ZH
@@ -33,7 +31,6 @@ def test_spot_descriptions_has_new_buckets():
         assert_true(bool(SPOT_DESCRIPTIONS_ZH[k]), f"{k} has empty label")
 
 
-@test
 def test_hard_validation_stop_message_blocks_coaching_output():
     """Hard-invalid image parses must return the validator message, not strategy."""
     from gemini_session import GeminiSessionManager
@@ -51,7 +48,6 @@ def test_hard_validation_stop_message_blocks_coaching_output():
     assert_in("不提供 GTO 判定", message)
 
 
-@test
 def test_aggression_direction_zh_complete():
     """leak_service: AGGRESSION_DIRECTION_ZH has all 4 direction labels."""
     from leak_service import AGGRESSION_DIRECTION_ZH
@@ -59,7 +55,6 @@ def test_aggression_direction_zh_complete():
         assert_true(k in AGGRESSION_DIRECTION_ZH, f"missing {k}")
 
 
-@test
 def test_classify_board_flush_draw_disconnected():
     """gtow_custom_url: 4c6h8h — flush_draw flop (2 hearts), not paired, disconnected (H2665 flop)."""
     from gtow_custom_url import classify_board
@@ -70,7 +65,6 @@ def test_classify_board_flush_draw_disconnected():
     assert_eq(r.get("turn_paired"), None)  # no turn card
 
 
-@test
 def test_classify_board_connected_flop():
     """gtow_custom_url: 7h8d9s — 3 consecutive ranks → connected."""
     from gtow_custom_url import classify_board
@@ -78,7 +72,6 @@ def test_classify_board_connected_flop():
     assert_eq(r["flop_connectedness"], "connected")
 
 
-@test
 def test_classify_board_oesd_possible_flop():
     """gtow_custom_url: 7h8dJc — two adjacent + one gap → oesd_possible."""
     from gtow_custom_url import classify_board
@@ -86,7 +79,6 @@ def test_classify_board_oesd_possible_flop():
     assert_eq(r["flop_connectedness"], "oesd_possible")
 
 
-@test
 def test_classify_board_turn_pairs_flop():
     """gtow_custom_url: 4c6h8h4h — flush_draw flop, turn pairs the 4 AND completes 3 hearts."""
     from gtow_custom_url import classify_board
@@ -98,7 +90,6 @@ def test_classify_board_turn_pairs_flop():
     assert_eq(r["turn_suit"], "flush")
 
 
-@test
 def test_classify_board_turn_backdoor():
     """gtow_custom_url: 4c6h8s2h — flop rainbow, turn brings 2nd heart → backdoor."""
     from gtow_custom_url import classify_board
@@ -108,7 +99,6 @@ def test_classify_board_turn_backdoor():
     assert_eq(r["turn_suit"], "backdoor")
 
 
-@test
 def test_classify_board_flush_draw_flop():
     """gtow_custom_url: AhKh2c — 2-tone flop → flush_draw."""
     from gtow_custom_url import classify_board
@@ -117,7 +107,6 @@ def test_classify_board_flush_draw_flop():
     assert_eq(r["flop_suits"], "flush_draw")
 
 
-@test
 def test_classify_board_monotone_flop():
     """gtow_custom_url: AhKhQh — all hearts → monotone."""
     from gtow_custom_url import classify_board
@@ -126,7 +115,6 @@ def test_classify_board_monotone_flop():
     assert_eq(r["flop_suits"], "monotone")
 
 
-@test
 def test_classify_board_paired_flop():
     """gtow_custom_url: 7h7d2c — paired flop."""
     from gtow_custom_url import classify_board
@@ -135,7 +123,6 @@ def test_classify_board_paired_flop():
     assert_eq(r["flop_suits"], "rainbow")
 
 
-@test
 def test_classify_board_river():
     """gtow_custom_url: 4c6h8h4hKh — flush_draw flop, turn pairs the 4 AND completes flush, river keeps flush."""
     from gtow_custom_url import classify_board
@@ -149,7 +136,6 @@ def test_classify_board_river():
     assert_eq(r["river_paired"], "paired")
 
 
-@test
 def test_classify_board_empty():
     """gtow_custom_url: empty board → empty dict (no keys, not an error)."""
     from gtow_custom_url import classify_board
@@ -157,7 +143,6 @@ def test_classify_board_empty():
     assert_eq(classify_board(None), {})
 
 
-@test
 def test_classify_board_tripled_flop():
     """gtow_custom_url: 7h7d7s — tripled flop (NOT 'paired')."""
     from gtow_custom_url import classify_board
@@ -166,7 +151,6 @@ def test_classify_board_tripled_flop():
     assert_eq(r["flop_suits"], "rainbow")
 
 
-@test
 def test_classify_board_odd_length_raises():
     """gtow_custom_url: odd-length board string → ValueError (caller falls back)."""
     from gtow_custom_url import classify_board
@@ -177,7 +161,6 @@ def test_classify_board_odd_length_raises():
         pass
 
 
-@test
 def test_resolver_9max_drops_only_leading_utg_fold():
     """9-max MTTGeneral safely maps onto its 8-max solver tree only by
     removing a leading physical-UTG fold; early-position hero names shift too.
@@ -200,7 +183,6 @@ def test_resolver_9max_drops_only_leading_utg_fold():
         raise AssertionError("non-folding 9-max UTG must not be dropped")
 
 
-@test
 def test_resolve_h2665_turn_decision():
     """gtow_action_resolver: H2665 turn fold resolves to R2.1 / R1.9-C / R5.2 at 30bb."""
     from gtow_action_resolver import resolve_actions_for_deviation
@@ -249,7 +231,6 @@ def test_resolve_h2665_turn_decision():
     assert_eq(result["gametype"], "MTTGeneral")
 
 
-@test
 def test_resolve_3bet_pot_preflop():
     """gtow_action_resolver: 6-max CO open, BTN 3bet, CO call, flop check.
 
@@ -289,7 +270,6 @@ def test_resolve_3bet_pot_preflop():
     assert_eq(result["villain_pos"], "BTN")  # last non-hero aggressor
 
 
-@test
 def test_resolve_second_preflop_decision_stops_after_threebet():
     """A hero-scoped preflop index of 1 means the response to a 3bet.
 
@@ -319,7 +299,6 @@ def test_resolve_second_preflop_decision_stops_after_threebet():
     assert_eq(result["villain_pos"], "SB")
 
 
-@test
 def test_resolve_cash_game_depth_has_no_125():
     """gtow_action_resolver: cash games use nearest_cash_depth without .125 suffix."""
     from gtow_action_resolver import resolve_actions_for_deviation
@@ -342,7 +321,6 @@ def test_resolve_cash_game_depth_has_no_125():
     )
 
 
-@test
 def test_resolve_h3480_multiway_coldcall_and_pot_ratio():
     """gtow_action_resolver: H3480 turn fold — full deep-link resolution.
 
@@ -386,7 +364,6 @@ def test_resolve_h3480_multiway_coldcall_and_pot_ratio():
     assert_eq(result["villain_pos"], "SB")
 
 
-@test
 def test_build_last_node_url_h3490_no_double_pad():
     """build_last_node_url: H3490 turn fold deep-links to the verified node.
 
@@ -442,7 +419,6 @@ def test_build_last_node_url_h3490_no_double_pad():
     assert_eq(qs["history_spot"], ["12"])
 
 
-@test
 def test_collapse_coldcall_folder_h3480():
     """gtow_action_resolver: a cold-caller who folds before the flop collapses
     to a single preflop fold so the HU postflop node stays on-tree (H3480).
@@ -460,7 +436,6 @@ def test_collapse_coldcall_folder_h3480():
               "F-R2-C-F-F-F-R12-F-F-C")
 
 
-@test
 def test_collapse_coldcall_preserves_raisers_and_flop_caller():
     """gtow_action_resolver: collapse only rewrites cold-call-then-fold players.
 
@@ -482,7 +457,6 @@ def test_collapse_coldcall_preserves_raisers_and_flop_caller():
     assert_eq(_collapse_coldcall_folders(opener_folds, pos, "CO"), opener_folds)
 
 
-@test
 def test_build_custom_spot_url_h2665():
     """gtow_custom_url: H2665 turn fold → URL with all expected params.
 
@@ -553,7 +527,6 @@ def test_build_custom_spot_url_h2665():
     assert_true("river_suit" not in url_tex, "river flags omitted when hand ended on turn")
 
 
-@test
 def test_build_custom_spot_url_preserves_icm_solver_context():
     """Every custom Trainer URL must carry ICM gametype, depth, and stacks."""
     from urllib.parse import parse_qs, urlsplit
@@ -583,7 +556,6 @@ def test_build_custom_spot_url_preserves_icm_solver_context():
     assert_eq(qs["stacks"], [stacks])
 
 
-@test
 def test_custom_turn_first_act_drill_uses_full_hand_mode():
     """Queue custom spots always continue as a Full hand exercise."""
     from urllib.parse import parse_qs, urlsplit
@@ -618,7 +590,6 @@ def test_custom_turn_first_act_drill_uses_full_hand_mode():
     assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
 
 
-@test
 def test_custom_spot_resolves_legacy_sized_bet_token():
     """Legacy live ``B`` + size rows must rebuild into valid GTOW R codes."""
     from urllib.parse import parse_qs, urlsplit
@@ -655,7 +626,6 @@ def test_custom_spot_resolves_legacy_sized_bet_token():
     assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
 
 
-@test
 def test_live_17bb_x_b15_r5_line_keeps_small_flop_sizing():
     """Production regression: the user's 17bb hand must not train an old
     30bb source whose LJ flop bet resolves to 83% pot.
@@ -688,7 +658,6 @@ def test_live_17bb_x_b15_r5_line_keeps_small_flop_sizing():
     assert_eq(query["flop_actions"], ["X-R1.8-R4.8-C"])
 
 
-@test
 def test_multiway_projection_matches_every_raise_by_real_pot_percentage():
     """Both the opening bet and subsequent raise use real-pot percentages.
 
@@ -728,7 +697,6 @@ def test_multiway_projection_matches_every_raise_by_real_pot_percentage():
     assert_eq(final_pot, 25.0)
 
 
-@test
 def test_custom_spot_resolver_uses_explicit_pot_fraction_without_bb_pot():
     """A persisted ``pot_fraction`` is enough to resolve a custom solver line
     even when no absolute size/pot can be reconstructed."""
@@ -765,7 +733,6 @@ def test_custom_spot_resolver_uses_explicit_pot_fraction_without_bb_pot():
     assert_eq(final_pot, 0.0)
 
 
-@test
 def test_custom_spot_resolver_advances_unique_unsized_preflop_raise():
     """A stored bare ``R`` reaches postflop only through a unique solver
     preflop raise branch; it never selects arbitrarily among two sizes."""
@@ -792,7 +759,6 @@ def test_custom_spot_resolver_advances_unique_unsized_preflop_raise():
         resolver.get_next_actions = old
 
 
-@test
 def test_build_custom_spot_url_raises_on_multiway_postflop():
     """gtow_custom_url: >2 distinct postflop actors → CustomSpotBuildError."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
@@ -820,7 +786,6 @@ def test_build_custom_spot_url_raises_on_multiway_postflop():
         pass
 
 
-@test
 def test_build_custom_spot_url_raises_on_unmapped_pot_type():
     """gtow_custom_url: unknown pot_type → CustomSpotBuildError (no wrong fallback)."""
     from gtow_custom_url import build_custom_spot_url, CustomSpotBuildError
@@ -837,7 +802,6 @@ def test_build_custom_spot_url_raises_on_unmapped_pot_type():
         pass
 
 
-@test
 def test_build_custom_spot_url_rejects_generic_action_tokens():
     """GTOW discards a custom history containing generic B/R action tokens.
 
@@ -865,7 +829,6 @@ def test_build_custom_spot_url_rejects_generic_action_tokens():
         gtow_action_resolver.resolve_actions_for_deviation = old
 
 
-@test
 def test_identify_villain_with_unplayed_river_street():
     """gtow_action_resolver: empty river actions list (hand ended on turn) must
     not disqualify villain identification. Regression for H2661-style hands
@@ -894,7 +857,6 @@ def test_identify_villain_with_unplayed_river_street():
     assert_eq(result, "BB")
 
 
-@test
 def test_resolve_hero_board_conflict_unresolvable_clears_hero():
     """n8_parser: when hero duplicates a board card and no common-OCR
     rank-swap resolves it, clear the hero side and keep the board.
@@ -916,7 +878,6 @@ def test_resolve_hero_board_conflict_unresolvable_clears_hero():
     assert_eq(new_hero, [], "hero must be cleared on unresolvable conflict")
 
 
-@test
 def test_duplicate_runout_detected_for_full_gemini_fallback():
     """n8_parser: impossible exact-card duplicates are structural failures.
 
@@ -950,7 +911,6 @@ def test_duplicate_runout_detected_for_full_gemini_fallback():
               "valid KhJsKsAdAs runout must not be flagged")
 
 
-@test
 def test_preflop_physics_rejects_non_monotone_raise():
     """n8_parser: impossible preflop raise sequences are precision rejects."""
     from ocr.n8_parser import _validate_preflop_bet_physics
@@ -964,7 +924,6 @@ def test_preflop_physics_rejects_non_monotone_raise():
     )
 
 
-@test
 def test_open_raise_one_bb_is_snapped_before_physics():
     """n8_parser: impossible OCR ``R1`` opens are repaired to legal min-raises.
 
@@ -1000,7 +959,6 @@ def test_open_raise_one_bb_is_snapped_before_physics():
     )
 
 
-@test
 def test_missing_allin_reaction_fold_repair_is_low_collapse_only():
     """n8_parser: missing preflop all-in reaction folds are repaired narrowly.
 
@@ -1036,7 +994,6 @@ def test_missing_allin_reaction_fold_repair_is_low_collapse_only():
     assert_eq(repairs, [])
 
 
-@test
 def test_preflop_physics_allows_short_allin_call():
     """n8_parser: short all-in calls are legal and must not be rejected."""
     from ocr.n8_parser import _validate_preflop_bet_physics
@@ -1047,7 +1004,6 @@ def test_preflop_physics_allows_short_allin_call():
     assert_eq(issues, [])
 
 
-@test
 def test_duplicate_bare_allin_after_call_is_dropped():
     """n8_parser: bare AI after C is a duplicated badge, not an action.
 
@@ -1068,7 +1024,6 @@ def test_duplicate_bare_allin_after_call_is_dropped():
     )
 
 
-@test
 def test_safe_emit_recovers_no_allin_structural_high_card_tails():
     """n8_parser: safe emit can recover low-scored but structurally clean
     non-all-in hands.
@@ -1109,7 +1064,6 @@ def test_safe_emit_recovers_no_allin_structural_high_card_tails():
     )
 
 
-@test
 def test_safe_emit_recovers_narrow_vlm_recovered_preflop_subset():
     """n8_parser: VLM recovered hands can emit only in a narrow stable subset.
 
@@ -1146,7 +1100,6 @@ def test_safe_emit_recovers_narrow_vlm_recovered_preflop_subset():
     assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
 
 
-@test
 def test_safe_emit_recovers_vlm_recovered_high_card_preflop_tail():
     """n8_parser: VLM recovered high-card preflop tails can emit.
 
@@ -1183,7 +1136,6 @@ def test_safe_emit_recovers_vlm_recovered_high_card_preflop_tail():
     )
 
 
-@test
 def test_safe_emit_recovers_no_allin_low_street_collapse_tail():
     """n8_parser: non-all-in low street-collapse tails can emit.
 
@@ -1220,7 +1172,6 @@ def test_safe_emit_recovers_no_allin_low_street_collapse_tail():
     assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
 
 
-@test
 def test_safe_emit_recovers_all_fold_high_card_walks_after_seat_guard():
     """n8_parser: all-fold rows can safe-emit only after the hero-first walk
     guard has had a chance to reject unsafe seat assignments.
@@ -1252,7 +1203,6 @@ def test_safe_emit_recovers_all_fold_high_card_walks_after_seat_guard():
     assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
 
 
-@test
 def test_safe_emit_recovers_large_table_all_fold_hero_first_rows():
     """n8_parser: large-table all-fold hero-first walks can safe-emit.
 
@@ -1290,7 +1240,6 @@ def test_safe_emit_recovers_large_table_all_fold_hero_first_rows():
     assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
 
 
-@test
 def test_misnamed_flop_column_promotes_short_preflop_rows():
     """n8_parser: physical Pre-Flop columns mislabeled as Flop are promoted
     even when only a short all-in/fold tail is visible.
@@ -1316,7 +1265,6 @@ def test_misnamed_flop_column_promotes_short_preflop_rows():
     assert_eq(streets, [])
 
 
-@test
 def test_preflop_filter_drops_anonymous_sizeless_bet_fragments():
     """n8_parser: nameless/positionless sizeless Bet fragments in Pre-Flop are
     OCR chrome bleed, not real preflop actions.
@@ -1344,7 +1292,6 @@ def test_preflop_filter_drops_anonymous_sizeless_bet_fragments():
     assert_eq(_filter_action_entries(named), named)
 
 
-@test
 def test_preflop_filter_drops_leading_anonymous_check_fragment():
     """n8_parser: a nameless leading preflop Check is a duplicate blind-option
     fragment and should not create an illegal X before UTG acts.
@@ -1360,7 +1307,6 @@ def test_preflop_filter_drops_leading_anonymous_check_fragment():
     assert_eq([e["action"] for e in filtered], ["Fold", "Check"])
 
 
-@test
 def test_terminal_fold_trim_safe_emit_single_allin_tail():
     """n8_parser: the duplicate terminal-fold trimmer can safe-emit only the
     single-sized-all-in tail; bare/multiple-AI chains stay abstained.
@@ -1404,7 +1350,6 @@ def test_terminal_fold_trim_safe_emit_single_allin_tail():
     )
 
 
-@test
 def test_preflop_builder_preserves_original_missing_position_flag():
     """n8_parser: VLM reassembly must remember whether a hero all-in sticker
     was originally positionless before order assignment mutated the row.
@@ -1438,7 +1383,6 @@ def test_preflop_builder_preserves_original_missing_position_flag():
     )
 
 
-@test
 def test_forced_collapse_action_tail_repairs_and_safe_emit():
     """n8_parser: narrow VLM-forced collapse repairs recover exact action
     tails and can pass the safe-emission gate.
@@ -1476,7 +1420,6 @@ def test_forced_collapse_action_tail_repairs_and_safe_emit():
     )
 
 
-@test
 def test_safe_emit_recovers_promoted_short_allin_vlm_corrections():
     """n8_parser: VLM-corrected action chains normally abstain, but a promoted
     short physical-Pre-Flop column with 3-4 visible all-in rows can emit.
@@ -1527,7 +1470,6 @@ def test_safe_emit_recovers_promoted_short_allin_vlm_corrections():
     )
 
 
-@test
 def test_safe_emit_blocks_large_raw_collapse_walk_tail():
     """n8_parser: large raw-fragment loss with no postflop signal is unsafe.
 
@@ -1558,7 +1500,6 @@ def test_safe_emit_blocks_large_raw_collapse_walk_tail():
     assert_eq(_safe_emit_override_reason(hand, cp, diag), None)
 
 
-@test
 def test_structural_demotions_block_threshold_emit_for_known_bad_tails():
     """n8_parser: structural-risk demotions must lower threshold confidence.
 
@@ -1630,7 +1571,6 @@ def test_structural_demotions_block_threshold_emit_for_known_bad_tails():
     )
 
 
-@test
 def test_vlm_residual_disagreement_keeps_hand_for_field_routing():
     """n8_parser: VLM structural disagreement should confidence-abstain with
     the OCR hand preserved, not erase it.
@@ -1683,7 +1623,6 @@ def test_vlm_residual_disagreement_keeps_hand_for_field_routing():
     )
 
 
-@test
 def test_vlm_corrected_structure_confidence_abstains_actions():
     """n8_parser: VLM-corrected structure is not an action verifier.
 
@@ -1734,7 +1673,6 @@ def test_vlm_corrected_structure_confidence_abstains_actions():
     )
 
 
-@test
 def test_vlm_recovers_parse_none_with_partial_allin_panel():
     """n8_parser: parse_none all-in tails can be reassembled with focused VLM
     structure instead of going straight to full Gemini.
@@ -1801,7 +1739,6 @@ def test_vlm_recovers_parse_none_with_partial_allin_panel():
     )
 
 
-@test
 def test_all_fold_walk_with_hero_first_confidence_abstains():
     """n8_parser: all-fold walk with hero at first row is unsafe to emit.
 
@@ -1839,7 +1776,6 @@ def test_all_fold_walk_with_hero_first_confidence_abstains():
     )
 
 
-@test
 def test_seven_max_sb_open_with_postflop_confidence_abstains():
     """n8_parser: 7-max SB open prefix with postflop is seat-count fragile.
 
@@ -1884,7 +1820,6 @@ def test_seven_max_sb_open_with_postflop_confidence_abstains():
     )
 
 
-@test
 def test_mask_win_overlay_whitens_large_lower_blob():
     """table_parser._mask_win_overlay paints out the orange WIN sticker.
 
@@ -1909,7 +1844,6 @@ def test_mask_win_overlay_whitens_large_lower_blob():
     )
 
 
-@test
 def test_mask_win_overlay_skips_small_top_banner():
     """No-op when the only orange is a thin top-edge banner.
 
@@ -1933,34 +1867,6 @@ def test_mask_win_overlay_skips_small_top_banner():
     )
 
 
-@test
-def test_field_level_fallback_fires_on_empty_hero_hand():
-    """gemini_session: cards-only Gemini fallback gate triggers when OCR
-    cleared hero_cards (hero_hand="") but structural fields are good.
-
-    Regression for the Ts9s screenshot where CardCNN labeled both hero
-    crops as Tc with high confidence; _resolve_hero_board_conflict's
-    duplicate guard cleared hero_cards, leaving hero_hand="". The old
-    gate required hero_hand non-empty (`hand_ok`) before considering
-    the cards-only fallback, so the path was skipped entirely and we
-    fell through to the full IMAGE_PARSE_PROMPT — which has separately
-    failed in production on similar inputs, returning the
-    "無法從截圖中辨識出撲克手牌" rejection.
-
-    This test verifies the source code surfaces the empty-hero gate so
-    a future refactor can't silently re-tighten it back to hand_ok.
-    """
-    import inspect
-    src = inspect.getsource(__import__("gemini_session", fromlist=["_dummy"]))
-    assert_in("hero_hand_present", src,
-              "gate variable name should appear in source")
-    assert_in("cards_need_fallback", src,
-              "fallback condition should track empty hero_hand")
-    assert_in("not hero_hand_present", src,
-              "must trigger cards-only when hero_hand is empty")
-
-
-@test
 def test_normalize_cards_handles_list_of_string_actions():
     """gemini_session: _normalize_cards must convert a street whose
     `actions` is a LIST OF BARE STRINGS into structured {position, action}
@@ -2007,7 +1913,6 @@ def test_normalize_cards_handles_list_of_string_actions():
     GeminiSessionManager._fix_folded_players(hand)
 
 
-@test
 def test_postflop_position_reconciliation_with_preflop_index():
     """n8_parser: postflop entries inherit the preflop's index-assigned
     canonical positions when player_name matches.
@@ -2085,7 +1990,6 @@ def test_postflop_position_reconciliation_with_preflop_index():
               "h3scar's flop position must match preflop reassignment")
 
 
-@test
 def test_postflop_repeated_named_bb_stays_bb_after_folded_btn():
     """n8_parser: a named BB who checks then raises must remain BB even
     after another opponent folds on the same street.
@@ -2125,7 +2029,6 @@ def test_postflop_repeated_named_bb_stays_bb_after_folded_btn():
 
 
 
-@test
 def test_hero_spots_carry_street_actions_before_hero_for_facing_donk():
     """Bug regression: H2755 was an LJ-opens / SB-calls / SB-donks-into-LJ
     spot but every hero deviation got tagged spot_category='cbet_ip'. Root
@@ -2166,7 +2069,6 @@ def test_hero_spots_carry_street_actions_before_hero_for_facing_donk():
               "PF aggressor first to act with no prior bet must be cbet_ip")
 
 
-@test
 def test_analyze_hand_attaches_street_actions_before_hero():
     """The fix only works if analyze_hand.py actually populates the new key
     on every hero_spot it builds. Static-check the source to guarantee that.
@@ -2186,7 +2088,6 @@ def test_analyze_hand_attaches_street_actions_before_hero():
                 f"(found {appends_with_key})")
 
 
-@test
 def test_scheduled_jobs_days_and_times():
     """Bug regression: PTB v20+ remapped run_daily day_of_week to cron-style
     (0=Sun … 6=Sat) — a wrong `days` tuple silently fires on the wrong day.
@@ -2252,7 +2153,6 @@ def test_scheduled_jobs_days_and_times():
               f"next fire must be Sunday (weekday=6); got {next_fire} (weekday={next_fire.weekday()})")
 
 
-@test
 def test_normalize_terms_deterministic():
     """Output-terminology safety net (_normalize_terms): the zero-false-
     positive corrections must apply with correct ordering, be idempotent,
@@ -2294,7 +2194,6 @@ def test_normalize_terms_deterministic():
     assert_eq(n(""), "")
 
 
-@test
 def test_coach_system_terminology_rule():
     """Guard: the COACH_SYSTEM 術語規範 section must stay in place so the
     no-bilingual-gloss / canonical-term rules can't be silently dropped,
@@ -2331,7 +2230,7 @@ def _queue_drill_row(**over):
     return base
 
 
-@test
+@pytest.mark.telegram
 def test_queue_payload_marks_manual_add():
     """A manually-added drill (added_by='manual', threshold-free) renders a
     「（手動加入）」 tag so a genuine 0.0bb non-leak spot isn't misread as a

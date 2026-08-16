@@ -9,18 +9,16 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 # ── Hand Eval Tests ──
 
-@test
 def test_hand_eval_two_pair():
     """Hand eval: T8o on 8-T-2-A board = two pair."""
     from hand_eval import evaluate
@@ -31,7 +29,6 @@ def test_hand_eval_two_pair():
     assert_in("8", r["made_hand_label"])
 
 
-@test
 def test_hand_eval_gutshot():
     """Hand eval: KQo on 8-T-2-A needs J for straight = gutshot."""
     from hand_eval import evaluate
@@ -40,7 +37,6 @@ def test_hand_eval_gutshot():
     assert_eq(r["made_hand"], "king_high")
 
 
-@test
 def test_hand_eval_straight():
     """Hand eval: T7s on 8-9-4-J = straight (7-8-9-T-J)."""
     from hand_eval import evaluate
@@ -49,7 +45,6 @@ def test_hand_eval_straight():
     assert_in("順子", r["made_hand_label"])
 
 
-@test
 def test_hand_eval_flush_draw():
     """Hand eval: AhKh on 8h3hTc = nut flush draw (4 hearts)."""
     from hand_eval import evaluate
@@ -58,7 +53,6 @@ def test_hand_eval_flush_draw():
     assert_eq(r["made_hand"], "ace_high")
 
 
-@test
 def test_hand_eval_no_draw_on_river():
     """Hand eval: no draws on river (5 board cards)."""
     from hand_eval import evaluate
@@ -67,7 +61,6 @@ def test_hand_eval_no_draw_on_river():
     assert_eq(r["made_hand"], "straight")
 
 
-@test
 def test_hand_eval_overpair():
     """Hand eval: AA on K-5-2 board = overpair."""
     from hand_eval import evaluate
@@ -76,7 +69,6 @@ def test_hand_eval_overpair():
     assert_in("超對", r["made_hand_label"])
 
 
-@test
 def test_hand_eval_set():
     """Hand eval: pocket 6s on K-6-2 board = set."""
     from hand_eval import evaluate
@@ -85,7 +77,6 @@ def test_hand_eval_set():
     assert_in("暗三條", r["made_hand_label"])
 
 
-@test
 def test_hand_eval_oesd():
     """Hand eval: 9-8 on 7-T-2 = OESD (needs 6 or J)."""
     from hand_eval import evaluate
@@ -93,7 +84,6 @@ def test_hand_eval_oesd():
     assert_in("oesd", r["draws"])
 
 
-@test
 def test_hand_eval_top_pair():
     """Hand eval: AhKh on Ah3hTc = top pair + nut flush draw."""
     from hand_eval import evaluate
@@ -102,7 +92,6 @@ def test_hand_eval_top_pair():
     assert_in("nut_flush_draw", r["draws"])
 
 
-@test
 def test_hand_eval_showdown_rank_key_distinguishes_pairs_in_same_solver_bucket():
     """Current-street comparison separates KK from JJ against QJ on A-T-9-Q."""
     from hand_eval import showdown_rank_key
@@ -113,7 +102,6 @@ def test_hand_eval_showdown_rank_key_distinguishes_pairs_in_same_solver_bucket()
     assert_true(showdown_rank_key("JcJh", board) < hero)
 
 
-@test
 def test_hand_eval_ac7c_on_7h5c4c_is_nut_flush_draw():
     """Exact real-hand regression used by grounded coaching."""
     from hand_eval import evaluate
@@ -123,7 +111,6 @@ def test_hand_eval_ac7c_on_7h5c4c_is_nut_flush_draw():
     assert_in("nut_flush_draw", result["draws"])
 
 
-@test
 def test_hand_eval_board_pair_not_hero():
     """H2671: JTo on KhQdKd = J high (board pair K, hero has no K)."""
     from hand_eval import evaluate
@@ -134,7 +121,6 @@ def test_hand_eval_board_pair_not_hero():
     assert_eq(r2["made_hand"], "high_card")
 
 
-@test
 def test_hand_eval_two_pair_with_board_pair():
     """Two pair logic: board pair does not inflate hero's made hand."""
     from hand_eval import evaluate
@@ -149,7 +135,6 @@ def test_hand_eval_two_pair_with_board_pair():
     assert_eq(r["made_hand"], "high_card")
 
 
-@test
 def test_hand_eval_preflop_empty():
     """Hand eval: no board = empty result."""
     from hand_eval import evaluate
@@ -159,7 +144,6 @@ def test_hand_eval_preflop_empty():
     assert_eq(r["full_label"], "")
 
 
-@test
 def test_postflop_actions_key():
     """Postflop: 'postflop_actions' key works as alias for 'streets'."""
     from analyze_hand import analyze_hand_full
@@ -187,7 +171,6 @@ def test_postflop_actions_key():
     assert_in("BTN", text)
 
 
-@test
 def test_standalone_board_override():
     """Standalone query: board_override builds params when no street_states."""
     from src.gemini_session import GeminiSessionManager
@@ -219,7 +202,6 @@ def test_standalone_board_override():
     assert_eq(params["turn_actions"], "X")
 
 
-@test
 def test_h3473_low_conf_ocr_hero_cards_do_not_anchor_gemini():
     """Image parse: below-threshold hero cards must not survive fallback.
 
@@ -279,7 +261,6 @@ def test_h3473_low_conf_ocr_hero_cards_do_not_anchor_gemini():
     assert_eq(partial["preflop_actions"], "F-F-R2-F-F-C-F-F")
 
 
-@test
 def test_high_conf_ocr_hero_cards_still_anchor_gemini():
     """Image parse: confident hero card hints stay available to Gemini."""
     from src.gemini_session import GeminiSessionManager
@@ -303,7 +284,6 @@ def test_high_conf_ocr_hero_cards_still_anchor_gemini():
     assert_eq(partial["hero_hand"], "KhJc")
 
 
-@test
 def test_collapsed_streets_4card_board():
     """Collapsed streets: 4-card board split into flop + turn."""
     from analyze_hand import _fix_collapsed_streets
@@ -320,7 +300,6 @@ def test_collapsed_streets_4card_board():
     assert_eq(len(fixed[1]["actions"]), 3)
 
 
-@test
 def test_collapsed_streets_normal_board_unchanged():
     """Collapsed streets: normal 3-card flop is not modified."""
     from analyze_hand import _fix_collapsed_streets
@@ -333,7 +312,6 @@ def test_collapsed_streets_normal_board_unchanged():
     assert_eq(fixed[0]["board"], "Js6h5s")
 
 
-@test
 def test_collapsed_streets_full_analysis():
     """Collapsed streets: full analysis works with 4-card board input."""
     from analyze_hand import analyze_hand_full
@@ -358,7 +336,6 @@ def test_collapsed_streets_full_analysis():
     assert_in("BTN", text)
 
 
-@test
 def test_check_through_flop_infers_xx():
     """Check-through: empty flop actions infer X-X when turn follows."""
     from analyze_hand import analyze_hand_full
@@ -386,7 +363,6 @@ def test_check_through_flop_infers_xx():
     assert_eq(result["final_actions"]["flop_actions"], "X-X")
 
 
-@test
 def test_single_check_turn_infers_check_through():
     """Check-through: single check on turn infers X-X when river follows (H2565)."""
     from analyze_hand import analyze_hand_full
@@ -424,7 +400,6 @@ def test_single_check_turn_infers_check_through():
                 "River BB check should have solver data (not None)")
 
 
-@test
 def test_allin_turn_skips_river_actions():
     """All-in on turn: river actions are skipped (no 400 error from API)."""
     from analyze_hand import analyze_hand_full
@@ -457,7 +432,6 @@ def test_allin_turn_skips_river_actions():
     assert_in("Turn", text)
 
 
-@test
 def test_allin_turn_normalized_from_raise_skips_river():
     """All-in on turn (bet normalized to RAI): river actions are skipped."""
     from analyze_hand import analyze_hand_full
@@ -491,7 +465,6 @@ def test_allin_turn_normalized_from_raise_skips_river():
               "River actions should be empty when turn bet normalizes to RAI")
 
 
-@test
 def test_categorized_range_uses_real_frequencies():
     """Formatter: categorized range shows real per-hand frequencies, not 1.0."""
     from gto_api import get_spot_solution
@@ -522,7 +495,6 @@ def test_categorized_range_uses_real_frequencies():
                 "All-in range should not show TT+ (AA is ~96% check, not all-in)")
 
 
-@test
 def test_hand_eval_uses_suited_hero_hand():
     """Hand eval: AcTh on 4-club board correctly identifies flush."""
     from hand_eval import evaluate
@@ -537,7 +509,6 @@ def test_hand_eval_uses_suited_hero_hand():
               "AcTh should be flush on 4-club board")
 
 
-@test
 def test_analyze_hand_eval_uses_raw_suits():
     """Analysis: hand type label uses raw suited hand, not normalized."""
     from analyze_hand import analyze_hand_full
@@ -569,7 +540,6 @@ def test_analyze_hand_eval_uses_raw_suits():
     assert_in("堅果花聽牌", text, "Flop hand type should show nut flush draw for AcTh on 3-club board")
 
 
-@test
 def test_format_hand_detail_specific_combo():
     """Formatter: specific combo query (Ah8h) shows that combo's strategy, not aggregated."""
     from gto_api import get_spot_solution
@@ -595,7 +565,6 @@ def test_format_hand_detail_specific_combo():
               "Aggregated query should show Range 頻率 header")
 
 
-@test
 def test_format_hand_detail_omits_class_fallback_for_zero_reach_exact_combo():
     """An absent exact suit is labelled unavailable without class advice."""
     from gto_formatter import format_hand_detail
@@ -630,7 +599,6 @@ def test_format_hand_detail_omits_class_fallback_for_zero_reach_exact_combo():
     assert_not_in("Range 頻率", text)
 
 
-@test
 def test_pot_pct_action_matching():
     """API: find_closest_action_by_pot_pct matches by pot percentage, not absolute bb."""
     from gto_api import get_next_actions, find_closest_action, find_closest_action_by_pot_pct
@@ -652,7 +620,6 @@ def test_pot_pct_action_matching():
     assert_eq(pct_result, "R3.7", "Pot-pct match for 3.35bb should be R3.7")
 
 
-@test
 def test_normalize_pct_flop_override():
     """Session: R50% flop override resolves to correct solver action code."""
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -678,7 +645,6 @@ def test_normalize_pct_flop_override():
 # ── ICM FT Image/Stacks Tests ──
 
 
-@test
 def test_icm_ft_5player_at_8max_table():
     """ICM FT: 5 active players at 8-max FT uses ICM8m mode."""
     from icm_modes import find_icm_params
@@ -696,7 +662,7 @@ def test_icm_ft_5player_at_8max_table():
     assert_eq(len(solver_stacks), 8, "should have 8 stack values")
 
 
-@test
+@pytest.mark.gtow
 def test_icm_ft_5player_at_8max_analysis():
     """ICM FT: 5 players at 8-max FT produces ICM analysis with correct padding."""
     from analyze_hand import analyze_hand_full
@@ -718,7 +684,6 @@ def test_icm_ft_5player_at_8max_analysis():
     assert_in("Solver 籌碼", result["text"])
 
 
-@test
 def test_icm_ft_5player_stacks():
     """ICM FT: 5-player final table with asymmetric stacks finds valid ICM mode."""
     from icm_modes import find_icm_params
@@ -734,7 +699,6 @@ def test_icm_ft_5player_stacks():
     assert_true(result["depth"] != "", "should have depth string")
 
 
-@test
 def test_icm_ft_4player_stacks():
     """ICM FT: 4-player final table finds valid ICM mode."""
     from icm_modes import find_icm_params
@@ -747,7 +711,6 @@ def test_icm_ft_4player_stacks():
     assert_in("ICM", result["approximation_note"])
 
 
-@test
 def test_icm_ft_7player_stacks():
     """ICM FT: 7-player final table finds valid ICM mode."""
     from icm_modes import find_icm_params
@@ -759,7 +722,6 @@ def test_icm_ft_7player_stacks():
                 f"should find ICM FT mode for 7 players, got {result['gametype']}")
 
 
-@test
 def test_structured_icm_open_range_query_preserves_stack_order():
     """ICM text range query: exact slash-delimited stacks map UTG→BB without LLM reorder."""
     from gemini_session import GeminiSessionManager
@@ -779,7 +741,6 @@ def test_structured_icm_open_range_query_preserves_stack_order():
     assert_eq(hand["phase"], "FT")
 
 
-@test
 def test_structured_icm_facing_range_query_prefers_explicit_hero():
     """ICM text range query: 'HJ raise hero CO ...' should query CO facing HJ, not HJ."""
     from gemini_session import GeminiSessionManager
@@ -796,7 +757,6 @@ def test_structured_icm_facing_range_query_prefers_explicit_hero():
     assert_eq(hand["preflop_actions"], "F-F-R2-F-F-F-F")
 
 
-@test
 def test_structured_partial_icm_decision_preserves_named_stacks():
     """Partial ICM text keeps stated seats instead of inventing symmetric stacks."""
     from gemini_session import GeminiSessionManager
@@ -819,7 +779,6 @@ def test_structured_partial_icm_decision_preserves_named_stacks():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
 
 
-@test
 def test_structured_partial_icm_decision_preserves_explicit_average_stack():
     """An explicit tournament average is a config constraint, not another seat."""
     from gemini_session import GeminiSessionManager
@@ -838,7 +797,6 @@ def test_structured_partial_icm_decision_preserves_explicit_average_stack():
     )
 
 
-@test
 def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     """ICM range coaching: no-hero FT response should be explanatory but deterministic."""
     from gemini_session import GeminiSessionManager
@@ -918,7 +876,6 @@ def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     assert_not_in("==================================================", text)
 
 
-@test
 def test_icm_ft_9player_stacks():
     """ICM FT: 9-player final table (full ring) finds valid ICM mode."""
     from icm_modes import find_icm_params
@@ -930,7 +887,6 @@ def test_icm_ft_9player_stacks():
                 f"should find ICM FT mode for 9 players, got {result['gametype']}")
 
 
-@test
 def test_icm_ft_5player_analysis():
     """ICM FT: 5-player FT hand analysis runs successfully with player_stacks."""
     from analyze_hand import analyze_hand_full
@@ -950,7 +906,6 @@ def test_icm_ft_5player_analysis():
     assert_in("ICM", result["text"])
 
 
-@test
 def test_icm_ft_image_parse_fields_flow():
     """ICM FT: hand JSON with image-parsed ICM fields flows through analyze_hand_full."""
     from analyze_hand import analyze_hand_full

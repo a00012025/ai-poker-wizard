@@ -3,7 +3,6 @@
 import asyncio
 import os
 import random
-import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -12,7 +11,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 from gtow_analyze_api import hand_detail
 
 TPE = ZoneInfo("Asia/Taipei")

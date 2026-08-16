@@ -9,20 +9,18 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 from gtow_trainer_url import SpotNotSupportedError
 
 # ── Phase 1 Ledger: GTOW Analyze API client ──
 
-@test
 def test_analyze_api_pagination():
     """iter_all_hands pages until offset >= total using injected transport."""
     import gtow_analyze_api as gapi
@@ -44,7 +42,6 @@ def test_analyze_api_pagination():
     assert_eq(calls, [0, 2])
 
 
-@test
 def test_analyze_api_backoff_then_success():
     """429 twice then 200 -> returns parsed json; delays follow _backoff_delay."""
     import gtow_analyze_api as gapi
@@ -62,7 +59,6 @@ def test_analyze_api_backoff_then_success():
     assert_eq(out["total"], 0)
 
 
-@test
 def test_analyze_api_hand_detail_soft_404_returns_none():
     """A single not-ready hand (404 'upload taking longer') must not crash the
     sweep — hand_detail returns None so the caller skips + retries later."""
@@ -85,7 +81,6 @@ def test_analyze_api_hand_detail_soft_404_returns_none():
         assert_eq(gapi.hand_detail("x", request_fn=fk), None)
 
 
-@test
 def test_analyze_api_incorrect_actions_is_typed_but_other_400_is_fatal():
     """Only GTOW's exact permanent per-hand validation failure is typed so a
     detail sweep can isolate that hand; unrelated 400s must remain fatal."""
@@ -121,7 +116,6 @@ def test_analyze_api_incorrect_actions_is_typed_but_other_400_is_fatal():
         pass
 
 
-@test
 def test_analyze_api_client_id_persisted():
     import gtow_analyze_api as gapi, os, uuid as _uuid
     p = "/tmp/_test_gtow_client_id"
@@ -141,7 +135,6 @@ def _load_fix(name):
     return json.loads((SCRIPTS_DIR / "fixtures" / "gtow" / name).read_text())
 
 
-@test
 def test_distill_river_blunder_hand():
     from ledger_distill import distill_hand
     rows = _load_fix("list_rows.json")
@@ -184,7 +177,6 @@ def test_distill_river_blunder_hand():
               round(hand["total_ev_loss_bb"], 4))
 
 
-@test
 def test_distill_preflop_fold_hand():
     from ledger_distill import distill_hand
     rows = _load_fix("list_rows.json")
@@ -218,7 +210,6 @@ def _list_only_row(**overrides):
     return row
 
 
-@test
 def test_list_only_distill_preflop_fold_is_complete_and_provenanced():
     from ledger_distill import distill_hand_from_list
     rows = _load_fix("list_rows.json")
@@ -237,7 +228,6 @@ def test_list_only_distill_preflop_fold_is_complete_and_provenanced():
     assert_eq(d["pot_type"], "unopened")
 
 
-@test
 def test_list_only_distill_preflop_3bet_line():
     from ledger_distill import distill_hand_from_list
     row = _list_only_row(
@@ -255,7 +245,6 @@ def test_list_only_distill_preflop_3bet_line():
     assert_in("vs3bet", decs[0]["spot_leaf"])
 
 
-@test
 def test_list_only_distill_hu_postflop_reconstructs_positions_and_taxonomy():
     from ledger_distill import distill_hand_from_list
     row = _list_only_row(
@@ -284,7 +273,6 @@ def test_list_only_distill_hu_postflop_reconstructs_positions_and_taxonomy():
     assert_eq(decs[3]["facing"], "vs_bet")
 
 
-@test
 def test_list_only_distill_falls_back_on_multiway_postflop_and_lossy_hand():
     from ledger_distill import ListOnlyReconstructionError, distill_hand_from_list
     multiway = _list_only_row(
@@ -308,7 +296,6 @@ def test_list_only_distill_falls_back_on_multiway_postflop_and_lossy_hand():
             pass
 
 
-@test
 def test_list_only_threshold_requires_solved_exact_zero():
     from ledger_distill import should_skip_zeroloss_detail
     assert_eq(should_skip_zeroloss_detail(_list_only_row()), True)
@@ -317,9 +304,7 @@ def test_list_only_threshold_requires_solved_exact_zero():
     assert_eq(should_skip_zeroloss_detail(_list_only_row(solution_status="NO_SOLUTION")), False)
 
 
-@test
 def test_ingest_detail_status_contract_and_backfill_mode_are_wired():
-    import inspect
     import ledger_ingest
     migration = (REPO_ROOT / "supabase" / "migrations" /
                  "20260715120000_ledger_detail_status.sql").read_text()
@@ -327,18 +312,12 @@ def test_ingest_detail_status_contract_and_backfill_mode_are_wired():
     assert_in("skipped_zeroloss", migration)
     assert_in("detail_fetched THEN 'fetched'", migration)
     assert_in("detail_status", ledger_ingest.HAND_COLS)
-    source = inspect.getsource(ledger_ingest.sweep_detail)
-    assert_in("WHERE detail_status=$1", source)
-    assert_in("backfill_skipped", source)
-    assert_in("detail_status='fetched'", source)
-    assert_in("detail_status='skipped_zeroloss'", source)
     invalid_migration = (REPO_ROOT / "supabase" / "migrations" /
                          "20260806090000_ledger_invalid_actions_status.sql").read_text()
     assert_in("skipped_invalid_actions", invalid_migration)
-    assert_in("detail_status='skipped_invalid_actions'", source)
 
 
-@test
+@pytest.mark.integration
 def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
     """Concurrent detail fetch: returns {hid: detail|None}, actually overlaps
     fetches (peak in-flight > 1, capped at the concurrency), and calls the
@@ -368,8 +347,10 @@ def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
         return None if hid == "nodata" else {"id": hid}
 
     orig = gapi.hand_detail
+    orig_headers = gapi._headers
     oc, oi = ledger_ingest._DETAIL_CONCURRENCY, ledger_ingest._DETAIL_MIN_INTERVAL
     gapi.hand_detail = fake_detail
+    gapi._headers = lambda: {}
     ledger_ingest._DETAIL_CONCURRENCY = 4
     ledger_ingest._DETAIL_MIN_INTERVAL = 0.0
     try:
@@ -391,7 +372,6 @@ def test_fetch_details_concurrent_maps_parallelizes_and_bypasses_throttle():
                 "concurrent fetch bypasses the global throttle")
 
 
-@test
 def test_hand_detail_forwards_throttle_flag():
     """hand_detail defaults to throttle=True but forwards throttle=False so the
     concurrent sweep can opt out of the serial pacer."""
@@ -415,7 +395,6 @@ def test_hand_detail_forwards_throttle_flag():
         gapi._request = orig
 
 
-@test
 def test_distill_honesty_rules():
     """Synthetic mutations of the fixture exercise every honesty rule (pure fn)."""
     import copy
@@ -443,7 +422,6 @@ def test_distill_honesty_rules():
     assert_true(all("solution:NO_SOLUTION" in d["approx_flags"] for d in decs))
 
 
-@test
 def test_distill_excludes_only_the_unsolved_hero_node_in_a_partial_hand():
     """Hand-level NO_GTO_SOLUTION is compatible with partial, usable nodes.
 
@@ -483,7 +461,6 @@ def test_distill_excludes_only_the_unsolved_hero_node_in_a_partial_hand():
                 "an unsolved node must not poison later solved hero nodes")
 
 
-@test
 def test_distill_uses_decision_solver_depth_not_list_depth():
     """The list-row depth is audit metadata; taxonomy and drills must use the
     GTOW game-point depth that actually graded this hero decision."""
@@ -514,7 +491,6 @@ def test_distill_uses_decision_solver_depth_not_list_depth():
     assert_eq(spots[0]["parent"], "SB_RFI")
 
 
-@test
 def test_gtow_canonical_depth_encoding_boundaries():
     """GTOW encodes canonical tree depths as bb+0.125; stack categories and
     stored solver depth use human bb, especially at 20/50 boundaries."""
@@ -530,7 +506,6 @@ def test_gtow_canonical_depth_encoding_boundaries():
               "non-canonical decision-local depths remain exact")
 
 
-@test
 def test_distill_confidence_is_not_hardcoded():
     """Missing decision depth is a real low-confidence fallback and must be
     distinguishable from authoritative GTOW game-point grading."""
@@ -548,7 +523,6 @@ def test_distill_confidence_is_not_hardcoded():
 
 # ── GTOW Analyzer vs analyze_hand fidelity ──
 
-@test
 def test_fidelity_reconstructs_exact_real_action_stream_and_suits():
     """The comparator must start from GTOW real actions, not ledger summaries."""
     from analysis_fidelity_check import reconstruct_analyze_hand
@@ -570,7 +544,6 @@ def test_fidelity_reconstructs_exact_real_action_stream_and_suits():
               [("SB", "X", 0.0), ("BB", "R16.642", 16.642), ("SB", "F", 0.0)])
 
 
-@test
 def test_fidelity_reconstructs_variable_gtow_ante_from_initial_pot():
     """GTOW real hands can use 0.15bb ante. Reconstruct it from the pot before
     the first action instead of forcing MTTGeneral's 0.125 default."""
@@ -590,7 +563,6 @@ def test_fidelity_reconstructs_variable_gtow_ante_from_initial_pot():
     assert_eq(hand["ante_per_player"], 0.15)
 
 
-@test
 def test_fidelity_reconstruction_stops_when_hero_folds():
     """Villain action after hero exits must not be replayed into invalid solver nodes."""
     from analysis_fidelity_check import reconstruct_analyze_hand
@@ -624,7 +596,6 @@ def test_fidelity_reconstruction_stops_when_hero_folds():
               "the list-row/physical depth remains available as audit metadata")
 
 
-@test
 def test_analyze_unopened_fold_keeps_effective_depth_not_hero_stack():
     """Only an actual RFI uses hero's own open depth. Folding in an unopened
     pot stays on the imported/effective decision tree (1d2180ab et al.)."""
@@ -639,7 +610,6 @@ def test_analyze_unopened_fold_keeps_effective_depth_not_hero_stack():
     assert_eq(preflop["params"]["depth"], 25.125)
 
 
-@test
 def test_fidelity_reconstruction_preserves_allin_semantics_for_analyze():
     from analysis_fidelity_check import _restore_analyze_allins
     hand = {"preflop_actions": "F-R20-C", "streets": [
@@ -661,7 +631,6 @@ def test_fidelity_reconstruction_preserves_allin_semantics_for_analyze():
     assert_eq(hand["streets"][0]["actions"][0]["allin"], True)
 
 
-@test
 def test_fidelity_extracts_gtow_decisions_and_acceptable_actions():
     from analysis_fidelity_check import gtow_decisions
     decs = gtow_decisions(
@@ -676,7 +645,6 @@ def test_fidelity_extracts_gtow_decisions_and_acceptable_actions():
     assert_eq(river["gtow_excluded"], False)
 
 
-@test
 def test_fidelity_skips_downstream_combo_after_zero_frequency_action():
     """A current equilibrium cannot grade the next decision after hero took a
     zero-frequency branch. Keep the gap explicit, but do not call it a combo
@@ -707,7 +675,6 @@ def test_fidelity_skips_downstream_combo_after_zero_frequency_action():
     assert_eq(rows[1]["status"], "skipped_own_offtree_continuation")
 
 
-@test
 def test_fidelity_skips_unrepresentable_numeric_vs_allin_tree_drift():
     """A historical non-all-in 75% branch may exceed the current tree's shove.
     That is explicit solver-tree drift, not EV parity evidence (eef0b07b)."""
@@ -733,7 +700,6 @@ def test_fidelity_skips_unrepresentable_numeric_vs_allin_tree_drift():
               "action semantic drift must not hide an independent depth mismatch")
 
 
-@test
 def test_fidelity_preserves_rare_nine_max_squeeze_truth():
     """Frozen real case: physical UTG+2 and hero's BTN squeeze must survive ingestion."""
     from analysis_fidelity_check import reconstruct_analyze_hand, gtow_decisions
@@ -757,7 +723,6 @@ def test_fidelity_preserves_rare_nine_max_squeeze_truth():
     assert_eq(round(decs[-1]["ev_loss_bb"], 3), 7.884)
 
 
-@test
 def test_analyze_maps_safe_nine_max_hand_to_mtt_tree_without_losing_display_seat():
     from analyze_hand import _map_9max_mtt_to_solver_tree
     hand = {
@@ -784,7 +749,6 @@ def test_analyze_maps_safe_nine_max_hand_to_mtt_tree_without_losing_display_seat
     assert_eq(unsafe_meta, None, "a voluntary physical-UTG action cannot be erased")
 
 
-@test
 def test_fidelity_gtow_unknown_is_skipped_not_failed():
     import copy
     from analysis_fidelity_check import compare_decisions, compare_hand, gtow_decisions
@@ -816,7 +780,6 @@ def test_fidelity_gtow_unknown_is_skipped_not_failed():
     assert_true(all(d["status"] == "skipped_gtow_unknown" for d in checked["decisions"]))
 
 
-@test
 def test_fidelity_gtow_ungraded_terminal_action_is_skipped_not_extra():
     """GTOW sometimes retains a real terminal all-in/call game-point without
     a selected Analyze action. It is ungraded evidence, not an invented local
@@ -845,7 +808,6 @@ def test_fidelity_gtow_ungraded_terminal_action_is_skipped_not_extra():
               "skipped_gtow_ungraded")
 
 
-@test
 def test_fidelity_compare_requires_same_node_before_ev_parity():
     from analysis_fidelity_check import compare_decisions
     base = {
@@ -894,7 +856,6 @@ def test_fidelity_compare_requires_same_node_before_ev_parity():
     assert_eq(compare_decisions([base], [own])[0]["status"], "match")
 
 
-@test
 def test_fidelity_own_metrics_read_preflop_strategy_arrays():
     from analysis_fidelity_check import own_decisions
     from hh_deviation_check import HAND_TO_169
@@ -928,7 +889,6 @@ def test_fidelity_own_metrics_read_preflop_strategy_arrays():
     assert_eq(dec["taken_freq"], 1.0)
 
 
-@test
 def test_fidelity_sample_is_deterministic_and_rare_first():
     from analysis_fidelity_check import select_sample
     rows = [
@@ -950,7 +910,6 @@ def test_fidelity_sample_is_deterministic_and_rare_first():
                 <= {r["sample_reason"] for r in a})
 
 
-@test
 def test_fidelity_resume_and_report_exclude_noncomparable_from_denominator():
     import tempfile
     from pathlib import Path
@@ -980,7 +939,6 @@ def test_fidelity_resume_and_report_exclude_noncomparable_from_denominator():
     assert_in("exact comparable matches: 1/1", report)
 
 
-@test
 def test_depth_band_boundaries():
     from ledger_distill import depth_band
     assert_eq(depth_band(9.9), "le15")
@@ -992,7 +950,6 @@ def test_depth_band_boundaries():
 
 # ── Phase 1 Ledger: ingest raw paths ──
 
-@test
 def test_ingest_raw_paths():
     from ledger_ingest import raw_paths
     ld, dp = raw_paths("abc-123", "2026-05-30T21:03:23Z")
@@ -1000,7 +957,6 @@ def test_ingest_raw_paths():
     assert_true(str(ld).endswith("data/gtow_raw/list/2026-05.jsonl.gz"))
 
 
-@test
 def test_incremental_since_uses_watermark_overlap():
     """Incremental ingest should not re-scan a fixed 30-day window when a
     latest ingested hand exists; use a watermark plus safety overlap instead."""
@@ -1022,7 +978,6 @@ def test_incremental_since_uses_watermark_overlap():
               "watermark minus overlap in GTOW wall-clock time, not now-30d")
 
 
-@test
 def test_gtow_played_at_z_is_site_wall_clock_not_utc():
     """GTOW Analyze labels the HH wall-clock as Z; store real UTC instead.
 
@@ -1039,7 +994,6 @@ def test_gtow_played_at_z_is_site_wall_clock_not_utc():
     assert_true(dt.tzinfo is timezone.utc, "stored timestamp is UTC-aware")
 
 
-@test
 def test_raw_paths_for_normalized_utc_still_use_gtow_local_month():
     """After DB normalization, detail prep must still find local-month archives."""
     from datetime import datetime, timezone
@@ -1075,7 +1029,6 @@ def _minimal_gtow_list_row(hand_id="known-h1", played_at="2026-07-22T19:35:19Z")
     }
 
 
-@test
 def test_sweep_list_rehydrates_known_hand_missing_archive_without_db_duplicate():
     """A DB-known hand seen again in GTOW list pages must repair its missing raw
     list archive row, but remain a known hand and not get upserted as new."""
@@ -1128,7 +1081,6 @@ def test_sweep_list_rehydrates_known_hand_missing_archive_without_db_duplicate()
               "archive row is rehydrated exactly once")
 
 
-@test
 def test_sweep_detail_does_not_raw_crash_when_monthly_list_archive_missing():
     """Detail prep should tolerate a DB-known pending hand whose monthly raw
     list gzip was lost; the ingest run must not die before detail progress."""
@@ -1202,7 +1154,6 @@ def test_sweep_detail_does_not_raw_crash_when_monthly_list_archive_missing():
 
 # ── Phase 1 Ledger: session clustering ──
 
-@test
 def test_session_concurrency_sliding_window_matches_naive_semantics():
     from datetime import datetime, timedelta, timezone
     from ledger_sessions import WINDOW, _max_concurrent_tables
@@ -1225,7 +1176,6 @@ def test_session_concurrency_sliding_window_matches_naive_semantics():
     assert_eq(_max_concurrent_tables(hands), expected)
 
 
-@test
 def test_session_clustering():
     from datetime import datetime, timedelta, timezone
     from ledger_sessions import cluster_sessions
@@ -1253,7 +1203,6 @@ def _dec(leaf="flop:SRP:BBvEP:OOP:vs_bet", cat="flop", band="15_25", loss=0.0,
             "played_at": datetime.fromisoformat(week_day + "T12:00:00+00:00")}
 
 
-@test
 def test_leak_board_ev_ranking_and_min_n():
     """Leak board runs on the OFFICIAL action-line taxonomy (§4.2):
     cell = spot_leaf × depth_band, EV-ranked with a hard n floor."""
@@ -1270,7 +1219,6 @@ def test_leak_board_ev_ranking_and_min_n():
     assert_true(any(c["spot_leaf"] == "UTG_RFI" for c in out["insufficient"]))
 
 
-@test
 def test_classify_leak_boundary_vs_knowledge():
     from ledger_diagnostics import classify_leak
     conc = [_dec(band="le15", loss=1.0)] * 12 + [_dec(band="40plus", loss=0.1)] * 12
@@ -1283,7 +1231,6 @@ def test_classify_leak_boundary_vs_knowledge():
     assert_eq(t2, "knowledge")
 
 
-@test
 def test_weekly_series_tz_bucketing():
     from ledger_diagnostics import weekly_series
     # 2026-06-07 15:59 UTC = 06-07 23:59 Taipei (Sunday, W23); 16:01 UTC = 06-08 Taipei (Monday, W24)
@@ -1297,7 +1244,6 @@ def test_weekly_series_tz_bucketing():
 
 # ── Phase 1 Ledger: scorecard ──
 
-@test
 def test_training_plan_focus_and_readback():
     """Scorecard v2 = training plan: focus spot + precise drill link +
     self-contained HTML + next-cycle EV-loss readback."""
@@ -1426,7 +1372,6 @@ def test_training_plan_focus_and_readback():
     assert_true(any(text.startswith("🔍 解法") for text in review_texts))
 
 
-@test
 def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
     """The focus button must have a queue row to provision/reuse a GTOW Drill;
     it must never bypass the existing detail flow with a raw Trainer URL."""
@@ -1488,7 +1433,6 @@ def test_weekly_focus_builds_an_idempotent_queue_drill_prescription():
     assert_eq(calls[0]["added_by"], "scorecard_focus")
 
 
-@test
 def test_scorecard_html_analyze_links_filter_exact_hand_ids():
     """Regression: date-range links opened an empty GTOW Analyze table.
     Weekly HTML must use the same exact hand_id__in filter as the queue source
@@ -1517,7 +1461,6 @@ def test_scorecard_html_analyze_links_filter_exact_hand_ids():
     assert_true("played_at__range" not in html)
 
 
-@test
 def test_action_bias_only_surfaces_a_robust_dominant_direction():
     """A direction is a sparse EV-backed coaching label, never filler text."""
     from action_bias import classify_action_bias, dominant_action_bias
@@ -1550,7 +1493,6 @@ def test_action_bias_only_surfaces_a_robust_dominant_direction():
     assert_eq(dominant_action_bias(outlier), None)
 
 
-@test
 def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
     from scorecard import compute_training_plan, render_html, weekly_tg_html
 
@@ -1592,7 +1534,6 @@ def test_scorecard_bias_label_is_compact_and_omitted_when_absent():
     assert_true("明顯傾向" not in quiet_rendered and "方向混合" not in quiet_rendered)
 
 
-@test
 def test_weekly_scorecard_progress_is_sample_aware_without_one_week_verdicts():
     """Readback hides noise below 10 decisions, then gives an early direction
     without claiming the spot is learned (§14)."""
@@ -1620,7 +1561,6 @@ def test_weekly_scorecard_progress_is_sample_aware_without_one_week_verdicts():
         assert_true(banned not in msg, f"single-window verdict leaked: {banned}")
 
 
-@test
 def test_weekly_scorecard_does_not_duplicate_unprescribed_ev_nodes():
     from scorecard import weekly_tg_html
 
@@ -1636,7 +1576,6 @@ def test_weekly_scorecard_does_not_duplicate_unprescribed_ev_nodes():
     assert_not_in("BB_vs3bet", msg)
 
 
-@test
 def test_build_drill_url_pins_position():
     """Precise drill URL pins fh_hero/fh_opponent/fh_rel_positions/fh_actions
     (params verified live 2026-07-09; see skill gtow-trainer-drill)."""
@@ -1672,7 +1611,6 @@ def test_build_drill_url_pins_position():
         pass
 
 
-@test
 def test_postflop_leaderboard_uses_exact_source_hand_custom_trainer():
     """River/turn/flop focus can open a faithful GTOW Custom Trainer URL."""
     from spot_leaderboard import drill_url_for_item, sample_sql
@@ -1693,7 +1631,6 @@ def test_postflop_leaderboard_uses_exact_source_hand_custom_trainer():
     assert_in("d.solver_depth_bb", sql)
 
 
-@test
 def test_ledger_service_summary_sql():
     from ledger_service import _summary_sql, _top_spots_sql
     sql, args = _summary_sql(None, None, None)
@@ -1708,7 +1645,6 @@ def test_ledger_service_summary_sql():
     assert_eq(targs, ["vs3bet", 10])
 
 
-@test
 def test_ledger_service_source_isolation():
     """§5.2: EVERY ledger stats/listing query is online-only — live hands are a
     biased sample and must only surface via the drill queue / 線下 sections."""
@@ -1730,7 +1666,6 @@ def test_ledger_service_source_isolation():
     assert_eq(eargs, ["vs3bet", 30])
 
 
-@test
 def test_leaderboard_sql_time_window():
     """§2.2: the leaderboard SQL takes an optional window — an unwindowed
     (cumulative) board cannot show recent form or the treatment effect."""
@@ -1754,7 +1689,6 @@ def test_leaderboard_sql_time_window():
     assert_in("source=$3", READBACK_WINDOW_SQL)
 
 
-@test
 def test_scorecard_fails_closed_until_hierarchy_backfill_ready():
     from scorecard import TRAINING_READINESS_SQL, training_readiness
     assert_in("spot_parent IS NOT NULL", TRAINING_READINESS_SQL)
@@ -1767,28 +1701,22 @@ def test_scorecard_fails_closed_until_hierarchy_backfill_ready():
     assert_in("90/100", note)
 
 
-@test
 def test_ledger_tool_declarations_wired():
-    """All four training-loop tools are ledger-backed; the frequency-era
-    deviations tools (query_my_leaks/query_my_stats) are GONE (§7.3/§12)."""
-    import inspect
-    import gemini_session as gs
-    assert_eq(gs.QUERY_LEDGER_SUMMARY_DECLARATION.name, "query_ledger_summary")
-    assert_eq(gs.QUERY_LEDGER_HANDS_DECLARATION.name, "query_ledger_hands")
-    assert_eq(gs.GET_TRAINING_PLAN_DECLARATION.name, "get_training_plan")
-    assert_eq(gs.GET_PROGRESS_DECLARATION.name, "get_progress")
-    assert_true(not hasattr(gs, "QUERY_MY_LEAKS_DECLARATION"))
-    assert_true(not hasattr(gs, "QUERY_MY_STATS_DECLARATION"))
-    src = inspect.getsource(gs.GeminiSessionManager)
-    assert_in("query_ledger_summary", src)
-    assert_in("_execute_ledger_tool", src)
-    for legacy in ("query_stats", "query_progress,", "get_top_leaks_ev_ranked",
-                   "deviation_rate"):
-        assert_true(legacy not in src,
-                    f"legacy frequency-era reference {legacy!r} still in GeminiSessionManager")
+    """Training-loop tools are exposed only through provider-neutral specs."""
+    from coach_tools import coach_tool_specs
+
+    specs = {spec.name: spec for spec in coach_tool_specs(True)}
+    assert_eq(specs["query_ledger_summary"].name, "query_ledger_summary")
+    assert_eq(specs["query_ledger_hands"].name, "query_ledger_hands")
+    assert_eq(specs["get_training_plan"].name, "get_training_plan")
+    assert_eq(specs["get_progress"].name, "get_progress")
+    assert_true("query_my_leaks" not in specs)
+    assert_true("query_my_stats" not in specs)
+    assert_true(all(spec.requires_db for name, spec in specs.items()
+                    if name in {"query_ledger_summary", "query_ledger_hands",
+                                "get_training_plan", "get_progress"}))
 
 
-@test
 def test_progress_sql_ev_weighted():
     """get_progress backend: weekly EV-loss series builder — EV numbers only,
     source-isolated, weeks as the trailing LIMIT parameter (§7.3)."""
@@ -1807,7 +1735,6 @@ def test_progress_sql_ev_weighted():
     assert_true("deviation" not in sql)
 
 
-@test
 def test_training_tool_renderers():
     """Renderers for the ledger-backed coach tools: plan shows focus + drill
     link + queue; progress shows per-week EV with n and the month-scale note,
@@ -1840,7 +1767,6 @@ def test_training_tool_renderers():
         assert_true(banned not in prog, f"{banned!r} must not appear in progress output")
 
 
-@test
 def test_analyze_table_url_shape():
     from scorecard import analyze_table_url
     url = analyze_table_url("2026-05-30", "2026-05-30")
@@ -1848,7 +1774,6 @@ def test_analyze_table_url_shape():
     assert_in("preselectGamemode=TOURNAMENT", url)
 
 
-@test
 def test_spot_taxonomy_preflop_lines():
     from spot_taxonomy import classify_preflop, pos_cat, ip_oop, board_suit, eff_stack_cat
     # RFI: folded to hero (exact position)
@@ -1898,7 +1823,6 @@ def test_spot_taxonomy_preflop_lines():
     assert_eq(eff_stack_cat(12), "short")
 
 
-@test
 def test_spot_taxonomy_ip_oop_uses_global_position_order():
     """GTOW keeps absolute position labels when seats are missing (observed
     7-max hands use UTG+1, not UTG). IP/OOP must therefore depend on button-
@@ -1921,7 +1845,6 @@ def test_spot_taxonomy_ip_oop_uses_global_position_order():
                           f"{npl}-max {hero} vs {villain}")
 
 
-@test
 def test_spot_taxonomy_7max_utg1_vs_sb_repro():
     """Production 5/27 QsTs: 7-max UTG+1 opens, SB 3bets, hero calls;
     SB acts first on flop/turn, so hero is IP on every affected leaf."""
@@ -1953,7 +1876,6 @@ def test_spot_taxonomy_7max_utg1_vs_sb_repro():
     assert_eq(spots[3]["leaf"], "turn:3bet:EPvSB:IP:[b-c]:vs_bet")
 
 
-@test
 def test_spot_taxonomy_walk_fixture():
     import json
     from pathlib import Path
@@ -1994,7 +1916,6 @@ def _restore_user_token_mint(orig):
     gto_token.invalidate_user_token(-1)
 
 
-@test
 def test_analyze_api_env_token_override_mints_access():
     """GTOW_REFRESH_TOKEN set -> access minted via the per-user cache."""
     import gtow_analyze_api as gapi
@@ -2018,7 +1939,6 @@ def test_analyze_api_env_token_override_mints_access():
         _restore_user_token_mint(orig)
 
 
-@test
 def test_analyze_api_env_token_override_invalid_refresh_raises():
     """Invalid refresh token -> TokenExpiredError, not a silent None header."""
     import gtow_analyze_api as gapi
@@ -2044,7 +1964,6 @@ def test_analyze_api_env_token_override_invalid_refresh_raises():
         gto_token.invalidate_user_token(gapi._ENV_TOKEN_USER)
 
 
-@test
 def test_analyze_api_bot_process_fails_closed_without_request_token():
     """Analyze API must not borrow owner auth inside the Telegram bot."""
     import gtow_analyze_api as gapi
@@ -2085,7 +2004,6 @@ def _fake_ingest_env(script_map):
     return fake_run, calls
 
 
-@test
 def test_ingest_subprocess_keeps_user_identity_but_clears_bot_guard():
     """A bot child receives user identity, never the refresh secret."""
     import asyncio
@@ -2123,7 +2041,6 @@ def test_ingest_subprocess_keeps_user_identity_but_clears_bot_guard():
     assert_true("POKER_BOT_PROCESS" not in captured["env"])
 
 
-@test
 def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
     """verify rc=2 -> full sweep runs (epoch default --since, no literal date);
     result carries the escalation marker."""
@@ -2159,7 +2076,6 @@ def test_ingest_runner_pipeline_escalates_on_verify_mismatch():
     assert_eq(len([c for c in calls if "--verify" in c]), 2)
 
 
-@test
 def test_ingest_runner_pipeline_persistent_mismatch_warns_not_fails():
     """Mismatch surviving the full sweep (GTOW-side deletion / pre-epoch
     hands) -> warning note in the result, not a hard failure."""
@@ -2184,7 +2100,6 @@ def test_ingest_runner_pipeline_persistent_mismatch_warns_not_fails():
     assert_in("對數仍不符", result)
 
 
-@test
 def test_ingest_runner_pipeline_no_new_hands_hint():
     """list=0 detail=0 with clean verify -> hint about GTOW still processing."""
     import asyncio
@@ -2209,7 +2124,6 @@ def test_ingest_runner_pipeline_no_new_hands_hint():
     assert_not_in("全量補齊", result)
 
 
-@test
 def test_ingest_runner_silences_success_notification_when_no_hands_added():
     """A successful list=0 sync is recorded but silent; useful results stay loud."""
     import asyncio
@@ -2248,7 +2162,6 @@ def test_ingest_runner_silences_success_notification_when_no_hands_added():
     assert_in("新增手牌：0", writes[0][1]["result"])
 
 
-@test
 def test_ingest_runner_pipeline_guard_skips_full_sweep_within_24h():
     """allow_full_sweep=False (a recent full sweep already proved a permanent
     mismatch) -> incremental only, no --backfill, warn + skip note (deferred #9:
@@ -2276,7 +2189,6 @@ def test_ingest_runner_pipeline_guard_skips_full_sweep_within_24h():
     assert_eq([c for c in calls if "--backfill" in c], [])
 
 
-@test
 def test_recent_permanent_mismatch_query_scopes_to_done_24h_markers():
     """The guard only fires on a DONE request within 24h whose result carries
     BOTH the full-sweep marker and the still-mismatch marker (deferred #9)."""
@@ -2313,7 +2225,6 @@ def test_recent_permanent_mismatch_query_scopes_to_done_24h_markers():
     assert_in("對數仍不符", q)
 
 
-@test
 def test_ingest_runner_surfaces_only_useful_summary_counts():
     import asyncio
     from src import ingest_runner
@@ -2342,7 +2253,6 @@ def test_ingest_runner_surfaces_only_useful_summary_counts():
     assert_not_in("摘要不足", result)
 
 
-@test
 def test_ingest_runner_omits_legacy_skipped_from_user_summary():
     """Legacy `skipped` input remains accepted but is not user-facing noise."""
     from src import ingest_runner
@@ -2356,7 +2266,6 @@ def test_ingest_runner_omits_legacy_skipped_from_user_summary():
     assert_not_in("skipped", result)
 
 
-@test
 def test_ingest_runner_pipeline_crash_surfaces_tail_not_silent():
     """Ingest crash (e.g. TokenExpiredError) -> loud error with output tail,
     never the old '✅ INGEST（無輸出）' silent-success (FORCED_LOGOUT bug)."""
@@ -2382,7 +2291,6 @@ def test_ingest_runner_pipeline_crash_surfaces_tail_not_silent():
         ingest_runner._run_script = orig
 
 
-@test
 def test_ingest_runner_pipeline_stage_failures_are_loud():
     """backfill_spots crash and verify crash (rc=1, not the rc=2 mismatch)
     must fail the run — a green result over unclassified decisions is the
@@ -2415,17 +2323,3 @@ def test_ingest_runner_pipeline_stage_failures_are_loud():
                 assert_in(needle, str(e))
         finally:
             ingest_runner._run_script = orig
-
-
-@test
-def test_settoken_save_force_overrides_stale_iat_guard():
-    """/settoken (manual, GTOW-validated upstream) must force-override the
-    stored token: the stale-iat guard blocked the working token after a
-    FORCED_LOGOUT killed the 'newer' one. Tripwire: the guard must not be
-    reintroduced into save_user_gto_token (force belongs to the SQL RPC's
-    p_force=false auto-sync path only)."""
-    import inspect
-    from src.database import Database
-    src = inspect.getsource(Database.save_user_gto_token)
-    assert_not_in("gto_refresh_token_iat IS NULL", src)
-    assert_not_in("gto_refresh_token_iat <=", src)

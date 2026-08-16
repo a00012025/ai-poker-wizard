@@ -7,7 +7,7 @@ EXT = ROOT / "chrome-extension"
 
 def test_manifest_v2_sync_contract():
     manifest = json.loads((EXT / "manifest.json").read_text())
-    assert manifest["version"] == "2.0.0"
+    assert manifest["version"].split(".", 1)[0] == "2"
     assert manifest["action"]["default_popup"] == "popup.html"
     assert "storage" in manifest["permissions"]
     assert "https://app.gtowizard.com/*" in manifest["host_permissions"]

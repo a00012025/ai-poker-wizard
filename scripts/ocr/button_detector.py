@@ -7,6 +7,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from position_constants import BUTTON_FIRST_POSITION_ORDERS
+
 TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "dealer_button.png"
 
 SEAT_ANCHORS = {
@@ -101,17 +103,7 @@ def hero_position_from_button(
     table_size: int,
     hero_seat_idx: int = 0,
 ) -> str | None:
-    post_button = {
-        9: ["BTN", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
-        8: ["BTN", "SB", "BB", "UTG", "UTG+1", "LJ", "HJ", "CO"],
-        7: ["BTN", "SB", "BB", "UTG", "LJ", "HJ", "CO"],
-        6: ["BTN", "SB", "BB", "LJ", "HJ", "CO"],
-        5: ["BTN", "SB", "BB", "HJ", "CO"],
-        4: ["BTN", "SB", "BB", "CO"],
-        3: ["BTN", "SB", "BB"],
-        2: ["SB", "BB"],
-    }
-    order = post_button.get(table_size)
+    order = BUTTON_FIRST_POSITION_ORDERS.get(table_size)
     if not order:
         return None
     offset = (hero_seat_idx - button_seat_idx) % len(order)

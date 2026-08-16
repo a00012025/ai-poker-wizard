@@ -1,10 +1,7 @@
 """N8 preflop hero-marker cleanup avoids adjacent opponent bleed."""
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from ocr.n8_parser import _filter_action_entries  # noqa: E402
 
 

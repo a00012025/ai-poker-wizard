@@ -29,11 +29,9 @@ Position categories: EP=UTG/UTG+1/UTG+2, MP=LJ/HJ, LP=CO/BTN, SB, BB.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ledger_distill import _norm_code, _street_of, decode_gtow_depth, depth_band
+from position_constants import POSITION_ORDERS
 
 # ── positions ──────────────────────────────────────────────────────────────
 _POS_CAT = {
@@ -43,16 +41,7 @@ _POS_CAT = {
     "SB": "SB", "BB": "BB",
 }
 # preflop seat order (button-relative) by table size
-_PREFLOP_ORDER = {
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    2: ["SB", "BB"],
-}
+_PREFLOP_ORDER = POSITION_ORDERS
 
 
 def pos_cat(pos: str) -> str:

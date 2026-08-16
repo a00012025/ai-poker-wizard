@@ -6,10 +6,8 @@ ICM gametype and stack configuration for a given tournament scenario.
 """
 import json
 import math
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gto_api import _get_with_retry, API_BASE
 
 # Cache game modes in memory

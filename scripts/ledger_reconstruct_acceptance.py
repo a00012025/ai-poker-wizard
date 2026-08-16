@@ -22,7 +22,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 
 from ledger_distill import (  # noqa: E402
     ListOnlyReconstructionError,

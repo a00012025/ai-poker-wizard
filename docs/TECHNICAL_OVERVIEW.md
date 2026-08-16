@@ -161,10 +161,10 @@ incremental/full ingest
 |---|---|
 | `BOT_TOKEN` | Telegram bot token |
 | `GEMINI_API_KEY` | Gemini API key |
-| `GEMINI_MODEL` / `GEMINI_PARSE_MODEL` | legacy rollback 與 hand parse 模型；正常 coaching 不使用 Gemini |
+| `GEMINI_PARSE_MODEL` | text hand parse 模型；正常 coaching 不使用 Gemini |
 | `GEMINI_LIVE_PARSE_MODEL` | `/live` lexical parser 模型 |
 | `OPENAI_API_KEY` | initial 與 follow-up GPT 教練；未設定時誠實降級，不切換 narrator |
-| `COACH_PROVIDER` / `OPENAI_COACH_MODEL` | 教練 provider 與模型（正常路徑為 OpenAI / `gpt-5.6-terra`）；`COACH_NARRATOR_PROVIDER` 只保留相容性 |
+| `OPENAI_COACH_MODEL` | OpenAI 教練模型（預設 `gpt-5.6-terra`） |
 | `OPENAI_COACH_MAX_TOOL_CALLS` / `OPENAI_COACH_MAX_EVIDENCE_ROUNDS` | 每輪 follow-up 的 tool-call 與依賴查詢上限 |
 | `SUPABASE_CONN` | PostgreSQL transaction-pooler DSN |
 | `SUPABASE_ACCESS_TOKEN` | Supabase CLI deploy token |
@@ -207,6 +207,7 @@ Token sync 首次部署與 rollback 見 [`GTOW_TOKEN_SYNC_DEPLOY.md`](GTOW_TOKEN
 python scripts/regression_test.py
 
 # pytest：OCR、parser、token sync 等
+pip install -r requirements-dev.txt
 pytest -q
 
 # Chrome Extension

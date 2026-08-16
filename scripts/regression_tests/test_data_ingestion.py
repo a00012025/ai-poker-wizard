@@ -9,14 +9,13 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 # ── HH Parser (ground-truth oracle) ──
 
@@ -95,7 +94,6 @@ Total pot 1,100
 """
 
 
-@test
 def test_hh_parser_ante_level_format():
     """Anted level 'Level14(400/800(100))' must parse (bb=800, not None)."""
     from hh_parser import parse_hand
@@ -170,7 +168,6 @@ Board [Th 8d 9h 5d 7h]
 """
 
 
-@test
 def test_hh_parser_ante_allin_does_not_false_walk():
     """Sub-ante all-in seat must not drop the whole hand via the walk gate."""
     from hh_parser import parse_hand
@@ -185,7 +182,6 @@ def test_hh_parser_ante_allin_does_not_false_walk():
     assert_true("streets" in gt and len(gt["streets"]) >= 1, "flop missing")
 
 
-@test
 def test_hh_parser_no_ante_level_still_works():
     """Non-anted level 'Level1(100/200)' must still parse (no regression)."""
     from hh_parser import parse_hand
@@ -210,7 +206,6 @@ def test_hh_parser_no_ante_level_still_works():
 _FX = REPO_ROOT / "tests" / "fixtures"
 
 
-@test
 def test_title_ocr_reads_correct_id_exactly():
     """A scene whose id is known from a direct row-click anchor must read
     back exactly (no off-by-one, no digit slip)."""
@@ -223,7 +218,6 @@ def test_title_ocr_reads_correct_id_exactly():
     assert_true(votes * 2 > total, "must win by a strict majority")
 
 
-@test
 def test_title_ocr_detects_mislabeled_file():
     """The regression case itself: a file on disk named TM5880084315 whose
     replay actually renders TM5880084269. Reading the title (not trusting
@@ -241,7 +235,6 @@ def test_title_ocr_detects_mislabeled_file():
                 "filename is the mislabel; title is ground truth")
 
 
-@test
 def test_title_ocr_unreadable_returns_none():
     """A title that cannot be read must return None — never a guessed id
     (a false id would silently corrupt the benchmark pairing)."""
@@ -257,7 +250,6 @@ def test_title_ocr_unreadable_returns_none():
     assert_true(tid is None, f"blank image must be unreadable, got {tid!r}")
 
 
-@test
 def test_resolve_hero_uses_top2_when_top1_collides():
     """Hero CNN top1 collides with board; top2 doesn't, so keep top2."""
     from ocr.n8_parser import _resolve_hero_board_conflict
@@ -290,7 +282,6 @@ def test_resolve_hero_uses_top2_when_top1_collides():
     assert_eq(new_hero, ["Qc", "As"])
 
 
-@test
 def test_temperature_scaling_lowers_ece():
     """Calibrated softmax should reduce expected calibration error."""
     import torch
@@ -312,7 +303,7 @@ def test_temperature_scaling_lowers_ece():
     assert_true(after < before, f"ECE not reduced: {before} -> {after}")
 
 
-@test
+@pytest.mark.telegram
 def test_document_image_routing():
     """Bug regression: Telegram delivers uncompressed/HEIC screenshots as
     Document (not Photo) when the user picks "send as file". The previous
@@ -346,7 +337,6 @@ def test_document_image_routing():
     assert_true(not _is_image_document(None, "notes.txt"))
 
 
-@test
 def test_first_bet_pot_pct_includes_ante():
     """H3432 regression: postflop first-bet matching must use a pot value that
     includes the MTT ante. analyze_hand previously computed actual_pot WITHOUT
@@ -388,7 +378,6 @@ def test_first_bet_pot_pct_includes_ante():
               "As6d-specific combo strategy at facing-cbet node must be Call 99%")
 
 
-@test
 def test_postflop_pre_collapse_in_diagnostics():
     """H3433 regression: per-street pre_collapse counts must be exposed in
     diagnostics so the fallback gate can demote to full-Gemini when an
@@ -421,7 +410,6 @@ def test_postflop_pre_collapse_in_diagnostics():
                 f"H3433 river must show large collapse loss; got {losses}")
 
 
-@test
 def test_range_image_legend_check_bet_vs_call_raise():
     """range_image: legend labels follow the node type.
 

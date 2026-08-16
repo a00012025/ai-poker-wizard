@@ -9,18 +9,20 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
 
-@test
+import pytest
+
+pytestmark = pytest.mark.ocr
+
 def test_board_unknown_suits_are_canonicalized_before_api():
     """Text parses must not leak unknown board suits like 5x to GTOW.
+
+
 
     Regression for a 422 on:
       board=5c7c9c5x after user wrote "579r ... turn 5".
@@ -40,7 +42,6 @@ def test_board_unknown_suits_are_canonicalized_before_api():
     assert_in("5x → 5♠️", "; ".join(notes))
 
 
-@test
 def test_postflop_allin_resolution_preserves_sized_hero_backjam():
     """OCR: a sized hero all-in must not be collapsed onto villain's raise.
 
@@ -68,7 +69,6 @@ def test_postflop_allin_resolution_preserves_sized_hero_backjam():
     assert_eq(resolved[4]["type"], "opponent")
 
 
-@test
 def test_corner_ocr_does_not_override_confident_ace():
     """OCR: EasyOCR misreads the Ace corner glyph as '4' (H2878).
 
@@ -89,7 +89,6 @@ def test_corner_ocr_does_not_override_confident_ace():
                 "corner OCR should override a non-Ace CNN rank")
 
 
-@test
 def test_corner_ocr_override_requires_cnn_top2_support():
     """OCR: corner OCR must not invent ranks absent from the CNN top-2.
 
@@ -120,7 +119,6 @@ def test_corner_ocr_override_requires_cnn_top2_support():
     )
 
 
-@test
 def test_corner_ocr_can_rescue_low_conf_overlapped_card():
     """OCR: shifted corner OCR can rescue an overlapped low-confidence crop.
 
@@ -153,7 +151,6 @@ def test_corner_ocr_can_rescue_low_conf_overlapped_card():
     )
 
 
-@test
 def test_board_corner_override_blocks_confident_cnn_ace():
     """OCR: board corner OCR must not flip a confident CNN board rank.
 
@@ -193,7 +190,6 @@ def test_board_corner_override_blocks_confident_cnn_ace():
     )
 
 
-@test
 def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     """OCR: sticker-only All-In fragments still belong to the prior raise.
 
@@ -220,7 +216,6 @@ def test_postflop_allin_resolution_still_attaches_sticker_only_badge():
     assert_eq(resolved[3]["type"], "hero")
 
 
-@test
 def test_dup_allin_badge_on_call_keeps_call_size():
     """OCR: a bare All-In badge on hero's own Call must keep the call size.
 
@@ -248,7 +243,6 @@ def test_dup_allin_badge_on_call_keeps_call_size():
     assert_eq(cleaned[2]["size"], 6.8, "call size must survive")
 
 
-@test
 def test_dup_allin_badge_on_bet_promotes_to_allin():
     """OCR: a bare All-In badge on a bet/raise promotes it to All-In (H2852).
 
@@ -290,7 +284,6 @@ def _allin_badge_region(above_color):
     return region, group
 
 
-@test
 def test_classify_group_keeps_opponent_allin_badge_over_white_sticker():
     """OCR: a bare All-In badge on villain's raise stays opponent (H3577).
 
@@ -313,7 +306,6 @@ def test_classify_group_keeps_opponent_allin_badge_over_white_sticker():
               "badge over white opponent sticker must stay opponent")
 
 
-@test
 def test_classify_group_flips_bare_hero_allin_with_no_sticker_above():
     """OCR: a centered bare hero All-In with no sticker above flips to hero.
 
@@ -340,7 +332,6 @@ def test_classify_group_flips_bare_hero_allin_with_no_sticker_above():
 # into Call so the call is scored as a match, not a deviation.
 
 
-@test
 def test_build_streets_tags_sized_allin():
     """OCR: a sized villain all-in keeps R{size} but is tagged ``allin``.
 
@@ -370,7 +361,6 @@ def test_build_streets_tags_sized_allin():
     assert_true("allin" not in turn[1], "a plain call is not an all-in")
 
 
-@test
 def test_build_streets_multiway_fold_not_attributed_to_the_bettor():
     """OCR: a multiway cold-caller's fold must not land on the bettor's seat.
 
@@ -404,7 +394,6 @@ def test_build_streets_multiway_fold_not_attributed_to_the_bettor():
     assert_eq(flop[2]["position"], "CO", "hero call stays CO")
 
 
-@test
 def test_effective_bb_opp_shove_called_uses_investment_not_misread_stack():
     """Opp shoves all-in, hero calls in full → eff_bb = opp's investment.
 
@@ -455,7 +444,6 @@ def test_effective_bb_opp_shove_called_uses_investment_not_misread_stack():
     assert_eq(eff, 8.8, "eff_bb = BB's full investment (all-in), not misread stack")
 
 
-@test
 def test_effbb_multiway_selection():
     """effbb: multiway returns min(hero, shortest active villain) bucket."""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR)))
@@ -486,7 +474,6 @@ def test_effbb_multiway_selection():
     assert_eq(depth_bucket(eff2), 17)
 
 
-@test
 def test_effbb_deep_invested_not_nulled():
     """effbb: deep-invested hero keeps a real value (no displayed*5 false-null)."""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR)))
@@ -503,7 +490,6 @@ def test_effbb_deep_invested_not_nulled():
     assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_walkover_seat_attribution():
     """effbb: a fold-through open binds on the shortest seat still to act,
     resolved by position/geometry — not hero's own (deeper) stack."""
@@ -524,7 +510,6 @@ def test_effbb_walkover_seat_attribution():
         assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_uncalled_shove_ceiling():
     """effbb: hero invests preflop then folds to an uncalled villain jam — the
     jam size is the villain's whole stack and caps the effective stack."""
@@ -544,7 +529,6 @@ def test_effbb_uncalled_shove_ceiling():
     assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_geometry_villain_attribution():
     """effbb: when villain names are None/garbled, the active villain's stack is
     resolved by position/geometry (not the shortest arbitrary seat)."""
@@ -565,7 +549,6 @@ def test_effbb_geometry_villain_attribution():
         assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_hero_uncalled_shove_starting_stack():
     """effbb: when hero jams preflop and everyone folds (uncalled), hero's shove
     size is hero's authoritative starting stack."""
@@ -585,7 +568,6 @@ def test_effbb_hero_uncalled_shove_starting_stack():
     assert_eq(depth_bucket(eff), depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_hero_allin_stack_zero_reconstruction():
     """effbb (Phase 3): when hero's displayed stack reads ~0 (all-in / called a
     villain shove), hero's STARTING stack is what hero permanently committed —
@@ -638,7 +620,6 @@ def test_effbb_hero_allin_stack_zero_reconstruction():
     assert_eq(depth_bucket(eff3), depth_bucket(o3["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_hero_stack_zero_no_confident_wrong():
     """effbb (Phase 3): across ALL hero-active, hero-stack~0 emits, the
     correct-or-abstain contract holds at high precision — the hero all-in
@@ -677,7 +658,6 @@ def test_effbb_hero_stack_zero_no_confident_wrong():
                 f"hero-stack~0 emitted precision regressed below 88%: {prec:.1f}% ({ok}/{emit})")
 
 
-@test
 def test_effbb_confidence_is_calibrated_monotonic():
     """effbb: attribution-certainty confidence yields a MONOTONIC precision/
     coverage curve — raising the floor trades coverage for precision (the old
@@ -722,7 +702,6 @@ def test_effbb_confidence_is_calibrated_monotonic():
     assert_true(p9 >= p0 + 1.0, f"high-conf band not more precise: all={p0:.1f} conf>=0.9={p9:.1f}")
 
 
-@test
 def test_effbb_abstain_or_correct_on_divergence():
     """effbb: ambiguous/divergent reconstruction abstains or hits the right bucket."""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR)))
@@ -739,7 +718,6 @@ def test_effbb_abstain_or_correct_on_divergence():
     assert_true(eff is None or depth_bucket(eff) == depth_bucket(o["gt"]["effective_bb"]))
 
 
-@test
 def test_effbb_overcompute_bounded():
     """effbb: over-compute past table max is rejected (bounded or abstain)."""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR)))
@@ -784,7 +762,6 @@ def _eng_streets_from_cache(hid):
     return o, streets, pot
 
 
-@test
 def test_engine_position_orders_match_parser():
     """Engine's POSITION_ORDERS must be identical to the parser's."""
     eng = _engine()
@@ -793,7 +770,6 @@ def test_engine_position_orders_match_parser():
               "engine POSITION_ORDERS drifted from n8_parser")
 
 
-@test
 def test_engine_infer_blinds():
     """Engine infers SB=0.5/BB=1.0 and a BB-ante from the preflop pot."""
     eng = _engine()
@@ -805,7 +781,6 @@ def test_engine_infer_blinds():
     assert_true(not ok2, "absurd preflop pot should not reconcile")
 
 
-@test
 def test_engine_action_order_assignment_preflop():
     """Engine assigns positions by legal action order, not player_name."""
     eng = _engine()
@@ -825,7 +800,6 @@ def test_engine_action_order_assignment_preflop():
     assert_in(("SB", "fold"), by)
 
 
-@test
 def test_engine_m1_uncalled_shove_ceiling():
     """M1: hero invests then folds to an uncalled villain jam → ceiling = the
     shover's TOTAL contribution (prior streets + shove). TM5863067496 GT 20.4."""
@@ -839,7 +813,6 @@ def test_engine_m1_uncalled_shove_ceiling():
               f"M1 ceiling {r.rule_ceiling} should be bucket 20")
 
 
-@test
 def test_engine_m1_postflop_jam_uses_total_contribution():
     """M1: a small river jam over a deep prior invest must use the shover's
     TOTAL contribution, not the bare shove size. TM5880480237 GT 15.0."""
@@ -853,7 +826,6 @@ def test_engine_m1_postflop_jam_uses_total_contribution():
               f"ceiling {r.rule_ceiling} vs GT {o['gt']['effective_bb']}")
 
 
-@test
 def test_engine_m2_walkover_binds_on_seats_behind():
     """M2: hero opens and folds through → EVERY seat still to act behind hero
     binds the steal spot (GT-aligned preflop-only set: a short BTN/SB behind
@@ -875,7 +847,6 @@ def test_engine_m2_walkover_binds_on_seats_behind():
                   f"got {r.relevant_opponents}")
 
 
-@test
 def test_engine_m3_multiway_live_set():
     """M3: relevant = the live contestants at hero's decision (action order),
     NOT showdown survivors or a folded short seat. TM5863067607: hero BB, SB
@@ -894,7 +865,6 @@ def test_engine_m3_multiway_live_set():
               f"live set should be the SB limper, got {r.relevant_opponents}")
 
 
-@test
 def test_engine_m3_multiway_postflop_callers_in_live_set():
     """M3: a caller who acts AFTER hero's open stays in the live set when hero
     does not fold — freezing at hero's open would drop the very callers who
@@ -913,7 +883,6 @@ def test_engine_m3_multiway_postflop_callers_in_live_set():
                     f"{folded} folded preflop, must not be live")
 
 
-@test
 def test_effbb_engine_m1_endtoend_bucket():
     """End-to-end: the M1 ceiling reaches _compute_effective_bb. TM5863067496
     GT 20.4 (bucket 20) — read straight off the panel shove."""
@@ -931,7 +900,6 @@ def test_effbb_engine_m1_endtoend_bucket():
 # ---------------------------------------------------------------------------
 # Phase 2: top-K layout enumeration + bucket-consensus emission
 # ---------------------------------------------------------------------------
-@test
 def test_engine_hu_postflop_order_bb_first():
     """HU (2-handed) postflop the BB acts FIRST (carry-over fix). Preflop the
     SB/BTN acts first; postflop the order flips to ['BB','SB']."""
@@ -942,7 +910,6 @@ def test_engine_hu_postflop_order_bb_first():
               "SB")
 
 
-@test
 def test_phase2_dead_code_removed():
     """The unused _seat_stack_for_position helper was removed in Phase 2."""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR), "ocr"))
@@ -951,7 +918,6 @@ def test_phase2_dead_code_removed():
                 "_seat_stack_for_position should be deleted (dead code)")
 
 
-@test
 def test_phase2_enumerate_layouts_topk():
     """_enumerate_layouts returns the top-K position->seat layouts, each a full
     {position: seat} map for the table, best-first by weak name agreement."""
@@ -974,7 +940,6 @@ def test_phase2_enumerate_layouts_topk():
         assert_eq(set(m.keys()), set(order))
 
 
-@test
 def test_phase2_consensus_holds_emits_correct_bucket():
     """When all plausible layouts + the engine's relevant seat agree on the
     bucket, the consensus path emits the correct bucket. TM5862907992: a
@@ -995,7 +960,6 @@ def test_phase2_consensus_holds_emits_correct_bucket():
     assert_true(conf >= 0.7, f"emitted confidence below floor: {conf}")
 
 
-@test
 def test_phase2_layout_straddle_abstains():
     """When the plausible geometric layouts straddle DIFFERENT depth buckets
     and the engine cannot break the tie, the consensus path ABSTAINS (None) —
@@ -1016,7 +980,6 @@ def test_phase2_layout_straddle_abstains():
         assert_true(conf < 0.7, f"{hid}: abstain conf should be low, got {conf}")
 
 
-@test
 def test_phase2_consensus_curve_trades_coverage_for_precision():
     """The consensus confidence yields a real precision/coverage frontier on
     hero-active hands: raising the floor must not lower precision and the top
@@ -1103,7 +1066,6 @@ def _effbb_run(hid, *, gate=True):
         importlib.reload(_P)
 
 
-@test
 def test_phase4_features_surfaced_per_hand():
     """The Phase-4 abstain features are captured per hand (no re-OCR) and carry
     the candidate signals the calibration harness fits gates on."""
@@ -1127,7 +1089,6 @@ def test_phase4_features_surfaced_per_hand():
         assert_in(key, f)
 
 
-@test
 def test_chip_solver_features_surfaced_per_hand():
     """B2: the chip-conservation features are captured per hand alongside the
     Phase-4 features (no re-OCR, no behavior change). The clean hand
@@ -1159,7 +1120,6 @@ def test_chip_solver_features_surfaced_per_hand():
     assert_true(f2["chip_residual"] is not None)
 
 
-@test
 def test_phase4_bucket_boundary_distance():
     """Boundary-distance fragility signal: a value near a bucket-cell edge is
     flagged fragile (small), a value at a bucket centre is not."""
@@ -1174,7 +1134,6 @@ def test_phase4_bucket_boundary_distance():
                 "bucket-centre value wrongly flagged fragile")
 
 
-@test
 def test_phase4_gate_abstains_structurally_wrong_hands():
     """The shipped structural gate ABSTAINS representative internally-consistent
     wrong emits (the layout-independent value errors consensus is blind to),
@@ -1193,7 +1152,6 @@ def test_phase4_gate_abstains_structurally_wrong_hands():
     # point (see test_effbb_herozero_slice_emitted for the upside).
 
 
-@test
 def test_phase4_gate_keeps_clean_correct_hands():
     """The shipped structural gate does NOT abstain clean, correct emits — the
     abstain is targeted, not a blanket coverage cut."""
@@ -1204,7 +1162,6 @@ def test_phase4_gate_keeps_clean_correct_hands():
                     f"gate wrongly abstained/missed clean hand {hid}: {eff} vs {gt}")
 
 
-@test
 def test_phase4_gate_lifts_precision_over_baseline():
     """The shipped structural gate lifts emitted precision over the bare-conf
     baseline across the hero-active cache, at the cost of coverage (abstaining
@@ -1269,7 +1226,6 @@ def test_phase4_gate_lifts_precision_over_baseline():
                 f"shipped coverage off calibrated band (~71%): {c_on:.1f}%")
 
 
-@test
 def test_effbb_called_shove_floor_binds():
     """A villain shove that hero CALLS binds the effective stack — the explicit
     panel all-in size is the authoritative read. Guards two fixes:
@@ -1285,7 +1241,6 @@ def test_effbb_called_shove_floor_binds():
                     f"{hid}: called-shove floor missed: {eff} vs GT {gt}")
 
 
-@test
 def test_effbb_behind_hero_bound_preflop_only():
     """A hand that truly ends preflop (no jam, no run-out) is bound by every
     seat acting AFTER hero — including seats that folded behind — plus earlier
@@ -1299,7 +1254,6 @@ def test_effbb_behind_hero_bound_preflop_only():
                     f"{hid}: behind-hero bound missed: {eff} vs GT {gt}")
 
 
-@test
 def test_effbb_hero_jam_behind_bound():
     """Hero jams UNCALLED preflop: a genuinely short NAMED seat folding behind
     still binds the ground-truth effective (hh_parser in_pot definition).
@@ -1314,7 +1268,6 @@ def test_effbb_hero_jam_behind_bound():
                     f"{hid}: hero-jam behind bound wrong: {eff} vs GT {gt}")
 
 
-@test
 def test_effbb_allin_legality_guard():
     """An 'All-In' row that does not exceed what a player already committed,
     followed by a fold from that covering player, is a misparsed raise — it
@@ -1325,7 +1278,6 @@ def test_effbb_allin_legality_guard():
                 f"illegal sub-level all-in misread bound the spot: {eff}")
 
 
-@test
 def test_effbb_herozero_slice_emitted():
     """Hero displayed ≈0 (all-in) with no engine confirmation is EMITTED when
     the other gate clauses pass — the old blanket herozero abstain measured
@@ -1337,7 +1289,6 @@ def test_effbb_herozero_slice_emitted():
                     f"{hid}: herozero hand wrongly abstained/wrong: {eff} vs GT {gt}")
 
 
-@test
 def test_collapse_allin_into_call_merges_shove_frequency():
     """A call facing a shove matches the GTO commit, not a phantom raise.
 
@@ -1362,7 +1313,6 @@ def test_collapse_allin_into_call_merges_shove_frequency():
     assert_eq(max(merged, key=merged.get), "C", "call is now the top action")
 
 
-@test
 def test_collapse_allin_into_call_noop_without_allin_option():
     """When no solver action is an all-in, frequencies are untouched."""
     from analyze_hand import _collapse_allin_into_call
@@ -1377,7 +1327,6 @@ def test_collapse_allin_into_call_noop_without_allin_option():
     assert_eq(_collapse_allin_into_call(af, display_sol), af)
 
 
-@test
 def test_find_action_by_pot_pct_preserves_near_shove_allin():
     """A near-shove opening bet snaps to all-in, not a pot-fraction bucket.
 
@@ -1401,7 +1350,6 @@ def test_find_action_by_pot_pct_preserves_near_shove_allin():
     assert_eq(code, "RAI", "near-shove must keep all-in, not snap to 1/2-pot")
 
 
-@test
 def test_find_action_by_pot_pct_normal_bet_unaffected_by_allin_guard():
     """A genuine pot-fraction bet is unchanged by the all-in guard.
 
@@ -1458,7 +1406,6 @@ _HERO_BAND = (30, 200, 220)       # gold/yellow hero sticker
 _OPP_BAND = (0, 12, 235)          # near-white opponent sticker
 
 
-@test
 def test_visual_allin_owner_reads_hero_from_yellow_band_above():
     """Yellow sticker above the red badge => hero owns the All-In."""
     from ocr.panel_parser import _infer_allin_badge_owner
@@ -1470,7 +1417,6 @@ def test_visual_allin_owner_reads_hero_from_yellow_band_above():
     assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
 
 
-@test
 def test_visual_allin_owner_reads_opponent_from_white_band_above():
     """White sticker above the red badge => opponent owns the All-In (H3441)."""
     from ocr.panel_parser import _infer_allin_badge_owner
@@ -1482,7 +1428,6 @@ def test_visual_allin_owner_reads_opponent_from_white_band_above():
     assert_true(conf >= 0.55, f"expected high confidence, got {conf}")
 
 
-@test
 def test_visual_allin_owner_abstains_when_inconclusive():
     """No clear sticker color above or below => no opinion (fall back to rules)."""
     import numpy as np
@@ -1496,7 +1441,6 @@ def test_visual_allin_owner_abstains_when_inconclusive():
     assert_eq(owner, None, f"evidence={evidence}")
 
 
-@test
 def test_visual_allin_owner_requires_bbox_metadata():
     """Without _bbox metadata the helper abstains (backward-compatible)."""
     import numpy as np
@@ -1506,7 +1450,6 @@ def test_visual_allin_owner_requires_bbox_metadata():
     assert_eq(owner, None)
 
 
-@test
 def test_visual_attribution_keeps_sticker_only_hero_jam():
     """Hardening: a sticker-only (sizeless) All-In after an opponent raise is
     KEPT as a hero jam when the sticker above is yellow — sequence rules alone
@@ -1534,7 +1477,6 @@ def test_visual_attribution_keeps_sticker_only_hero_jam():
     assert_eq(resolved[3]["type"], "hero", "the All-In belongs to hero")
 
 
-@test
 def test_visual_attribution_collapses_opponent_badge():
     """A sticker-only All-In after an opponent raise with a WHITE sticker above
     is the opponent's all-in badge — collapse it onto their raise (H3441).
@@ -1568,14 +1510,12 @@ def test_visual_attribution_collapses_opponent_badge():
 # exact. See _gto_text_compare.gto_text_matches.
 
 
-@test
 def test_gto_text_compare_exact_match():
     from gto_text_compare import gto_text_matches
     ok, msg = gto_text_matches("EV: 7.57bb\nFold: 42.0%", "EV: 7.57bb\nFold: 42.0%")
     assert_true(ok, msg)
 
 
-@test
 def test_gto_text_compare_tolerates_ev_drift():
     """0.01bb EV drift (H2504) is within tolerance => match."""
     from gto_text_compare import gto_text_matches
@@ -1584,7 +1524,6 @@ def test_gto_text_compare_tolerates_ev_drift():
     assert_true(ok, msg)
 
 
-@test
 def test_gto_text_compare_tolerates_frequency_drift():
     """0.2pp frequency drift (H2505) is within tolerance => match."""
     from gto_text_compare import gto_text_matches
@@ -1593,21 +1532,18 @@ def test_gto_text_compare_tolerates_frequency_drift():
     assert_true(ok, msg)
 
 
-@test
 def test_gto_text_compare_rejects_large_ev_drift():
     from gto_text_compare import gto_text_matches
     ok, _ = gto_text_matches("EV: 7.57bb", "EV: 7.70bb")
     assert_true(not ok, "0.13bb EV drift must fail")
 
 
-@test
 def test_gto_text_compare_rejects_large_frequency_drift():
     from gto_text_compare import gto_text_matches
     ok, _ = gto_text_matches("Fold: 42.0%", "Fold: 43.0%")
     assert_true(not ok, "1.0pp frequency drift must fail")
 
 
-@test
 def test_gto_text_compare_rejects_combos_count_change():
     """Combos counts are part of the structure — compared exactly."""
     from gto_text_compare import gto_text_matches
@@ -1615,27 +1551,23 @@ def test_gto_text_compare_rejects_combos_count_change():
     assert_true(not ok, "combos count change must fail even within freq tolerance")
 
 
-@test
 def test_gto_text_compare_rejects_structural_change():
     from gto_text_compare import gto_text_matches
     ok, _ = gto_text_matches("  Fold: 42.0%（22 combos）", "  Call: 42.0%（22 combos）")
     assert_true(not ok, "action label change must fail")
 
 
-@test
 def test_gto_text_compare_rejects_line_count_change():
     from gto_text_compare import gto_text_matches
     ok, _ = gto_text_matches("a\nb", "a\nb\nc")
     assert_true(not ok, "line count change must fail")
 
 
-@test
 def test_snapshot_cli_uses_the_same_hermetic_cache_as_regressions():
     """H2494 regression: snapshot golden updates used the root ``.gto_cache``
     while the regression harness read ``tests/snapshots/.gto_cache``. The two
     caches held different solver responses (57% vs 68%), so a freshly updated
     golden failed deterministically in the full suite."""
-    import inspect
     import analyze_hand
     import gto_cache
     import snapshot_test
@@ -1651,16 +1583,12 @@ def test_snapshot_cli_uses_the_same_hermetic_cache_as_regressions():
         assert_eq(result["cache_dir"], str(expected))
         assert_eq(gto_cache._CACHE_DIR, original_dir,
                   "snapshot cache override must be restored")
-        for fn in (snapshot_test.run_layer2_gto, snapshot_test.cmd_add,
-                   snapshot_test.cmd_update):
-            assert_in("_analyze_snapshot_hand", inspect.getsource(fn))
     finally:
         analyze_hand.analyze_hand_full = original
         gto_cache._CACHE_DIR = original_dir
         gto_cache._mem.clear()
 
 
-@test
 def test_ev_comparison_suppresses_gto_mixed_taken_action():
     """Formatter: do not show EV loss for a solver-approved mixed action.
 

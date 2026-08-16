@@ -15,7 +15,6 @@ import asyncio
 import gzip
 import json
 import os
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -27,7 +26,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 
 import gtow_analyze_api as gapi
 from ledger_distill import (

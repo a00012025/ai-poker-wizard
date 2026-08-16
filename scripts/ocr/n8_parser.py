@@ -56,17 +56,7 @@ _ENGINE_OPP_OVERRIDE_DISABLED = not bool(os.getenv("OCR_EFFBB_ENGINE_OPP"))
 # OCR_EFFBB_STRUCTURAL_GATE=0 to revert to the bare conf floor (70.9% @ 78.2%).
 _EFFBB_STRUCTURAL_GATE = os.getenv("OCR_EFFBB_STRUCTURAL_GATE", "1") != "0"
 
-# Position orders by table size (must match analyze_hand.py)
-POSITION_ORDERS = {
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    2: ["SB", "BB"],
-}
+from position_constants import POSITION_ORDERS
 
 
 def _promote_misnamed_preflop_column(

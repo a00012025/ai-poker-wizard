@@ -26,19 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Mirror of n8_parser.POSITION_ORDERS / analyze_hand.POSITION_ORDERS. Kept local
-# so the engine has zero import-time dependency on the heavy parser module; the
-# regression suite asserts the two stay identical.
-POSITION_ORDERS = {
-    9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    8: ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
-    5: ["HJ", "CO", "BTN", "SB", "BB"],
-    4: ["CO", "BTN", "SB", "BB"],
-    3: ["BTN", "SB", "BB"],
-    2: ["SB", "BB"],
-}
+from position_constants import POSITION_ORDERS
 
 _FOLD = "fold"
 _CHECK = "check"

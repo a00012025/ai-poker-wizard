@@ -9,13 +9,10 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -48,7 +45,6 @@ def _soft_codes(report):
     return [i.code for i in report.soft]
 
 
-@test
 def test_validator_legal_check_bet_call_passes():
     """A clean single-raised pot replayed street-by-street must validate."""
     from hand_validator import validate_hand
@@ -65,7 +61,6 @@ def test_validator_legal_check_bet_call_passes():
     assert_true(r.ok, f"clean hand flagged: {_hard_codes(r)}")
 
 
-@test
 def test_validator_flags_orphan_call():
     """A Call with no preceding bet this street is an orphan call (H2565/H3485)."""
     from hand_validator import validate_hand
@@ -80,7 +75,6 @@ def test_validator_flags_orphan_call():
     assert_true(not r.ok, "hand with orphan call must be invalid")
 
 
-@test
 def test_validator_flags_act_after_fold():
     """A player who folded pre-flop must not act post-flop (H2838)."""
     from hand_validator import validate_hand
@@ -95,7 +89,6 @@ def test_validator_flags_act_after_fold():
     assert_in("ACT_AFTER_FOLD", _hard_codes(r), "folded SB acting not flagged")
 
 
-@test
 def test_validator_recognizes_all_aggression_codes():
     """AI<n>, RAI, bare R, and allin:true all close an orphan-call check (H2740)."""
     from hand_validator import validate_hand
@@ -114,7 +107,6 @@ def test_validator_recognizes_all_aggression_codes():
                       f"{aggr['action']} not treated as aggression → false orphan call")
 
 
-@test
 def test_validator_flags_illegal_check_facing_bet():
     """A check is illegal once someone has wagered this street."""
     from hand_validator import validate_hand
@@ -125,7 +117,6 @@ def test_validator_flags_illegal_check_facing_bet():
     assert_in("ILLEGAL_CHECK", _hard_codes(r), "check facing a bet not flagged")
 
 
-@test
 def test_validator_flags_non_monotonic_raise():
     """A raise must exceed the standing bet."""
     from hand_validator import validate_hand
@@ -136,7 +127,6 @@ def test_validator_flags_non_monotonic_raise():
     assert_in("NON_MONOTONIC_RAISE", _hard_codes(r), "shrinking raise not flagged")
 
 
-@test
 def test_validator_flags_action_after_allin_called():
     """Once an all-in is called the round closes; later actions are illegal."""
     from hand_validator import validate_hand
@@ -149,7 +139,6 @@ def test_validator_flags_action_after_allin_called():
               "action after a called all-in not flagged")
 
 
-@test
 def test_validator_flags_duplicate_card():
     """The same card cannot appear in hero's hand and on the board."""
     from hand_validator import validate_hand
@@ -158,7 +147,6 @@ def test_validator_flags_duplicate_card():
     assert_in("DUP_CARD", _hard_codes(r), "duplicate As not flagged")
 
 
-@test
 def test_validator_flags_bad_card_and_board_count():
     """Illegal card faces and wrong board lengths are structural errors."""
     from hand_validator import validate_hand
@@ -168,7 +156,6 @@ def test_validator_flags_bad_card_and_board_count():
     assert_in("BOARD_COUNT", _hard_codes(short_flop), "2-card flop not flagged")
 
 
-@test
 def test_validator_flags_hero_pos_and_preflop_len_and_effbb():
     """Hero position, pre-flop length and effective_bb invariants."""
     from hand_validator import validate_hand
@@ -183,7 +170,6 @@ def test_validator_flags_hero_pos_and_preflop_len_and_effbb():
               "non-positive effective_bb not flagged")
 
 
-@test
 def test_validator_legal_allin_called_runout_passes():
     """All-in + call + a dealt runout with NO decisions is legal."""
     from hand_validator import validate_hand
@@ -197,7 +183,6 @@ def test_validator_legal_allin_called_runout_passes():
     assert_true(r.ok, f"legal all-in runout flagged: {_hard_codes(r)}")
 
 
-@test
 def test_validator_multiway_hero_fold_reconcile_clean():
     """H3511: hero folded pre-flop per the raw string but plays the flop.
 
@@ -225,7 +210,6 @@ def test_validator_multiway_hero_fold_reconcile_clean():
     assert_true(r.ok, f"reconciled multiway hand false-positived: {_hard_codes(r)}")
 
 
-@test
 def test_validator_soft_stacks_len_mismatch():
     """player_stacks length ≠ players_at_table is a SOFT warning, not a block."""
     from hand_validator import validate_hand
@@ -235,7 +219,6 @@ def test_validator_soft_stacks_len_mismatch():
     assert_true(r.ok, "stacks length is SOFT — must not invalidate the hand")
 
 
-@test
 def test_validator_user_warning_messages():
     """user_warning picks the right zh-TW note for hard / soft / clean reports."""
     from hand_validator import validate_hand, user_warning, HARD_WARNING, SOFT_WARNING
@@ -253,7 +236,6 @@ def test_validator_user_warning_messages():
     assert_eq(user_warning(validate_hand(_vhand())), "", "clean report → no warning")
 
 
-@test
 def test_h3839_validator_warning_names_the_duplicate_card():
     """H3839: state the real card conflict, not an orphan-call example."""
     from hand_validator import validate_hand, user_warning
@@ -280,7 +262,6 @@ def test_h3839_validator_warning_names_the_duplicate_card():
     assert_in("不提供 GTO 判定", warning)
 
 
-@test
 def test_analyze_validation_runs_on_repaired_hand_not_raw_parse():
     """H3660: a raw parse missing effective_bb must NOT surface a HARD warning.
 
@@ -318,7 +299,6 @@ def test_analyze_validation_runs_on_repaired_hand_not_raw_parse():
                   "H3660 must not surface the hard 'orphan call' warning")
 
 
-@test
 def test_validator_parser_feedback_localizes_the_spot():
     """to_parser_feedback renders the failing street + repair hint for re-parse."""
     from hand_validator import validate_hand, to_parser_feedback
@@ -329,7 +309,6 @@ def test_validator_parser_feedback_localizes_the_spot():
     assert_in("Call", fb, "feedback must describe the orphan call")
 
 
-@test
 def test_validator_hero_folded_but_plays_with_continuation_tokens_clean():
     """H2823: hero folded pre-flop but plays — even with 3-bet continuation tokens.
 
@@ -353,7 +332,6 @@ def test_validator_hero_folded_but_plays_with_continuation_tokens_clean():
     assert_true(r.ok, f"hero-plays-after-raw-fold false-positived: {_hard_codes(r)}")
 
 
-@test
 def test_validator_unknown_hero_hand_is_not_a_card_error():
     """An 'XX' placeholder (hero folded pre-flop, cards unknown) is not BAD_CARD."""
     from hand_validator import validate_hand
@@ -362,7 +340,6 @@ def test_validator_unknown_hero_hand_is_not_a_card_error():
     assert_not_in("BAD_CARD", _hard_codes(r), "unknown-hero placeholder wrongly flagged")
 
 
-@test
 def test_validator_soft_size_exceeds_stack():
     """A bet larger than the effective stack is a SOFT warning (OCR noise)."""
     from hand_validator import validate_hand
@@ -394,7 +371,6 @@ KNOWN_VALIDATOR_FLAGS = {
 }
 
 
-@test
 def test_validator_corpus_no_new_false_positives():
     """Corpus gate: validator must flag nothing outside the triaged bug set.
 
@@ -408,8 +384,6 @@ def test_validator_corpus_no_new_false_positives():
 
     dsn = os.environ.get("SUPABASE_CONN")
     if not dsn:
-        if _verbose:
-            print("    (skipped: SUPABASE_CONN unset)")
         return
     try:
         import asyncpg
@@ -439,9 +413,7 @@ def test_validator_corpus_no_new_false_positives():
 
     try:
         flagged = asyncio.run(_scan())
-    except Exception as e:
-        if _verbose:
-            print(f"    (skipped: DB error {e})")
+    except Exception:
         return
 
     new_fps = {h: c for h, c in flagged.items() if h not in KNOWN_VALIDATOR_FLAGS}
@@ -450,7 +422,6 @@ def test_validator_corpus_no_new_false_positives():
               "fix the participant model/aggression handling, do not just add them here")
 
 
-@test
 def test_validator_soft_icm_unconfirmed():
     """possible_ft set without a confirmed ICM signal is a SOFT warning."""
     from hand_validator import validate_hand
@@ -462,7 +433,6 @@ def test_validator_soft_icm_unconfirmed():
                   "chip-EV hand wrongly flagged ICM_UNCONFIRMED")
 
 
-@test
 def test_effbb_depth_bucket():
     """effbb_metrics: depth_bucket snaps to AVAILABLE_DEPTHS"""
     sys.path.insert(0, os.path.join(str(SCRIPTS_DIR)))
@@ -474,7 +444,6 @@ def test_effbb_depth_bucket():
     assert_eq(depth_bucket("x"), None)
 
 
-@test
 def test_effbb_bucket_match():
     """effbb_metrics: bucket_match compares snapped depths"""
     from effbb_metrics import bucket_match
@@ -483,7 +452,6 @@ def test_effbb_bucket_match():
     assert_true(not bucket_match(None, 20.0))
 
 
-@test
 def test_effbb_hero_folded():
     """effbb_metrics: hero_folded_preflop reads position-ordered action string"""
     from effbb_metrics import hero_folded_preflop
@@ -497,7 +465,6 @@ def test_effbb_hero_folded():
     assert_eq(hero_folded_preflop(gt2), False)
 
 
-@test
 def test_effbb_classify_fault():
     """effbb_metrics: classify_fault buckets the 4 error classes"""
     from effbb_metrics import classify_fault
@@ -517,7 +484,6 @@ def test_effbb_classify_fault():
 
 # ── Phase A: per-node depth resolution (node_depth.py) ──
 
-@test
 def test_node_depth_open_uses_max_live_cover():
     """D1: the open node plays vs the deepest live opponent, not the shortest
     seat behind. CO 30bb opens, BTN 30bb behind, SB 17bb behind -> open node
@@ -539,7 +505,6 @@ def test_node_depth_open_uses_max_live_cover():
     assert_eq(open_node["depth_bucket"], 30)
 
 
-@test
 def test_node_depth_facing_allin_uses_jammer_commitment():
     """D1: the facing-all-in node queries min(hero, jam total). SB jams 17
     over hero CO's 30bb open -> facing node is 17bb with a range-mismatch
@@ -562,7 +527,6 @@ def test_node_depth_facing_allin_uses_jammer_commitment():
                 f"caveat must name both depths: {facing[0]['caveat']}")
 
 
-@test
 def test_node_depth_first_action_facing_allin_uses_jammer_commitment():
     """A first hero decision can already face a shove. BB calling a 31.8bb
     HJ jam must query the 30bb tree, not BB/list-row 40bb (a622f880)."""
@@ -579,7 +543,6 @@ def test_node_depth_first_action_facing_allin_uses_jammer_commitment():
     assert_eq(nodes[0]["depth_bucket"], 30)
 
 
-@test
 def test_node_depth_first_facing_raise_without_stacks_uses_known_effective():
     """If the opener's physical stack is absent, retain the already-known
     effective depth rather than silently substituting hero's deeper stack."""
@@ -594,7 +557,6 @@ def test_node_depth_first_facing_raise_without_stacks_uses_known_effective():
     assert_eq(nodes[0]["depth_bucket"], 50)
 
 
-@test
 def test_node_depth_short_allin_sidepot_keeps_known_played_effective():
     """A short all-in plus another caller before hero must not collapse hero's
     squeeze node onto the short stack (cd23771b: 17bb tree, not 3bb)."""
@@ -608,7 +570,6 @@ def test_node_depth_short_allin_sidepot_keeps_known_played_effective():
     assert_eq(nodes[0]["depth_bucket"], 17)
 
 
-@test
 def test_mtt_hu_depth_below_eight_bb_is_not_clamped_to_general_floor():
     """MTTHUGeneral has sub-8bb trees. A 4.34bb shove/call must stay on 4.125
     and normalize the SB shove to RAI (0495200d), not query 8.125/R2."""
@@ -626,7 +587,6 @@ def test_mtt_hu_depth_below_eight_bb_is_not_clamped_to_general_floor():
     assert_eq(preflop["params"]["preflop_actions"], "RAI")
 
 
-@test
 def test_h3834_two_player_mtt_auto_routes_to_heads_up_solution():
     """A physical two-player MTT is the HU format even when the parser emits
     its generic ``MTTGeneral`` default.  It must not be padded into an 8-max
@@ -673,7 +633,6 @@ def test_h3834_two_player_mtt_auto_routes_to_heads_up_solution():
     ))
 
 
-@test
 def test_multiplayer_table_bvb_stays_on_general_mtt_solution():
     """SB-vs-BB after folds at a multiplayer table is BvB, not HU format."""
     import analyze_hand
@@ -705,7 +664,6 @@ def test_multiplayer_table_bvb_stays_on_general_mtt_solution():
     ))
 
 
-@test
 def test_node_depth_same_bucket_no_caveat():
     """No caveat when consecutive nodes land in the SAME depth bucket —
     don't spam the user with a meaningless warning."""
@@ -723,7 +681,6 @@ def test_node_depth_same_bucket_no_caveat():
     assert_true(facing["caveat"] is None, "same-bucket node must carry no caveat")
 
 
-@test
 def test_node_depth_icm_returns_none():
     """D1c: ICM hands keep the single find_icm_params depth — resolver opts out."""
     from node_depth import resolve_preflop_nodes
@@ -736,7 +693,6 @@ def test_node_depth_icm_returns_none():
     assert_true(nodes is None, "ICM must opt out of per-node depths")
 
 
-@test
 def test_hh_node_effectives_open_vs_facing():
     """D2: hh_parser.node_effectives derives per-node effectives from exact HH
     chips. Build a synthetic HH where hero CO (9000 chips, bb=300 -> 30bb)
@@ -758,7 +714,6 @@ def test_hh_node_effectives_open_vs_facing():
     assert_eq(facing["eff"], 17.0)
 
 
-@test
 def test_analyze_per_node_depths_split():
     """The open spot queries the deep tree; the facing-all-in spot queries the
     jam-depth tree with a range-mismatch caveat — replacing the old global
@@ -776,7 +731,6 @@ def test_analyze_per_node_depths_split():
     assert_true(spots["facing"]["caveat"] is not None)
 
 
-@test
 def test_sized_allin_raise_never_normalizes_to_call():
     """A short RAI is still a raise. Numeric nearest-action matching must not
     choose C just because the call amount is closer than the solver raise."""
@@ -794,7 +748,6 @@ def test_sized_allin_raise_never_normalizes_to_call():
     assert_eq(normalized.split("-")[4], "R5")
 
 
-@test
 def test_postflop_raise_matches_gtow_raise_increment_pot_fraction():
     """GTOW maps a real 75%-pot raise to its 79%-pot all-in branch rather
     than the numerically closer 33%-pot small raise (d8622ce7)."""
@@ -812,7 +765,6 @@ def test_postflop_raise_matches_gtow_raise_increment_pot_fraction():
     assert_eq(code, "RAI")
 
 
-@test
 def test_postflop_pot_fraction_midpoint_snaps_up_like_gtow():
     """GTOW chooses the upper sizing at an exact midpoint: 50% between its
     37.5% and 62.5% branches maps to 62.5% (b3734adc)."""
@@ -827,7 +779,6 @@ def test_postflop_pot_fraction_midpoint_snaps_up_like_gtow():
         available, bet_size=2.4, actual_pot=4.8), "R3")
 
 
-@test
 def test_postflop_explicit_non_allin_is_not_promoted_to_nearby_shove():
     """A real 75%-pot bet marked non-all-in must stay on the numeric branch.
 
@@ -848,7 +799,6 @@ def test_postflop_explicit_non_allin_is_not_promoted_to_nearby_shove():
         available, 16.642, 22.189, allow_allin_snap=False), "R15")
 
 
-@test
 def test_postflop_exact_bb_shortcut_requires_same_physical_and_solver_pot():
     """Do not let an accidental absolute-bb match override the real pot ratio.
 
@@ -868,7 +818,6 @@ def test_postflop_exact_bb_shortcut_requires_same_physical_and_solver_pot():
         available, 14.0, 12.6, allow_allin_snap=False), "R20.6")
 
 
-@test
 def test_actual_pot_uses_physical_table_not_padded_solver_seats():
     """A 5-max hand padded to MTTGeneral's 8 seats still has only five antes.
     Over-counting three phantom antes shifts check-raise sizing (2b6c62db)."""
@@ -877,7 +826,6 @@ def test_actual_pot_uses_physical_table_not_padded_solver_seats():
         "R2-F-F-F-C", 40, num_players=5, ante_per_player=0.129), 3), 5.145)
 
 
-@test
 def test_postflop_exact_combo_evs_keep_rare_nonzero_range():
     """Rare exact combos below the old 0.5% display cutoff still have valid
     solver EV arrays and are graded by GTOW (d8622ce7)."""
@@ -901,7 +849,6 @@ def test_postflop_exact_combo_evs_keep_rare_nonzero_range():
     )
 
 
-@test
 def test_postflop_allin_caps_effective_bb_by_hero_stack():
     """H3660: a flop shove hero contests bounds the effective stack.
 
@@ -934,7 +881,6 @@ def test_postflop_allin_caps_effective_bb_by_hero_stack():
                 "an all-in hero didn't contest must not bound hero's depth")
 
 
-@test
 def test_h3828_river_allin_uses_cumulative_investment_for_effective_bb():
     """H3828: a river shove size is street-local, not the starting stack.
 
@@ -980,7 +926,6 @@ def test_h3828_river_allin_uses_cumulative_investment_for_effective_bb():
     assert_eq(_postflop_allin_effective_bb(padded, "BB", POSITION_ORDER), 11.7)
 
 
-@test
 def test_h3838_terminal_call_for_less_recovers_missing_effective_stack():
     """H3838: do not turn a missing OCR stack into ``open_size * 10``.
 
@@ -1026,7 +971,6 @@ def test_h3838_terminal_call_for_less_recovers_missing_effective_stack():
     assert_eq(_nearest_depth_for_gametype(recovered, "MTTGeneral"), 60.125)
 
 
-@test
 def test_missing_postflop_effective_stack_has_no_raise_times_ten_fallback():
     """Unknown postflop depth must stop rather than fabricate a solver tree."""
     from analyze_hand import (
@@ -1061,7 +1005,6 @@ def test_missing_postflop_effective_stack_has_no_raise_times_ten_fallback():
     assert_in("EFFECTIVE_BB", [i["code"] for i in blocked["validation"]["hard"]])
 
 
-@test
 def test_analyze_flop_allin_solved_at_hero_stack_not_deep_fallback():
     """H3660 end-to-end: a flop shove hero calls solves at hero's ~35bb, not the
     80bb tree the max_raise*10 effective_bb fallback leaves in place.
@@ -1089,7 +1032,6 @@ def test_analyze_flop_allin_solved_at_hero_stack_not_deep_fallback():
                   "every flop node must query the shove-depth tree")
 
 
-@test
 def test_analyze_open_node_keeps_deep_depth_under_allin_override():
     """D1d: an all-in that reopens to hero no longer drags the OPEN node to jam
     depth. Hero UTG opens (39bb stack), an early seat jams 19.9bb: the open spot
@@ -1122,7 +1064,6 @@ def test_analyze_open_node_keeps_deep_depth_under_allin_override():
 
 # ── Phase B: chip constraint solver (ocr/chip_solver.py) ──
 
-@test
 def test_chip_solver_consistent_hand():
     """Pot headers that match the engine contributions -> consistent, ~0 residuals.
     6-max, blinds 0.5/1.0, no ante: UTG opens to 2.0, BB calls (1.0 more) ->
@@ -1138,7 +1079,6 @@ def test_chip_solver_consistent_hand():
     assert_true(res.repair is None)
 
 
-@test
 def test_chip_solver_single_field_repair():
     """A garbled call size (1.0 read for 10.0) leaves a 9.0 residual that
     exactly ONE field change explains -> repair names that field; nothing is
@@ -1156,7 +1096,6 @@ def test_chip_solver_single_field_repair():
     assert_true(abs(res.repair["to"] - 11.0) < 0.01)
 
 
-@test
 def test_chip_solver_ambiguous_repair_returns_none():
     """Two fields could each explain the residual -> repair=None (never guess)."""
     from ocr.chip_solver import check_chips
@@ -1171,7 +1110,6 @@ def test_chip_solver_ambiguous_repair_returns_none():
 
 # ── Phase C: avatar-anchored seat reading (ocr/seat_detector + seat_reader) ──
 
-@test
 def test_seat_detector_excludes_board_zone():
     """C2: avatar candidates inside the central board-card zone are dropped —
     no seat sits there. Ring discs survive; a central disc does not."""
@@ -1192,7 +1130,6 @@ def test_seat_detector_excludes_board_zone():
         assert_true(not in_board, f"board-zone disc not excluded: {a}")
 
 
-@test
 def test_seat_reader_anchors_stack_and_rejects_phantom():
     """C3/D4: read_seats claims the 'XX.X BB' under each avatar and drops BB
     text not near any avatar (pot/timeline phantoms). Rows carry anchor_conf."""

@@ -19,7 +19,6 @@ import asyncio
 import json
 import os
 import re
-import sys
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -31,7 +30,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 import spot_leaderboard as lb
 from plan_scheduler import QUEUE_SLOTS, TRACK_SLOTS
 from spot_leaderboard import analyze_table_url

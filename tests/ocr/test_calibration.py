@@ -1,13 +1,10 @@
 """Calibration helpers: ECE, reliability bins, precision-coverage curve."""
 from __future__ import annotations
 
-from pathlib import Path
 import random
-import sys
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from ocr.calibration import (
     expected_calibration_error,

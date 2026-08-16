@@ -33,7 +33,6 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from title_ocr import read_title_id  # noqa: E402
 
 AB = "agent-browser"

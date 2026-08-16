@@ -11,19 +11,17 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 # ── GTO cache ordering Tests ──
 
 
-@test
 def test_gto_cache_reads_persistent_local_file():
     """A persistent local hit hydrates memory without any database layer."""
     import tempfile
@@ -48,7 +46,6 @@ def test_gto_cache_reads_persistent_local_file():
         gto_cache._mem.clear()
 
 
-@test
 def test_gto_cache_corrupt_local_file_is_visible_miss():
     """A corrupt entry misses locally so the caller can re-fetch and repair it."""
     import tempfile
@@ -75,7 +72,6 @@ def test_gto_cache_corrupt_local_file_is_visible_miss():
         gto_cache._mem.clear()
 
 
-@test
 def test_gto_cache_legacy_null_entry_expires_instead_of_poisoning_node():
     """A historical 204/403/404 must not suppress a now-available GTOW node."""
     import tempfile
@@ -101,7 +97,6 @@ def test_gto_cache_legacy_null_entry_expires_instead_of_poisoning_node():
         gto_cache._mem.clear()
 
 
-@test
 def test_gto_cache_put_is_atomic_and_json_safe():
     """Local writes are atomic and memory matches the persisted sanitized JSON."""
     import tempfile
@@ -136,7 +131,6 @@ def test_gto_cache_put_is_atomic_and_json_safe():
         gto_cache._mem.clear()
 
 
-@test
 def test_gto_cache_export_repairs_and_verifies_local_rows():
     """The DB exporter is resumable and repairs corrupt/null local entries."""
     import tempfile
@@ -157,7 +151,6 @@ def test_gto_cache_export_repairs_and_verifies_local_rows():
         assert_eq(json.loads(path.read_text()), {"is_null": True})
 
 
-@test
 def test_gto_cache_has_no_supabase_runtime_dependency():
     """Runtime cache paths and analytics must not reference the dropped table."""
     cache_source = (SCRIPTS_DIR / "gto_cache.py").read_text()
@@ -168,7 +161,6 @@ def test_gto_cache_has_no_supabase_runtime_dependency():
     assert_not_in("FROM gto_api_cache", database_source)
 
 
-@test
 def test_gto_cache_drop_is_guarded_by_verified_export():
     """Deployment quiesces writers and exports again before dropping the table."""
     deploy = (REPO_ROOT / "scripts/deploy.sh").read_text()
@@ -183,7 +175,6 @@ def test_gto_cache_drop_is_guarded_by_verified_export():
     assert_in("DROP TABLE IF EXISTS public.gto_api_cache", migration)
 
 
-@test
 def test_gto_cache_is_persisted_into_bot_container():
     """Deploys must reuse the host cache instead of baking it into images."""
     compose = (REPO_ROOT / "docker-compose.yml").read_text()
@@ -194,7 +185,6 @@ def test_gto_cache_is_persisted_into_bot_container():
 
 # ── GTO auth context Tests ──
 
-@test
 def test_run_with_gto_token_preserves_main_thread_token():
     import analyze_hand
     import gto_api
@@ -221,7 +211,6 @@ def test_run_with_gto_token_preserves_main_thread_token():
         gto_api.clear_user_token()
 
 
-@test
 def test_run_with_gto_token_clears_executor_thread_token():
     import analyze_hand
     import gto_api
@@ -245,7 +234,6 @@ def test_run_with_gto_token_clears_executor_thread_token():
     )
 
 
-@test
 def test_gto_api_env_token_mints_from_shared_refresh():
     """GTOW_REFRESH_TOKEN mints access from the shared DB/browser session."""
     import gto_api
@@ -279,7 +267,6 @@ def test_gto_api_env_token_mints_from_shared_refresh():
         gto_credentials._jwt_exp = orig_exp
 
 
-@test
 def test_gto_api_bootstraps_owner_db_token_when_env_unset():
     """Owner-run tooling resolves the shared DB refresh token lazily."""
     import gto_api
@@ -312,7 +299,6 @@ def test_gto_api_bootstraps_owner_db_token_when_env_unset():
             os.environ["POKER_BOT_PROCESS"] = orig_bot
 
 
-@test
 def test_gto_api_bot_process_fails_closed_without_request_token():
     """A missed per-user wiring path in the bot must never borrow owner auth."""
     import gto_api
@@ -339,7 +325,6 @@ def test_gto_api_bot_process_fails_closed_without_request_token():
             os.environ["POKER_BOT_PROCESS"] = orig_bot
 
 
-@test
 def test_gto_token_legacy_file_api_removed():
     """The legacy file-backed auth surface is removed, not merely unused."""
     import gto_token
@@ -349,7 +334,6 @@ def test_gto_token_legacy_file_api_removed():
         assert_true(not hasattr(gto_token, name), f"legacy symbol removed: {name}")
 
 
-@test
 def test_owner_token_bootstrap_reads_configured_owner_from_db():
     """CLI bootstrap selects OWNER_CHAT_ID and exports its DB refresh token."""
     import gto_owner_token
@@ -402,7 +386,6 @@ def test_owner_token_bootstrap_reads_configured_owner_from_db():
                 os.environ[key] = value
 
 
-@test
 def test_icm_game_modes_fetch_uses_scoped_gto_request():
     """A missing disk cache must respect thread-local/per-request auth."""
     import tempfile
@@ -442,7 +425,6 @@ def test_icm_game_modes_fetch_uses_scoped_gto_request():
 
 # ── Card classifier v2 Tests ──
 
-@test
 def test_extract_crops_smoke():
     from ocr.classifier.extract_pokercraft_crops import extract_one
     import numpy as np
@@ -466,7 +448,6 @@ def test_extract_crops_smoke():
         assert_true(isinstance(crop, np.ndarray) and crop.shape[0] > 0)
 
 
-@test
 def test_extract_hero_labels_match_n8_visual_order():
     from ocr.classifier.extract_pokercraft_crops import _visual_hero_order
 
@@ -477,7 +458,6 @@ def test_extract_hero_labels_match_n8_visual_order():
     assert_eq(_visual_hero_order(["2h", "2d"]), ["2d", "2h"])
 
 
-@test
 def test_augment_win_sticker_overlays_yellow():
     import numpy as np
     from ocr.classifier.augment import apply_win_sticker
@@ -488,7 +468,6 @@ def test_augment_win_sticker_overlays_yellow():
     assert_true(yellow_mask.sum() > 100, f"WIN sticker did not write yellow pixels: {yellow_mask.sum()}")
 
 
-@test
 def test_augment_color_jitter_preserves_dimensions():
     import numpy as np
     from ocr.classifier.augment import color_jitter
@@ -499,7 +478,6 @@ def test_augment_color_jitter_preserves_dimensions():
     assert_eq(out.dtype, np.uint8)
 
 
-@test
 def test_card_cnn_v2_forward_shape():
     import torch
     from ocr.classifier.model import CardCNNv2, RANK_CLASSES, SUIT_CLASSES
@@ -511,7 +489,6 @@ def test_card_cnn_v2_forward_shape():
     assert_eq(suit_logits.shape, (2, len(SUIT_CLASSES)))
 
 
-@test
 def test_card_mobilenet_v3_small_forward_shape():
     import torch
     from ocr.classifier.model import CardMobileNetV3Small, RANK_CLASSES, SUIT_CLASSES
@@ -523,7 +500,6 @@ def test_card_mobilenet_v3_small_forward_shape():
     assert_eq(suit_logits.shape, (2, len(SUIT_CLASSES)))
 
 
-@test
 def test_button_detector_picks_known_fixture_sector():
     import cv2
 
@@ -544,7 +520,6 @@ def test_button_detector_picks_known_fixture_sector():
 
 # ── Chip EV Tests ──
 
-@test
 def test_chip_ev_preflop_basic():
     """Chip EV: basic preflop open spot returns valid data."""
     from analyze_hand import analyze_hand_full
@@ -563,7 +538,6 @@ def test_chip_ev_preflop_basic():
     assert_eq(result["stacks"], "")
 
 
-@test
 def test_chip_ev_multi_street():
     """Chip EV: multi-street hand walks through flop/turn/river."""
     from analyze_hand import analyze_hand_full
@@ -590,7 +564,6 @@ def test_chip_ev_multi_street():
     assert_true("turn" in result["street_states"], "should have turn state")
 
 
-@test
 def test_chip_ev_alternate_street_keys():
     """Chip EV: handles LLM outputting 'cards' or 'card' instead of 'board' for flop."""
     from analyze_hand import analyze_hand_full
@@ -616,7 +589,6 @@ def test_chip_ev_alternate_street_keys():
     assert_in("Turn", result["text"])
 
 
-@test
 def test_chip_ev_preflop_reraise():
     """Chip EV: preflop re-raise creates second hero decision point."""
     from analyze_hand import analyze_hand_full
@@ -632,7 +604,6 @@ def test_chip_ev_preflop_reraise():
     assert_true(len(preflop_spots) >= 2, f"expected 2 preflop spots, got {len(preflop_spots)}")
 
 
-@test
 def test_chip_ev_3way_cold_call_fallback():
     """Chip EV: 3-way cold call preflop falls back to HU for hero's second decision."""
     from analyze_hand import analyze_hand_full
@@ -654,7 +625,6 @@ def test_chip_ev_3way_cold_call_fallback():
     assert_in("cold caller", result["text"].lower())
 
 
-@test
 def test_preflop_continuation_spot_for_facing_4bet_call():
     """H3427: hero's preflop call facing a 4-bet must be its own solver node."""
     from analyze_hand import analyze_hand_full
@@ -685,7 +655,6 @@ def test_preflop_continuation_spot_for_facing_4bet_call():
     assert_in("→ Hero call", facing_section)
 
 
-@test
 def test_compact_in_mix_note_is_concise():
     """A low-frequency supported action needs one clear clause, not audit jargon."""
     from analyze_hand import _compact_negligible_frequency_note
@@ -698,7 +667,6 @@ def test_compact_in_mix_note_is_concise():
     assert_not_in("非錯誤", note)
 
 
-@test
 def test_preflop_pending_facing_allin_uses_allin_effective_depth():
     """H3428: initial-round AI action reopens a visible 20bb facing-all-in node."""
     from analyze_hand import analyze_hand_full
@@ -725,7 +693,6 @@ def test_preflop_pending_facing_allin_uses_allin_effective_depth():
     assert_in("RAI", preflop_spots[1]["params"]["preflop_actions"])
 
 
-@test
 def test_exact_combo_summary_preserves_suits():
     """User-facing summaries keep a concrete hero combo instead of its 169 class."""
     from analyze_hand import analyze_hand_full
@@ -745,7 +712,6 @@ def test_exact_combo_summary_preserves_suits():
     assert_not_in("Hero: HJ QJo", result["text"])
 
 
-@test
 def test_seven_max_padded_utg_facing_3bet_spot_from_sb():
     """H3431: 7-max UTG maps to solver UTG+1 and must expose the SB 3-bet call node."""
     from analyze_hand import analyze_hand_full
@@ -787,7 +753,6 @@ def test_seven_max_padded_utg_facing_3bet_spot_from_sb():
     assert_true("cold call" not in result["text"].lower(), result["text"])
 
 
-@test
 def test_chip_ev_depth_mapping():
     """Chip EV: depth maps to nearest available solver depth."""
     from gto_api import nearest_depth
@@ -801,7 +766,6 @@ def test_chip_ev_depth_mapping():
 
 # ── Multiway Simplification Tests ──
 
-@test
 def test_multiway_3way_fold_on_flop():
     """Multiway: 3-way pot where one folds on flop simplifies to heads-up."""
     from analyze_hand import analyze_hand_full
@@ -839,7 +803,6 @@ def test_multiway_3way_fold_on_flop():
     assert_true(len(flop_solutions) > 0, "flop should have solver data after multiway simplification")
 
 
-@test
 def test_multiway_3way_check_raise_on_flop():
     """Multiway: 3-way pot with check-raise on flop matches correctly (not all-in)."""
     from analyze_hand import analyze_hand_full
@@ -885,7 +848,6 @@ def test_multiway_3way_check_raise_on_flop():
     assert_eq(result["final_actions"]["turn_actions"], "RAI-C")
 
 
-@test
 def test_multiway_2way_flop_unchanged():
     """Multiway: 3-way preflop but only 2 see flop already works without change."""
     from analyze_hand import analyze_hand_full
@@ -908,7 +870,6 @@ def test_multiway_2way_flop_unchanged():
     assert_in("Flop", result["text"])
 
 
-@test
 def test_multiway_coldcaller_folds_preflop_keeps_real_squeeze_node():
     """A continuation fold that leaves HU is already a solved real GTOW node."""
     from analyze_hand import _simplify_multiway
@@ -930,7 +891,6 @@ def test_multiway_coldcaller_folds_preflop_keeps_real_squeeze_node():
     assert_eq(positions, None)
 
 
-@test
 def test_multiway_all_fold_to_hero_raise():
     """Multiway: 3-way pot where everyone folds to hero's flop raise simplifies to HU."""
     from analyze_hand import analyze_hand_full
@@ -963,7 +923,6 @@ def test_multiway_all_fold_to_hero_raise():
 
 # ── Position Order Tests ──
 
-@test
 def test_position_orders():
     """Position orders match GTO Wizard convention for all table sizes."""
     from analyze_hand import POSITION_ORDERS
@@ -974,7 +933,6 @@ def test_position_orders():
     assert_eq(POSITION_ORDERS[2], ["SB", "BB"])
 
 
-@test
 def test_position_order_for_hand():
     """Position order is selected correctly based on player_stacks length."""
     from analyze_hand import _get_position_order
@@ -984,7 +942,6 @@ def test_position_order_for_hand():
 
 # ── Range Compression Tests ──
 
-@test
 def test_compress_range_pairs():
     """Range compression: consecutive pairs produce 22+ notation."""
     from gto_formatter import _compress_range
@@ -994,7 +951,6 @@ def test_compress_range_pairs():
     assert_not_in("AA", result.replace("22+", ""))  # AA shouldn't appear separately
 
 
-@test
 def test_compress_range_all_kickers():
     """Range compression: all suited kickers produce AXs notation."""
     from gto_formatter import _compress_range
@@ -1004,7 +960,6 @@ def test_compress_range_all_kickers():
     assert_in("AXs", result)
 
 
-@test
 def test_compress_range_plus_notation():
     """Range compression: K3o+ means K3o through KQo (reaches top kicker)."""
     from gto_formatter import _compress_range
@@ -1014,7 +969,6 @@ def test_compress_range_plus_notation():
     assert_in("K3o+", result)
 
 
-@test
 def test_compress_range_partial_dash():
     """Range compression: partial kicker range uses dash notation (Q2s-Q4s)."""
     from gto_formatter import _compress_range
@@ -1024,7 +978,6 @@ def test_compress_range_partial_dash():
     assert_not_in("+", result)
 
 
-@test
 def test_compress_range_mixed_freq():
     """Range compression: mixed frequency shows inline percentage."""
     from gto_formatter import _compress_range
@@ -1033,7 +986,6 @@ def test_compress_range_mixed_freq():
     assert_in("K2o(28%)", result)
 
 
-@test
 def test_compress_range_full_call_range():
     """Range compression: full BB call range compresses correctly (real scenario)."""
     from gto_formatter import _compress_range
@@ -1077,7 +1029,6 @@ def test_compress_range_full_call_range():
     assert_in("Q8o+", result)
 
 
-@test
 def test_compress_range_highfreq_merge_pairs():
     """Range compression: ≥90% hands merge into the run (JJ@99% → 22+~), not split out."""
     from gto_formatter import _compress_range
@@ -1092,7 +1043,6 @@ def test_compress_range_highfreq_merge_pairs():
     assert_not_in("JJ", result.replace("22+~", ""))  # JJ must not appear separately
 
 
-@test
 def test_compress_range_highfreq_below_threshold_stays_mixed():
     """Range compression: hands below 90% stay broken out with inline %, not merged."""
     from gto_formatter import _compress_range
@@ -1103,7 +1053,6 @@ def test_compress_range_highfreq_below_threshold_stays_mixed():
     assert_not_in("22+", result)  # run is broken by missing JJ from pure set
 
 
-@test
 def test_compress_range_pure_no_marker():
     """Range compression: fully-pure run carries no ~ marker."""
     from gto_formatter import _compress_range
@@ -1113,7 +1062,6 @@ def test_compress_range_pure_no_marker():
     assert_not_in("~", result)
 
 
-@test
 def test_compress_range_highfreq_suited_marker():
     """Range compression: a ≥90% suited hand merges as pure but its token gets ~."""
     from gto_formatter import _compress_range
@@ -1129,7 +1077,7 @@ def test_compress_range_highfreq_suited_marker():
 
 # ── GTO API Tests ──
 
-@test
+@pytest.mark.gtow
 def test_api_get_next_actions():
     """API: next_actions returns valid response for UTG first-to-act."""
     from gto_api import get_next_actions
@@ -1141,23 +1089,7 @@ def test_api_get_next_actions():
     assert_in("F", codes, "Fold should be available")
 
 
-@test
-def test_api_next_actions_endpoint_path():
-    """API: next-actions URL pinned to /v4/game-points/ (was /v1/poker/, moved 2026-05-02)."""
-    import inspect
-    import gto_api
-    src = inspect.getsource(gto_api.get_next_actions)
-    assert_true(
-        "/v4/game-points/next-actions/" in src,
-        "get_next_actions must call /v4/game-points/next-actions/",
-    )
-    assert_true(
-        "/v1/poker/next-actions/" not in src,
-        "old /v1/poker/next-actions/ path is dead — must not be used",
-    )
-
-
-@test
+@pytest.mark.gtow
 def test_api_get_spot_solution():
     """API: spot_solution returns valid data for basic preflop spot."""
     from gto_api import get_spot_solution
@@ -1167,7 +1099,7 @@ def test_api_get_spot_solution():
     assert_true("players_info" in sol, "should have players_info")
 
 
-@test
+@pytest.mark.gtow
 def test_api_find_closest_action():
     """API: find_closest_action picks nearest raise size."""
     from gto_api import get_next_actions, find_closest_action
@@ -1177,7 +1109,6 @@ def test_api_find_closest_action():
     assert_true(code.startswith("R"), f"expected raise code, got {code}")
 
 
-@test
 def test_normalize_preflop_raise_never_snaps_to_complete():
     """A hero raise must resolve to a raise size, never the Complete/limp (C)
     action — even when Complete's size (1bb) is numerically closer than the
@@ -1200,7 +1131,6 @@ def test_normalize_preflop_raise_never_snaps_to_complete():
     assert_eq(code, "R3.5")
 
 
-@test
 def test_best_in_mix_excludes_zero_frequency_noise():
     """Recommendation + EV loss must be measured against actions the solver
     actually plays (freq >= 1%), not a 0%-frequency high-EV noise size.
@@ -1215,7 +1145,7 @@ def test_best_in_mix_excludes_zero_frequency_noise():
     assert_true(abs(best_ev - 3.31) < 1e-9, f"best_ev={best_ev}")
 
 
-@test
+@pytest.mark.gtow
 def test_api_stacks_param():
     """API: stacks parameter is accepted (ICM mode)."""
     from gto_api import get_next_actions
@@ -1226,7 +1156,7 @@ def test_api_stacks_param():
     assert_true("next_actions" in resp)
 
 
-@test
+@pytest.mark.gtow
 def test_api_no_solution_returns_none():
     """API: spot_solution returns None for 204/403 responses."""
     from gto_api import get_spot_solution
@@ -1241,7 +1171,6 @@ def test_api_no_solution_returns_none():
     assert_true(sol is None, "ICM mode should return None for postflop query")
 
 
-@test
 def test_api_404_spot_solution_returns_none():
     """API: spot_solution returns None for 404 responses.
 
@@ -1284,7 +1213,7 @@ def test_api_404_spot_solution_returns_none():
                 "404 response should write a null cache entry")
 
 
-@test
+@pytest.mark.gtow
 def test_api_postflop_percentage_detection():
     """API: find_closest_action_postflop detects percentage-based sizes."""
     from gto_api import get_next_actions, find_closest_action_postflop
@@ -1304,7 +1233,7 @@ def test_api_postflop_percentage_detection():
     assert_true(code_ai == "RAI", f"actual all-in should match RAI, got {code_ai}")
 
 
-@test
+@pytest.mark.gtow
 def test_rederive_postflop_codes_remaps_stale_bet():
     """Off-range depth escalation must re-match opponent bet codes to the
     new depth's bet grid.
@@ -1341,7 +1270,6 @@ def test_rederive_postflop_codes_remaps_stale_bet():
     assert_eq(nr, "", "no river actions in → empty out")
 
 
-@test
 def test_h3870_unsized_postflop_allin_maps_to_allin_not_check():
     """H3870: an explicit unsized AI must select RAI instead of zero-size X."""
     from analyze_hand import _find_postflop_allin_action
@@ -1355,7 +1283,6 @@ def test_h3870_unsized_postflop_allin_maps_to_allin_not_check():
     assert_eq(_find_postflop_allin_action(avail, None), "RAI")
 
 
-@test
 def test_api_postflop_overbet_clamps_to_allin():
     """API: hero's all-in bet that overshoots solver's modeled all-in
     (hero stack > opponent stack, so real all-in > solver's effective
@@ -1389,7 +1316,6 @@ def test_api_postflop_overbet_clamps_to_allin():
               "17.1bb close to all-in 17.35 → RAI")
 
 
-@test
 def test_chip_ev_percentage_size_analysis():
     """ChipEV: analysis handles percentage-based bet sizes without errors."""
     from analyze_hand import analyze_hand
@@ -1426,7 +1352,6 @@ def test_chip_ev_percentage_size_analysis():
 # ── Formatter Tests ──
 
 
-@test
 def test_solver_detail_uses_exact_postflop_combo_for_coaching_text():
     """Analyze text: coach data must use exact postflop combo.
 
@@ -1453,7 +1378,6 @@ def test_solver_detail_uses_exact_postflop_combo_for_coaching_text():
     )
 
 
-@test
 def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
     """Analyze text: H3471 is HJ RFI, not HJ calling a prior raise.
 
@@ -1503,7 +1427,7 @@ def test_h3471_preflop_rfi_not_misreported_as_call_vs_raise():
     assert_not_in("→ Hero limp", result["text_compact"])
 
 
-@test
+@pytest.mark.gtow
 def test_formatter_action_summary():
     """Formatter: format_action_summary produces readable output."""
     from gto_api import get_spot_solution
@@ -1514,7 +1438,7 @@ def test_formatter_action_summary():
     assert_in("底池", text)
 
 
-@test
+@pytest.mark.gtow
 def test_formatter_hand_detail():
     """Formatter: format_hand_detail shows strategy for specific hand."""
     from gto_api import get_spot_solution
@@ -1525,7 +1449,7 @@ def test_formatter_hand_detail():
     assert_in("Range 頻率", text)
 
 
-@test
+@pytest.mark.gtow
 def test_formatter_range_by_action():
     """Formatter: format_range_by_action uses compressed notation."""
     from gto_api import get_spot_solution
@@ -1538,7 +1462,7 @@ def test_formatter_range_by_action():
                 "should use compressed range notation")
 
 
-@test
+@pytest.mark.gtow
 def test_formatter_range_by_action_categorized():
     """Formatter: range_by_action shows hand categories (top pair, trips, etc.)."""
     from gto_api import get_spot_solution
@@ -1555,7 +1479,6 @@ def test_formatter_range_by_action_categorized():
     assert_in("花聽牌", text, "Should mention flush draws")
 
 
-@test
 def test_solver_grounding_intent_gate():
     """Follow-up gate: strategy/range/hypothetical questions must be detected
     so a solver tool call can be hard-forced (anti-hallucination, H2873).
@@ -1581,23 +1504,42 @@ def test_solver_grounding_intent_gate():
         assert_true(not g(q), f"gate must NOT fire for: {q!r}")
 
 
-@test
 def test_solver_grounding_forces_only_solver_navigation_tools():
-    """H3815: a range question must not force evaluate_hand.
+    """Strategy questions force solver strategy tools, not evaluate_hand."""
+    import asyncio
+    import types as py_types
+    from coach_runtime import ChatWorkflow, WorkflowDeps
+    from coach_tools import coach_tool_specs
 
-    Gemini used the permissive forced-tool list to emit one evaluate_hand call
-    per candidate preflop hand instead of fetching the range once.  Keep the
-    forced lane restricted to solver queries; evaluate_hand remains available
-    later in AUTO mode for real postflop hand-type questions.
-    """
-    from gemini_session import _SOLVER_GROUNDING_TOOL_NAMES
+    calls = []
 
-    assert_eq(_SOLVER_GROUNDING_TOOL_NAMES,
-              ("query_gto", "query_next_actions"))
-    assert_not_in("evaluate_hand", _SOLVER_GROUNDING_TOOL_NAMES)
+    async def model_response(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return py_types.SimpleNamespace(id="plan-skip", output_text="NO_TOOL", output=[])
+        return py_types.SimpleNamespace(id="plan-forced", output_text="NO_TOOL", output=[])
+
+    workflow = ChatWorkflow(WorkflowDeps(
+        get_hand_context=lambda chat_id: {"hand": {"hero_hand": "AhKh"}},
+        clear_followup_node_street=lambda chat_id: None,
+        build_evidence_context=lambda chat_id: "Hero AhKh",
+        history_for_evidence=lambda chat_id: "",
+        evaluate_hand=lambda chat_id, args: "ace high",
+        execute_tool=lambda *a, **k: "",
+        model_response=model_response,
+        accept_history=lambda *a, **k: None,
+        tool_status=lambda result: "ok",
+        model="gpt-test", max_tool_calls=4, max_evidence_rounds=2,
+        reasoning="low", max_output_tokens=100, logger=__import__("logging").getLogger("test"),
+    ))
+    answer = asyncio.run(workflow.run(1, "HJ turn 應該用哪些牌下注？",
+                                      tool_specs=coach_tool_specs(False)))
+    assert_in("沒有取得可驗證的 solver 資料", answer)
+    forced_names = {tool["name"] for tool in calls[1]["tools"]}
+    assert_eq(forced_names, {"query_coach_facts", "query_gto"})
+    assert_not_in("evaluate_hand", forced_names)
 
 
-@test
 def test_followup_chat_has_total_timeout_and_cancels_stuck_work():
     """A stuck tool loop must release the bot so later questions can run."""
     import gemini_session
@@ -1633,7 +1575,6 @@ def test_followup_chat_has_total_timeout_and_cancels_stuck_work():
     assert_eq(result, "next answer", "later follow-up must still run normally")
 
 
-@test
 def test_h2873_turn_AA_is_bet_not_check():
     """Ground truth guard (H2873): on the HJ turn JcTd5c8d, AA is ~100% bet,
     NOT check. The bot must answer range questions from THIS data, never from
@@ -1676,7 +1617,6 @@ def test_h2873_turn_AA_is_bet_not_check():
                 f"AA must be ~100% bet/raise (was {bet_raise_freq:.4f})")
 
 
-@test
 def test_formatter_normalize_hand_name():
     """Formatter: normalize_hand_name handles various input formats."""
     from gto_formatter import normalize_hand_name
@@ -1692,7 +1632,6 @@ def test_formatter_normalize_hand_name():
     assert_eq(normalize_hand_name("66"), "66")
 
 
-@test
 def test_formatter_low_rank_first_class_uses_canonical_solver_row():
     """Formatter: low-rank-first classes like 45o must look up 54o.
 
@@ -1758,7 +1697,6 @@ def test_formatter_low_rank_first_class_uses_canonical_solver_row():
     assert_eq(compact, "GTO: Call 100%")
 
 
-@test
 def test_formatter_low_range_exact_combo_not_aggregated():
     """Formatter: hero's exact combo below the 0.5% display range must still
     drive the full-text verdict, not the same-class aggregate.
@@ -1851,7 +1789,6 @@ def test_formatter_low_range_exact_combo_not_aggregated():
 
 # ── ICM Tests ──
 
-@test
 def test_icm_gametype_lookup():
     """ICM: find_gametype returns valid ICM mode for bubble scenario."""
     from icm_modes import find_gametype
@@ -1865,7 +1802,6 @@ def test_icm_gametype_lookup():
     assert_in("BUBBLE", gt)
 
 
-@test
 def test_icm_stacks_matching():
     """ICM: find_stacks returns matching stack configuration."""
     from icm_modes import find_gametype, find_stacks
@@ -1879,7 +1815,6 @@ def test_icm_stacks_matching():
         assert_true(p.endswith("125"), f"stack {p} should end in .125")
 
 
-@test
 def test_icm_partial_stacks_prioritize_known_positions():
     """ICM: explicitly stated HJ/BTN stacks outrank unknown seats."""
     import icm_modes
@@ -1921,7 +1856,6 @@ def test_icm_partial_stacks_prioritize_known_positions():
     assert_eq(metadata["avg_stack"], 21, "must preserve config metadata, not recompute it")
 
 
-@test
 def test_icm_explicit_average_stack_constrains_config_pool():
     """ICM: avg 25bb selects metadata avg_stack=25 before seat-distance ranking."""
     import icm_modes
@@ -1964,7 +1898,6 @@ def test_icm_explicit_average_stack_constrains_config_pool():
     assert_eq(stacks, "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125")
 
 
-@test
 def test_icm_find_params():
     """ICM: find_icm_params returns complete ICM configuration."""
     from icm_modes import find_icm_params
@@ -1980,7 +1913,6 @@ def test_icm_find_params():
     assert_in("Solver metadata 均碼:", result["approximation_note"])
 
 
-@test
 def test_icm_preflop_analysis():
     """ICM: full preflop analysis with ICM mode and stacks."""
     from analyze_hand import analyze_hand_full
@@ -2000,7 +1932,6 @@ def test_icm_preflop_analysis():
     assert_true(result["solutions"][0] is not None, "preflop solution should exist")
 
 
-@test
 def test_icm_symmetric_stacks():
     """ICM: symmetric stacks fallback when no player_stacks given."""
     from analyze_hand import analyze_hand_full
@@ -2020,7 +1951,6 @@ def test_icm_symmetric_stacks():
     assert_in("20.125", result["stacks"])
 
 
-@test
 def test_icm_symmetric_stacks_off_grid_depth():
     """ICM: 17bb symmetric (no SYMMETRIC config at that depth) must snap to nearest available.
 
@@ -2075,7 +2005,6 @@ def test_icm_symmetric_stacks_off_grid_depth():
                 f"resolved config (depth={result['depth']}, symmetric 20bb) must be a visible entry in {gt_name}")
 
 
-@test
 def test_icm_6max_ft():
     """ICM: 6-player final table uses correct position order."""
     from analyze_hand import analyze_hand_full
@@ -2095,7 +2024,6 @@ def test_icm_6max_ft():
     assert_true(result["solutions"][0] is not None, "should have preflop solution")
 
 
-@test
 def test_icm_postflop_falls_back_to_chipev():
     """ICM: postflop streets fall back to chip EV (ICM is preflop_only)."""
     from analyze_hand import analyze_hand_full
@@ -2120,7 +2048,6 @@ def test_icm_postflop_falls_back_to_chipev():
     assert_in("Flop", result["text"])
 
 
-@test
 def test_icm_hh_deviation_differs_from_chipev():
     """ICM HH: bubble ICM flags T9s UTG raise as deviation (chip EV says raise 100%)."""
     from hh_deviation_check import check_hand
@@ -2156,7 +2083,6 @@ def test_icm_hh_deviation_differs_from_chipev():
     assert_eq(devs_icm[0]["gto_action"], "F", "ICM bubble GTO action should be Fold")
 
 
-@test
 def test_missing_solver_data_explains_rare_line():
     """Missing solver data: explains hero's rare action caused solver gap."""
     from analyze_hand import analyze_hand_full
@@ -2186,7 +2112,6 @@ def test_missing_solver_data_explains_rare_line():
     assert_in("All-in", text, "Should mention GTO recommended action")
 
 
-@test
 def test_preflop_only_multiway_allin():
     """Multiway preflop-only: SB all-in should simplify without false corrections."""
     from analyze_hand import analyze_hand_full
@@ -2225,7 +2150,6 @@ _H3511_STREETS = [
 ]
 
 
-@test
 def test_reconcile_rebuilds_when_hero_folded_on_checkaround_flop():
     """H3511: hero folded pre-flop but checks the flop → rebuild from flop seats.
 
@@ -2240,7 +2164,6 @@ def test_reconcile_rebuilds_when_hero_folded_on_checkaround_flop():
     assert_eq(new, "F-F-R2-F-C-C-F-C", "callers re-seated to CO/BTN/BB, HJ dropped")
 
 
-@test
 def test_reconcile_noop_when_hero_not_folded():
     """A faithfully-parsed multiway line (hero is a caller) is left untouched."""
     from analyze_hand import _reconcile_preflop_with_streets, POSITION_ORDER
@@ -2250,7 +2173,6 @@ def test_reconcile_noop_when_hero_not_folded():
     assert_eq(new, "F-F-R2-F-C-C-F-C")
 
 
-@test
 def test_reconcile_does_not_drop_caller_on_bet_flop():
     """Hero folded + flop has a bet → ADD hero, but do NOT drop the other caller.
 
@@ -2275,7 +2197,6 @@ def test_reconcile_does_not_drop_caller_on_bet_flop():
     assert_eq(parts[5], "C", "the off-flop caller (BTN) is kept, not dropped")
 
 
-@test
 def test_h3511_multiway_postflop_has_solver_data_and_overcall_preflop():
     """End-to-end H3511: buggy parse → full post-flop solver data + overcall node.
 
@@ -2304,7 +2225,6 @@ def test_h3511_multiway_postflop_has_solver_data_and_overcall_preflop():
     for header in ("【Flop:", "【Turn:", "【River:"):
         assert_in(header, text, f"{header} section must render")
 
-@test
 def test_card_display_helper_is_display_only():
     """User-facing exact cards use emoji suits; class hands and malformed tokens
     stay machine-readable/pass-through."""
@@ -2318,7 +2238,6 @@ def test_card_display_helper_is_display_only():
               "Hero A☘️ K🔷 on board Q♠️")
 
 
-@test
 def test_formatter_ev_loss_excludes_zero_frequency_noise():
     """User-facing EV loss must share grading's in-mix action basis.
 
@@ -2349,7 +2268,6 @@ def test_formatter_ev_loss_excludes_zero_frequency_noise():
     assert_eq(comparison, None)
 
 
-@test
 def test_grade_action_choice_never_charges_an_in_mix_action():
     """Mixed actions are equilibrium-approved even when raw action EVs disagree."""
     from hh_deviation_check import _grade_action_choice

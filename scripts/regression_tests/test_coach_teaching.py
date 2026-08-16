@@ -8,8 +8,9 @@ from regression_tests.harness import (
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 
 def _arrays(default=0.0):
@@ -946,7 +947,6 @@ def _pure_aggression_after_check_context():
     return context
 
 
-@test
 def test_coach_teaching_real_fixture_builds_human_range_story():
     """Teaching card: real node becomes range role + human category evidence."""
     import coach_teaching as ct
@@ -967,7 +967,6 @@ def test_coach_teaching_real_fixture_builds_human_range_story():
     assert_in("不要逐點重述", prompt)
 
 
-@test
 def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     """H3855: replace frequency narration with grounded range/action reasons."""
     import coach_teaching as ct
@@ -1018,7 +1017,6 @@ def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
 
 
-@test
 def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     """H3856: a zero-frequency check cannot receive a fabricated check story."""
     import coach_teaching as ct
@@ -1058,7 +1056,6 @@ def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
 
 
-@test
 def test_raise_facing_bet_names_protection_and_indifferent_targets():
     """A raise over a bet explains which worse-equity hands are denied."""
     import coach_teaching as ct
@@ -1123,7 +1120,6 @@ def test_raise_facing_bet_names_protection_and_indifferent_targets():
     assert_in("protection／equity denial", prompt)
 
 
-@test
 def test_coach_teaching_h3835_allows_selective_freeform_coaching():
     """H3835: narrator may focus on the useful idea instead of replaying every street."""
     import coach_teaching as ct
@@ -1165,7 +1161,6 @@ def test_coach_teaching_h3835_allows_selective_freeform_coaching():
     assert_in("coaching response too short", empty_audit.violations)
 
 
-@test
 def test_correct_check_raise_node_beats_bare_check_for_coaching_focus():
     """Live regression: x-x-b-fold-r-call must teach the Hero raise node.
 
@@ -1207,7 +1202,6 @@ def test_correct_check_raise_node_beats_bare_check_for_coaching_focus():
         )
 
 
-@test
 def test_coach_teaching_h3841_focuses_on_mistake_and_explains_equity_source():
     """H3841: the missed turn shove, not a correct flop, owns the explanation."""
     import coach_teaching as ct
@@ -1245,7 +1239,6 @@ def test_coach_teaching_h3841_focuses_on_mistake_and_explains_equity_source():
     assert_true(fallback_audit.ok, str(fallback_audit.violations))
 
 
-@test
 def test_coach_teaching_h3840_explains_showdown_value_against_draws():
     """H3840: bottom pair calls because it still leads verified unmade draws."""
     import coach_teaching as ct
@@ -1268,7 +1261,6 @@ def test_coach_teaching_h3840_explains_showdown_value_against_draws():
     assert_true(ct.audit_draft(fallback, digest).ok)
 
 
-@test
 def test_coach_teaching_keeps_off_tree_hero_decision_visible_and_neutral():
     """A 0%-reach Hero action is still a decision, but has no EV verdict."""
     import coach_teaching as ct
@@ -1298,7 +1290,6 @@ def test_coach_teaching_keeps_off_tree_hero_decision_visible_and_neutral():
     assert_in("off-tree decision graded turn", misgrade_audit.violations)
 
 
-@test
 def test_coach_teaching_freeform_does_not_require_solver_card_labels():
     """Freeform coaching may omit numbered labels already shown on the solver card."""
     import coach_teaching as ct
@@ -1316,7 +1307,6 @@ def test_coach_teaching_freeform_does_not_require_solver_card_labels():
     assert_true(audit.ok, str(audit.violations))
 
 
-@test
 def test_coach_teaching_omits_opponent_card_delta_when_blocker_is_not_selected():
     """Defense-price coaching should not dump an unrelated blocker-tab metric."""
     import coach_teaching as ct
@@ -1333,7 +1323,6 @@ def test_coach_teaching_omits_opponent_card_delta_when_blocker_is_not_selected()
     assert_not_in("• Opponent-card conditional delta：", prompt)
 
 
-@test
 def test_coach_teaching_h3818_keeps_range_and_blocker_roles_separate():
     """H3818 shape: nut-region capacity is primary; negative blocker stays secondary."""
     import coach_teaching as ct
@@ -1355,7 +1344,6 @@ def test_coach_teaching_h3818_keeps_range_and_blocker_roles_separate():
     assert_not_in("阻擋順子", prompt)
 
 
-@test
 def test_coach_teaching_low_spr_vulnerable_pair_selects_equity_denial():
     """Low-SPR 88: range-EQ deficit is a guardrail; denial explains the jam."""
     import coach_teaching as ct
@@ -1392,7 +1380,6 @@ def test_coach_teaching_low_spr_vulnerable_pair_selects_equity_denial():
     assert_in("不可外推", prompt)
 
 
-@test
 def test_coach_teaching_causal_rule_catalog_is_explicit_and_unique():
     """Coverage inventory stays inspectable as new mechanisms are added."""
     import coach_causal_rules as rules
@@ -1407,7 +1394,6 @@ def test_coach_teaching_causal_rule_catalog_is_explicit_and_unique():
         assert_true(bool(row["forbidden_inferences"]), f"{row['id']} needs guardrails")
 
 
-@test
 def test_coach_teaching_semantic_audit_locks_actor_combo_and_action_bucket():
     """Semantic gate catches repair-time role, exact-combo and continue/call drift."""
     import coach_teaching as ct
@@ -1459,7 +1445,6 @@ def test_coach_teaching_semantic_audit_locks_actor_combo_and_action_bucket():
     assert_in("unsupported future action plan", ct.audit_draft(future_plan, digest).violations)
 
 
-@test
 def test_coach_teaching_audit_binds_numbers_to_nearest_action():
     """100% continue and nearby call/raise splits must not be conflated."""
     import coach_teaching as ct
@@ -1501,7 +1486,6 @@ def test_coach_teaching_audit_binds_numbers_to_nearest_action():
     )
 
 
-@test
 def test_coach_teaching_category_audit_separates_draws_and_human_trips_wording():
     """Human draw/trips wording should map to one semantic category."""
     import coach_teaching as ct
@@ -1533,7 +1517,6 @@ def test_coach_teaching_category_audit_separates_draws_and_human_trips_wording()
     )
 
 
-@test
 def test_coach_teaching_normalizes_gtow_fullhouse_alias():
     """GTOW's fullhouse spelling participates in Chinese labels and polar sizing."""
     import coach_teaching as ct
@@ -1549,7 +1532,6 @@ def test_coach_teaching_normalizes_gtow_fullhouse_alias():
     assert_eq(ct._MADE_ZH[ct._normalize_category("fullhouse")], "葫蘆")
 
 
-@test
 def test_coach_teaching_advanced_equity_buckets_quantify_range_and_size_shape():
     """Advanced buckets expose top-end ownership and relative size polarization."""
     import coach_teaching as ct
@@ -1613,7 +1595,6 @@ def test_coach_teaching_advanced_equity_buckets_quantify_range_and_size_shape():
     assert_true(not rules._aligned_top_equity_structure({"range_structure": conflicting}))
 
 
-@test
 def test_coach_teaching_blocker_frequency_delta_keeps_opponent_card_semantics():
     """Per-card action deltas are conditional on Villain's card, not Hero's hand."""
     import coach_teaching as ct
@@ -1646,7 +1627,6 @@ def test_coach_teaching_blocker_frequency_delta_keeps_opponent_card_semantics():
     assert_in("不可解讀成 Hero 手牌", effects["scope"])
 
 
-@test
 def test_coach_teaching_exact_combo_category_audit_rejects_range_category_drift():
     """A range-level trips fact cannot turn Hero's exact low pair into trips."""
     import coach_teaching as ct
@@ -1676,7 +1656,6 @@ def test_coach_teaching_exact_combo_category_audit_rejects_range_category_drift(
     assert_in("exact-combo category mismatch turn:trips!=low_pair", violations)
 
 
-@test
 def test_coach_teaching_value_size_uses_exact_class_allocation_without_polar_claim():
     """A pure 44 jam supports class allocation, not invented range polarization."""
     import coach_teaching as ct
@@ -1704,7 +1683,6 @@ def test_coach_teaching_value_size_uses_exact_class_allocation_without_polar_cla
     assert_in("unsupported polarization claim", ct.audit_draft(invented, digest).violations)
 
 
-@test
 def test_coach_teaching_audit_rejects_unqueried_board_and_response_stories():
     """Natural variants cannot smuggle in texture, fold-equity or response facts."""
     import coach_teaching as ct
@@ -1733,7 +1711,6 @@ def test_coach_teaching_audit_rejects_unqueried_board_and_response_stories():
     )
 
 
-@test
 def test_coach_teaching_audit_allows_explanation_but_rejects_invented_nuts():
     """Fact gate: prose is flexible; unsupported combo/nuts claims are not."""
     import coach_teaching as ct
@@ -1796,7 +1773,6 @@ def test_coach_teaching_audit_allows_explanation_but_rejects_invented_nuts():
     assert_in("unsupported range-transition claim", shift_audit.violations)
 
 
-@test
 def test_coach_teaching_fallback_is_short_and_teachable():
     """Audit fallback: selective natural coaching, no raw internal dump."""
     import coach_teaching as ct
@@ -1817,7 +1793,6 @@ def test_coach_teaching_fallback_is_short_and_teachable():
     assert_not_in("blocker", no_blocker_answer)
 
 
-@test
 def test_coach_teaching_keeps_low_reach_node_with_caveat():
     """Low-reach river: keep useful node facts, but downgrade confidence."""
     import coach_teaching as ct
@@ -1850,7 +1825,6 @@ def test_coach_teaching_keeps_low_reach_node_with_caveat():
     assert_not_in("River 是前街低頻線", fallback)
 
 
-@test
 def test_session_initial_teaching_block_caches_digest():
     """Gemini session: initial prompt carries and caches deterministic skeleton."""
     from gemini_session import GeminiSessionManager
@@ -1861,7 +1835,6 @@ def test_session_initial_teaching_block_caches_digest():
     assert_true(context.get("_teaching_digest") is not None)
 
 
-@test
 def test_session_initial_coaching_replaces_unsupported_draft():
     """Gemini session: a hallucinated nuts story is replaced, not shown."""
     import asyncio
@@ -1874,19 +1847,20 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     GeminiSessionManager._initial_teaching_block(context)
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("coach-teaching-test")
-    manager.coach_narrator_provider = "gemini"
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
     manager.histories = {}
     observed_systems = []
 
-    async def fake_chat(self, chat_id, prompt, **kwargs):
-        observed_systems.append(kwargs.get("system_override"))
+    async def fake_chat(self, prompt, system, usage_acc=None):
+        observed_systems.append(system)
         return (
             "*核心判斷*\nRiver bet 正確。\n\n"
             "*為什麼*\nQdJs blocks JT nuts。\n\n"
             "*你要記得*\n每次都 bluff。"
         )
 
-    manager._chat_with_tools = py_types.MethodType(fake_chat, manager)
+    manager._call_openai_narrator = py_types.MethodType(fake_chat, manager)
     answer = asyncio.run(manager._verified_initial_coaching(
         1, "prompt", context, "H3818", disable_tools=True,
     ))
@@ -1897,7 +1871,6 @@ def test_session_initial_coaching_replaces_unsupported_draft():
     assert_true(all("Deterministic 教學骨架" in item for item in observed_systems))
 
 
-@test
 def test_session_initial_coaching_accepts_selective_natural_first_draft():
     """Happy path keeps one grounded insight instead of replaying the solver card."""
     import asyncio
@@ -1910,7 +1883,8 @@ def test_session_initial_coaching_accepts_selective_natural_first_draft():
     GeminiSessionManager._initial_teaching_block(context)
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("coach-natural-first-draft-test")
-    manager.coach_narrator_provider = "gemini"
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
     manager.histories = {}
     calls = []
     draft = (
@@ -1919,11 +1893,11 @@ def test_session_initial_coaching_accepts_selective_natural_first_draft():
         "主動打光不需要因為頻率較低而修正。"
     )
 
-    async def fake_chat(self, chat_id, prompt, **kwargs):
+    async def fake_chat(self, prompt, system, usage_acc=None):
         calls.append(prompt)
         return draft
 
-    manager._chat_with_tools = py_types.MethodType(fake_chat, manager)
+    manager._call_openai_narrator = py_types.MethodType(fake_chat, manager)
     answer = asyncio.run(manager._verified_initial_coaching(
         3, "prompt", context, "H3835", disable_tools=True,
     ))
@@ -1934,7 +1908,6 @@ def test_session_initial_coaching_accepts_selective_natural_first_draft():
     assert_not_in("Flop ①", answer)
 
 
-@test
 def test_session_initial_coaching_accepts_grounded_repair():
     """Coach session: one constrained rewrite preserves the LLM narrator role."""
     import asyncio
@@ -1949,7 +1922,8 @@ def test_session_initial_coaching_accepts_grounded_repair():
     manager._logger = logging.getLogger("coach-teaching-repair-test")
     # This test supplies its own legacy narrator stub. OpenAI is the production
     # default and is covered independently by the Responses API tests below.
-    manager.coach_narrator_provider = "gemini"
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
     manager.histories = {2: ["base-history"]}
     observed_histories = []
     drafts = iter([
@@ -1970,12 +1944,12 @@ def test_session_initial_coaching_accepts_grounded_repair():
         ),
     ])
 
-    async def fake_chat(self, chat_id, prompt, **kwargs):
-        observed_histories.append(list(self.histories[chat_id]))
-        self.histories[chat_id].append(f"internal-draft-{len(observed_histories)}")
+    async def fake_chat(self, prompt, system, usage_acc=None):
+        observed_histories.append(list(self.histories[2]))
+        self.histories[2].append(f"internal-draft-{len(observed_histories)}")
         return next(drafts)
 
-    manager._chat_with_tools = py_types.MethodType(fake_chat, manager)
+    manager._call_openai_narrator = py_types.MethodType(fake_chat, manager)
     answer = asyncio.run(manager._verified_initial_coaching(
         2, "prompt", context, "H3818", disable_tools=True,
     ))
@@ -1990,7 +1964,6 @@ def test_session_initial_coaching_accepts_grounded_repair():
     assert_in("FOLLOWUP: River 為什麼能下注？", answer)
 
 
-@test
 def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
     """OpenAI narrates the distilled card without loading Gemini coach context."""
     import asyncio
@@ -2014,15 +1987,11 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
 
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("openai-initial-narrator-test")
-    manager._openai_narrator_client = py_types.SimpleNamespace(responses=FakeResponses())
+    manager._openai_coach_client = py_types.SimpleNamespace(responses=FakeResponses())
     manager.coach_narrator_model = "gpt-5.6-terra"
     manager.coach_narrator_reasoning = "low"
     manager.coach_narrator_max_output_tokens = 900
 
-    async def forbidden_gemini(self, *args, **kwargs):
-        raise AssertionError("grounded OpenAI narrator should not load Gemini context")
-
-    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
     usage = {}
     answer = asyncio.run(manager._generate_initial_narrator(
         7, "card", digest={"decisions": [{}]},
@@ -2033,7 +2002,6 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
     assert_eq(usage["thinking_tokens"], 7)
 
 
-@test
 def test_initial_coach_followups_are_constrained_to_pipeline_answerability():
     """Generated buttons must carry the inputs the hypothetical resolver needs."""
     from gemini_session import INITIAL_COACH_SYSTEM
@@ -2044,21 +2012,44 @@ def test_initial_coach_followups_are_constrained_to_pipeline_answerability():
     assert_in("不可問「什麼情況選某個 mix 分支」", INITIAL_COACH_SYSTEM)
 
 
-@test
-def test_text_image_and_ft_initial_coaches_share_followup_contract():
-    """FT switching must not drift from normal text/image coach buttons."""
-    import inspect
+def test_coach_hand_uses_shared_followup_extractor():
+    """Initial coaching strips and stores only pipeline-answerable followups."""
+    import asyncio
+    import logging
+    from coach_runtime import ChatWorkflow, WorkflowDeps
     from gemini_session import GeminiSessionManager
 
-    chat_source = inspect.getsource(GeminiSessionManager.send_message)
-    image_source = inspect.getsource(GeminiSessionManager.send_image_message)
-    assert_true(chat_source.count("FOLLOWUP_REQUEST") >= 2,
-                "text and FT-switch paths must share one contract")
-    assert_in("FOLLOWUP_REQUEST", image_source,
-              "image path must share the same contract")
+    context = {"text": "solver card"}
+
+    async def generate_initial(*args, **kwargs):
+        return "回答本文\nFOLLOWUP: Turn 對手下注 50% pot，Hero AhKh 要怎麼打？"
+
+    workflow = ChatWorkflow(WorkflowDeps(
+        get_hand_context=lambda chat_id: context,
+        clear_followup_node_street=lambda chat_id: None,
+        build_evidence_context=lambda chat_id: "",
+        history_for_evidence=lambda chat_id: "",
+        evaluate_hand=lambda chat_id, args: "",
+        execute_tool=lambda *a, **k: "",
+        model_response=lambda **kwargs: None,
+        accept_history=lambda *a, **k: None,
+        tool_status=lambda result: "ok",
+        model="test", max_tool_calls=1, max_evidence_rounds=1,
+        reasoning="low", max_output_tokens=100, logger=logging.getLogger("test"),
+        build_teaching_block=lambda ctx: "骨架",
+        generate_initial=generate_initial,
+        extract_followups=GeminiSessionManager.extract_followups,
+    ))
+
+    answer = asyncio.run(workflow.coach_hand(
+        1, context, hand_description="hand", user_text="user",
+        source_instruction="instruction",
+    ))
+    assert_eq(answer, "回答本文")
+    assert_eq(context["followup_questions"],
+              ["Turn 對手下注 50% pot，Hero AhKh 要怎麼打？"])
 
 
-@test
 def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
     """An OpenAI outage degrades honestly instead of unaudited Gemini prose."""
     import asyncio
@@ -2069,16 +2060,13 @@ def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
 
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("openai-initial-narrator-fallback-test")
-    manager._openai_narrator_client = object()
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
 
     async def failing_openai(self, *args, **kwargs):
         raise RuntimeError("temporary OpenAI failure")
 
-    async def forbidden_gemini(self, *args, **kwargs):
-        raise AssertionError("GPT coach must not silently switch narrator models")
-
     manager._call_openai_narrator = py_types.MethodType(failing_openai, manager)
-    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
     answer = asyncio.run(manager._generate_initial_narrator(
         7, "card", digest={"decisions": [{}]},
         disable_tools=True, system_override=INITIAL_COACH_SYSTEM,
@@ -2087,7 +2075,6 @@ def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
     assert_not_in("gemini", answer.lower())
 
 
-@test
 def test_coach_teaching_ignores_zero_frequency_ev_noise():
     """Coach focus and loss must not use an action outside the solver mix."""
     import coach_teaching as ct
@@ -2115,7 +2102,6 @@ def test_coach_teaching_ignores_zero_frequency_ev_noise():
     assert_true(decision["equity_denial"] is None)
 
 
-@test
 def test_coach_teaching_card_parser_does_not_read_words_as_combos():
     """English prose such as 'exact combo' must not tokenize as AcTc."""
     import coach_teaching as ct
@@ -2130,7 +2116,6 @@ def test_coach_teaching_card_parser_does_not_read_words_as_combos():
     assert_not_in("unsupported exact combo AcTc", violations)
 
 
-@test
 def test_coach_teaching_audit_ignores_followup_questions_not_claims():
     """Suggested questions may name hypotheticals; they are not coach claims."""
     import coach_teaching as ct
@@ -2145,7 +2130,6 @@ def test_coach_teaching_audit_ignores_followup_questions_not_claims():
     assert_true(audit.ok, str(audit.violations))
 
 
-@test
 def test_coach_teaching_allows_verified_nut_flush_draw_only():
     """Verified nut-flush draw is safe; literal nuts remains banned."""
     import coach_teaching as ct
@@ -2173,7 +2157,6 @@ def test_coach_teaching_allows_verified_nut_flush_draw_only():
     assert_in("unsupported nuts claim", ct.audit_draft(bad, digest).violations)
 
 
-@test
 def test_coach_teaching_category_owner_stops_at_list_delimiter():
     """One actor's category must not leak across '、' into the next actor."""
     import coach_teaching as ct
@@ -2187,7 +2170,6 @@ def test_coach_teaching_category_owner_stops_at_list_delimiter():
     assert_true(bool(violations), "inverted ownership must still fail")
 
 
-@test
 def test_coach_teaching_backdoor_flush_is_not_flush_draw():
     """Backdoor potential is allowed only as backdoor wording, not a real draw."""
     import coach_teaching as ct
@@ -2210,7 +2192,6 @@ def test_coach_teaching_backdoor_flush_is_not_flush_draw():
     assert_in("unsupported category flush_draw", ct.audit_draft(bad, digest).violations)
 
 
-@test
 def test_coach_teaching_action_frequency_binds_to_size_and_nearest_street():
     """A size's frequency is not the sum of every bet/raise size."""
     import coach_teaching as ct
@@ -2225,7 +2206,6 @@ def test_coach_teaching_action_frequency_binds_to_size_and_nearest_street():
     )
 
 
-@test
 def test_coach_teaching_spr_audit_does_not_read_3bet_as_spr_three():
     """The token '3bet' is a pot type, never an SPR numeric claim."""
     import coach_teaching as ct
@@ -2235,7 +2215,6 @@ def test_coach_teaching_spr_audit_does_not_read_3bet_as_spr_three():
     assert_not_in("SPR mismatch 3", ct.audit_draft(answer, digest).violations)
 
 
-@test
 def test_coach_teaching_fallback_self_audits_supported_shapes():
     """Deterministic degradation is a safety boundary and must itself be clean."""
     import coach_teaching as ct
@@ -2247,7 +2226,6 @@ def test_coach_teaching_fallback_self_audits_supported_shapes():
         assert_true(audit.ok, f"{audit.violations}: {fallback}")
 
 
-@test
 def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
     """A meaningful fold/raise mix teaches allocation without reversing verdict."""
     import coach_teaching as ct
@@ -2275,7 +2253,6 @@ def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
     assert_true(ct.audit_draft(fallback, digest).ok)
 
 
-@test
 def test_followup_why_facts_include_guarded_removal_and_range_structure():
     """The GPT sees blocker/range facts, while the final prompt can stay concise."""
     import coach_facts as cf
@@ -2294,7 +2271,6 @@ def test_followup_why_facts_include_guarded_removal_and_range_structure():
     assert_in("HJ 的同花、set較多", rendered)
 
 
-@test
 def test_followup_decision_renderer_labels_top_equity_as_proxy_not_nuts():
     """Advanced equity buckets quantify range tops without claiming literal nuts."""
     import coach_teaching as ct
@@ -2314,7 +2290,6 @@ def test_followup_decision_renderer_labels_top_equity_as_proxy_not_nuts():
     assert_in("不是 literal nuts", rendered)
 
 
-@test
 def test_followup_why_facts_include_low_spr_equity_denial_guardrail():
     """A vulnerable made-hand jam carries denial evidence, not a range-EQ shortcut."""
     import coach_facts as cf
@@ -2332,7 +2307,6 @@ def test_followup_why_facts_include_low_spr_equity_denial_guardrail():
     assert_in("range 劣勢不能直接翻譯成 fold", rendered)
 
 
-@test
 def test_coach_teaching_audit_rejects_unselected_street_commentary():
     """Raw solver text must not lure the narrator into grading another street."""
     import coach_teaching as ct
@@ -2346,7 +2320,6 @@ def test_coach_teaching_audit_rejects_unselected_street_commentary():
     assert_in("unsupported street preflop", ct.audit_draft(answer, digest).violations)
 
 
-@test
 def test_coach_teaching_audit_rejects_in_mix_action_called_error():
     """A selected solver-supported mix branch cannot be narrated as a leak."""
     import coach_teaching as ct
@@ -2367,7 +2340,6 @@ def test_coach_teaching_audit_rejects_in_mix_action_called_error():
     )
 
 
-@test
 def test_coach_teaching_audit_rejects_secondary_category_as_action_cause():
     """Strong-hand ownership cannot directly explain a non-bluff exact action."""
     import coach_teaching as ct
@@ -2383,7 +2355,6 @@ def test_coach_teaching_audit_rejects_secondary_category_as_action_cause():
     )
 
 
-@test
 def test_coach_teaching_low_ev_offmix_action_stays_offmix():
     """Negligible EV loss and solver support are separate deterministic facts."""
     import coach_teaching as ct
@@ -2420,7 +2391,6 @@ def test_coach_teaching_low_ev_offmix_action_stays_offmix():
     )
 
 
-@test
 def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
     """The core verdict cannot evade auditing by saying '這裡' instead of Turn."""
     import coach_teaching as ct
@@ -2433,7 +2403,6 @@ def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
     )
 
 
-@test
 def test_coach_teaching_pure_preferred_action_is_not_called_mix():
     """A near-pure preferred branch should be described as pure, not mixed."""
     import coach_teaching as ct
@@ -2449,12 +2418,11 @@ def test_coach_teaching_pure_preferred_action_is_not_called_mix():
     assert_not_in("mix 分支", core_line)
 
 
-@test
 def test_coach_tool_registry_translates_provider_neutral_schemas_for_openai():
     """The GPT tool registry preserves every solver tool with JSON Schema types."""
-    from gemini_session import _coach_tool_specs
+    from coach_tools import coach_tool_specs
 
-    specs = {spec.name: spec for spec in _coach_tool_specs(False)}
+    specs = {spec.name: spec for spec in coach_tool_specs(False)}
     assert_true("query_coach_facts" in specs)
     assert_true("query_gto" in specs)
     assert_true("query_next_actions" in specs)
@@ -2464,14 +2432,13 @@ def test_coach_tool_registry_translates_provider_neutral_schemas_for_openai():
     assert_eq(tool["parameters"]["type"], "object")
     assert_eq(tool["parameters"]["properties"]["street"]["type"], "string")
 
-    db_specs = {spec.name for spec in _coach_tool_specs(True)}
+    db_specs = {spec.name for spec in coach_tool_specs(True)}
     assert_true({
         "lookup_hand", "get_training_plan", "get_progress",
         "query_ledger_summary", "query_ledger_hands",
     }.issubset(db_specs), "GPT follow-ups must retain every ledger/session tool")
 
 
-@test
 def test_evidence_audit_rejects_invented_combo_number_and_category():
     """Generic follow-up prose cannot invent range members, percentages or hand types."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2492,7 +2459,6 @@ def test_evidence_audit_rejects_invented_combo_number_and_category():
     assert_in("set", joined)
 
 
-@test
 def test_evidence_audit_rejects_unmeasured_board_texture_story():
     """A visible board alone does not license wet/dry causal language."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2507,7 +2473,6 @@ def test_evidence_audit_rejects_unmeasured_board_texture_story():
     assert_in("濕潤", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_number_when_no_numeric_fact_exists():
     """An empty numeric whitelist does not mean arbitrary percentages are safe."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2520,7 +2485,6 @@ def test_evidence_audit_rejects_number_when_no_numeric_fact_exists():
     assert_in("73%", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_checks_action_sizes_even_without_bb_suffix():
     """'Facing a 1.3 bet' is numeric strategy content even without a unit."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2533,7 +2497,6 @@ def test_evidence_audit_checks_action_sizes_even_without_bb_suffix():
     assert_in("action number", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_literal_nuts_from_top_equity_proxy():
     """90-100% equity buckets cannot be rewritten as nuts or nut advantage."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2550,7 +2513,6 @@ def test_evidence_audit_rejects_literal_nuts_from_top_equity_proxy():
     assert_in("literal nuts", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_blocker_target_joined_from_separate_facts():
     """Removal direction plus a flush category cannot invent 'blocks flush'."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2567,7 +2529,6 @@ def test_evidence_audit_rejects_blocker_target_joined_from_separate_facts():
     assert_in("blocker target", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_ev_ranking_inferred_from_pure_frequency():
     """A 100% action is a recommendation, not evidence of an EV ranking."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2583,7 +2544,6 @@ def test_evidence_audit_rejects_ev_ranking_inferred_from_pure_frequency():
     assert_in("EV ranking", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_requires_causal_gate_for_category_to_action_join():
     """More sets in a range do not alone prove the betting range is strong."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2611,7 +2571,6 @@ def test_evidence_audit_requires_causal_gate_for_category_to_action_join():
     assert_true(allowed.ok, "explicit strong-end causal card should authorize the join")
 
 
-@test
 def test_evidence_audit_rejects_unmeasured_induced_action_story():
     """A pure call frequency does not prove an induce/preserve-range motive."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2624,7 +2583,6 @@ def test_evidence_audit_rejects_unmeasured_induced_action_story():
     assert_in("induced-action", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_personalized_mix_choice():
     """GTO mixing is randomized, not selected from momentary comfort."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2639,7 +2597,6 @@ def test_evidence_audit_rejects_personalized_mix_choice():
     assert_in("personalized", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_exact_combo_action_from_class_average():
     """A9s aggregate frequencies cannot be attributed to A♦9♦."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2665,7 +2622,6 @@ def test_evidence_audit_rejects_exact_combo_action_from_class_average():
     assert_true(allowed.ok)
 
 
-@test
 def test_evidence_audit_rejects_exact_action_from_zero_reach_notice():
     """A low-reach notice proves absence, not an exact-combo recommendation."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2695,7 +2651,6 @@ def test_evidence_audit_rejects_exact_action_from_zero_reach_notice():
     assert_true(honest.ok, "an explicit refusal is not an action recommendation")
 
 
-@test
 def test_evidence_audit_binds_hand_class_action_to_local_not_node_totals():
     """Whole-range Call 91.6% cannot be renamed as an A8s class average."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2725,7 +2680,6 @@ def test_evidence_audit_binds_hand_class_action_to_local_not_node_totals():
     assert_true(good.ok, str(good.violations))
 
 
-@test
 def test_evidence_audit_forbids_judging_actual_action_when_exact_is_unavailable():
     """Zero reach permits recording Hero's fold, not calling it reasonable."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2749,7 +2703,6 @@ def test_evidence_audit_forbids_judging_actual_action_when_exact_is_unavailable(
     assert_true(honest.ok, str(honest.violations))
 
 
-@test
 def test_evidence_audit_rejects_hero_verdict_from_villain_range_only():
     """An action-conditioned villain range cannot prove Hero should fold."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2766,7 +2719,6 @@ def test_evidence_audit_rejects_hero_verdict_from_villain_range_only():
     assert_in("exact combo action", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_rejects_raw_equity_as_bet_cause():
     """High equity describes strength; it does not itself select bet vs check."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2790,7 +2742,6 @@ def test_evidence_audit_rejects_raw_equity_as_bet_cause():
     assert_in("raw equity", " | ".join(across_clause.violations))
 
 
-@test
 def test_evidence_audit_rejects_invented_check_raise_label():
     """Opponent check then Hero bet is not a Hero check-raise."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2811,7 +2762,6 @@ def test_evidence_audit_rejects_invented_check_raise_label():
     assert_in("action-line label", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_audit_preserves_facing_bet_vs_raise_semantics():
     """Raw R4 after a check is a bet, not a raise to 4bb."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -2840,7 +2790,6 @@ def test_evidence_audit_preserves_facing_bet_vs_raise_semantics():
     assert_true(right.ok, str(right.violations))
 
 
-@test
 def test_compact_evidence_context_labels_facing_villain_action():
     """The GPT context carries deterministic bet/raise semantics, not raw R only."""
     from gemini_session import GeminiSessionManager
@@ -2867,7 +2816,6 @@ def test_compact_evidence_context_labels_facing_villain_action():
     assert_in("facing_villain_action=bet_to_4bb", text)
 
 
-@test
 def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
     """A failed narrator degrades to useful facts, not hand_id/gametype internals."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -2880,7 +2828,6 @@ def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
     assert_not_in("hand_id", answer)
 
 
-@test
 def test_h3874_range_fallback_preserves_complete_solver_range():
     """A verifier fallback must not collapse a requested range to six facts."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -2908,7 +2855,6 @@ def test_h3874_range_fallback_preserves_complete_solver_range():
     assert_not_in("核心資料", answer)
 
 
-@test
 def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable():
     """A failed exact-combo narration must not expose range totals as advice."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -2933,7 +2879,6 @@ def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable(
     assert_not_in("8.4%", answer)
 
 
-@test
 def test_evidence_repair_guidance_explains_frequency_is_not_ev_rank():
     """Semantic audit failures produce an actionable constrained rewrite."""
     from coach_evidence import repair_guidance_for_violations
@@ -2945,7 +2890,6 @@ def test_evidence_repair_guidance_explains_frequency_is_not_ev_rank():
     assert_in("高頻 raise 不代表", guidance)
 
 
-@test
 def test_evidence_safe_fallback_prioritizes_causal_facts_over_titles():
     """Even a failed narrator leaves a compact learnable evidence card."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -2965,7 +2909,6 @@ def test_evidence_safe_fallback_prioritizes_causal_facts_over_titles():
     assert_not_in("solver 決策數據：", answer)
 
 
-@test
 def test_coach_term_normalizer_expands_flush_draw_shorthand_safely():
     """花聽牌 becomes 同花聽牌 without corrupting 梅花聽牌."""
     from coach_prompts import _normalize_terms
@@ -2974,7 +2917,6 @@ def test_coach_term_normalizer_expands_flush_draw_shorthand_safely():
     assert_eq(_normalize_terms("梅花聽牌"), "梅花聽牌")
 
 
-@test
 def test_coach_term_normalizer_canonicalizes_legacy_card_emoji():
     """LLM glyph variants must not leak past the Telegram output boundary."""
     from coach_prompts import _normalize_terms
@@ -2988,7 +2930,6 @@ def test_coach_term_normalizer_canonicalizes_legacy_card_emoji():
               "169 hand classes remain machine-readable")
 
 
-@test
 def test_h3874_coach_normalizer_repairs_impossible_emoji_hand_class():
     """Two exact-card glyphs followed by s/o are a malformed 169 class."""
     from coach_evidence import display_exact_cards
@@ -2999,7 +2940,6 @@ def test_h3874_coach_normalizer_repairs_impossible_emoji_hand_class():
               "UTG KTs 在 12bb fold")
 
 
-@test
 def test_coach_term_normalizer_removes_scope_boilerplate_but_keeps_low_reach():
     """A useful low-reach warning must not end in generic node boilerplate."""
     from coach_prompts import _normalize_terms
@@ -3013,7 +2953,6 @@ def test_coach_term_normalizer_removes_scope_boilerplate_but_keeps_low_reach():
     assert_not_in("action line", normalized)
 
 
-@test
 def test_evidence_audit_checks_emoji_board_suits():
     """T♥ in evidence cannot silently become T♠ in Telegram prose."""
     from coach_evidence import EvidenceBundle, audit_evidence_answer
@@ -3027,7 +2966,6 @@ def test_evidence_audit_checks_emoji_board_suits():
     assert_in("Ts", " | ".join(audit.violations))
 
 
-@test
 def test_evidence_display_formats_exact_cards_but_not_hand_classes():
     """The user sees suit glyphs while A9s/QQ remain solver hand classes."""
     from coach_evidence import display_exact_cards
@@ -3043,7 +2981,8 @@ def _evidence_manager(responses):
     import logging
     import types as py_types
 
-    from gemini_session import GeminiSessionManager
+    from coach_runtime import ChatWorkflow, WorkflowDeps
+    from coach_tools import coach_tool_specs
 
     class FakeResponses:
         def __init__(self, queue):
@@ -3057,11 +2996,8 @@ def _evidence_manager(responses):
             return self.queue.pop(0)
 
     api = FakeResponses(responses)
-    manager = GeminiSessionManager.__new__(GeminiSessionManager)
+    manager = py_types.SimpleNamespace()
     manager._logger = logging.getLogger("evidence-manager-test")
-    manager._openai_coach_client = py_types.SimpleNamespace(responses=api)
-    manager._openai_narrator_client = manager._openai_coach_client
-    manager.coach_narrator_provider = "openai"
     manager.coach_narrator_model = "gpt-5.6-terra"
     manager.coach_narrator_reasoning = "low"
     manager.coach_narrator_max_output_tokens = 900
@@ -3077,11 +3013,44 @@ def _evidence_manager(responses):
     manager.last_hand_ids = {7: "H3818"}
     manager.pending_images = {}
     manager.db = None
-    manager._accumulate_usage = lambda *args, **kwargs: None
+
+    def _content_text(content):
+        if isinstance(content, dict):
+            return content.get("content", "")
+        return str(content)
+
+    def _append_history(chat_id, user_text, answer):
+        manager.histories.setdefault(chat_id, []).extend([
+            {"role": "user", "content": user_text},
+            {"role": "model", "content": answer},
+        ])
+
+    async def _execute_tool(chat_id, user_text, name, args, **kwargs):
+        return await manager._execute_coach_tool(chat_id, user_text, name, args, **kwargs)
+
+    manager._content_text = _content_text
+    manager.workflow = ChatWorkflow(WorkflowDeps(
+        get_hand_context=lambda chat_id: manager.hand_contexts.get(chat_id),
+        clear_followup_node_street=lambda chat_id: manager.hand_contexts.get(chat_id, {}).pop("_followup_node_street", None),
+        build_evidence_context=lambda chat_id: "Hero HJ QdJs turn board 6hAc5d2c",
+        history_for_evidence=lambda chat_id: "",
+        evaluate_hand=lambda chat_id, args: "Q♦J♠：high card",
+        execute_tool=_execute_tool,
+        model_response=api.create,
+        accept_history=_append_history,
+        tool_status=lambda result: "missing" if "沒有 solver" in (result or "") else "ok",
+        model=manager.coach_narrator_model,
+        max_tool_calls=manager.coach_max_tool_calls,
+        max_evidence_rounds=manager.coach_max_evidence_rounds,
+        reasoning=manager.coach_narrator_reasoning,
+        max_output_tokens=manager.coach_narrator_max_output_tokens,
+        logger=manager._logger,
+    ))
+    manager.run_evidence = manager.workflow.run
+    manager.tool_specs = coach_tool_specs(False)
     return manager, api
 
 
-@test
 def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
     """Opponent street bet-range answers are planned, grounded and narrated by Terra."""
     import asyncio
@@ -3114,7 +3083,7 @@ def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
         return "對手 BTN 在 turn 的下注範圍：頂對 佔 40%"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "對手 turn 的下注範圍是什麼？",
     ))
     assert_in("頂對", answer)
@@ -3128,7 +3097,6 @@ def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
     assert_in("頂對", manager._content_text(manager.histories[7][1]))
 
 
-@test
 def test_openai_hero_range_query_is_enriched_with_exact_combo():
     """One range query returns both the full range and exact-suit strategy."""
     import asyncio
@@ -3167,7 +3135,7 @@ def test_openai_hero_range_query_is_enriched_with_exact_combo():
         return "HJ turn range：Check 72%\nQ♦J♠\n策略: Check 97%"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "Hero turn 的範圍怎麼分？",
     ))
     assert_in(cards_to_emoji("QdJs"), answer)
@@ -3176,7 +3144,6 @@ def test_openai_hero_range_query_is_enriched_with_exact_combo():
                 "range intent must survive exact-combo enrichment")
 
 
-@test
 def test_openai_followup_forces_solver_tool_when_planner_skips_strategy_query():
     """A strategy question cannot reach final narration without a solver evidence call."""
     import asyncio
@@ -3209,14 +3176,13 @@ def test_openai_followup_forces_solver_tool_when_planner_skips_strategy_query():
         return "HJ turn 整體下注頻率 62%"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "HJ turn 應該用哪些牌下注？",
     ))
     assert_in("62%", answer)
     assert_eq(api.calls[1]["tool_choice"], "required")
 
 
-@test
 def test_openai_followup_repairs_unsupported_range_claim_before_history():
     """An invented combo is rejected; only the repaired answer enters conversation history."""
     import asyncio
@@ -3255,7 +3221,7 @@ def test_openai_followup_repairs_unsupported_range_claim_before_history():
         return "HJ turn 整體下注頻率 62%"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "HJ turn 的下注範圍怎麼打？",
     ))
     assert_in("62%", answer)
@@ -3264,7 +3230,6 @@ def test_openai_followup_repairs_unsupported_range_claim_before_history():
     assert_not_in("73", history_text)
 
 
-@test
 def test_openai_followup_missing_solver_data_fails_honestly_without_narration():
     """A failed solver tool stops before prose generation and never guesses a range."""
     import asyncio
@@ -3288,7 +3253,7 @@ def test_openai_followup_missing_solver_data_fails_honestly_without_narration():
         return "turn 沒有 solver 數據（無效 action line）"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "HJ turn 應該用哪些牌下注？",
     ))
     assert_in("沒有取得可驗證的 solver 資料", answer)
@@ -3297,7 +3262,6 @@ def test_openai_followup_missing_solver_data_fails_honestly_without_narration():
     assert_eq(len(manager.histories[7]), 2)
 
 
-@test
 def test_openai_followup_next_actions_is_completed_by_hypothetical_strategy():
     """Discovery-only output must be followed by exact strategy evidence."""
     import asyncio
@@ -3313,7 +3277,12 @@ def test_openai_followup_next_actions_is_completed_by_hypothetical_strategy():
         )],
     )
     after_tool = py_types.SimpleNamespace(
-        id="plan-next-only-2", usage=None, output_text="NO_TOOL", output=[],
+        id="plan-next-only-2", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_coach_facts",
+            arguments=_json.dumps({"intent": "why_action", "street": "turn"}),
+            call_id="call-strategy",
+        )],
     )
     final = py_types.SimpleNamespace(
         id="answer-next-completed", usage=None, output=[],
@@ -3336,7 +3305,7 @@ def test_openai_followup_next_actions_is_completed_by_hypothetical_strategy():
                 "7d7c：equity 25%\n      solver 動作：棄牌 100%")
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "如果我跟注 flop，turn 8h 對手下注半池，77 怎麼打？",
     ))
     assert_in("棄牌 100%", answer)
@@ -3345,9 +3314,8 @@ def test_openai_followup_next_actions_is_completed_by_hypothetical_strategy():
     assert_eq(len(api.calls), 3)
 
 
-@test
 def test_openai_followup_without_client_never_falls_back_to_gemini():
-    """COACH_PROVIDER=openai is an honest stop when its client is missing."""
+    """A missing GPT client fails closed instead of switching providers."""
     import asyncio
     import logging
     import types as py_types
@@ -3356,20 +3324,12 @@ def test_openai_followup_without_client_never_falls_back_to_gemini():
 
     manager = GeminiSessionManager.__new__(GeminiSessionManager)
     manager._logger = logging.getLogger("missing-openai-client-test")
-    manager.coach_narrator_provider = "openai"
     manager._openai_coach_client = None
-    manager._openai_narrator_client = None
-
-    async def forbidden_gemini(self, *args, **kwargs):
-        raise AssertionError("missing GPT config must not invoke Gemini coaching")
-
-    manager._chat_with_tools = py_types.MethodType(forbidden_gemini, manager)
     answer = asyncio.run(manager._chat(7, "turn 怎麼打？"))
     assert_in("未設定 GPT 教練模型", answer)
     assert_in("不會改用另一個模型", answer)
 
 
-@test
 def test_openai_followup_can_chain_next_actions_into_strategy_query():
     """A hypothetical line resolves an action code before querying its strategy."""
     import asyncio
@@ -3414,7 +3374,7 @@ def test_openai_followup_can_chain_next_actions_into_strategy_query():
         return "HJ 面對 4.15bb：call 61%"
 
     manager._execute_coach_tool = fake_execute
-    answer = asyncio.run(manager._chat_with_openai_evidence(
+    answer = asyncio.run(manager.run_evidence(
         7, "如果 turn check 後對手下注，我該怎麼打？",
     ))
     assert_in("call", answer)

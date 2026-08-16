@@ -8,11 +8,8 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spot_leaderboard import analyze_table_url
 
 TPE = ZoneInfo("Asia/Taipei")

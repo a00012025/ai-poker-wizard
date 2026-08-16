@@ -8,7 +8,7 @@ python -m venv venv
 source venv/bin/activate
 
 # 安裝依賴
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # 複製環境模板
 if [ ! -f .env ]; then
@@ -22,4 +22,4 @@ mkdir -p data/cache data/logs
 echo "🎯 設置完成！接下來的步驟："
 echo "1. 編輯 .env 檔案，填入你的 Telegram bot token"
 echo "2. 執行：source venv/bin/activate"
-echo "3. 執行：python -m src.main"
+echo "3. 執行：python -m src.main_gemini"

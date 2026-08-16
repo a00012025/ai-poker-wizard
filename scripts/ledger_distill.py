@@ -7,10 +7,7 @@ this module can always be re-run over the archive when taxonomy evolves.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Single official taxonomy (§4.2): action-line spot columns come from
 # spot_taxonomy via backfill_spots; the legacy ~15-bucket family/texture is
 # no longer written. Only the shared pot-type helper remains imported.

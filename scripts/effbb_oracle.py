@@ -20,12 +20,8 @@ Usage: python scripts/effbb_oracle.py --cache data/effbb_cache/cache.jsonl
 """
 import argparse
 import json
-import sys
 from collections import Counter
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "ocr"))
 
 from effbb_metrics import depth_bucket, hero_folded_preflop
 

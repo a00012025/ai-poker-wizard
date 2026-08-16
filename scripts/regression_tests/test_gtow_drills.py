@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from regression_tests.harness import (assert_eq, assert_in, assert_not_in,
-                                      assert_true, REPO_ROOT, test)
+                                      assert_true, REPO_ROOT)
 
 
 class _Response:
@@ -36,7 +36,6 @@ def _trainer_url(**overrides):
     return "https://app.gtowizard.com/practice/trainer?" + urlencode(params)
 
 
-@test
 def test_gtow_drill_settings_match_ignores_display_only_query_params():
     from gtow_drill_service import (find_matching_drill,
                                     settings_from_trainer_url, settings_hash)
@@ -52,7 +51,6 @@ def test_gtow_drill_settings_match_ignores_display_only_query_params():
     assert_eq(settings_hash(settings), settings_hash(drills[0]["settings"]))
 
 
-@test
 def test_repo_trainer_urls_pin_the_gtow_injected_169_group_default():
     from gtow_drill_service import settings_from_trainer_url
     from gtow_trainer_url import build_drill_url
@@ -64,7 +62,6 @@ def test_repo_trainer_urls_pin_the_gtow_injected_169_group_default():
     assert_eq(settings["gmff_variant"], "with_limps")
 
 
-@test
 def test_mtt_limp_variant_is_part_of_drill_identity():
     from gtow_drill_service import settings_from_trainer_url, settings_hash
     from gtow_trainer_url import apply_trainer_defaults
@@ -79,7 +76,6 @@ def test_mtt_limp_variant_is_part_of_drill_identity():
     assert_true(settings_hash(no_limp) != settings_hash(with_limp))
 
 
-@test
 def test_gtow_drill_ensure_reuses_exact_settings_without_post():
     import gtow_drill_service as svc
     settings = svc.settings_from_trainer_url(_trainer_url())
@@ -108,7 +104,6 @@ def test_gtow_drill_ensure_reuses_exact_settings_without_post():
     assert_eq([call[0] for call in calls], ["GET"])
 
 
-@test
 def test_gtow_drill_ensure_renames_matching_settings_with_full_patch():
     """Settings own identity; a stale display name is PATCHed, not duplicated."""
     import gtow_drill_service as svc
@@ -155,7 +150,6 @@ def test_gtow_drill_ensure_renames_matching_settings_with_full_patch():
     assert_eq(body["settings"]["unused_empty"], "")
 
 
-@test
 def test_gtow_drill_known_binding_is_verified_then_patched():
     """A bound UUID is checked remotely and renamed without duplication."""
     import gtow_drill_service as svc
@@ -189,7 +183,6 @@ def test_gtow_drill_known_binding_is_verified_then_patched():
     assert_eq([call[0] for call in calls], ["GET", "PATCH"])
 
 
-@test
 def test_gtow_drill_remote_name_overrides_stale_db_assumption():
     """Opening a menu repairs GTOW even when DB already has the new name."""
     import gtow_drill_service as svc
@@ -223,7 +216,6 @@ def test_gtow_drill_remote_name_overrides_stale_db_assumption():
     assert_eq(calls[1][2]["json"]["name"], wanted)
 
 
-@test
 def test_gtow_drill_known_binding_with_current_name_needs_only_remote_read():
     import gtow_drill_service as svc
     calls = []
@@ -255,7 +247,6 @@ def test_gtow_drill_known_binding_with_current_name_needs_only_remote_read():
     assert_true(not binding.created)
 
 
-@test
 def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
     """A DB URL mode upgrade PATCHes the same GTOW Drill UUID."""
     import gtow_drill_service as svc
@@ -292,7 +283,6 @@ def test_gtow_drill_known_binding_patches_changed_full_hand_settings():
               "stop_end_of_hand")
 
 
-@test
 def test_gtow_drill_known_binding_list_miss_still_patches_bound_uuid():
     """A list miss repairs the known UUID instead of creating a duplicate."""
     import gtow_drill_service as svc
@@ -322,7 +312,6 @@ def test_gtow_drill_known_binding_list_miss_still_patches_bound_uuid():
     assert_eq([call[0] for call in calls], ["GET", "PATCH"])
 
 
-@test
 def test_full_hand_drill_migration_backfills_urls_and_locks_invariant():
     sql = (REPO_ROOT / "supabase/migrations/20260716233000_full_hand_drills.sql"
            ).read_text()
@@ -332,7 +321,6 @@ def test_full_hand_drill_migration_backfills_urls_and_locks_invariant():
     assert_in("drill_queue_full_hand_trainer_url", sql)
 
 
-@test
 def test_drill_depth_name_migration_updates_db_names():
     sql = (REPO_ROOT / "supabase/migrations/20260805143000_drill_depth_names.sql"
            ).read_text()
@@ -348,7 +336,6 @@ def test_drill_depth_name_migration_updates_db_names():
     assert_in("ON drill_queue(spot_leaf, depth_scope)", scope_sql)
 
 
-@test
 def test_scope_dedupe_clear_reason_is_allowed_by_database_contract():
     sql = (REPO_ROOT / "supabase/migrations" /
            "20260810233500_drill_queue_scope_dedupe_reason.sql").read_text()
@@ -356,7 +343,6 @@ def test_scope_dedupe_clear_reason_is_allowed_by_database_contract():
     assert_in("'scope_dedupe'", sql)
 
 
-@test
 def test_gtow_drill_ensure_creates_preset_name_without_apw_prefix():
     import gtow_drill_service as svc
     calls = []
@@ -386,7 +372,6 @@ def test_gtow_drill_ensure_creates_preset_name_without_apw_prefix():
     assert_eq(post["settings"]["fh_actions"], "vs3bet")
 
 
-@test
 def test_gtow_attempt_stats_only_count_bound_drill_after_menu_open():
     import gtow_drill_service as svc
     rows = [
@@ -418,7 +403,6 @@ def test_gtow_attempt_stats_only_count_bound_drill_after_menu_open():
     assert_true(abs(stats.total_ev_loss_bb - 0.3) < 1e-9)
 
 
-@test
 def test_gtow_drill_queue_migration_tracks_binding_attempt_and_clear_reason():
     sql = (REPO_ROOT / "supabase/migrations/20260716190000_gtow_drill_queue_binding.sql"
            ).read_text()

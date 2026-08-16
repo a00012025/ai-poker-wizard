@@ -40,7 +40,6 @@ import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 EVAL = Path("data/_ocr_loc_eval")

@@ -20,12 +20,10 @@ import asyncio
 import gzip
 import json
 import os
-import sys
 from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
 
 import queue_feed as qf  # noqa: E402  (reuse URL/label/enqueue helpers + _HONEST)
 from action_bias import bias_suffix  # noqa: E402

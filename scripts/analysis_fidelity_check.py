@@ -20,7 +20,6 @@ import gzip
 import json
 import os
 import random
-import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,7 +31,6 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
-sys.path.insert(0, str(ROOT / "scripts"))
 
 from analyze_hand import POSITION_ORDERS, analyze_hand_full
 from gto_formatter import (

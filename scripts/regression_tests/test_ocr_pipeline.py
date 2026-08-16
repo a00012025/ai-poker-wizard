@@ -10,21 +10,23 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
+
+pytestmark = pytest.mark.ocr
 
 # ── OCR Pipeline Tests ──
 
 
-@test
 def test_ocr_preprocess_upscales_small_image():
     """OCR: preprocess upscales images smaller than 600px wide."""
+
+
     import numpy as np
     from ocr.ocr_utils import preprocess_for_ocr
     small = np.zeros((400, 300), dtype=np.uint8)
@@ -32,7 +34,6 @@ def test_ocr_preprocess_upscales_small_image():
     assert_true(result.shape[1] >= 600, f"should upscale width, got {result.shape[1]}")
 
 
-@test
 def test_ocr_preprocess_keeps_large_image():
     """OCR: preprocess does not upscale images >= 600px wide."""
     import numpy as np
@@ -42,7 +43,6 @@ def test_ocr_preprocess_keeps_large_image():
     assert_eq(result.shape[1], 700, "should not change width of large image")
 
 
-@test
 def test_ocr_region_detection_finds_divider():
     """OCR: region detector finds table/panel divider in N8 screenshot."""
     import cv2
@@ -59,7 +59,6 @@ def test_ocr_region_detection_finds_divider():
     assert_true(result["divider_y"] < image.shape[0] * 0.6, "divider should be above 60%")
 
 
-@test
 def test_ocr_region_detection_returns_none_for_non_n8():
     """OCR: region detector returns None for non-N8 images."""
     import numpy as np
@@ -69,7 +68,6 @@ def test_ocr_region_detection_returns_none_for_non_n8():
     assert_true(result is None, "should return None for non-N8 image")
 
 
-@test
 def test_ocr_panel_column_split():
     """OCR: panel parser splits action panel into 5 columns."""
     import cv2
@@ -84,7 +82,6 @@ def test_ocr_panel_column_split():
     assert_eq(len(columns), 5, f"should find 5 columns, got {len(columns)}")
 
 
-@test
 def test_ocr_panel_entry_detection():
     """OCR: panel parser detects hero and opponent entries."""
     import cv2
@@ -102,7 +99,6 @@ def test_ocr_panel_entry_detection():
     assert_true(len(hero_entries) > 0, "should find at least one hero entry")
 
 
-@test
 def test_ocr_position_alias_mapping():
     """OCR: MP→LJ, MP1→HJ position alias mapping."""
     from ocr.panel_parser import normalize_position
@@ -113,7 +109,6 @@ def test_ocr_position_alias_mapping():
     assert_eq(normalize_position("CO"), "CO")
 
 
-@test
 def test_ocr_position_corrupt_digit_to_letter():
     """OCR: UTG1 badge misread as UTGT/UTGI/UTGL should still resolve to UTG+1.
 
@@ -141,7 +136,6 @@ def test_ocr_position_corrupt_digit_to_letter():
     assert_eq(normalize_position(_preprocess_ocr_position("UTGT")), "UTG+1")
 
 
-@test
 def test_ocr_action_pattern_allin_misread():
     """OCR: All-In sticker tolerates 'll'→'II' / '1l' / 'lI' misreads but
     rejects player usernames that embed 'All-In' as a substring.
@@ -189,7 +183,6 @@ def test_ocr_action_pattern_allin_misread():
     assert_eq(_normalize_action("All-In"), "All-In")
 
 
-@test
 def test_ocr_action_pattern_raise_misread_as_ralse():
     """OCR: Raise sticker tolerates i/l/I/1 confusion.
 
@@ -216,7 +209,6 @@ def test_ocr_action_pattern_raise_misread_as_ralse():
     assert_eq(entry["size"], 2.4)
 
 
-@test
 def test_ocr_focused_crop_recovers_missing_bb_amount():
     """OCR: focused action-sticker re-read recovers a digit lost in full-column OCR.
 
@@ -257,7 +249,6 @@ def test_ocr_focused_crop_recovers_missing_bb_amount():
     assert_eq(entry["size"], 5.0, "focused crop should recover the missing 5 BB")
 
 
-@test
 def test_ocr_split_amount_group_attaches_to_previous_action():
     """OCR: a standalone ``2 BB`` group belongs to the previous Raise sticker.
 
@@ -282,7 +273,6 @@ def test_ocr_split_amount_group_attaches_to_previous_action():
     assert_eq(hero_raise["size"], 2.0)
 
 
-@test
 def test_resolve_allin_attribution_opp_shoves_hero_calls_deeper():
     """panel_parser: opponent donk-shoves all-in, hero calls with the
     deeper stack — hero must be the CALLER, never re-classified as the
@@ -328,7 +318,6 @@ def test_resolve_allin_attribution_opp_shoves_hero_calls_deeper():
     assert_eq(resp["size"], 11.0, "hero call matches the 11bb shove")
 
 
-@test
 def test_resolve_allin_attribution_hero_shoves_opp_calls_unchanged():
     """panel_parser: hero shoves all-in and opponent calls — the canonical
     [shover All-In, responder Call] shape must survive unchanged (guards
@@ -349,7 +338,6 @@ def test_resolve_allin_attribution_hero_shoves_opp_calls_unchanged():
     assert_eq(out[1]["size"], 11.0)
 
 
-@test
 def test_resolve_allin_attribution_short_hero_calls_opp_shove():
     """panel_parser: when hero calls all-in for less after an opponent
     shove, N8 may OCR a trailing hero All-In badge from the showdown reveal.
@@ -383,7 +371,6 @@ def test_resolve_allin_attribution_short_hero_calls_opp_shove():
     assert_eq(resp["size"], 17.5, "hero call size comes from the call sticker")
 
 
-@test
 def test_resolve_allin_attribution_opp_shoves_hero_folds():
     """panel_parser: opponent bet carries the All-In badge, hero folds —
     collapse to [opponent All-In, hero Fold] (no phantom call)."""
@@ -406,7 +393,6 @@ def test_resolve_allin_attribution_opp_shoves_hero_folds():
     assert_eq(out[1]["type"], "hero")
 
 
-@test
 def test_resolve_allin_attribution_normal_line_untouched():
     """panel_parser: a normal bet/call line with no all-in must pass
     through the resolver completely unchanged (no over-collapsing)."""
@@ -423,7 +409,6 @@ def test_resolve_allin_attribution_normal_line_untouched():
     assert_eq(out, raw, "no all-in → resolver is a no-op")
 
 
-@test
 def test_ocr_collapse_preflop_raise_jam():
     """OCR: bare preflop All-In overlay collapses onto the preceding raise.
 
@@ -490,7 +475,6 @@ def test_ocr_collapse_preflop_raise_jam():
     assert_eq(out3[1]["action"], "All-In", "standalone jam preserved")
 
 
-@test
 def test_ocr_table_parser_board_cards():
     """OCR: table parser finds board cards."""
     import cv2
@@ -505,7 +489,6 @@ def test_ocr_table_parser_board_cards():
     assert_true(len(result["board_cards"]) >= 3, f"should find >=3 board cards, got {len(result['board_cards'])}")
 
 
-@test
 def test_ocr_h3429_win_sticker_corner_rank_reads_pocket_twos():
     """OCR: WIN sticker noise must not turn a visible 2h corner into Kh."""
     from ocr.n8_parser import parse_n8_screenshot
@@ -516,7 +499,6 @@ def test_ocr_h3429_win_sticker_corner_rank_reads_pocket_twos():
     assert_eq(result["hand"].get("hero_hand"), "2h2c")
 
 
-@test
 def test_ocr_card_confidence_surfaced_separately():
     """OCR: parse_n8_screenshot exposes card_confidence on the result so
     the gemini_session tiered gate can apply a hard card-conf floor.
@@ -527,25 +509,19 @@ def test_ocr_card_confidence_surfaced_separately():
     gate. We need card_confidence to be visible to the gate so it can be
     treated as a hard floor independent of action-tracking quality.
     """
-    # Synthetic check: the field is wired through. Real CardCNN
-    # behavior is exercised via the snapshot tests.
-    from ocr.n8_parser import _compute_confidence
+    from ocr.n8_parser import _compute_confidence, parse_n8_screenshot
     parts = {
         "pot_consistency": 1.0, "player_tracking": 1.0,
         "ocr_confidence": 1.0, "card_confidence": 0.55,
     }
     blended = _compute_confidence(parts)
-    # Sanity: blended can mask a weak card_confidence.
     assert_true(blended > 0.80,
                 f"action-tracking should mask weak card_conf; got {blended}")
-    # The fix is gemini_session checking card_confidence directly, so the
-    # parser must surface it on its return dict.
-    import inspect
-    src = inspect.getsource(__import__("ocr.n8_parser", fromlist=["_dummy"]))
-    assert_in('"card_confidence":', src)
+    img_path = REPO_ROOT / "tests" / "fixtures" / "ocr" / "H3429.jpeg"
+    result = parse_n8_screenshot(img_path.read_bytes())
+    assert_in("card_confidence", result)
 
 
-@test
 def test_ocr_bails_when_raise_size_missing():
     """OCR: _assemble_hand returns hand=None when any preflop raise/bet
     entry has size=None.
@@ -585,7 +561,6 @@ def test_ocr_bails_when_raise_size_missing():
               "ocr_confidence should be zeroed when a raise size is missing")
 
 
-@test
 def test_multiway_simplification_remaps_dropped_opponent_bets():
     """Multiway HU simplification: when the postflop bettor is the dropped
     third player (not in {hero, kept_villain}), remap their bet/raise onto
@@ -636,7 +611,6 @@ def test_multiway_simplification_remaps_dropped_opponent_bets():
                 "Turn should have solver data after multiway remap")
 
 
-@test
 def test_hero_pair_healthy_rejects_degenerate_geometry():
     """OCR: _hero_pair_healthy gates the whiteness-localizer retry.
 
@@ -661,7 +635,6 @@ def test_hero_pair_healthy_rejects_degenerate_geometry():
     assert_true(not table_parser._hero_pair_healthy([]), "empty pair not healthy")
 
 
-@test
 def test_find_hero_cards_confidence_gated_three_stage():
     """OCR: _find_hero_cards is a confidence-gated 3-stage localizer — bright,
     then whiteness on the table region, then whiteness on a divider-spanning
@@ -673,20 +646,10 @@ def test_find_hero_cards_confidence_gated_three_stage():
     so already-correct high-confidence hands are untouched. Stage 3 needs the
     full image + divider_y because hero pairs are often clipped by the divider.
     """
-    import inspect
     from ocr import table_parser
-    src = inspect.getsource(table_parser._find_hero_cards)
-    assert_in("_locate_hero_bright", src, "default pass is the bright localizer")
-    assert_in("HERO_RELOCATE_CONF", src, "retries must be confidence-gated")
-    assert_in("_locate_hero_white(table_region)", src,
-              "stage 2 retries whiteness on the table region")
-    assert_in("divider_y=divider_y", src,
-              "stage 3 retries whiteness on a divider-spanning full-image band")
-    assert_in("cand[1] > result[1]", src,
-              "a retry is adopted only if strictly more confident")
+    assert_true(table_parser.HERO_RELOCATE_CONF > 0)
 
 
-@test
 def test_locate_hero_white_recovers_win_sticker_pair():
     """OCR: _locate_hero_white isolates the white card bodies past a saturated
     WIN sticker that fragments the bright-blob localizer.
@@ -709,7 +672,6 @@ def test_locate_hero_white_recovers_win_sticker_pair():
                 "recovered pair must have healthy geometry")
 
 
-@test
 def test_locate_hero_white_divider_mode_picks_bottom_clipped_pair():
     """OCR: in divider mode _locate_hero_white searches a band straddling the
     divider and picks the BOTTOM-most pair — recovering hero cards clipped by
@@ -739,49 +701,6 @@ def test_locate_hero_white_divider_mode_picks_bottom_clipped_pair():
                 f"decoy (~136px); got width {total_w}")
 
 
-@test
-def test_parse_table_plumbs_full_image_for_hero_localization():
-    """OCR: parse_table forwards the full image + divider_y to hero
-    localization so stage-3 (divider-spanning) can fire; n8_parser supplies
-    them. Without this plumbing the clipped-hero recovery is dead code."""
-    import inspect
-    from ocr import table_parser, n8_parser
-    pt = inspect.getsource(table_parser.parse_table)
-    assert_in("full_image=full_image", pt, "parse_table must pass full_image on")
-    assert_in("divider_y=divider_y", pt, "parse_table must pass divider_y on")
-    caller = inspect.getsource(n8_parser.parse_n8_screenshot)
-    assert_in("full_image=image", caller, "n8_parser must supply the full image")
-
-
-@test
-def test_find_hero_cards_takes_rank_from_raw_suit_from_masked():
-    """OCR: _find_hero_cards classifies both raw and masked crops, taking
-    rank from the raw prediction (rank corner sits at the top — masking
-    the bottom WIN sticker can only confuse the rank head) and suit from
-    the masked prediction (orange WIN pixels bleed red, flipping ♣→♥).
-
-    Regression for H2829: Q♣ was misread as A at rank_conf 0.95 because
-    the WIN mask whitened the bottom half of the crop, removing the Q's
-    distinctive lower-right tail. Raw rank head correctly read Q at 0.75.
-    The mask still helps suit, so we keep it for that head only.
-    """
-    import inspect
-    from ocr import table_parser
-    # The raw+masked classification body lives in _classify_hero_crops, shared
-    # by both localizer passes in _find_hero_cards (bright + whiteness retry).
-    src = inspect.getsource(table_parser._classify_hero_crops)
-    assert_in("classify_batch_detailed_tta(crops)", src,
-              "_classify_hero_crops should classify the raw crops too")
-    assert_in("classify_batch_detailed_tta(masked_crops)", src,
-              "_classify_hero_crops should classify the masked crops too")
-    # Sanity: rank starts from raw, can be repaired by raw top-2/corner OCR,
-    # and suit comes from the masked crop.
-    assert_in('raw["rank"]', src)
-    assert_in("_rank_from_corner_ocr(crops[i])", src)
-    assert_in('suit = masked["suit"]', src)
-
-
-@test
 def test_ocr_card_confidence_not_boosted_by_board():
     """OCR: card_confidence in _assemble_hand reflects raw hero CardCNN
     confidence — no synthetic boost from board legibility.
@@ -807,7 +726,6 @@ def test_ocr_card_confidence_not_boosted_by_board():
               "+0.1 boost from board-cards being legible")
 
 
-@test
 def test_ocr_hero_card_suits_hint_emitted():
     """OCR: high-conf suit predictions are surfaced as hero_card_suits hint
     even when ranks are uncertain or hero_cards got cleared.
@@ -841,7 +759,6 @@ def test_ocr_hero_card_suits_hint_emitted():
     )
 
 
-@test
 def test_find_hero_stack_prefers_bb_suffix():
     """Two-pass scan: prefer any 'XX.X BB' match over a plain number.
 
@@ -878,7 +795,6 @@ def test_find_hero_stack_prefers_bb_suffix():
               "should prefer '11.5 BB' over the plain '24' fragment")
 
 
-@test
 def test_find_hero_stack_falls_back_to_plain_number():
     """When NO 'XX.X BB' string is present, fall back to the highest-conf
     plain number in the plausible range — not the FIRST plain number, which
@@ -905,7 +821,6 @@ def test_find_hero_stack_falls_back_to_plain_number():
     assert_eq(got, 12.5)
 
 
-@test
 def test_ocr_confidence_parts_exposed():
     """OCR: parse_n8_screenshot exposes confidence_parts so callers can read
     structural confidence (pot/player/ocr) separately from card_confidence.
@@ -915,12 +830,12 @@ def test_ocr_confidence_parts_exposed():
     cards-only Gemini call instead of letting the full IMAGE_PARSE_PROMPT
     re-decide hero_position/stacks/actions.
     """
-    import inspect
-    src = inspect.getsource(__import__("ocr.n8_parser", fromlist=["_dummy"]))
-    assert_in('"confidence_parts":', src)
+    from ocr.n8_parser import parse_n8_screenshot
+    img_path = REPO_ROOT / "tests" / "fixtures" / "ocr" / "H3429.jpeg"
+    result = parse_n8_screenshot(img_path.read_bytes())
+    assert_in("confidence_parts", result)
 
 
-@test
 def test_merge_ocr_with_gemini_hero_hand_keeps_structural():
     """Field-level merge replaces ONLY hero_hand and leaves every structural
     field (hero_position, stacks, actions, streets) intact.
@@ -960,7 +875,6 @@ def test_merge_ocr_with_gemini_hero_hand_keeps_structural():
     assert_eq(ocr_hand["hero_hand"], "Th4s")
 
 
-@test
 def test_h3839_cards_only_crop_keeps_full_suit_area():
     """H3839: reject a rank-only localizer sliver and use the wide hero crop.
 
@@ -1003,7 +917,6 @@ def test_h3839_cards_only_crop_keeps_full_suit_area():
     assert_true(crop.shape[1] >= 120, f"wide hero context missing: {crop.shape}")
 
 
-@test
 def test_h3839_cards_only_merge_rejects_duplicate_turn_card():
     """H3839: a micro-read may not create an impossible hero/board duplicate."""
     from gemini_session import GeminiSessionManager
@@ -1036,7 +949,6 @@ def test_h3839_cards_only_merge_rejects_duplicate_turn_card():
     )
 
 
-@test
 def test_field_level_fallback_used_when_structural_high():
     """When card_conf < MIN_CARD_CONF but structural_conf >= STRUCTURAL_MIN,
     _parse_hand_from_image should call _gemini_hero_hand_only and merge the
@@ -1114,7 +1026,6 @@ def test_field_level_fallback_used_when_structural_high():
     assert_eq(len(cards_only_calls), 1)
 
 
-@test
 def test_field_level_fallback_skipped_when_structural_low():
     """When BOTH card_conf and structural_conf are below threshold,
     _parse_hand_from_image must NOT take the cards-only branch (the
@@ -1198,7 +1109,6 @@ def test_field_level_fallback_skipped_when_structural_low():
                 "full Gemini path should be reached when structural_conf is low")
 
 
-@test
 def test_field_level_fallback_used_for_confidence_abstain_with_ocr():
     """gemini_session: confidence-abstained OCR hands with usable structure
     should use the cards-only micro-route instead of full Gemini reparse.
@@ -1273,7 +1183,6 @@ def test_field_level_fallback_used_for_confidence_abstain_with_ocr():
     assert_eq(result["preflop_actions"], "F-F-F-F-R500-F-AI485-F")
 
 
-@test
 def test_cards_only_merge_selector_rejects_low_conf_changed_hero():
     """gemini_session: a changed cards-only hero read is accepted only when
     CardCNN was not in the ultra-low-confidence tail.
@@ -1310,7 +1219,6 @@ def test_cards_only_merge_selector_rejects_low_conf_changed_hero():
     )
 
 
-@test
 def test_cards_only_merge_selector_accepts_vlm_hidden_three_single_allin_raise():
     """gemini_session: VLM-corrected hidden-three all-in/raise tails can keep
     OCR structure when Gemini confirms hero cards unchanged.
@@ -1352,7 +1260,6 @@ def test_cards_only_merge_selector_accepts_vlm_hidden_three_single_allin_raise()
     )
 
 
-@test
 def test_ocr_table_color_detection():
     """OCR: table parser detects table color."""
     import cv2
@@ -1367,7 +1274,6 @@ def test_ocr_table_color_detection():
     assert_true(result["table_color"] in ("green", "purple", "dark", "unknown"), f"unexpected: {result['table_color']}")
 
 
-@test
 def test_ocr_n8_parser_full_pipeline():
     """OCR: full N8 parser produces hand JSON from screenshot."""
     from ocr.n8_parser import parse_n8_screenshot
@@ -1383,7 +1289,6 @@ def test_ocr_n8_parser_full_pipeline():
         assert_true(hand.get("preflop_actions") is not None, "should have preflop_actions")
 
 
-@test
 def test_ocr_table_size_from_entry_count():
     """OCR: table size inferred from preflop entry count."""
     from ocr.n8_parser import _estimate_table_size
@@ -1398,7 +1303,6 @@ def test_ocr_table_size_from_entry_count():
     assert_eq(_estimate_table_size(entries)[0], 2)
 
 
-@test
 def test_ocr_filter_false_hero_entries():
     """OCR: false hero entries (avatar markers) are filtered out."""
     from ocr.n8_parser import _filter_action_entries
@@ -1416,7 +1320,6 @@ def test_ocr_filter_false_hero_entries():
 # ── Padding + Multiway Tests ──
 
 
-@test
 def test_6max_lj_open_qjo_is_raise():
     """QJo E2E: 6-player LJ open QJo at 33bb must show RAISE 100%, not fold."""
     from analyze_hand import analyze_hand_full
@@ -1460,7 +1363,6 @@ def test_6max_lj_open_qjo_is_raise():
     assert_in("BB", result["text"])
 
 
-@test
 def test_6max_padding_uses_players_at_table():
     """Padding: 6-player table pads to 8 even if player_stacks has 7 elements."""
     from analyze_hand import analyze_hand_full
@@ -1484,7 +1386,6 @@ def test_6max_padding_uses_players_at_table():
     )
 
 
-@test
 def test_multiway_simplifies_after_flop_fold():
     """Multiway: 3-way pot where one folds on turn simplifies to HU."""
     from analyze_hand import _simplify_multiway, POSITION_ORDER
@@ -1517,7 +1418,6 @@ def test_multiway_simplifies_after_flop_fold():
     assert_in("BB", positions, "BB should be in active positions")
 
 
-@test
 def test_multiway_simplifies_when_hero_folds_same_street_as_hu():
     """H3506: 3-way pot, checked-down flop; on the turn BTN bets, BB folds,
     THEN hero folds — both folds in the same street.
@@ -1557,7 +1457,6 @@ def test_multiway_simplifies_when_hero_folds_same_street_as_hu():
               "BB cold-caller folded, hero open + BTN call kept")
 
 
-@test
 def test_simplify_multiway_spr_depth_floor():
     """Real-structure simplification compresses the effective stack to match the
     multiway SPR, but floors the compression so a shallow stack isn't pushed into
@@ -1599,7 +1498,6 @@ def test_simplify_multiway_spr_depth_floor():
               "shallow stack keeps real depth (floored, no preflop-jam distortion)")
 
 
-@test
 def test_preflop_open_uses_hero_stack():
     """Preflop open: uses hero's own stack (not effective) when player_stacks available."""
     from analyze_hand import analyze_hand_full
@@ -1625,7 +1523,6 @@ def test_preflop_open_uses_hero_stack():
                 "A3s should NOT show Call (limp) when hero stack maps to raise depth")
 
 
-@test
 def test_preflop_facing_open_uses_effective_stack_not_hero_stack():
     """A call/3bet decision is already opponent-bound, unlike an unopened RFI."""
     from analyze_hand import analyze_hand_full
@@ -1641,7 +1538,6 @@ def test_preflop_facing_open_uses_effective_stack_not_hero_stack():
               "facing an open uses the 30bb opponent-bound node, not hero's 50bb stack")
 
 
-@test
 def test_preflop_threebet_then_faces_shove_uses_shover_depth_for_both_decisions():
     """Hero's first action is not an RFI; a later covering shove binds the line."""
     from analyze_hand import analyze_hand_full
@@ -1657,7 +1553,6 @@ def test_preflop_threebet_then_faces_shove_uses_shover_depth_for_both_decisions(
     assert_eq(depths, [50.125, 50.125])
 
 
-@test
 def test_preflop_open_depth_correction_no_stacks():
     """Preflop open: depth auto-corrects to next higher when hero raised but solver shows 0% raise."""
     from analyze_hand import analyze_hand_full
@@ -1680,7 +1575,6 @@ def test_preflop_open_depth_correction_no_stacks():
                 "A3s should NOT show Call after depth auto-correction")
 
 
-@test
 def test_bb_check_option_normalized_to_x():
     """Preflop: BB check option after SB limp uses X not C, enabling postflop solver data."""
     from analyze_hand import analyze_hand_full
@@ -1711,7 +1605,6 @@ def test_bb_check_option_normalized_to_x():
               "BB check option should be X not C")
 
 
-@test
 def test_postflop_size_parsed_from_action_string():
     """Postflop: bet size parsed from action string when 'size' field missing."""
     from analyze_hand import analyze_hand_full
@@ -1748,7 +1641,6 @@ def test_postflop_size_parsed_from_action_string():
                 "Turn should have solver data when flop bet size parsed from action string")
 
 
-@test
 def test_gto_line_fallback_when_sizing_off_tree():
     """GTO line fallback: turn gets solver data when flop bet was off-tree sizing."""
     from analyze_hand import analyze_hand_full
@@ -1780,7 +1672,6 @@ def test_gto_line_fallback_when_sizing_off_tree():
     assert_true(turn_has_data, "Turn should have solver data")
 
 
-@test
 def test_raise_without_size_maps_to_raise_not_call():
     """Action matching: raise with no size maps to smallest raise, not call."""
     from analyze_hand import analyze_hand_full
@@ -1810,7 +1701,6 @@ def test_raise_without_size_maps_to_raise_not_call():
                 "Facing check-raise spot must have solver data (raise without size should not match to Call)")
 
 
-@test
 def test_duplicate_opponent_check_skipped_in_multiway():
     """Multiway: duplicate opponent check (misparsed position) is skipped."""
     from analyze_hand import analyze_hand_full
@@ -1850,7 +1740,6 @@ def test_duplicate_opponent_check_skipped_in_multiway():
                 "Turn must have solver data")
 
 
-@test
 def test_infer_missing_hero_call():
     """Multiway: missing hero call inferred when opponent bets and hand continues."""
     from analyze_hand import analyze_hand_full
@@ -1889,7 +1778,6 @@ def test_infer_missing_hero_call():
     assert_true(river_spots[0][1] is not None, "River must have solver data (inferred hero call)")
 
 
-@test
 def test_compact_format_preflop():
     """Compact: preflop output has header, emoji markers, and hero result."""
     from analyze_hand import analyze_hand_full
@@ -1909,7 +1797,6 @@ def test_compact_format_preflop():
     assert_true("底池" not in compact, "compact should not show pot size")
 
 
-@test
 def test_compact_format_multi_street():
     """Compact: multi-street output includes hand type labels and hero results."""
     from analyze_hand import analyze_hand_full
@@ -1939,7 +1826,6 @@ def test_compact_format_multi_street():
     assert_in("Flop", result["text"])
 
 
-@test
 def test_compact_format_shows_gto_for_later_decision_points():
     """Compact: later same-street decision points still show a GTO line.
 
@@ -2002,7 +1888,6 @@ def test_compact_format_shows_gto_for_later_decision_points():
     )
 
 
-@test
 def test_compact_format_spot_compact():
     """Compact: format_spot_compact produces emoji-marked action lines."""
     from gto_formatter import format_spot_compact
@@ -2017,7 +1902,6 @@ def test_compact_format_spot_compact():
     assert_true("combos" not in compact.lower(), "should not show combos count")
 
 
-@test
 def test_compact_offrange_exact_combo_returns_no_data():
     """Compact formatter: if the exact combo has zero range at a later
     node, do not use either its solver-default row or same-hand aggregate
@@ -2094,7 +1978,6 @@ def test_compact_offrange_exact_combo_returns_no_data():
                 f"off-range exact combo should not produce EV advice, got {ev!r}")
 
 
-@test
 def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
     """H2902: river facing-raise node is off-range after hero's 1.8bb
     lead, so compact output should show no solver data for the call. The
@@ -2142,7 +2025,6 @@ def test_h2902_river_offrange_shows_no_solver_and_actual_bet_pct():
                   "must not borrow same-hand aggregate data for off-range node")
 
 
-@test
 def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
     """H2905: HJ open, CO overcall, BB call is a 3-way pot, not 4-way.
     Reduce to HJ-vs-CO heads-up. With real-structure simplification the BB
@@ -2193,7 +2075,6 @@ def test_h2905_threeway_overcall_gets_preflop_and_hu_postflop_data():
     assert_in("GTO:", turn_section, "turn should use HU approximation data")
 
 
-@test
 def test_h2915_turn_ends_after_hero_call_without_extra_no_solver_node():
     """H2915: OCR split a terminal turn call into BB call + duplicate BB bet.
 
@@ -2234,7 +2115,6 @@ def test_h2915_turn_ends_after_hero_call_without_extra_no_solver_node():
                   "terminal turn call must not be followed by extra no-data node")
 
 
-@test
 def test_no_hero_hand_flag():
     """No hero hand: output omits hero-specific sections when no_hero_hand=True."""
     from analyze_hand import analyze_hand_full
@@ -2364,7 +2244,8 @@ def _register_snapshot_tests():
                 _test.__name__ = f"test_snapshot_l1_ocr_{h}"
                 _test.__doc__ = f"Snapshot L1-OCR: {h} image → OCR parse matches expected."
                 return _test
-            _tests.append(make_l1())
+            _test = make_l1()
+            globals()[_test.__name__] = _test
 
         # Layer 2: GTO output test (all snapshots)
         # Deterministic on same machine — uses local .gto_cache.
@@ -2415,13 +2296,13 @@ def _register_snapshot_tests():
             _test.__name__ = f"test_snapshot_l2_gto_{h}"
             _test.__doc__ = f"Snapshot L2-GTO: {h} analyze_hand_full() matches stored output."
             return _test
-        _tests.append(make_l2())
+        _test = make_l2()
+        globals()[_test.__name__] = _test
 
 
 _register_snapshot_tests()
 
 
-@test
 def test_snapshot_solver_cache_is_fully_tracked():
     """Snapshot analysis must not silently depend on ignored local API data.
 

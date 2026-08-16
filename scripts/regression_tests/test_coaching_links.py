@@ -10,18 +10,16 @@ from pathlib import Path
 from regression_tests.harness import (
     REPO_ROOT,
     SCRIPTS_DIR,
-    _tests,
-    _verbose,
     assert_eq,
     assert_in,
     assert_not_in,
     assert_true,
-    test,
 )
+
+import pytest
 
 # ── Spot Categorizer Tests ──
 
-@test
 def test_spot_categorize_open_raise():
     """Spot categorizer: first to raise = open_raise."""
     from spot_categorizer import categorize_preflop
@@ -29,14 +27,12 @@ def test_spot_categorize_open_raise():
     cat = categorize_preflop("F-F-F-F-R2-F-F-C", "CO", 8, action_index=0)
     assert_eq(cat, "open_raise")
 
-@test
 def test_spot_categorize_open_raise_utg():
     """Spot categorizer: UTG first to act = open_raise."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("R2-F-F-F-F-F-F-F", "UTG", 8, action_index=0)
     assert_eq(cat, "open_raise")
 
-@test
 def test_spot_categorize_facing_open():
     """Spot categorizer: facing a single raise = facing_open."""
     from spot_categorizer import categorize_preflop
@@ -44,7 +40,6 @@ def test_spot_categorize_facing_open():
     cat = categorize_preflop("R2-F-F-F-C-F-F-F", "CO", 8, action_index=0)
     assert_eq(cat, "facing_open")
 
-@test
 def test_spot_categorize_facing_3bet():
     """Spot categorizer: hero opened, facing re-raise = facing_3bet."""
     from spot_categorizer import categorize_preflop
@@ -52,7 +47,6 @@ def test_spot_categorize_facing_3bet():
     cat = categorize_preflop("F-F-F-F-R2-F-F-R8-C", "CO", 8, action_index=1)
     assert_eq(cat, "facing_3bet")
 
-@test
 def test_spot_categorize_squeeze():
     """Spot categorizer: open + call + hero raises = squeeze."""
     from spot_categorizer import categorize_preflop
@@ -60,7 +54,6 @@ def test_spot_categorize_squeeze():
     cat = categorize_preflop("F-R2-C-F-R8-F-F-F", "CO", 8, action_index=0)
     assert_eq(cat, "squeeze")
 
-@test
 def test_spot_categorize_facing_4bet():
     """Spot categorizer: 3+ raises before hero's second decision = facing_4bet."""
     from spot_categorizer import categorize_preflop
@@ -69,7 +62,6 @@ def test_spot_categorize_facing_4bet():
     cat = categorize_preflop("F-F-F-F-R2-F-F-R8-R20-R50", "BB", 8, action_index=1)
     assert_eq(cat, "facing_4bet")
 
-@test
 def test_spot_categorize_limp_pot():
     """Spot categorizer: calls without prior raise = limp_pot."""
     from spot_categorizer import categorize_preflop
@@ -77,14 +69,12 @@ def test_spot_categorize_limp_pot():
     cat = categorize_preflop("F-F-F-F-F-F-C-X", "BB", 8, action_index=0)
     assert_eq(cat, "limp_pot")
 
-@test
 def test_spot_categorize_6max_open():
     """Spot categorizer: 6-max table open raise."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("F-F-R2-F-F-F", "CO", 6, action_index=0)
     assert_eq(cat, "open_raise")
 
-@test
 def test_spot_categorize_cbet_ip():
     """Spot categorizer: PF aggressor bets IP = cbet_ip."""
     from spot_categorizer import categorize_postflop_action
@@ -98,7 +88,6 @@ def test_spot_categorize_cbet_ip():
     )
     assert_eq(cat, "cbet_ip")
 
-@test
 def test_spot_categorize_cbet_oop():
     """Spot categorizer: PF aggressor bets OOP = cbet_oop."""
     from spot_categorizer import categorize_postflop_action
@@ -112,7 +101,6 @@ def test_spot_categorize_cbet_oop():
     )
     assert_eq(cat, "cbet_oop")
 
-@test
 def test_spot_categorize_facing_cbet_oop():
     """Spot categorizer: facing c-bet when OOP = facing_cbet_oop."""
     from spot_categorizer import categorize_postflop_action
@@ -128,7 +116,6 @@ def test_spot_categorize_facing_cbet_oop():
     # BB checked then CO bet — this is check-raise opportunity for BB
     assert_eq(cat, "check_raise")
 
-@test
 def test_spot_categorize_facing_cbet_ip_btn():
     """Spot categorizer: BTN facing BB c-bet = facing_cbet_ip."""
     from spot_categorizer import categorize_postflop_action
@@ -142,7 +129,6 @@ def test_spot_categorize_facing_cbet_ip_btn():
     )
     assert_eq(cat, "facing_cbet_ip")
 
-@test
 def test_spot_categorize_probe():
     """Spot categorizer: non-aggressor bets after check-through = probe."""
     from spot_categorizer import categorize_postflop_action
@@ -159,7 +145,6 @@ def test_spot_categorize_probe():
     # This should be probe since PF aggressor (CO) will act after BB
     assert_eq(cat, "probe")
 
-@test
 def test_spot_categorize_donk():
     """Spot categorizer: non-aggressor bets into aggressor (donk is detected as probe)."""
     from spot_categorizer import categorize_postflop_action
@@ -175,7 +160,6 @@ def test_spot_categorize_donk():
     # BB is OOP, not aggressor, first to act = probe (donk is a form of probe)
     assert_eq(cat, "probe")
 
-@test
 def test_spot_categorize_check_raise():
     """Spot categorizer: hero checks then faces bet = check_raise."""
     from spot_categorizer import categorize_postflop_action
@@ -194,21 +178,18 @@ def test_spot_categorize_check_raise():
 
 # ── Board Texture Tests ──
 
-@test
 def test_board_texture_paired():
     """Board texture: paired board (any pair on board)."""
     from spot_categorizer import classify_board_texture
     assert_eq(classify_board_texture("Ks6h6s"), "paired")
     assert_eq(classify_board_texture("AhAdKs"), "paired")
 
-@test
 def test_board_texture_monotone():
     """Board texture: monotone (3+ same suit)."""
     from spot_categorizer import classify_board_texture
     assert_eq(classify_board_texture("Ks9s3s"), "monotone")
     assert_eq(classify_board_texture("AhKhQh"), "monotone")
 
-@test
 def test_board_texture_wet():
     """Board texture: wet (flush draw or connected)."""
     from spot_categorizer import classify_board_texture
@@ -217,7 +198,6 @@ def test_board_texture_wet():
     # Connected cards within 3 ranks
     assert_eq(classify_board_texture("Jh9c8d"), "wet")
 
-@test
 def test_board_texture_dry():
     """Board texture: dry (no pair, no flush draw, no straight draw).
 
@@ -235,7 +215,6 @@ def test_board_texture_dry():
     assert_eq(classify_board_texture("Kd7h2s"), "dry")
 
 
-@test
 def test_board_texture_wet_via_straight_draw():
     """A flop with any gap of 1 in adjacent sorted ranks is wet (matches
     GTOW's oesd_possible bucket). Boards previously over-tagged as wet
@@ -250,21 +229,18 @@ def test_board_texture_wet_via_straight_draw():
     # 8h2c3d — gaps from sorted [2,3,8] are [1, 5]. wet (low end straight draws).
     assert_eq(classify_board_texture("8h2c3d"), "wet")
 
-@test
 def test_board_texture_empty():
     """Board texture: empty or None returns None."""
     from spot_categorizer import classify_board_texture
     assert_eq(classify_board_texture(None), None)
     assert_eq(classify_board_texture(""), None)
 
-@test
 def test_board_texture_priority():
     """Board texture: paired takes priority over monotone."""
     from spot_categorizer import classify_board_texture
     # Paired AND monotone: AhAh... wait, paired + 3 same suit
     assert_eq(classify_board_texture("AhKh6h6d"), "paired")  # paired > monotone
 
-@test
 def test_spot_categorize_full_hand():
     """Spot categorizer: categorize_spot with full hand dict."""
     from spot_categorizer import categorize_spot
@@ -292,14 +268,12 @@ def test_spot_categorize_full_hand():
     assert_eq(cat, "cbet_ip")
     assert_eq(tex, "wet")  # Js6h5s = two spades = flush draw = wet
 
-@test
 def test_spot_edge_missing_actions():
     """Spot categorizer: empty preflop actions defaults to open_raise."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("", "UTG", 8, action_index=0)
     assert_eq(cat, "open_raise")
 
-@test
 def test_spot_edge_facing_open_caller():
     """Spot categorizer: facing open when hero just calls."""
     from spot_categorizer import categorize_preflop
@@ -310,7 +284,6 @@ def test_spot_edge_facing_open_caller():
 
 # ── New buckets: possible_squeeze, hero_3bet, vs_squeeze ──
 
-@test
 def test_spot_categorize_possible_squeeze():
     """possible_squeeze: open + caller in front, hero does not raise."""
     from spot_categorizer import categorize_preflop
@@ -318,14 +291,12 @@ def test_spot_categorize_possible_squeeze():
     cat = categorize_preflop("F-F-F-F-R2-C-F-F", "BB", 8, action_index=0)
     assert_eq(cat, "possible_squeeze")
 
-@test
 def test_spot_categorize_possible_squeeze_sb():
     """possible_squeeze: LJ opens, CO calls, hero SB does not raise."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("F-F-R2-F-C-F-F-F", "SB", 8, action_index=0)
     assert_eq(cat, "possible_squeeze")
 
-@test
 def test_spot_categorize_hero_3bet():
     """hero_3bet: hero 3bets facing an open with no callers in between."""
     from spot_categorizer import categorize_preflop
@@ -333,14 +304,12 @@ def test_spot_categorize_hero_3bet():
     cat = categorize_preflop("F-F-R2-F-F-R8-F-F", "BTN", 8, action_index=0)
     assert_eq(cat, "hero_3bet")
 
-@test
 def test_spot_categorize_hero_3bet_bb():
     """hero_3bet: CO opens, hero BB 3bets, no callers."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("F-F-F-F-R2-F-F-R8", "BB", 8, action_index=0)
     assert_eq(cat, "hero_3bet")
 
-@test
 def test_spot_categorize_vs_squeeze():
     """vs_squeeze: hero opened, caller came in, then re-raise (squeeze)."""
     from spot_categorizer import categorize_preflop
@@ -348,14 +317,12 @@ def test_spot_categorize_vs_squeeze():
     cat = categorize_preflop("F-F-R2-F-C-R8-F-F", "LJ", 8, action_index=1)
     assert_eq(cat, "vs_squeeze")
 
-@test
 def test_spot_categorize_vs_squeeze_co():
     """vs_squeeze: CO opens, BTN calls, BB squeezes; CO faces squeeze."""
     from spot_categorizer import categorize_preflop
     cat = categorize_preflop("F-F-F-F-R2-C-F-R8", "CO", 8, action_index=1)
     assert_eq(cat, "vs_squeeze")
 
-@test
 def test_spot_categorize_facing_3bet_no_squeeze_still_works():
     """Regression: facing_3bet without caller between stays facing_3bet."""
     from spot_categorizer import categorize_preflop
@@ -363,7 +330,6 @@ def test_spot_categorize_facing_3bet_no_squeeze_still_works():
     cat = categorize_preflop("F-F-F-F-R2-F-F-R8-C", "CO", 8, action_index=1)
     assert_eq(cat, "facing_3bet")
 
-@test
 def test_spot_categorize_facing_open_regression():
     """REGRESSION: facing_open must still classify when no callers in front
     and hero does not raise. This is the critical split-safety guarantee."""
@@ -374,7 +340,6 @@ def test_spot_categorize_facing_open_regression():
     cat2 = categorize_preflop("F-F-R2-F-F-F-F-F", "HJ", 8, action_index=0)
     assert_eq(cat2, "facing_open")
 
-@test
 def test_spot_categorize_squeeze_still_works():
     """Regression: squeeze (hero IS the squeezer) unchanged."""
     from spot_categorizer import categorize_preflop
@@ -385,21 +350,18 @@ def test_spot_categorize_squeeze_still_works():
 
 # ── compute_preflop_line_key tests ──
 
-@test
 def test_line_key_srp_open_call():
     """HJ opens, hero BB calls → 'HJ-R' (hero action excluded, pre-raise folds elided)."""
     from spot_categorizer import compute_preflop_line_key
     key = compute_preflop_line_key("F-F-F-R2-F-F-F-C", "BB", 8)
     assert_eq(key, "HJ-R")
 
-@test
 def test_line_key_simple_open_fold():
     """CO opens, hero BTN folds (or acts) → 'CO-R'."""
     from spot_categorizer import compute_preflop_line_key
     key = compute_preflop_line_key("F-F-F-F-R2-F-F-F", "BTN", 8)
     assert_eq(key, "CO-R")
 
-@test
 def test_line_key_3bet_pot():
     """LJ opens, CO folds, BTN 3bets, SB folds, hero BB; BTN-F elided (pre-RR fold),
     but SB-F is retained since it comes AFTER the 3bet."""
@@ -409,21 +371,18 @@ def test_line_key_3bet_pot():
     # Folds before RR (HJ, CO) elided; SB-F comes after RR, kept.
     assert_eq(key, "LJ-R-BTN-RR-SB-F")
 
-@test
 def test_line_key_squeeze_pot():
     """LJ opens, HJ folds, CO calls, BTN squeezes, hero SB."""
     from spot_categorizer import compute_preflop_line_key
     key = compute_preflop_line_key("F-F-R2-F-C-R8-F-F", "SB", 8)
     assert_eq(key, "LJ-R-CO-C-BTN-RR")
 
-@test
 def test_line_key_limp_iso():
     """UTG limps, UTG+1 limps, BTN iso-raises, hero SB."""
     from spot_categorizer import compute_preflop_line_key
     key = compute_preflop_line_key("C-C-F-F-F-R2-F-F", "SB", 8)
     assert_eq(key, "UTG-C-UTG+1-C-BTN-R")
 
-@test
 def test_line_key_hero_excluded():
     """Hero's own token must not appear in the key."""
     from spot_categorizer import compute_preflop_line_key
@@ -431,7 +390,6 @@ def test_line_key_hero_excluded():
     key = compute_preflop_line_key("F-F-F-F-R2-F-F-F", "CO", 8)
     assert_eq(key, "")
 
-@test
 def test_line_key_4bet_pot():
     """CO opens, BB 3bets, CO 4bets (hero is BB, second decision) → captures
     LJ-R ... wait: CO opens R2, hero BB 3bets, CO 4bets → hero BB acts second.
@@ -445,7 +403,6 @@ def test_line_key_4bet_pot():
     # But we stop at hero's second action (BB). CO-RRR comes before that.
     assert_eq(key, "CO-R-CO-RRR")
 
-@test
 def test_line_key_fold_after_3bet_kept():
     """Fold that follows a 3bet (RR) should be kept."""
     from spot_categorizer import compute_preflop_line_key
@@ -454,7 +411,6 @@ def test_line_key_fold_after_3bet_kept():
     # HJ-F elided (pre-RR). BTN-F and SB-F kept (post-RR).
     assert_eq(key, "LJ-R-CO-RR-BTN-F-SB-F")
 
-@test
 def test_line_key_fold_after_open_elided():
     """Folds that only follow a single raise (R) are elided."""
     from spot_categorizer import compute_preflop_line_key
@@ -462,14 +418,12 @@ def test_line_key_fold_after_open_elided():
     key = compute_preflop_line_key("F-F-R2-F-F-F-F-F", "BB", 8)
     assert_eq(key, "LJ-R")
 
-@test
 def test_line_key_unopened():
     """All folds with no raise — hero BB walks."""
     from spot_categorizer import compute_preflop_line_key
     key = compute_preflop_line_key("F-F-F-F-F-F-F-F", "BB", 8)
     assert_eq(key, "")
 
-@test
 def test_line_key_6max_3bet():
     """6-max: CO opens, BTN 3bets, hero SB."""
     from spot_categorizer import compute_preflop_line_key
@@ -478,7 +432,6 @@ def test_line_key_6max_3bet():
     assert_eq(key, "CO-R-BTN-RR")
 
 
-@test
 def test_line_key_postflop_consumes_full_preflop():
     """action_index=None: consume full preflop line, don't stop at hero."""
     from spot_categorizer import compute_preflop_line_key
@@ -492,7 +445,6 @@ def test_line_key_postflop_consumes_full_preflop():
     assert_eq(key, "BB-C")
 
 
-@test
 def test_line_key_postflop_3bet_pot_full_preflop():
     """Postflop line_key for a 3bet pot: full preflop consumed."""
     from spot_categorizer import compute_preflop_line_key
@@ -505,7 +457,6 @@ def test_line_key_postflop_3bet_pot_full_preflop():
     assert_in("HJ-RR", key)
 
 
-@test
 def test_line_key_postflop_srp_hero_is_caller():
     """Postflop line_key when hero flatted preflop: full preflop kept."""
     from spot_categorizer import compute_preflop_line_key
@@ -518,7 +469,6 @@ def test_line_key_postflop_srp_hero_is_caller():
 
 # ── compute_pot_type_from_preflop tests (hero-independent) ──
 
-@test
 def test_pot_type_from_preflop_srp_hero_is_opener():
     """Regression for the bug where hero-as-opener falsely showed as limp.
     compute_pot_type_from_preflop works directly on raw actions."""
@@ -529,49 +479,42 @@ def test_pot_type_from_preflop_srp_hero_is_opener():
     assert_eq(compute_pot_type_from_preflop("R2-F-F-F-F-F-C-C", 8), "SRP")
 
 
-@test
 def test_pot_type_from_preflop_short_stack_open_shove_is_srp():
     """BTN open-shove is still an opened single-raised pot."""
     from spot_categorizer import compute_pot_type_from_preflop
     assert_eq(compute_pot_type_from_preflop("F-F-F-F-F-AI7-F-C", 8), "SRP")
 
 
-@test
 def test_pot_type_from_preflop_all_in_squeeze():
     from spot_categorizer import compute_pot_type_from_preflop
     assert_eq(compute_pot_type_from_preflop(
         "F-F-R2-C-AI12-F-F-F-F-F", 8), "squeezed")
 
 
-@test
 def test_pot_type_from_preflop_3bet():
     from spot_categorizer import compute_pot_type_from_preflop
     # UTG opens, HJ 3bets, UTG calls
     assert_eq(compute_pot_type_from_preflop("R2-F-F-R8-F-F-F-F-C", 8), "3bet")
 
 
-@test
 def test_pot_type_from_preflop_4bet():
     from spot_categorizer import compute_pot_type_from_preflop
     # CO opens, BTN 3bets, CO 4bets
     assert_eq(compute_pot_type_from_preflop("F-F-R2-R8-F-F-F-F-R20", 8), "4bet")
 
 
-@test
 def test_pot_type_from_preflop_squeezed():
     from spot_categorizer import compute_pot_type_from_preflop
     # LJ opens, CO calls, BTN squeezes
     assert_eq(compute_pot_type_from_preflop("F-F-R2-F-C-R8-F-F", 8), "squeezed")
 
 
-@test
 def test_pot_type_from_preflop_limp():
     from spot_categorizer import compute_pot_type_from_preflop
     # UTG limps, CO iso-raises
     assert_eq(compute_pot_type_from_preflop("C-F-F-R3-F-F-F-F", 8), "limp")
 
 
-@test
 def test_pot_type_from_preflop_unopened():
     from spot_categorizer import compute_pot_type_from_preflop
     # All folds (hypothetical — shouldn't happen in practice)
@@ -579,7 +522,6 @@ def test_pot_type_from_preflop_unopened():
     assert_eq(compute_pot_type_from_preflop("", 8), "unopened")
 
 
-@test
 def test_line_key_preflop_default_still_stops_at_hero():
     """action_index=0 (default): preflop behavior unchanged — stop at hero."""
     from spot_categorizer import compute_preflop_line_key
@@ -592,40 +534,33 @@ def test_line_key_preflop_default_still_stops_at_hero():
 
 # ── compute_pot_type tests ──
 
-@test
 def test_pot_type_srp():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("CO-R"), "SRP")
     assert_eq(compute_pot_type("HJ-R-BTN-F-SB-F"), "SRP")
 
-@test
 def test_pot_type_3bet():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("LJ-R-BTN-RR-SB-F"), "3bet")
     assert_eq(compute_pot_type("CO-R-BB-RR"), "3bet")
 
-@test
 def test_pot_type_4bet():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("CO-R-BB-RR-CO-RRR"), "4bet")
 
-@test
 def test_pot_type_squeezed():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("LJ-R-CO-C-BTN-RR"), "squeezed")
 
-@test
 def test_pot_type_limp():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("UTG-C-UTG+1-C-BTN-R"), "limp")
 
-@test
 def test_pot_type_limp_pure():
     from spot_categorizer import compute_pot_type
     # pure limp pot with no iso raise
     assert_eq(compute_pot_type("UTG-C-SB-C"), "limp")
 
-@test
 def test_pot_type_unopened():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type(""), "unopened")
@@ -633,7 +568,6 @@ def test_pot_type_unopened():
 
 # ── Follow-up Parse Guard Tests ──
 
-@test
 def test_followup_question_not_parsed_as_hand():
     """Follow-up questions should not be treated as new hands when context exists."""
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -679,7 +613,6 @@ def test_followup_question_not_parsed_as_hand():
               True, "Suited digit pair '76s' + action is a hand description")
 
 
-@test
 def test_real_hand_description_parsed():
     """Real hand descriptions should still be parsed even with existing context."""
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -697,7 +630,6 @@ def test_real_hand_description_parsed():
         assert_eq(result, True, f"Hand description should look like a hand: {h!r}")
 
 
-@test
 def test_query_gto_h2643_redundant_overrides():
     """H2643 river follow-up: LLM sent redundant overrides (including a
     7-position preflop from a 7-max hand). The cached context has 8-position
@@ -769,7 +701,6 @@ def test_query_gto_h2643_redundant_overrides():
     assert_in("Check", result, "Should show the Check action in the result")
 
 
-@test
 def test_overrides_match_played_line_helper():
     """Unit test for the _overrides_match_played_line helper used by Fix B."""
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -843,7 +774,6 @@ def test_overrides_match_played_line_helper():
     ), "different depth should not match")
 
 
-@test
 def test_extract_followups_strips_from_text():
     """Extract FOLLOWUP lines from coaching response and store separately."""
     from gemini_session import GeminiSessionManager as GeminiSession
@@ -853,29 +783,28 @@ def test_extract_followups_strips_from_text():
         "FOLLOWUP: 如果我在 turn 跟注，河牌來 K♣，BB 下注半池，該怎麼打？\n"
         "FOLLOWUP: 這手牌的 EV 如何？"
     )
-    clean, followups = GeminiSession._extract_followups(text)
+    clean, followups = GeminiSession.extract_followups(text)
     assert_eq(len(followups), 3, "should extract 3 followup questions")
     assert_true("FOLLOWUP" not in clean, "clean text should not contain FOLLOWUP lines")
     assert_eq(followups[0], "Turn 上對手的範圍是什麼？", "first followup content")
     # Full-width colon variant
     text2 = "分析內容\nFOLLOWUP：全形冒號問題？"
-    clean2, followups2 = GeminiSession._extract_followups(text2)
+    clean2, followups2 = GeminiSession.extract_followups(text2)
     assert_eq(len(followups2), 1, "should handle full-width colon")
     assert_true("FOLLOWUP" not in clean2, "clean text should not contain full-width FOLLOWUP")
     # Markdown/bullet variants should also be removed from user-visible text.
     text_md = "分析內容\n- **FOLLOWUP:** 如果 CO 3-bet all-in 要跟哪些牌？"
-    clean_md, followups_md = GeminiSession._extract_followups(text_md)
+    clean_md, followups_md = GeminiSession.extract_followups(text_md)
     assert_eq(followups_md, ["如果 CO 3-bet all-in 要跟哪些牌？"],
               "should strip bullet+bold FOLLOWUP marker")
     assert_true("FOLLOWUP" not in clean_md, "markdown followup marker should not leak")
     # No followups
     text3 = "普通分析文字，沒有 followup"
-    clean3, followups3 = GeminiSession._extract_followups(text3)
+    clean3, followups3 = GeminiSession.extract_followups(text3)
     assert_eq(clean3, text3, "text without followups unchanged")
     assert_eq(len(followups3), 0, "no followups extracted")
 
 
-@test
 def test_extract_followups_drops_unanswerable_generated_buttons():
     """Underspecified future lines and false-premise mix questions stay hidden."""
     from gemini_session import GeminiSessionManager as GeminiSession
@@ -886,7 +815,7 @@ def test_extract_followups_drops_unanswerable_generated_buttons():
         "FOLLOWUP: 77 為什麼混合 call/all-in，什麼情況選 all-in？\n"
         "FOLLOWUP: BB 在 flop 的下注範圍有哪些？"
     )
-    clean, followups = GeminiSession._extract_followups(text)
+    clean, followups = GeminiSession.extract_followups(text)
     assert_eq(followups, ["BB 在 flop 的下注範圍有哪些？"])
     assert_not_in("FOLLOWUP", clean)
 
@@ -895,30 +824,30 @@ def test_extract_followups_drops_unanswerable_generated_buttons():
         "FOLLOWUP: 如果河牌是空白牌怎麼打？\n"
         "FOLLOWUP: 77 混合 call/all-in，什麼情況選 all-in？"
     )
-    clean_bad, followups_bad = GeminiSession._extract_followups(all_bad)
+    clean_bad, followups_bad = GeminiSession.extract_followups(all_bad)
     assert_eq(followups_bad, [])
     assert_eq(clean_bad, "分析內容",
               "rejected markers must never leak into visible coach text")
 
 
 def _followup_bot_stub(contexts):
-    """A bare PokerWizardBot wired to a session stub exposing _extract_followups."""
+    """A bare PokerWizardBot wired to a session stub exposing extract_followups."""
     from telegram_bot.bot import PokerWizardBot
     from gemini_session import GeminiSessionManager as GeminiSession
     bot = PokerWizardBot.__new__(PokerWizardBot)
     bot.session_manager = type("SessionStub", (), {
         "hand_contexts": contexts,
-        "_extract_followups": staticmethod(GeminiSession._extract_followups),
+        "extract_followups": staticmethod(GeminiSession.extract_followups),
     })()
     return bot
 
 
-@test
+@pytest.mark.telegram
 def test_finalize_followups_recovers_leaked_lines():
     """Follow-up answers whose FOLLOWUP lines leaked become buttons, not raw text.
 
     Regression: the plain-chat follow-up path (_chat) never ran
-    _extract_followups, so FOLLOWUP: lines surfaced as visible text instead of
+    extract_followups, so FOLLOWUP: lines surfaced as visible text instead of
     inline buttons. _finalize_followups is the send-time safety net.
     """
     ctx = {
@@ -948,7 +877,7 @@ def test_finalize_followups_recovers_leaked_lines():
               "button shows the recovered question text")
 
 
-@test
+@pytest.mark.telegram
 def test_finalize_followups_noop_when_already_clean():
     """Already-extracted responses pass through unchanged, keeping prior followups."""
     ctx = {
@@ -965,7 +894,7 @@ def test_finalize_followups_noop_when_already_clean():
     assert_eq(len(markup.inline_keyboard), 3, "three stored questions → three buttons")
 
 
-@test
+@pytest.mark.telegram
 def test_resilient_status_skips_duplicate_edits():
     """H3815: repeated tool statuses must not hit Telegram again.
 
@@ -993,7 +922,7 @@ def test_resilient_status_skips_duplicate_edits():
     assert_eq(len(raw.edits), 1, "identical status edit should be a no-op")
 
 
-@test
+@pytest.mark.telegram
 def test_followup_markup_for_no_hero_uses_callback_ids():
     """Telegram follow-ups: no-hero range spots still get buttons without truncating callback data."""
     from telegram_bot.bot import PokerWizardBot
@@ -1019,7 +948,7 @@ def test_followup_markup_for_no_hero_uses_callback_ids():
     assert_eq(ctx["_followup_buttons"]["0"], long_q, "full question should be stored in context")
 
 
-@test
+@pytest.mark.telegram
 def test_followup_button_marks_question_as_authoritative_followup():
     """H3865: Telegram button questions must carry explicit follow-up intent
     into the session manager instead of being reclassified from their text.
@@ -1081,7 +1010,7 @@ def test_followup_button_marks_question_as_authoritative_followup():
               "button boundary must bypass hand parsing")
 
 
-@test
+@pytest.mark.telegram
 def test_gto_link_lives_on_summary_card_not_coaching():
     """"Open in GTO Wizard" button rides the 📋 summary card, not the coaching reply."""
     from telegram_bot.bot import PokerWizardBot
@@ -1111,7 +1040,7 @@ def test_gto_link_lives_on_summary_card_not_coaching():
                 "coaching reply must NOT carry the GTO Wizard link")
 
 
-@test
+@pytest.mark.telegram
 def test_gto_link_markup_none_without_url():
     """No deep-link buildable → no summary-card button (graceful)."""
     from telegram_bot.bot import PokerWizardBot
@@ -1135,7 +1064,6 @@ from leak_service import (  # noqa: E402
 from spot_categorizer import map_spot_to_gtow  # noqa: E402
 
 
-@test
 def test_ev_loss_tied_best():
     """Mixed bet/check with tied EVs → loss is 0 when hero bets."""
     evs = {"R2": 10.5, "X": 10.5}
@@ -1143,7 +1071,6 @@ def test_ev_loss_tied_best():
     assert_eq(compute_ev_loss(evs, "X"), 0.0)
 
 
-@test
 def test_ev_loss_small_delta():
     """Hero picks the slightly worse line → loss equals delta."""
     evs = {"R2": 10.5, "X": 10.3}
@@ -1151,7 +1078,6 @@ def test_ev_loss_small_delta():
     assert_true(loss is not None and abs(loss - 0.2) < 1e-9, f"loss={loss}")
 
 
-@test
 def test_ev_loss_dominated_action():
     """Dominated action: bet 10, call 9, fold 8 → hero folds → loss=2.0."""
     evs = {"R2": 10.0, "C": 9.0, "F": 8.0}
@@ -1159,14 +1085,12 @@ def test_ev_loss_dominated_action():
     assert_true(loss is not None and abs(loss - 2.0) < 1e-9, f"loss={loss}")
 
 
-@test
 def test_ev_loss_one_legal_action():
     """Only one legal action → loss is 0."""
     evs = {"F": 0.0}
     assert_eq(compute_ev_loss(evs, "F"), 0.0)
 
 
-@test
 def test_ev_loss_missing_inputs():
     """Missing EVs or unknown code → returns None, no crash."""
     assert_eq(compute_ev_loss(None, "R2"), None)
@@ -1175,7 +1099,6 @@ def test_ev_loss_missing_inputs():
     assert_eq(compute_ev_loss({"R2": 10.0}, "X"), None)  # code not in dict
 
 
-@test
 def test_ev_loss_fp_edge_clamp():
     """Floating-point: hero_ev marginally > max due to FP error → clamps to 0."""
     # 0.1 + 0.2 == 0.30000000000000004 ≠ 0.3; construct a tiny negative delta.
@@ -1186,14 +1109,12 @@ def test_ev_loss_fp_edge_clamp():
     assert_true(loss is not None and loss == 0.0, f"loss={loss}")
 
 
-@test
 def test_pick_best_ev_action():
     assert_eq(pick_best_ev_action({"R2": 10.0, "C": 9.0, "F": 8.0}), "R2")
     assert_eq(pick_best_ev_action({}), None)
     assert_eq(pick_best_ev_action(None), None)
 
 
-@test
 def test_deviation_meta_to_jsonb_excludes_none():
     dm = DeviationMeta(villain_pos="HJ", pot_type="SRP")
     d = dm.to_jsonb()
@@ -1201,7 +1122,6 @@ def test_deviation_meta_to_jsonb_excludes_none():
     assert_true("aggression_direction" not in d)
 
 
-@test
 def test_deviation_meta_from_jsonb_none():
     dm = DeviationMeta.from_jsonb(None)
     assert_eq(dm, DeviationMeta())
@@ -1209,7 +1129,6 @@ def test_deviation_meta_from_jsonb_none():
     assert_eq(dm2, DeviationMeta())
 
 
-@test
 def test_deviation_meta_round_trip():
     original = DeviationMeta(
         villain_pos="HJ",
@@ -1225,20 +1144,17 @@ def test_deviation_meta_round_trip():
     assert_eq(restored, original)
 
 
-@test
 def test_deviation_meta_from_jsonb_ignores_unknown():
     """Unknown keys in JSONB should not crash from_jsonb."""
     dm = DeviationMeta.from_jsonb({"villain_pos": "BTN", "future_field": 42})
     assert_eq(dm.villain_pos, "BTN")
 
 
-@test
 def test_aggression_direction_aligned():
     assert_eq(classify_aggression_direction("R2", "R2"), "aligned")
     assert_eq(classify_aggression_direction("F", "F"), "aligned")
 
 
-@test
 def test_aggression_direction_too_passive():
     # X (check) when GTO wants to bet/raise.
     assert_eq(classify_aggression_direction("X", "R2"), "too_passive")
@@ -1246,27 +1162,23 @@ def test_aggression_direction_too_passive():
     assert_eq(classify_aggression_direction("F", "AI"), "too_passive")
 
 
-@test
 def test_aggression_direction_too_aggressive():
     assert_eq(classify_aggression_direction("R2", "X"), "too_aggressive")
     assert_eq(classify_aggression_direction("AI", "C"), "too_aggressive")
     assert_eq(classify_aggression_direction("R3", "F"), "too_aggressive")
 
 
-@test
 def test_aggression_direction_mixed():
     # Two aggressive actions, different sizings → "mixed".
     assert_eq(classify_aggression_direction("R2", "R3"), "mixed")
     assert_eq(classify_aggression_direction("R2", "AI"), "mixed")
 
 
-@test
 def test_aggression_direction_missing():
     assert_eq(classify_aggression_direction(None, "R2"), None)
     assert_eq(classify_aggression_direction("R2", None), None)
 
 
-@test
 def test_map_spot_to_gtow_preflop():
     cases = {
         "open_raise":       ("RFI",             "aggressor"),
@@ -1284,7 +1196,6 @@ def test_map_spot_to_gtow_preflop():
         assert_eq(actual, expected, msg=f"preflop spot {spot}")
 
 
-@test
 def test_map_spot_to_gtow_postflop():
     # SRP pot, hero is the aggressor (cbet_ip) → (SRP, aggressor).
     assert_eq(
@@ -1308,7 +1219,6 @@ def test_map_spot_to_gtow_postflop():
     )
 
 
-@test
 def test_map_spot_to_gtow_unknown():
     # Unknown preflop spot category → (None, None).
     assert_eq(
@@ -1328,56 +1238,47 @@ from gtow_trainer_url import (
 )
 
 
-@test
 def test_snap_depth_exact_points():
     """snap_depth: exact snap points round to themselves"""
     for d in (10, 20, 30, 100):
         assert_eq(snap_depth(d), d, f"exact {d}")
 
 
-@test
 def test_snap_depth_round_down():
     """snap_depth: 22.4 → 20 (nearer to 20 than 25)"""
     assert_eq(snap_depth(22.4), 20)
 
 
-@test
 def test_snap_depth_round_up():
     """snap_depth: 22.6 → 25"""
     assert_eq(snap_depth(22.6), 25)
 
 
-@test
 def test_snap_depth_tie_rounds_down():
     """snap_depth: 17.5 → 15 (tie rounds down)"""
     assert_eq(snap_depth(17.5), 15)
 
 
-@test
 def test_snap_depth_clamp_min():
     """snap_depth: 5 → 10 (clamped to min)"""
     assert_eq(snap_depth(5), 10)
 
 
-@test
 def test_snap_depth_clamp_max():
     """snap_depth: 150 → 100 (clamped to max)"""
     assert_eq(snap_depth(150), 100)
 
 
-@test
 def test_snap_depth_gtow_float_format():
     """snap_depth: 30.125 (GTOW internal format) → 30"""
     assert_eq(snap_depth(30.125), 30)
 
 
-@test
 def test_snap_depth_boundary_tie_low():
     """snap_depth: 12.5 → 10 (tie between 10 and 15 rounds down)"""
     assert_eq(snap_depth(12.5), 10)
 
 
-@test
 def test_build_url_open_raise():
     """Every trainer URL carries the owner's global session defaults."""
     url = build_trainer_url("open_raise", "preflop", 20)
@@ -1390,7 +1291,6 @@ def test_build_url_open_raise():
     assert_eq(qs["gmff_variant"], ["with_limps"])
 
 
-@test
 def test_apply_trainer_defaults_upgrades_existing_url():
     from gtow_trainer_url import apply_trainer_defaults
     old = ("https://app.gtowizard.com/practice/trainer?gametype=MTTGeneral"
@@ -1407,7 +1307,6 @@ def test_apply_trainer_defaults_upgrades_existing_url():
     assert_eq(apply_trainer_defaults(non_trainer), non_trainer)
 
 
-@test
 def test_mtt_trainer_urls_replace_no_limp_filter_but_cash_does_not_get_one():
     from gtow_trainer_url import apply_trainer_defaults, build_drill_url
 
@@ -1428,7 +1327,6 @@ def test_mtt_trainer_urls_replace_no_limp_filter_but_cash_does_not_get_one():
     assert_true("gmff_variant" not in cash)
 
 
-@test
 def test_build_url_facing_3bet():
     """build_trainer_url: facing_3bet → fh_actions=vs3bet"""
     url = build_trainer_url("facing_3bet", "preflop", 20)
@@ -1436,7 +1334,6 @@ def test_build_url_facing_3bet():
     assert_eq(qs["fh_actions"], ["vs3bet"])
 
 
-@test
 def test_build_url_possible_squeeze():
     """build_trainer_url: possible_squeeze → fh_actions=possibleSqueeze"""
     url = build_trainer_url("possible_squeeze", "preflop", 20)
@@ -1444,7 +1341,6 @@ def test_build_url_possible_squeeze():
     assert_eq(qs["fh_actions"], ["possibleSqueeze"])
 
 
-@test
 def test_build_url_hero_3bet():
     """build_trainer_url: hero_3bet → fh_actions=3bet"""
     url = build_trainer_url("hero_3bet", "preflop", 20)
@@ -1452,7 +1348,6 @@ def test_build_url_hero_3bet():
     assert_eq(qs["fh_actions"], ["3bet"])
 
 
-@test
 def test_build_url_vs_squeeze():
     """build_trainer_url: vs_squeeze → fh_actions=vsSqueeze"""
     url = build_trainer_url("vs_squeeze", "preflop", 20)
@@ -1460,7 +1355,6 @@ def test_build_url_vs_squeeze():
     assert_eq(qs["fh_actions"], ["vsSqueeze"])
 
 
-@test
 def test_build_url_depth_snapped():
     """build_trainer_url: effective_bb=22.4 → depth=20.125"""
     url = build_trainer_url("open_raise", "preflop", 22.4)
@@ -1469,7 +1363,6 @@ def test_build_url_depth_snapped():
     assert_eq(qs["depth_list"], ["20.125"])
 
 
-@test
 def test_build_url_unknown_preflop_spot_raises():
     """build_trainer_url: unknown preflop spot → SpotNotSupportedError"""
     try:
@@ -1479,7 +1372,6 @@ def test_build_url_unknown_preflop_spot_raises():
     raise AssertionError("expected SpotNotSupportedError")
 
 
-@test
 def test_build_url_is_parseable():
     """build_trainer_url: result is a valid URL starting with base"""
     url = build_trainer_url("open_raise", "preflop", 20)
@@ -1490,7 +1382,6 @@ def test_build_url_is_parseable():
     assert_eq(parsed.path, "/practice/trainer")
 
 
-@test
 def test_build_url_postflop_srp():
     """build_trainer_url: coarse postflop links are rejected."""
     try:
@@ -1500,7 +1391,6 @@ def test_build_url_postflop_srp():
         pass
 
 
-@test
 def test_build_url_postflop_3bet_pot():
     """build_trainer_url: 3bet-pot flop also requires custom_spot."""
     try:
@@ -1510,7 +1400,6 @@ def test_build_url_postflop_3bet_pot():
         pass
 
 
-@test
 def test_build_url_postflop_squeezed():
     """build_trainer_url: squeezed-pot flop requires custom_spot."""
     try:
@@ -1520,7 +1409,6 @@ def test_build_url_postflop_squeezed():
         pass
 
 
-@test
 def test_build_url_postflop_4bet_falls_back_to_3bet():
     """build_trainer_url: 4bet must never fall back to a 3bet-pot link."""
     try:
@@ -1530,7 +1418,6 @@ def test_build_url_postflop_4bet_falls_back_to_3bet():
         pass
 
 
-@test
 def test_build_url_turn_srp_keeps_turn_start():
     """build_trainer_url: GTOW rewrites turn starts, so reject them."""
     try:
@@ -1540,7 +1427,6 @@ def test_build_url_turn_srp_keeps_turn_start():
         pass
 
 
-@test
 def test_build_url_postflop_missing_pot_type_raises():
     """build_trainer_url: postflop without pot_type → SpotNotSupportedError"""
     try:
@@ -1550,7 +1436,6 @@ def test_build_url_postflop_missing_pot_type_raises():
     raise AssertionError("expected SpotNotSupportedError")
 
 
-@test
 def test_build_url_postflop_unknown_pot_type_raises():
     """build_trainer_url: unknown pot_type → SpotNotSupportedError"""
     try:
@@ -1560,7 +1445,6 @@ def test_build_url_postflop_unknown_pot_type_raises():
     raise AssertionError("expected SpotNotSupportedError")
 
 
-@test
 def test_build_url_preserves_ui_flags():
     """build_trainer_url: every URL contains fh_trainer_hero_range=on"""
     url = build_trainer_url("open_raise", "preflop", 20)
@@ -1568,7 +1452,6 @@ def test_build_url_preserves_ui_flags():
     assert_eq(qs["fh_trainer_hero_range"], ["on"])
 
 
-@test
 def test_build_url_contains_solution_type():
     """build_trainer_url: every URL contains solution_type=gwiz"""
     url = build_trainer_url("facing_3bet", "preflop", 25)
@@ -1607,14 +1490,12 @@ _H3476_URL = (
 )
 
 
-@test
 def test_solution_url_matches_h3476_reference():
     """build_solution_url: exact match to the hand-verified H3476 URL"""
     url = build_solution_url(_H3476_RESOLVED, "8h7d2hAh")
     assert_eq(url, _H3476_URL)
 
 
-@test
 def test_solution_url_canonical_flop_rank_descending():
     """_canonical_flop: flop reordered rank-descending, suits follow rank"""
     assert_eq(_gsu._canonical_flop("7d8h2h"), "8h7d2h")
@@ -1625,7 +1506,6 @@ def test_solution_url_canonical_flop_rank_descending():
     assert_eq(_gsu._canonical_flop("2h3h4h"), "4h3h2h")
 
 
-@test
 def test_solution_url_board_truncated_to_decision_street():
     """canonical_board_through_street: turn node excludes a dealt river card"""
     hand = {"streets": [
@@ -1639,7 +1519,6 @@ def test_solution_url_board_truncated_to_decision_street():
     assert_eq(canonical_board_through_street(hand, "river"), "8h7d2hAhKs")
 
 
-@test
 def test_solution_url_preflop_node_has_no_board():
     """build_solution_url: preflop node omits board / postflop action params"""
     resolved = {
@@ -1654,7 +1533,6 @@ def test_solution_url_preflop_node_has_no_board():
     assert_eq(qs["history_spot"], ["8"])
 
 
-@test
 def test_solution_url_includes_river_actions():
     """build_solution_url: river_actions emitted when present"""
     resolved = dict(_H3476_RESOLVED, river_actions="X-C", history_spot=15)
@@ -1664,7 +1542,6 @@ def test_solution_url_includes_river_actions():
     assert_eq(qs["board"], ["8h7d2hAhKs"])
 
 
-@test
 def test_solution_url_matches_river_reference():
     """build_solution_url: core params match a hand-verified river URL
 
@@ -1690,7 +1567,6 @@ def test_solution_url_matches_river_reference():
     assert_eq(qs["soltab"], ["strategy"])
 
 
-@test
 def test_solution_url_no_preflop_raises():
     """build_solution_url: empty preflop line → ValueError"""
     try:
@@ -1700,7 +1576,6 @@ def test_solution_url_no_preflop_raises():
     raise AssertionError("expected ValueError for empty preflop_actions")
 
 
-@test
 def test_solution_url_cash_depth_no_125_suffix():
     """build_solution_url: non-MTT gametype keeps a plain depth (no .125)"""
     resolved = {
@@ -1713,7 +1588,6 @@ def test_solution_url_cash_depth_no_125_suffix():
     assert_eq(qs["depth"], ["100"])
 
 
-@test
 def test_enumerate_hero_decisions_action_indices():
     """enumerate_hero_decisions: per-street hero action indices, in play order"""
     context = {
@@ -1727,7 +1601,6 @@ def test_enumerate_hero_decisions_action_indices():
               [("preflop", 0), ("flop", 0), ("flop", 1), ("turn", 0)])
 
 
-@test
 def test_enumerate_hero_decisions_skips_dataless_spots():
     """enumerate_hero_decisions: spots without a solution are skipped"""
     context = {
@@ -1737,7 +1610,6 @@ def test_enumerate_hero_decisions_skips_dataless_spots():
     assert_eq(enumerate_hero_decisions(context), [("preflop", 0)])
 
 
-@test
 def test_build_last_node_falls_back_to_earlier_node():
     """build_last_node_url: off-tree last node falls back to nearest earlier"""
     hand = {"streets": [
@@ -1766,7 +1638,6 @@ def test_build_last_node_falls_back_to_earlier_node():
     assert_eq(qs["board"], ["8h7d2h"])  # turn card excluded — fell back to flop
 
 
-@test
 def test_build_last_node_returns_none_when_nothing_builds():
     """build_last_node_url: None when every decision node fails to build"""
     context = {
@@ -1781,7 +1652,6 @@ def test_build_last_node_returns_none_when_nothing_builds():
     assert_true(build_last_node_url(context, _resolver=always_fail) is None)
 
 
-@test
 def test_build_last_node_none_when_no_decisions():
     """build_last_node_url: None when context has no hero decisions"""
     assert_true(build_last_node_url({"hand": {}, "hero_spots": [], "solutions": []}) is None)
@@ -1811,7 +1681,6 @@ def _h3639_spot_context():
     }
 
 
-@test
 def test_build_last_node_url_uses_resolved_spot_params_h3639():
     """build_last_node_url: sources snapped codes from spot params, not the API.
 
@@ -1835,7 +1704,6 @@ def test_build_last_node_url_uses_resolved_spot_params_h3639():
     assert_eq(qs["history_spot"], ["14"])         # hero's river decision node
 
 
-@test
 def test_build_last_node_url_preserves_icm_mode_and_stack_distribution_h3868():
     """H3868: an ICM button must open the exact asymmetric ICM solution.
 
@@ -1893,7 +1761,6 @@ def test_build_last_node_url_preserves_icm_mode_and_stack_distribution_h3868():
         raise AssertionError("ICM URLs without stacks must be refused, not downgraded")
 
 
-@test
 def test_build_last_hero_hand_url_reconstructs_icm_params_from_parsed_hand():
     """Persisted live hands must also rebuild the exact ICM review URL."""
     import gtow_action_resolver as resolver_module
@@ -1944,7 +1811,6 @@ def test_build_last_hero_hand_url_reconstructs_icm_params_from_parsed_hand():
     assert_eq(qs["preflop_actions"], ["F-F-F-R2-F-R12-F-F"])
 
 
-@test
 def test_build_node_url_for_street_uses_resolved_spot_params():
     """build_node_url_for_street: turn link uses the turn spot's snapped codes."""
     from gtow_solution_url import build_node_url_for_street
@@ -1960,7 +1826,6 @@ def test_build_node_url_for_street_uses_resolved_spot_params():
     assert_eq(qs["board"], ["9s9c5cKs"])          # flop + turn, canonical
 
 
-@test
 def test_build_last_node_url_falls_back_to_resolver_without_params():
     """build_last_node_url: spots lacking params still resolve via the API path."""
     ctx = {
@@ -1999,10 +1864,6 @@ def _split_flow_session(fake_ctx, fake_hand):
     sess.db = None
     sess.model = "test-model"
     sess.parse_model = "test-parse"
-    # This helper deliberately stubs the legacy narrator. Production defaults
-    # to OpenAI and only enters this branch under an explicit rollback setting.
-    sess.coach_narrator_provider = "gemini"
-
     async def _fake_parse(chat_id, user_text, usage_acc=None):
         return fake_hand
 
@@ -2013,10 +1874,10 @@ def _split_flow_session(fake_ctx, fake_hand):
         return None
 
     sess._parse_hand = _fake_parse
-    sess._chat_with_tools = _fake_coach
+    sess.coach_parsed_hand = _fake_coach
     sess._save_usage = _noop
     sess._save_snapshot = _noop
-    sess._extract_deviations = _noop
+    sess.extract_deviations = _noop
     sess._update_snapshot_coaching = _noop
     sess._setup_user_token = lambda *a, **k: None
     sess._clear_user_token = lambda *a, **k: None
@@ -2047,7 +1908,6 @@ def _run_split_flow(fake_ctx, fake_hand, user_text):
     return sent, result
 
 
-@test
 def test_text_split_flow_fires_gto_card_for_concrete_hand():
     """send_message pushes the structured per-street GTO card via
     send_gto_callback before the coaching reply when there's a concrete hero
@@ -2069,7 +1929,6 @@ def test_text_split_flow_fires_gto_card_for_concrete_hand():
     assert_in("COACHING REPLY", result, "coaching reply still returned after card")
 
 
-@test
 def test_text_split_flow_skips_gto_card_for_range_only_query():
     """send_message must NOT push the GTO card for a range-only query
     (no_hero_hand) — there's no per-hand verdict to show, so the split would
