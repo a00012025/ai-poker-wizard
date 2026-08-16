@@ -462,6 +462,8 @@ INITIAL_COACH_SYSTEM = """\
 - Exact combo action job 的 value／bluff／protection target 只要非空，每類至少點名一個主要 target；不能只說 range 是 merged 或 polar 就結束。
 - 若骨架列出對手的 indifferent 邊界，要指出這個 size 把哪些牌推進 fold／call／raise 混合的困難決策；不可把純 action 的牌說成 indifferent。
 - 若骨架證明 action range 偏極化，要交代價值端門檻、弱端組成與 Hero exact combo 在其中的角色；若是 merged，就明說它也包含哪些中等牌力，不可套用 nuts-or-air 口號。
+- 每次提到 range 都要直接寫清楚「誰、哪一街、哪個動作」，例如「HJ 的 Turn all-in range」；不可只寫無主詞的「整體 range」或「all-in range」。
+- 骨架有 Villain action range / All-in calling math 時，用白話回答三件事：對手 all-in 有哪些主要牌、強牌與聽牌各自扮演什麼角色、Hero 跟注需要多少 equity 且這手實際有多少；不要用「range 偏上／偏下」代替答案。
 - 核心判定、Actor lock、exact combo、牌型、聽牌與 action bucket 都是硬契約。
 - 低頻不等於 EV 錯誤；骨架寫「沒有實質 EV 損失」時不得翻案。
 - 骨架寫「小漏洞／明顯失誤」時，即使只差 0.01bb 也必須照寫；不得改成「沒有實質損失」、正確、可接受或 solver mix。

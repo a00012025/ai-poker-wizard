@@ -17,6 +17,115 @@ def _arrays(default=0.0):
     return [default] * 1326
 
 
+def _live_qdjd_turn_jam_context():
+    """live:2026-08-15:b5807e517b — CO faces HJ's turn all-in."""
+    import gto_formatter as gf
+
+    hero_hand = "QdJd"
+    hero_idx = gf.combo_index_for_hand(hero_hand)
+    hero_range = _arrays()
+    hero_range[hero_idx] = 1.0
+    villain_range = _arrays()
+    villain_classes = {
+        "77": ("7c7s", 0.47, 0),
+        "99": ("9c9s", 0.35, 1),
+        "A8s": ("As8s", 0.21, 2),
+        "A2s": ("Ad2d", 0.16, 3),
+    }
+    made = [-1] * 1326
+    draws = [-1] * 1326
+    made[hero_idx] = 0
+    draws[hero_idx] = 1
+    counters = {}
+    for hand_class, (combo, weight, made_idx) in villain_classes.items():
+        idx = gf.combo_index_for_hand(combo)
+        villain_range[idx] = weight
+        made[idx] = made_idx
+        draws[idx] = 2 if hand_class == "A2s" else 0
+        counters[hand_class] = {"total_combos": weight}
+
+    percentiles = _arrays(-1.0)
+    equities = _arrays()
+    percentiles[hero_idx] = 0.31
+    equities[hero_idx] = 0.263
+
+    def action(code, total_frequency, hero_frequency, ev):
+        strategy = _arrays()
+        evs = _arrays(-9.0)
+        strategy[hero_idx] = hero_frequency
+        evs[hero_idx] = ev
+        return {
+            "action": {"code": code, "allin": False, "betsize_by_pot": None},
+            "total_frequency": total_frequency,
+            "strategy": strategy,
+            "evs": evs,
+        }
+
+    solution = {
+        "game": {
+            "active_position": "CO", "board": "8d6d4h8h", "pot": "29.0",
+            "pot_odds": "0.320",
+            "players": [
+                {"position": "CO", "current_stack": "13.5",
+                 "relative_postflop_position": "IP"},
+                {"position": "HJ", "current_stack": "0", "chips_on_table": "13.5",
+                 "relative_postflop_position": "OOP"},
+            ],
+            "current_street": {"type": "TURN", "start_pot": "15.5"},
+        },
+        "action_solutions": [
+            action("F", 0.60, 1.0, 0.0),
+            action("C", 0.40, 0.0, -1.65),
+        ],
+        "players_info": [
+            {
+                "player": {"position": "CO"}, "range": hero_range,
+                "eq_percentile": percentiles, "hand_eqs": equities, "total_eq": 0.45,
+                "hand_categories": [
+                    {"name": "no_made_hand", "index": 0, "total_frequency": 1.0},
+                ],
+                "draw_categories": [
+                    {"name": "no_draw", "index": 0, "total_frequency": 0.0},
+                    {"name": "flush_draw", "index": 1, "total_frequency": 1.0},
+                    {"name": "nut_flush_draw", "index": 2, "total_frequency": 0.0},
+                ],
+            },
+            {
+                "player": {"position": "HJ"}, "range": villain_range,
+                "total_eq": 0.55, "simple_hand_counters": counters,
+                "hand_categories": [
+                    {"name": "underpair", "index": 0, "total_combos": 0.47},
+                    {"name": "overpair", "index": 1, "total_combos": 0.35},
+                    {"name": "trips", "index": 2, "total_combos": 0.21},
+                    {"name": "ace_high", "index": 3, "total_combos": 0.16},
+                ],
+                "draw_categories": [
+                    {"name": "no_draw", "index": 0, "total_combos": 1.03},
+                    {"name": "flush_draw", "index": 1, "total_combos": 0.0},
+                    {"name": "nut_flush_draw", "index": 2, "total_combos": 0.16},
+                ],
+            },
+        ],
+        "hand_categories_range": made,
+        "draw_categories_range": draws,
+    }
+    return {
+        "hand": {"hero_hand": hero_hand},
+        "hero_hand": "QJs",
+        "hero_position": "CO",
+        "hero_spots": [{
+            "street": "turn", "taken_code": "F", "solver_hero_pos": "CO",
+            "params": {
+                "preflop_actions": "F-F-F-R2-C-F-F-F",
+                "board": "8d6d4h8h", "flop_actions": "R4.5-C",
+                "turn_actions": "RAI",
+            },
+        }],
+        "solutions": [solution],
+        "validation": {},
+    }
+
+
 def _h3818_like_context():
     """Small synthetic node locking the H3818 river mechanisms."""
     import gto_formatter as gf
@@ -945,6 +1054,50 @@ def _pure_aggression_after_check_context():
     context["hero_spots"] = [spot]
     context["solutions"] = [solution]
     return context
+
+
+def test_live_qdjd_turn_jam_names_both_ranges_and_calling_math():
+    """The coach must explain HJ's actual jam, not CO's unrelated range."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_live_qdjd_turn_jam_context())
+    decision = digest["decisions"][0]
+    facing = decision["facing_action_range"]
+    assert_eq(
+        (facing["actor"], facing["street"], facing["action_label"]),
+        ("HJ", "turn", "all-in"),
+    )
+    assert_eq(
+        [row["hand_class"] for row in facing["representative_classes"][:4]],
+        ["77", "99", "A8s", "A2s"],
+    )
+    assert_in("三條", [row["label"] for row in facing["main_categories"]])
+    assert_in("堅果同花聽牌", [row["label"] for row in facing["draw_categories"]])
+
+    math = decision["allin_calling_math"]
+    assert_eq(math["required_equity"], 0.32)
+    assert_eq(math["combo_equity"], 0.263)
+    assert_true(not math["has_enough_equity"])
+
+    prompt = ct.render_prompt_block(digest)
+    assert_in("HJ 在 Turn 的 all-in range", prompt)
+    assert_in("成牌負責取 value", prompt)
+    assert_in("聽牌則保留被跟注後的改善 equity", prompt)
+    assert_in("CO 跟注至少需要 32% equity", prompt)
+    assert_in("QdJd 對這個 HJ all-in range 的 equity 約 26%", prompt)
+    fallback = ct.render_fallback(digest)
+    assert_in("HJ 在 Turn 的 all-in range", fallback)
+    assert_in("CO 跟注至少需要 32% equity", fallback)
+    assert_in("QdJd 對這個 HJ all-in range 的 equity 約 26%", fallback)
+    audit = ct.audit_draft(fallback, digest)
+    assert_true(audit.ok, f"{audit.violations}: {fallback}")
+    ambiguous = fallback.replace(
+        "HJ 在 Turn 的 all-in range：", "all-in 是 merged；",
+    )
+    assert_in(
+        "ambiguous all-in range actor/street",
+        ct.audit_draft(ambiguous, digest).violations,
+    )
 
 
 def test_coach_teaching_real_fixture_builds_human_range_story():

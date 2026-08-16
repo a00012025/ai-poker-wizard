@@ -1180,6 +1180,85 @@ def _action_range_profile(
     }
 
 
+def _facing_allin_range(spot: dict, villain: str, villain_pi: dict) -> dict | None:
+    """Describe the range already conditioned on Villain's preceding jam."""
+    street = spot.get("street") or ""
+    actions = str((spot.get("params") or {}).get(f"{street}_actions") or "")
+    if not actions or actions.split("-")[-1] != "RAI":
+        return None
+
+    def rows(source: list[dict], labels: dict[str, str], *, skip=()) -> list[dict]:
+        masses = [
+            (_normalize_category(row.get("name")), _float(row.get("total_combos")))
+            for row in source
+            if row.get("name") not in skip and _float(row.get("total_combos")) > 0
+        ]
+        total = sum(mass for _, mass in masses)
+        return [
+            {"category": name, "label": labels.get(name, name), "share": mass / total}
+            for name, mass in sorted(masses, key=lambda item: -item[1])[:6]
+            if name
+        ]
+
+    classes = sorted(
+        (
+            {"hand_class": name, "mass": _float(counter.get("total_combos"))}
+            for name, counter in (villain_pi.get("simple_hand_counters") or {}).items()
+            if _float(counter.get("total_combos")) > 0
+        ),
+        key=lambda row: -row["mass"],
+    )[:8]
+    made = rows(villain_pi.get("hand_categories") or [], _MADE_ZH)
+    draws = rows(villain_pi.get("draw_categories") or [], _DRAW_ZH, skip={"no_draw"})
+    if not made and not draws and not classes:
+        return None
+    street_label = street.capitalize()
+    made_text = "、".join(row["label"] for row in made[:4])
+    class_text = "、".join(row["hand_class"] for row in classes[:6])
+    draw_text = "、".join(row["label"] for row in draws[:4])
+    parts = []
+    if made_text:
+        parts.append(f"主要牌型是 {made_text}")
+    if class_text:
+        parts.append(f"代表 hand classes 有 {class_text}")
+    if draw_text:
+        parts.append(f"也包含 {draw_text}")
+    if made_text and draw_text:
+        parts.append("白話說，成牌負責取 value，聽牌則保留被跟注後的改善 equity")
+    return {
+        "actor": villain,
+        "street": street,
+        "action_code": "RAI",
+        "action_label": "all-in",
+        "main_categories": made,
+        "draw_categories": draws,
+        "representative_classes": classes,
+        "interpretation": f"{villain} 在 {street_label} 的 all-in range：" + "；".join(parts),
+    }
+
+
+def _allin_calling_math(facing_range: dict | None, node: dict,
+                        combo_equity: float | None, hero: str,
+                        hero_hand: str) -> dict | None:
+    if not facing_range or combo_equity is None:
+        return None
+    required = node.get("pot_odds")
+    if required is None or required < 0:
+        return None
+    enough = combo_equity >= required
+    villain = facing_range["actor"]
+    return {
+        "required_equity": required,
+        "combo_equity": combo_equity,
+        "has_enough_equity": enough,
+        "interpretation": (
+            f"{hero} 跟注至少需要 {_pct(required)}% equity；{hero_hand} 對這個 "
+            f"{villain} all-in range 的 equity 約 {_pct(combo_equity)}%，"
+            f"所以{'可以跟注' if enough else '不夠，應該 fold'}"
+        ),
+    }
+
+
 def _range_strength_targets(
     solution: dict, player_info: dict, hero_hand: str,
 ) -> dict | None:
@@ -2073,6 +2152,10 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     action_range_profile = _action_range_profile(
         solution, hero_pi, (aggressive_branch or {}).get("code"),
     )
+    facing_action_range = _facing_allin_range(spot, villain, villain_pi)
+    allin_calling_math = _allin_calling_math(
+        facing_action_range, node_context, combo_equity, hero, hero_hand,
+    )
     relative_strength = _range_strength_targets(
         solution, villain_pi, hero_hand,
     )
@@ -2116,6 +2199,8 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
         "aggressive_branch_is_actual": aggressive_branch_is_actual,
         "aggressive_branch_is_preferred": aggressive_branch_is_preferred,
         "action_range_profile": action_range_profile,
+        "facing_action_range": facing_action_range,
+        "allin_calling_math": allin_calling_math,
         "relative_strength": relative_strength,
         "check_range_composition": _action_composition(hero_pi, "X"),
         "opponent_response_profile": None,
@@ -2163,6 +2248,8 @@ def _teaching_score(decision: dict) -> float:
         score += 0.5
     if decision.get("action_range_profile"):
         score += 1.0
+    if decision.get("allin_calling_math"):
+        score += 1.5
     return score
 
 
@@ -2322,6 +2409,11 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
             allowed_percentages.add(round(100 * continue_frequency, 1))
         if row.get("defense_price"):
             allowed_percentages.add(round(100 * row["defense_price"]["pot_odds"], 1))
+        if row.get("allin_calling_math"):
+            allowed_percentages |= {
+                round(100 * row["allin_calling_math"]["required_equity"], 1),
+                round(100 * row["allin_calling_math"]["combo_equity"], 1),
+            }
         if row.get("ev_loss_bb") is not None:
             allowed_bb.add(round(row["ev_loss_bb"], 3))
         if row.get("ev_loss_pot") is not None:
@@ -2337,6 +2429,15 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         action_profile = row.get("action_range_profile") or {}
         for item in action_profile.get("main_categories") or []:
             allowed_categories.add(item["category"])
+        facing_profile = row.get("facing_action_range") or {}
+        for item in facing_profile.get("main_categories") or []:
+            allowed_categories.add(item["category"])
+        for item in facing_profile.get("draw_categories") or []:
+            draw = item["category"]
+            if draw in {"flush_draw", "nut_flush_draw", "combo_draw"}:
+                allowed_categories.add("flush_draw")
+            if draw in {"gutshot", "oesd", "combo_draw"}:
+                allowed_categories.add("straight_draw")
         response = row.get("opponent_response_profile") or {}
         for bucket in (response.get("targets") or {}).values():
             for item in bucket.get("categories") or []:
@@ -2386,6 +2487,7 @@ def _range_first_overview(decision: dict) -> dict | None:
         return None
     hero = decision.get("hero") or "Hero"
     villain = decision.get("villain") or "Villain"
+    street = (decision.get("street") or "").capitalize()
     structure = decision.get("range_structure") or {}
     top = structure.get("nut_region") or {}
     strong = structure.get("strong_region") or {}
@@ -2419,26 +2521,31 @@ def _range_first_overview(decision: dict) -> dict | None:
 
     value_categories = profile.get("value_categories") or []
     weak_categories = profile.get("weak_categories") or []
+    action_range_label = profile["action_label"]
+    overview_prefix = "先看整體 range："
+    if profile["action_label"] == "all-in":
+        action_range_label = f"{hero} 在 {street} 的 all-in range"
+        overview_prefix = f"先看整體 range（{hero} 在 {street}）："
     if profile.get("shape") == "polar":
         construction = (
-            f"{profile['action_label']} 是{profile['shape_label']}："
+            f"{action_range_label} 是{profile['shape_label']}："
             f"價值端主要由 {'、'.join(value_categories[:4]) or '已驗證強牌'} 構成，"
             f"弱端則從 {'、'.join(weak_categories[:4]) or '已驗證弱牌'} 挑選詐唬候選"
         )
     elif profile.get("shape") == "merged":
         construction = (
-            f"{profile['action_label']} 是{profile['shape_label']}，"
+            f"{action_range_label} 是{profile['shape_label']}，"
             f"中段主要包含{'、'.join((profile.get('middle_categories') or [])[:4]) or '一對類牌力'}"
         )
     else:
-        construction = f"{profile['action_label']} 採{profile['shape_label']}"
+        construction = f"{action_range_label} 採{profile['shape_label']}"
     parts = structure_parts + [part for part in (plan_text, construction) if part]
     return {
         "hero": hero,
         "villain": villain,
         "value_categories": value_categories,
         "weak_categories": weak_categories,
-        "interpretation": "先看整體 range：" + "；".join(parts),
+        "interpretation": overview_prefix + "；".join(parts),
         "scope": (
             "先描述雙方 range 的強端厚度與此 action bucket 的價值／弱端組成，"
             "再描述 exact combo；不得把頂端 equity proxy 稱為 literal nut advantage"
@@ -2625,6 +2732,14 @@ def render_prompt_block(digest: dict | None) -> str:
             f"• 主要機制：{decision['drivers']['primary']}。",
             f"• 已觀測 range plan：{decision['range_plan']['text']}。",
         ])
+        if decision.get("facing_action_range"):
+            lines.append(
+                f"• Villain action range：{decision['facing_action_range']['interpretation']}。"
+            )
+        if decision.get("allin_calling_math"):
+            lines.append(
+                f"• All-in calling math：{decision['allin_calling_math']['interpretation']}。"
+            )
         range_first = _range_first_overview(decision)
         if range_first:
             lines.append(
@@ -2773,7 +2888,7 @@ def render_prompt_block(digest: dict | None) -> str:
         "低到達率 caveat 到『這個 combo 只少量到達此節點』為止；正文不得再加 generic node 邊界收尾。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
         "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
-        "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
+        "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；只有 All-in calling math 可把所需 equity 與 exact combo equity 成對列出。不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
         "每個 postflop 焦點在總評後都先講雙方整體 range：誰的 equity 頂端／強端較厚、整體 check／進攻計畫，以及所選 action bucket 的價值端與弱端組成；之後才講 exact combo 在其中負責什麼。",
         "若 exact combo 對某個 bet／raise 是近乎純進攻（至少 97%），而實戰 check 低於 1%，只能解釋 solver 建議的進攻及 check 犧牲的收益；不得替 0% 過牌補理由（包括 pot control、免費看牌或 equity realization）。",
@@ -2784,6 +2899,8 @@ def render_prompt_block(digest: dict | None) -> str:
         "若 Action range morphology 寫明偏極化，必須沿用骨架列出的實際 value_categories 與 weak_categories 說明價值端／詐唬候選組成；不得固定套『兩對以上』，也不得縮寫成 literal nuts-or-air。",
         "只有骨架存在 Check job 時，過牌焦點才可交代 Hero 在自身 range 的位置、目前領先／落後的主要範圍，以及保留 equity realization 或避開反擊的作用；再用替代進攻分支說明沒有選 bet/raise 犧牲了什麼。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
+        "提到任何 action range 都要同時寫明 actor、street 與 action；不得只寫無主詞的『all-in range』或『整體 range』。",
+        "骨架有 Villain action range 與 All-in calling math 時，必須先白話列出對手實際 all-in range 的主要牌型／代表 hand classes，再說 Hero 跟注所需 equity、exact combo equity 與 call/fold 結論。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
         "只有骨架明示 Equity denial 或 Exact combo action job 的 protection target 時，才能談拒絕對手 equity；低 SPR／脆弱成牌仍只限 Equity denial 欄位。",
@@ -2812,6 +2929,10 @@ def render_fallback(digest: dict) -> str:
     for decision in focus:
         role = decision["hero_role"]
         pieces = []
+        if decision.get("facing_action_range"):
+            pieces.append(decision["facing_action_range"]["interpretation"])
+        if decision.get("allin_calling_math"):
+            pieces.append(decision["allin_calling_math"]["interpretation"])
         range_first = _range_first_overview(decision)
         if range_first:
             pieces.append(range_first["interpretation"])
@@ -2930,7 +3051,7 @@ def render_fallback(digest: dict) -> str:
             ))
         ):
             pieces.append(decision["range_plan"]["text"])
-        reasons.append("；".join(pieces) + "。")
+        reasons.append("。".join(pieces) + "。")
 
     # The common two-street teaching shape (bad bluff candidate on one street,
     # range-created bluff capacity on the next) reads better as one causal
@@ -3181,6 +3302,27 @@ def _audit_actor_contract(body: str, digest: dict) -> list[str]:
     return violations
 
 
+def _audit_action_range_scope(body: str) -> list[str]:
+    """Do not let one street's all-in range masquerade as the other actor's."""
+    violations = []
+    for sentence in re.split(r"[。！？\n]", body or ""):
+        for match in re.finditer(
+            r"all[- ]?in\s*(?:(?:range\s*)?(?:是|採)\s*"
+            r"(?:merged|polar|mixed|線性|極化|混合)|range\s*(?:主要|包含))",
+            sentence,
+            re.I,
+        ):
+            prefix = sentence[max(0, match.start() - 36):match.start()]
+            if not re.search(
+                r"(?:Hero|Villain|對手|我們|你|UTG\+?[12]?|LJ|HJ|CO|BTN|SB|BB)"
+                r"[^。；\n]{0,24}(?:Preflop|Flop|Turn|River|翻牌前|翻牌|轉牌|河牌)",
+                prefix,
+                re.I,
+            ):
+                violations.append("ambiguous all-in range actor/street")
+    return violations
+
+
 _ACTION_TEXT_PATTERNS = {
     "allin": r"(?:all[- ]?in|全下|打光)",
     "call": r"(?:call|跟注)",
@@ -3267,6 +3409,9 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
         for number in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|％)", sentence):
             tail = sentence[number.end():number.end() + 8]
             if re.search(r"(?:pot|底池)", tail, re.I):
+                continue
+            equity_window = sentence[max(0, number.start() - 16):number.end() + 12]
+            if re.search(r"(?:equity|勝率)", equity_window, re.I):
                 continue
             window = sentence[max(0, number.start() - 28):number.end() + 28]
             family = _nearest_action_family(sentence, number.start(), number.end())
@@ -3697,6 +3842,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         pass
     violations.extend(_audit_exact_combos(body, digest))
     violations.extend(_audit_actor_contract(body, digest))
+    violations.extend(_audit_action_range_scope(body))
     violations.extend(_audit_action_frequency_claims(body, digest))
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
@@ -3725,6 +3871,10 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     nut_claim_body = body
     if any(
         (row.get("hero_role") or {}).get("draw") == "nut_flush_draw"
+        or any(
+            draw.get("category") == "nut_flush_draw"
+            for draw in (row.get("facing_action_range") or {}).get("draw_categories") or []
+        )
         for row in digest["decisions"]
     ):
         nut_claim_body = re.sub(
