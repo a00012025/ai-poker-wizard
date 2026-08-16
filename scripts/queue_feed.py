@@ -517,7 +517,7 @@ SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        d.pot_type, d.eff_stack, d.ev_loss_bb, d.taken_code, d.best_code, d.gametype,
        d.played_depth_bb, d.solver_depth_bb,
        h.source hand_source, h.raw_path, h.raw_text, h.parsed_json,
-       h.position hand_position, h.preflop_depth_bb
+       h.position hand_position, h.hero_hand, h.preflop_depth_bb
 FROM ledger_decisions d
 JOIN ledger_hands h ON h.gtow_hand_id=d.gtow_hand_id
 WHERE d.gtow_hand_id=$1 AND d.street=$2 AND d.decision_idx=$3
@@ -526,15 +526,20 @@ WHERE d.gtow_hand_id=$1 AND d.street=$2 AND d.decision_idx=$3
 _QUEUE_DECISIONS_BY_STREET_SQL = _QUEUE_DECISION_SQL.replace(
     " AND d.decision_idx=$3", " ORDER BY d.decision_idx")
 
-_EXACT_SOURCE_CATEGORIES = {"flop", "turn", "river", "vsCold3bet", "vsCold4bet"}
+_EXACT_SOURCE_CATEGORIES = {
+    "flop", "turn", "river", "vsOpen", "vsRaiseCall", "vsSqueeze",
+    "vs3bet", "vs4bet", "vsCold3bet", "vsCold4bet",
+}
 _PRESCRIPTION_SCOPE_SQL = """CASE
-  WHEN spot_category IN ('flop','turn','river','vsCold3bet','vsCold4bet')
+  WHEN spot_category IN ('flop','turn','river','vsOpen','vsRaiseCall',
+                         'vsSqueeze','vs3bet','vs4bet',
+                         'vsCold3bet','vsCold4bet')
     OR spot_leaf LIKE '%flat_vsSqueeze%'
     OR gametype LIKE 'MTTGeneral_ICM%'
   THEN eff_stack ELSE 'all' END"""
 
 
-def _load_source_hand(dec: dict) -> dict:
+def _load_source_hand(dec: dict, detail_loader=None) -> dict:
     """Reconstruct the parsed-hand shape required by the custom URL builder."""
     source = dec.get("hand_source")
     if source == "live":
@@ -557,14 +562,23 @@ def _load_source_hand(dec: dict) -> dict:
     raw_path = dec.get("raw_path")
     depth = _decision_effective_depth(dec)
     hero_pos = dec.get("hand_position") or dec.get("position")
-    if not (raw_path and depth is not None and hero_pos):
+    if depth is None or not hero_pos:
         raise ValueError("online ledger hand is missing archive/depth/position")
     import gzip
     from gtow_solution_url import _parsed_hand_from_analyze
-    p = Path(raw_path) if os.path.isabs(raw_path) else (ROOT / raw_path)
-    opener = gzip.open if str(p).endswith(".gz") else open
-    with opener(p, "rb") as fh:
-        detail = json.loads(fh.read())
+    p = (Path(raw_path) if os.path.isabs(raw_path) else (ROOT / raw_path)) \
+        if raw_path else None
+    if p and p.exists():
+        opener = gzip.open if str(p).endswith(".gz") else open
+        with opener(p, "rb") as fh:
+            detail = json.loads(fh.read())
+    else:
+        if detail_loader is None:
+            from gtow_analyze_api import hand_detail
+            detail_loader = hand_detail
+        detail = detail_loader(dec.get("gtow_hand_id"))
+        if not detail:
+            raise ValueError("online ledger hand detail is unavailable")
     return _parsed_hand_from_analyze(
         detail, hero_pos, float(depth), dec.get("gametype") or "MTTGeneral")
 
@@ -575,7 +589,7 @@ def _is_flat_vs_squeeze(dec: dict) -> bool:
 
 def _exact_pot_type(dec: dict) -> str:
     category = dec.get("spot_category")
-    if _is_flat_vs_squeeze(dec):
+    if _is_flat_vs_squeeze(dec) or category == "vsSqueeze":
         return "squeezed"
     if category == "vsCold3bet":  # legacy rows only; new taxonomy emits vs3bet
         return "3bet"
@@ -606,9 +620,10 @@ def decision_requires_exact_scope(dec: dict) -> bool:
 def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> str | None:
     """Faithful queue Trainer URL for one joined ledger decision.
 
-    Postflop and cold-raise spots require the source action history.  Failure is
-    honest ``None`` — never a nearby shortcut.  Supported preflop categories
-    continue to use CDP-verified shortcuts.
+    Postflop and preflop response spots require the source action history;
+    otherwise a shortcut can deal strategically different sizes/nodes. Failure
+    is honest ``None`` — never a nearby shortcut. RFI keeps its verified seat
+    shortcut because there is no preceding action node to pin.
     """
     category = dec.get("spot_category")
     if decision_requires_exact_scope(dec):
@@ -617,7 +632,9 @@ def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> 
             hand = _load_source_hand(dec)
             return build_custom_spot_url(
                 hand, dec.get("street") or "preflop",
-                int(dec.get("decision_idx") or 0), _exact_pot_type(dec))
+                int(dec.get("decision_idx") or 0), _exact_pot_type(dec),
+                **({"opponent_role": "opener"}
+                   if category == "vsRaiseCall" else {}))
         except Exception as exc:
             log.warning(
                 "queue Trainer exact URL failed (%s %s[%s]): %s",
@@ -632,6 +649,152 @@ def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> 
         category, hero_pos=dec.get("position"), hero_cat=dec.get("hero_cat"),
         villain_cat=dec.get("villain_cat"), ip_oop=dec.get("ip_oop"),
         pot_type=dec.get("pot_type"), depths=depths)
+
+
+def _user_detail_loader(user_id: int, refresh_token: str | None):
+    """Authenticated Analyze detail loader for a Telegram worker thread."""
+    import requests
+    from gto_credentials import get_user_credentials
+    from gtow_analyze_api import hand_detail
+
+    def load(hand_id: str):
+        credentials = get_user_credentials(
+            user_id, fallback_refresh=refresh_token)
+
+        def request(method, url, **kwargs):
+            headers = {
+                "authorization": f"Bearer {credentials.access_token}",
+                "origin": "https://app.gtowizard.com",
+                "content-type": "application/json",
+            }
+            if credentials.client_id:
+                headers["gwclientid"] = credentials.client_id
+            return requests.request(
+                method, url, headers=headers, timeout=30, **kwargs)
+
+        return hand_detail(hand_id, request_fn=request)
+    return load
+
+
+def queue_drill_url_for_decisions(
+    decisions: list[dict],
+    depths: list[int] | None = None,
+    *,
+    hand_loader=None,
+    resolver=None,
+    solution_loader=None,
+    solver_user_id: int | None = None,
+    solver_refresh_token: str | None = None,
+) -> str | None:
+    """Build one source-faithful URL and narrow preflop hands dynamically."""
+    if not decisions:
+        return None
+    hand_loader = hand_loader or _load_source_hand
+    if resolver is None:
+        from gtow_action_resolver import resolve_actions_for_deviation
+        resolver = resolve_actions_for_deviation
+    if solution_loader is None:
+        from gto_api import get_spot_solution
+        solution_loader = get_spot_solution
+
+    token_bound = False
+    detail_loader = None
+    if solver_user_id is not None:
+        try:
+            from gto_api import set_user_token
+            from gto_credentials import get_user_credentials
+            credentials = get_user_credentials(
+                solver_user_id, fallback_refresh=solver_refresh_token)
+            set_user_token(
+                credentials.access_token, credentials.client_id, solver_user_id)
+            token_bound = True
+            detail_loader = _user_detail_loader(
+                solver_user_id, solver_refresh_token)
+        except Exception as exc:
+            log.warning("queue solver credentials unavailable: %s", exc)
+            return None
+
+    hands: dict[tuple[str, str, int], dict] = {}
+
+    def load_hand(dec: dict) -> dict:
+        key = (str(dec.get("gtow_hand_id")), str(dec.get("street")),
+               int(dec.get("decision_idx") or 0))
+        if key not in hands:
+            hands[key] = hand_loader(dec, detail_loader=detail_loader)
+        return hands[key]
+
+    try:
+        base_url = None
+        base_decision = None
+        for dec in reversed(decisions):
+            base_url = None
+            if decision_requires_exact_scope(dec):
+                try:
+                    from gtow_custom_url import build_custom_spot_url
+                    base_url = build_custom_spot_url(
+                        load_hand(dec), dec.get("street") or "preflop",
+                        int(dec.get("decision_idx") or 0), _exact_pot_type(dec),
+                        **({"opponent_role": "opener"}
+                           if dec.get("spot_category") == "vsRaiseCall" else {}))
+                except Exception as exc:
+                    log.warning(
+                        "queue Trainer exact URL failed (%s %s[%s]): %s",
+                        dec.get("gtow_hand_id"), dec.get("street"),
+                        dec.get("decision_idx"), exc)
+                    continue
+            else:
+                base_url = queue_drill_url_for_decision(dec, depths)
+            if base_url:
+                base_decision = dec
+                break
+        if not base_url:
+            return None
+
+        # Exact/custom drills deal one concrete source node, so their hand
+        # filter must describe that same node rather than the whole queue
+        # family's union. Shortcut drills can still aggregate source nodes.
+        preflop = (
+            [base_decision]
+            if (base_decision and base_decision.get("street") == "preflop"
+                and decision_requires_exact_scope(base_decision))
+            else [dec for dec in decisions if dec.get("street") == "preflop"]
+        )
+        if not preflop:
+            return base_url
+
+        nodes = []
+        required_hands = []
+        seen_params = set()
+        for dec in preflop:
+            hand = load_hand(dec)
+            resolved = resolver(
+                hand, "preflop", int(dec.get("decision_idx") or 0))
+            params = {
+                "gametype": resolved.get("gametype") or "MTTGeneral",
+                "depth": resolved["depth"],
+                "stacks": resolved.get("stacks") or "",
+                "preflop_actions": resolved.get("preflop_actions") or "",
+            }
+            key = json.dumps(params, sort_keys=True, default=str)
+            if key not in seen_params:
+                solution = solution_loader(**params)
+                if not solution:
+                    return base_url
+                nodes.append((solution, resolved["hero_pos"]))
+                seen_params.add(key)
+            required_hands.append(dec.get("hero_hand") or hand.get("hero_hand") or "")
+
+        from drill_hand_selector import select_preflop_hand_groups
+        from gtow_trainer_url import with_trainer_hand_groups
+        groups = select_preflop_hand_groups(nodes, required_hands=required_hands)
+        return with_trainer_hand_groups(base_url, groups)
+    except Exception as exc:
+        log.warning("queue dynamic hand range unavailable: %s", exc)
+        return None
+    finally:
+        if token_bound:
+            from gto_api import clear_user_token
+            clear_user_token()
 
 
 async def _source_decisions(conn, entries: list[dict]) -> list[dict]:
@@ -682,7 +845,9 @@ async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
 
 
 async def queue_drill_url_from_sources(conn, entries: list[dict],
-                                       depths: list[int] | None = None) -> str | None:
+                                       depths: list[int] | None = None,
+                                       *, solver_user_id: int | None = None,
+                                       solver_refresh_token: str | None = None) -> str | None:
     """Use the newest source decision that can produce a faithful URL.
 
     ``source_hands`` is persisted chronologically.  New evidence should own
@@ -705,17 +870,12 @@ async def queue_drill_url_from_sources(conn, entries: list[dict],
         if depths is None and len({decision.get("eff_stack") for decision in decisions}) > 1:
             raise QueueGranularityError(
                 "multi-source drill must declare an explicit all-depth or stack-band scope")
-    for dec in reversed(decisions):
-        if decision_requires_exact_scope(dec):
-            # Exact resolution may query GTOW while snapping real bet sizes;
-            # keep Telegram callbacks and weekly jobs off the event loop.
-            url = await asyncio.to_thread(
-                queue_drill_url_for_decision, dec, depths)
-        else:
-            url = queue_drill_url_for_decision(dec, depths=depths)
-        if url:
-            return url
-    return None
+    # Source loading plus solver queries are blocking.  One worker call also
+    # lets Telegram bind its per-user credentials inside the same thread.
+    return await asyncio.to_thread(
+        queue_drill_url_for_decisions, decisions, depths,
+        solver_user_id=solver_user_id,
+        solver_refresh_token=solver_refresh_token)
 
 
 # ── shared upsert policy (the ONE enqueue; live_flow imports this) ────────────
@@ -738,6 +898,12 @@ UPDATE drill_queue SET
   gtow_drill_synced_at = CASE
     WHEN $5::text IS NOT NULL AND drill_url IS DISTINCT FROM $5::text
       THEN NULL ELSE gtow_drill_synced_at END,
+  gtow_training_started_at = CASE
+    WHEN $5::text IS NOT NULL AND drill_url IS DISTINCT FROM $5::text
+      THEN NULL ELSE gtow_training_started_at END,
+  gtow_baseline_totals = CASE
+    WHEN $5::text IS NOT NULL AND drill_url IS DISTINCT FROM $5::text
+      THEN NULL ELSE gtow_baseline_totals END,
   drill_url = COALESCE($5::text, drill_url),
   label = COALESCE($6, label),
   bias_key = CASE WHEN $7 THEN $8 ELSE bias_key END,
@@ -799,6 +965,10 @@ async def enqueue_one(conn, it: dict) -> str:
                         bias.get("ev_loss_bb"), bias.get("share"))
                 return "noop"
             merged = existing + fresh
+            rebuilt_url = await queue_drill_url_from_sources(
+                conn, merged, depths=depths_for_scope(it["depth_scope"]))
+            if rebuilt_url:
+                it["drill_url"] = rebuilt_url
             await conn.execute(
                 _MERGE_SQL, open_row["id"], json.dumps(merged),
                 (open_row["n_sources"] or 0) + len(fresh), add_ev,
@@ -806,6 +976,10 @@ async def enqueue_one(conn, it: dict) -> str:
                 it.get("bias_key"), bias.get("direction"), bias.get("n"),
                 bias.get("ev_loss_bb"), bias.get("share"))
             return "merged"
+        rebuilt_url = await queue_drill_url_from_sources(
+            conn, incoming, depths=depths_for_scope(it["depth_scope"]))
+        if rebuilt_url:
+            it["drill_url"] = rebuilt_url
     await conn.execute(
         _INSERT_SQL, it.get("spot_leaf"), it.get("spot_category"), it.get("label"),
         it.get("drill_url"), it.get("review_anchor_url"),
@@ -955,7 +1129,6 @@ async def remove_source_hand(conn, hand_id: str) -> None:
                 "UPDATE drill_queue SET source_hands=$2::jsonb, "
                 "total_ev_loss_bb=$3, n_sources=$4, drill_url=$5, "
                 "depth_scope=$6, "
-                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
                 "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
                 "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
                 "WHERE id=$1",
@@ -1245,10 +1418,17 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
         normalized = await normalize_source_entries(conn, entries)
         rebuilt = await queue_drill_url_from_sources(
             conn, normalized, depths=depths_for_scope(row["depth_scope"]))
-        from spot_naming import drill_depth_scope
-        rebuilt_scope = drill_depth_scope({"drill_url": rebuilt})
         if not rebuilt:
             tally["unresolved"] += 1
+            if normalized != entries:
+                await conn.execute(
+                    "UPDATE drill_queue SET source_hands=$2::jsonb, "
+                    "n_sources=$3 WHERE id=$1",
+                    row["id"], json.dumps(normalized), len(normalized))
+                tally["updated"] += 1
+            continue
+        from spot_naming import drill_depth_scope
+        rebuilt_scope = drill_depth_scope({"drill_url": rebuilt})
         if (rebuilt != row["drill_url"] or normalized != entries
                 or rebuilt_scope != row["depth_scope"]):
             collision = None
@@ -1277,16 +1457,24 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
                     await conn.execute(
                         "UPDATE drill_queue SET source_hands=$2::jsonb, "
                         "n_sources=$3, total_ev_loss_bb=$4, drill_url=$5, "
-                        "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL "
+                        "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+                        "gtow_training_started_at=NULL, gtow_baseline_totals=NULL "
                         "WHERE id=$1",
                         collision["id"], json.dumps(merged), len(merged),
                         total, rebuilt)
                 tally["updated"] += 1
                 continue
             await conn.execute(
-                "UPDATE drill_queue SET drill_url=$2, source_hands=$3::jsonb, "
-                "depth_scope=$4, gtow_settings_hash=NULL, "
-                "gtow_drill_synced_at=NULL WHERE id=$1",
+                "UPDATE drill_queue SET "
+                "gtow_settings_hash=CASE WHEN drill_url IS DISTINCT FROM $2 THEN NULL "
+                "ELSE gtow_settings_hash END, "
+                "gtow_drill_synced_at=CASE WHEN drill_url IS DISTINCT FROM $2 THEN NULL "
+                "ELSE gtow_drill_synced_at END, "
+                "gtow_training_started_at=CASE WHEN drill_url IS DISTINCT FROM $2 "
+                "THEN NULL ELSE gtow_training_started_at END, "
+                "gtow_baseline_totals=CASE WHEN drill_url IS DISTINCT FROM $2 THEN NULL "
+                "ELSE gtow_baseline_totals END, "
+                "drill_url=$2, source_hands=$3::jsonb, depth_scope=$4 WHERE id=$1",
                 row["id"], rebuilt, json.dumps(normalized), rebuilt_scope)
             tally["updated"] += 1
     return tally

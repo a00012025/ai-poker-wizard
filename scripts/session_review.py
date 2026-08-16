@@ -184,7 +184,8 @@ async def resolve_session_key(conn, key: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def _spot_items(conn, session_id: int) -> list[dict]:
+async def _spot_items(conn, session_id: int,
+                      user_id: int | None = None) -> list[dict]:
     rows = await conn.fetch(_TOP_SPOTS_SQL, session_id)
     out = []
     for r in rows:
@@ -195,7 +196,8 @@ async def _spot_items(conn, session_id: int) -> list[dict]:
         # spots are grouped by stack band in SQL so their evidence matches the
         # representative source URL.
         url = await qf.queue_drill_url_from_sources(
-            conn, entries, depths=qf.depths_for_scope(row["prescription_scope"]))
+            conn, entries, depths=qf.depths_for_scope(row["prescription_scope"]),
+            solver_user_id=user_id)
         desc = drill_desc(row, bias)
         if await _entries_are_all_real_hu(conn, entries):
             desc = _mark_hu_pot(desc)
@@ -604,13 +606,13 @@ async def compute(conn, session: dict, user_id: int | None = None) -> dict:
         ov, hon, spots, decisions = await asyncio.gather(
             conn.fetchrow(_OVERVIEW_SQL, sid),
             conn.fetchrow(_HONESTY_SQL, sid),
-            _spot_items(conn, sid),
+            _spot_items(conn, sid, user_id=user_id),
             _decision_items(conn, sid, user_id=user_id),
         )
     else:
         ov = await conn.fetchrow(_OVERVIEW_SQL, sid)
         hon = await conn.fetchrow(_HONESTY_SQL, sid)
-        spots = await _spot_items(conn, sid)
+        spots = await _spot_items(conn, sid, user_id=user_id)
         decisions = await _decision_items(conn, sid, user_id=user_id)
     return {
         "session_id": sid,

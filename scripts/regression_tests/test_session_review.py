@@ -705,7 +705,8 @@ def test_session_review_parallelizes_independent_reads_for_runtime_pool():
             return await rendezvous({"n": 1, "per100": 0.0, "total_bb": 0.0,
                                      "n_lossy": 0})
 
-    async def spots(_conn, _sid):
+    async def spots(_conn, _sid, user_id=None):
+        assert_eq(user_id, 7)
         return await rendezvous([])
 
     async def decisions(_conn, _sid, user_id=None):

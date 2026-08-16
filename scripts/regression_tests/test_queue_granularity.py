@@ -120,8 +120,9 @@ def test_session_review_grouped_drill_explicitly_uses_all_depths():
                 }],
             }]
 
-    async def fake_url(_conn, _entries, depths=None):
+    async def fake_url(_conn, _entries, depths=None, solver_user_id=None):
         captured.append(depths)
+        assert solver_user_id == 7
         return "https://app.gtowizard.com/practice/trainer?depth_list=10.125"
 
     old_url = qf.queue_drill_url_from_sources
@@ -133,7 +134,7 @@ def test_session_review_grouped_drill_explicitly_uses_all_depths():
 
     sr._entries_are_all_real_hu = not_hu
     try:
-        asyncio.run(sr._spot_items(FakeConn(), 7))
+        asyncio.run(sr._spot_items(FakeConn(), 7, user_id=7))
     finally:
         qf.queue_drill_url_from_sources = old_url
         sr._entries_are_all_real_hu = old_hu
@@ -306,6 +307,15 @@ def test_queue_granularity_migration_and_deploy_audit_contract():
     audit = deploy.index("python scripts/audit_queue_granularity.py --fix")
     build = deploy.index("docker compose build")
     assert push < audit < build
+
+
+def test_queue_audit_url_repair_keeps_binding_for_remote_patch():
+    import audit_queue_granularity as audit
+
+    assert "gtow_settings_hash=CASE WHEN $19 THEN NULL" in audit._UPDATE_SQL
+    assert "gtow_training_started_at=CASE WHEN $19 THEN NULL" in audit._UPDATE_SQL
+    assert "gtow_drill_id=CASE" not in audit._UPDATE_SQL
+    assert "gtow_drill_name=CASE" not in audit._UPDATE_SQL
 
 
 def test_queue_scan_sources_carry_depth_for_scope_filtering():

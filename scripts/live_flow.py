@@ -2433,23 +2433,20 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
 # ── drill queue ──────────────────────────────────────────────────────────────
 def drill_url_for(dec: dict) -> str | None:
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
+    from queue_feed import _exact_pot_type, decision_requires_exact_scope
 
     hand = dec.get("_hand")
     category = dec.get("spot_category")
     is_icm = bool(hand and hand.get("tournament_type") == "icm")
-    is_flat_vs_squeeze = "flat_vsSqueeze" in str(dec.get("spot_leaf") or "")
-    needs_exact = (dec.get("street") in {"flop", "turn", "river"}
-                   or category in {"vsCold3bet", "vsCold4bet"}
-                   or is_flat_vs_squeeze or is_icm)
+    needs_exact = decision_requires_exact_scope(dec) or is_icm
     if hand and needs_exact:
         try:
             from gtow_custom_url import build_custom_spot_url
-            pot_type = ("squeezed" if is_flat_vs_squeeze else
-                        ({"vsCold3bet": "3bet", "vsCold4bet": "4bet"}.get(category)
-                         or dec.get("pot_type") or ""))
             return build_custom_spot_url(
                 hand, dec["street"], int(dec.get("decision_idx") or 0),
-                pot_type,
+                _exact_pot_type(dec),
+                **({"opponent_role": "opener"}
+                   if category == "vsRaiseCall" else {}),
             )
         except Exception:
             # A broad pot-family link is not this action line.  Omit the button

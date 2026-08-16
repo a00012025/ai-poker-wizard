@@ -226,6 +226,7 @@ def test_resolve_h2665_turn_decision():
     assert_eq(result["river_actions"], "")
     assert_eq(result["hero_pos"], "BTN")
     assert_eq(result["villain_pos"], "BB")
+    assert_eq(result["opener_pos"], "BTN")
     assert_eq(result["history_spot"], 11)
     assert_eq(result["depth"], 30.125)
     assert_eq(result["gametype"], "MTTGeneral")
@@ -268,6 +269,7 @@ def test_resolve_3bet_pot_preflop():
     assert_eq(pf[6:9], ["F", "F", "C"])
     assert_eq(result["hero_pos"], "CO")
     assert_eq(result["villain_pos"], "BTN")  # last non-hero aggressor
+    assert_eq(result["opener_pos"], "CO")
 
 
 def test_resolve_second_preflop_decision_stops_after_threebet():
