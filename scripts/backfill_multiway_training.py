@@ -226,7 +226,8 @@ async def backfill(conn, *, dry_run: bool = True) -> dict:
                     "UPDATE drill_queue SET spot_leaf=$2, spot_category=$3, "
                     "label=$4, drill_url=$5, depth_scope=$6, "
                     "source_hands=$7::jsonb, gtow_settings_hash=NULL, "
-                    "gtow_drill_synced_at=NULL WHERE id=$1",
+                    "gtow_drill_synced_at=NULL, gtow_training_started_at=NULL, "
+                    "gtow_baseline_totals=NULL WHERE id=$1",
                     queue["id"],
                     leaf,
                     category,

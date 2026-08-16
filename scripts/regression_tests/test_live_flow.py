@@ -2392,12 +2392,21 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
             "villain_cat": "SB", "pot_type": "Preflop",
             "eff_stack": "short", "_hand": {"hero_position": "BB"},
         })
+        open_url = drill_url_for({
+            "gtow_hand_id": "live:z", "street": "preflop", "decision_idx": 0,
+            "spot_category": "vsOpen", "spot_leaf": "BB_vsOpen_EP",
+            "position": "BB", "hero_cat": "BB",
+            "villain_cat": "EP", "pot_type": "SRP",
+            "eff_stack": "short", "_hand": {"hero_position": "BB"},
+        })
     finally:
         gtow_custom_url.build_custom_spot_url = old
     assert_in("fh_start_spot=custom_spot", url)
     assert_in("fh_start_spot=custom_spot", cold_url)
+    assert_in("fh_start_spot=custom_spot", open_url)
     assert_eq(calls[0][1:], ("turn", 0, "squeezed"))
     assert_eq(calls[1][1:], ("preflop", 0, "squeezed"))
+    assert_eq(calls[2][1:], ("preflop", 0, "SRP"))
 
 
 def test_live_drill_url_omits_failed_exact_postflop_link():
@@ -2481,8 +2490,8 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
     old_load = qf._load_source_hand
     old_build = gtow_custom_url.build_custom_spot_url
     qf._load_source_hand = lambda dec: {"hero_position": dec["position"]}
-    gtow_custom_url.build_custom_spot_url = lambda hand, street, idx, pot: (
-        seen.append((street, idx, pot)) or
+    gtow_custom_url.build_custom_spot_url = lambda hand, street, idx, pot, **kw: (
+        seen.append((street, idx, pot, kw)) or
         "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot")
     try:
         post = qf.queue_drill_url_for_decision({
@@ -2494,12 +2503,29 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
             "street": "preflop", "decision_idx": 0, "position": "BB",
             "pot_type": "Preflop",
         })
+        raise_call = qf.queue_drill_url_for_decision({
+            "spot_category": "vsRaiseCall", "spot_leaf": "BB_vsRaiseCall_vEP_OOP",
+            "street": "preflop", "decision_idx": 0, "position": "BB",
+            "pot_type": "SRP",
+        })
+        versus_open = qf.queue_drill_url_for_decision({
+            "spot_category": "vsOpen", "spot_leaf": "BB_vsOpen_EP",
+            "street": "preflop", "decision_idx": 0, "position": "BB",
+            "pot_type": "SRP",
+        })
     finally:
         qf._load_source_hand = old_load
         gtow_custom_url.build_custom_spot_url = old_build
     assert_in("fh_start_spot=custom_spot", post)
     assert_in("fh_start_spot=custom_spot", cold)
-    assert_eq(seen, [("turn", 1, "3bet"), ("preflop", 0, "squeezed")])
+    assert_in("fh_start_spot=custom_spot", raise_call)
+    assert_in("fh_start_spot=custom_spot", versus_open)
+    assert_eq(seen, [
+        ("turn", 1, "3bet", {}),
+        ("preflop", 0, "squeezed", {}),
+        ("preflop", 0, "SRP", {"opponent_role": "opener"}),
+        ("preflop", 0, "SRP", {}),
+    ])
 
 
 def test_queue_decision_url_requires_exact_source_for_icm():
@@ -2675,10 +2701,12 @@ def test_shared_queue_drill_prefers_newest_valid_source_sizing():
     30bb source's unrelated bet sizes; persisted sources are chronological.
     """
     import asyncio
+    import gtow_custom_url
     import queue_feed as qf
 
     old_source = qf._source_decisions
-    old_builder = qf.queue_drill_url_for_decision
+    old_load = qf._load_source_hand
+    old_builder = gtow_custom_url.build_custom_spot_url
 
     async def fake_source(_conn, _entries):
         return [
@@ -2686,16 +2714,16 @@ def test_shared_queue_drill_prefers_newest_valid_source_sizing():
             {"gtow_hand_id": "new-17bb", "spot_category": "turn"},
         ]
 
-    def fake_builder(dec, _depths=None):
-        return f"https://trainer/{dec['gtow_hand_id']}"
-
     qf._source_decisions = fake_source
-    qf.queue_drill_url_for_decision = fake_builder
+    qf._load_source_hand = lambda dec, **_kwargs: {"id": dec["gtow_hand_id"]}
+    gtow_custom_url.build_custom_spot_url = (
+        lambda hand, *_args, **_kwargs: f"https://trainer/{hand['id']}")
     try:
         url = asyncio.run(qf.queue_drill_url_from_sources(None, []))
     finally:
         qf._source_decisions = old_source
-        qf.queue_drill_url_for_decision = old_builder
+        qf._load_source_hand = old_load
+        gtow_custom_url.build_custom_spot_url = old_builder
 
     assert_eq(url, "https://trainer/new-17bb")
 
@@ -2779,6 +2807,53 @@ def test_trainer_refresh_merges_pending_scope_collision():
     assert_eq(conn.execs[1][1][0], 137)
     assert_eq(conn.execs[1][1][2], 2)
     assert_eq(conn.execs[1][1][3], 3.0)
+    assert_not_in("gtow_drill_id=NULL", conn.execs[1][0])
+    assert_in("gtow_training_started_at=NULL", conn.execs[1][0])
+    assert_in("gtow_baseline_totals=NULL", conn.execs[1][0])
+
+
+def test_trainer_refresh_preserves_working_url_when_rebuild_is_unavailable():
+    import asyncio
+    import queue_feed as qf
+
+    class FakeConn:
+        def __init__(self):
+            self.execs = []
+
+        async def fetch(self, _sql, *_args):
+            return [{
+                "id": 7, "spot_leaf": "BB_vs3bet_vEP_OOP",
+                "status": "pending", "drill_url": "https://working",
+                "depth_scope": "short", "source_hands": [{"hand_id": "h1"}],
+            }]
+
+        async def execute(self, sql, *args):
+            self.execs.append((sql, args))
+
+    async def normalize(_conn, entries):
+        return [{**entries[0], "decision_idx": 0}]
+
+    async def unavailable(*_args, **_kwargs):
+        return None
+
+    old_normalize = qf.normalize_source_entries
+    old_rebuild = qf.queue_drill_url_from_sources
+    qf.normalize_source_entries = normalize
+    qf.queue_drill_url_from_sources = unavailable
+    try:
+        conn = FakeConn()
+        tally = asyncio.run(qf.refresh_trainer_links(conn))
+    finally:
+        qf.normalize_source_entries = old_normalize
+        qf.queue_drill_url_from_sources = old_rebuild
+
+    assert_eq(tally, {"checked": 1, "updated": 1, "unresolved": 1})
+    assert_eq(len(conn.execs), 1)
+    sql, args = conn.execs[0]
+    assert_in("source_hands=$2::jsonb", sql)
+    assert_not_in("drill_url", sql)
+    assert_not_in("gtow_training_started_at", sql)
+    assert_eq(args[0], 7)
 
 
 def test_live_detail_uses_persisted_parsed_json_not_raw_reparse():
@@ -2969,21 +3044,21 @@ def test_missing_token_size_excludes_live_decisions_from_stats():
 
 
 def test_shared_drill_url_policy():
-    """drill_url_for_spot is the ONE spot→Trainer-link policy (leaderboard
-    rows + live queue items both route through it with identical results)."""
+    """RFI is the shared shortcut; response drills require source history."""
     from gtow_trainer_url import drill_url_for_spot
     from spot_leaderboard import _drill_url
     from live_flow import drill_url_for
     # a leaderboard row and a live decision describing the SAME spot
-    row = {"spot_category": "vsOpen", "spot_leaf": "BTN_vsOpen_EP", "hero_pos": "BTN",
-           "hero_cat": "LP", "villain_cat": "EP", "ip_oop": None}
-    dec = {"spot_category": "vsOpen", "position": "BTN", "hero_cat": "LP",
-           "villain_cat": "EP", "ip_oop": None, "pot_type": None, "eff_stack": None}
+    row = {"spot_category": "RFI", "spot_leaf": "BTN_RFI", "hero_pos": "BTN",
+           "hero_cat": "LP", "villain_cat": None, "ip_oop": None}
+    dec = {"spot_category": "RFI", "position": "BTN", "hero_cat": "LP",
+           "villain_cat": None, "ip_oop": None, "pot_type": None, "eff_stack": None}
     u_row = _drill_url(row, None)
     u_dec = drill_url_for(dec)
     assert_true(u_row and u_dec)
     assert_eq(u_row, u_dec)
-    assert_in("fh_hero=BTN", u_row)          # RFI/vsOpen pin the exact seat
+    assert_in("fh_hero=BTN", u_row)
+    assert_eq(drill_url_for({**dec, "spot_category": "vsOpen"}), None)
     # postflop/cold spots require a source hand; unsupported category -> None
     u_pf = drill_url_for_spot("flop", hero_cat="BB", villain_cat="LP",
                               ip_oop="OOP", pot_type="SRP")
@@ -5062,7 +5137,7 @@ def test_remove_source_hand_recomputes_or_clears_open_rows():
               (0.35, 1, "https://rebuilt.example/drill", "all"))
     assert_in("drill_url=$5", conn.execs[0][0])
     assert_in("depth_scope=$6", conn.execs[0][0])
-    assert_in("gtow_drill_id=NULL", conn.execs[0][0])
+    assert_not_in("gtow_drill_id=NULL", conn.execs[0][0])
     assert_in("gtow_training_started_at=NULL", conn.execs[0][0])
     assert_in("gtow_baseline_totals=NULL", conn.execs[0][0])
     assert_in("clear_reason='resend'", conn.execs[1][0])
@@ -5121,6 +5196,56 @@ def test_remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
     assert_not_in("gtow_drill_id=NULL", sql)
     assert_eq(json.loads(args[1]), [{"hand_id": "keep-hand", "ev_loss_bb": 0.5}])
     assert_eq(args[2:], (0.5, 1))
+
+
+def test_open_queue_drill_rebuilds_old_range_and_patches_existing_binding():
+    import asyncio
+    import queue_feed as qf
+    from telegram_bot.bot import _refresh_open_queue_drill_url
+
+    calls = []
+
+    async def rebuild(_conn, sources, depths=None, **credentials):
+        calls.append((sources, depths, credentials))
+        return "https://gtowizard.com/drills?fh_groups=AA%2CKK"
+
+    class Conn:
+        async def fetchrow(self, sql, *args):
+            calls.append((sql, args))
+            return {**item, "drill_url": args[1]}
+
+    item = {
+        "id": 7,
+        "source_hands": [{"hand_id": "h1", "street": "preflop",
+                          "decision_idx": 0}],
+        "depth_scope": "short",
+        "drill_url": "https://gtowizard.com/drills?fh_groups=all",
+        "gtow_drill_id": "stale",
+    }
+    old_rebuild = qf.queue_drill_url_from_sources
+    qf.queue_drill_url_from_sources = rebuild
+    try:
+        refreshed = asyncio.run(_refresh_open_queue_drill_url(
+            Conn(), item, user_id=99, refresh_token="refresh"))
+    finally:
+        qf.queue_drill_url_from_sources = old_rebuild
+
+    assert_eq(refreshed["drill_url"],
+              "https://gtowizard.com/drills?fh_groups=AA%2CKK")
+    assert_eq(refreshed["gtow_drill_id"], "stale")
+    assert_eq(calls[0], (
+        item["source_hands"], list(qf.depths_for_scope("short")),
+        {"solver_user_id": 99, "solver_refresh_token": "refresh"},
+    ))
+    sql, args = calls[1]
+    assert_eq(args, (7, refreshed["drill_url"]))
+    assert_not_in("gtow_drill_id=NULL", sql)
+    assert_not_in("gtow_drill_name=NULL", sql)
+    for field in (
+        "gtow_settings_hash=NULL", "gtow_drill_synced_at=NULL",
+        "gtow_training_started_at=NULL", "gtow_baseline_totals=NULL",
+    ):
+        assert_in(field, sql)
 
 
 def test_depth_escalation_failure_is_honest_in_state_and_rendering():

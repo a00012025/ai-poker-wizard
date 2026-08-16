@@ -415,6 +415,32 @@ async def _present_queue_detail(
                 raise
 
 
+async def _refresh_open_queue_drill_url(
+    conn, item, *, user_id: int, refresh_token: str
+):
+    """Replace a stale persisted drill URL before opening it."""
+    from queue_feed import (_as_list, depths_for_scope,
+                            queue_drill_url_from_sources)
+
+    rebuilt_url = await queue_drill_url_from_sources(
+        conn,
+        _as_list(item["source_hands"]),
+        depths=depths_for_scope(item["depth_scope"]),
+        solver_user_id=user_id,
+        solver_refresh_token=refresh_token,
+    )
+    if not rebuilt_url or rebuilt_url == item["drill_url"]:
+        return item
+    return await conn.fetchrow(
+        "UPDATE drill_queue SET drill_url=$2, "
+        "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+        "gtow_training_started_at=NULL, gtow_baseline_totals=NULL, "
+        "last_added=NOW() WHERE id=$1 RETURNING *",
+        item["id"],
+        rebuilt_url,
+    )
+
+
 def _setup_logger() -> logging.Logger:
     _LOG_DIR.mkdir(exist_ok=True)
     logger = logging.getLogger("poker_bot")
@@ -2464,28 +2490,14 @@ class PokerWizardBot:
                             new_message=new_message,
                         )
                         return
-                    if not item["drill_url"]:
-                        from queue_feed import (
-                            _as_list,
-                            depths_for_scope,
-                            queue_drill_url_from_sources,
-                        )
-
-                        rebuilt_url = await queue_drill_url_from_sources(
-                            conn,
-                            _as_list(item["source_hands"]),
-                            depths=depths_for_scope(item["depth_scope"]),
-                        )
-                        if rebuilt_url:
-                            item = await conn.fetchrow(
-                                "UPDATE drill_queue SET drill_url=$2, "
-                                "gtow_drill_id=NULL, gtow_drill_name=NULL, "
-                                "gtow_settings_hash=NULL, "
-                                "gtow_drill_synced_at=NULL, last_added=NOW() "
-                                "WHERE id=$1 RETURNING *",
-                                queue_id,
-                                rebuilt_url,
-                            )
+                    # Rebuild on every open so old persisted links inherit the
+                    # latest exact source node and hand-range curriculum.
+                    item = await _refresh_open_queue_drill_url(
+                        conn,
+                        item,
+                        user_id=update.effective_user.id,
+                        refresh_token=refresh_token,
+                    )
                     if not item["drill_url"]:
                         await _present_queue_detail(
                             query,
@@ -2507,7 +2519,6 @@ class PokerWizardBot:
                     if upgraded_url != item["drill_url"]:
                         item = await conn.fetchrow(
                             "UPDATE drill_queue SET drill_url=$2, "
-                            "gtow_drill_id=NULL, gtow_drill_name=NULL, "
                             "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
                             "gtow_training_started_at=NULL, "
                             "gtow_baseline_totals=NULL, last_added=NOW() "
@@ -3026,6 +3037,7 @@ class PokerWizardBot:
                     }
                 ],
                 depths=depths_for_scope(dec["eff_stack"] or "all"),
+                solver_user_id=update.effective_user.id,
             )
             item = manual_drill_item(dict(dec), drill_url=url)
             await enqueue(conn, [item])

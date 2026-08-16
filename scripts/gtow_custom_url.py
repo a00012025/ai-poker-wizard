@@ -186,6 +186,7 @@ def build_custom_spot_url(
     action_index: int,
     pot_type: str,
     include_board_texture: bool = False,
+    opponent_role: Literal["villain", "opener"] = "villain",
 ) -> str:
     """Build a GTOW custom-spot practice URL for a specific hand decision.
 
@@ -214,7 +215,9 @@ def build_custom_spot_url(
     except Exception as e:
         raise CustomSpotBuildError(f"resolver failed: {e}") from e
 
-    if not resolved.get("villain_pos"):
+    opponent_pos = (resolved.get("opener_pos") if opponent_role == "opener"
+                    else resolved.get("villain_pos"))
+    if not opponent_pos:
         raise CustomSpotBuildError("could not identify HU villain (multiway or RFI)")
 
     for key in ("preflop_actions", "flop_actions", "turn_actions", "river_actions"):
@@ -272,7 +275,7 @@ def build_custom_spot_url(
             if k in texture and texture[k]:
                 params.append((k, texture[k]))
     params.append(("fh_hero", resolved["hero_pos"]))
-    params.append(("fh_opponent", resolved["villain_pos"]))
+    params.append(("fh_opponent", opponent_pos))
     if resolved["flop_actions"]:
         params.append(("flop_actions", resolved["flop_actions"]))
     if resolved["turn_actions"]:

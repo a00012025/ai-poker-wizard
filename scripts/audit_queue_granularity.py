@@ -168,8 +168,6 @@ UPDATE drill_queue SET
   status=$9, prescribed_week=$10, cleared_at=$11, clear_reason=$12,
   bias_key=$13, bias_direction=$14, bias_n=$15,
   bias_ev_loss_bb=$16, bias_share=$17, depth_scope=$18,
-  gtow_drill_id=CASE WHEN $19 THEN NULL ELSE gtow_drill_id END,
-  gtow_drill_name=CASE WHEN $19 THEN NULL ELSE gtow_drill_name END,
   gtow_settings_hash=CASE WHEN $19 THEN NULL ELSE gtow_settings_hash END,
   gtow_drill_synced_at=CASE WHEN $19 THEN NULL ELSE gtow_drill_synced_at END,
   gtow_training_started_at=CASE WHEN $19 THEN NULL ELSE gtow_training_started_at END,

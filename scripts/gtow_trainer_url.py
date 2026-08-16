@@ -126,8 +126,26 @@ def apply_trainer_defaults(url: str | None) -> str | None:
     if parts.path.rstrip("/") != "/practice/trainer":
         return url
     params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    selected_groups = params.get("fh_groups")
     params.update(_TRAINER_UI_DEFAULTS)
+    if selected_groups:
+        params["fh_groups"] = selected_groups
     params.update(trainer_solution_defaults(params.get("gametype")))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(params), parts.fragment))
+
+
+def with_trainer_hand_groups(url: str | None,
+                             hand_groups: list[str] | None) -> str | None:
+    """Apply a selected 169-class subset without changing spot identity."""
+    if not url or not hand_groups:
+        return url
+    parts = urlsplit(url)
+    if parts.path.rstrip("/") != "/practice/trainer":
+        return url
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params["fh_groups_selection"] = "manual"
+    params["fh_groups"] = ",".join(hand_groups)
     return urlunsplit((parts.scheme, parts.netloc, parts.path,
                        urlencode(params), parts.fragment))
 

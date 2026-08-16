@@ -594,6 +594,12 @@ def resolve_actions_for_deviation(
     history_spot = _count(preflop_codes) + _count(flop_codes) + _count(turn_codes) + _count(river_codes)
 
     villain_pos = _identify_villain(hand_data, hero_pos_8, preflop_codes, street)
+    positions = (POSITION_ORDERS[players] if _is_cash(gametype)
+                 else POSITION_ORDERS[MTT_TREE_SIZE])
+    preflop_tokens = [token for token in preflop_codes.split("-") if token]
+    preflop_actors = _replay_preflop_actors(preflop_tokens, positions)
+    opener_pos = next((pos for pos, code in zip(preflop_actors, preflop_tokens)
+                       if code.startswith("R") or code == "AI"), None)
 
     return {
         "preflop_actions": preflop_codes,
@@ -602,6 +608,7 @@ def resolve_actions_for_deviation(
         "river_actions":   river_codes,
         "hero_pos":        hero_pos_8,
         "villain_pos":     villain_pos,
+        "opener_pos":      opener_pos,
         "history_spot":    history_spot,
         "depth":           depth,
         "gametype":        gametype,
