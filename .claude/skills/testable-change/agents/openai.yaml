@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testable Change"
+  short_description: "Require behavior tests and testable boundaries"
+  default_prompt: "Use $testable-change before changing production behavior."

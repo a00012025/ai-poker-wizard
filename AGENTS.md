@@ -182,6 +182,14 @@ When the user reports a bug with expected values (e.g., "hero hand is Ts9d"), yo
 - **Fix until it matches** — the snapshot test must pass with the EXACT expected values the user provided.
 - **Exhaust all approaches** — if one approach fails, try another. Debug deeper. Add new detection strategies. The fix is not done until OCR output matches expected.
 
+## Testability Contract (MANDATORY)
+
+- Load `$testable-change` for every bug fix, feature, refactor, prompt, hook, skill, or provider integration that changes production behavior.
+- Add a deterministic behavior test that fails before the production edit. Run `python scripts/agent_change_guard.py --base origin/main` before finishing.
+- Keep Telegram, LLM, database, and GTO Wizard calls at adapter boundaries. Core workflow tests must run offline through injected callables or fakes; live-provider tests stay explicitly marked and separate.
+- Reuse an existing boundary before adding an interface. Test observable behavior, not source shape or private implementation details.
+- Chat behavior changes must run `python scripts/run_chat_contracts.py`.
+
 ## Regression Tests (REQUIRED)
 
 When modifying any of these core analysis files, you MUST run the regression test suite before committing:
@@ -211,7 +219,7 @@ All tests must pass. If a test fails, fix the issue before committing.
 
 ### Adding new tests
 
-When adding new features to core analysis logic, add corresponding regression tests to the matching domain module under `scripts/regression_tests/`. Keep `scripts/regression_test.py` as the compatibility entry point only. Use the `@test` decorator and assertion helpers (`assert_eq`, `assert_in`, `assert_true`) from `regression_tests.harness`.
+When adding new features to core analysis logic, add ordinary pytest tests to the matching domain module under `scripts/regression_tests/`. Keep `scripts/regression_test.py` as the compatibility entry point only.
 
 **IMPORTANT: Every bug fix MUST include a regression test.** If it broke once, add a test so it can't break again. This is non-negotiable for all bug reports and fixes.
 

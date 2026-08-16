@@ -126,8 +126,7 @@ class ChatWorkflow:
         )
         response = await result if inspect.isawaitable(result) else result
         answer, followups = self.deps.extract_followups(response)
-        if followups:
-            context["followup_questions"] = followups
+        context["followup_questions"] = followups
         return answer
 
 

@@ -8,6 +8,7 @@ env/
 venv/
 .venv/
 .env
+.coverage
 
 # IDE
 .vscode/
