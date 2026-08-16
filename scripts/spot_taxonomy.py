@@ -10,7 +10,8 @@ Preflop top-level lines (mirror GTOW drill "Preflop action"):
   - vsOpen: L1 = exact hero pos (BTN_vsOpen); L2 = opener position CATEGORY
             (BTN_vsOpen_EP). Opener seat collapses to EP/MP/LP/SB/BB.
   - vs3bet/vs4bet/vsRaiseCall/vsSqueeze: rarer -> L1 = hero pos CATEGORY
-            (EP_vs3bet); L2 = hero IP/OOP vs the villain (EP_vs3bet_IP).
+            (EP_vs3bet); L2 = villain CATEGORY + hero IP/OOP
+            (EP_vs3bet_vBB_OOP).
   - flat_vsSqueeze leaf prefix: hero cold-called an open, then faces a squeeze.
   - vsCold4bet: hero opened (or cold), a 3bet then 4bet, hero faces the 4bet.
 
@@ -174,8 +175,10 @@ def classify_preflop(hero: str, before: list[tuple[str, str]], npl: int) -> dict
             return {"category": "vsOpen", "l1": f"{h}_vsOpen",
                     "l2": f"{h}_vsOpen_{pos_cat(opener)}",
                     "villain": opener, "note": ""}
+        vc = pos_cat(opener)
+        rel = ip_oop(hero, opener, npl)
         return {"category": "vsRaiseCall", "l1": f"{hc}_vsRaiseCall",
-                "l2": f"{hc}_vsRaiseCall_{ip_oop(hero, opener, npl)}",
+                "l2": f"{hc}_vsRaiseCall_v{vc}_{rel}",
                 "villain": opener, "note": ""}
 
     if raise_count == 2:
