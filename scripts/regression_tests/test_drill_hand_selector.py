@@ -1,6 +1,6 @@
 """Dynamic preflop Trainer hand-range regression tests."""
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from regression_tests.harness import assert_eq, assert_true
 
@@ -326,6 +326,124 @@ def test_exact_raise_call_drill_filters_opener_not_the_last_caller():
     params = parse_qs(urlparse(url).query)
     assert_eq(params["fh_opponent"], ["UTG+1"])
     assert_eq(params["preflop_actions"], ["F-R2-F-F-C-F-F"])
+
+
+def test_custom_preflop_url_can_cover_the_full_stack_band():
+    import gtow_action_resolver
+    from gtow_custom_url import build_custom_spot_url
+
+    old = gtow_action_resolver.resolve_actions_for_deviation
+    gtow_action_resolver.resolve_actions_for_deviation = lambda *_args: {
+        "gametype": "MTTGeneral", "depth": 14.125, "stacks": "",
+        "preflop_actions": "F-R2-F-F-C-F-F", "flop_actions": "",
+        "turn_actions": "", "river_actions": "", "history_spot": 7,
+        "hero_pos": "BB", "villain_pos": "CO", "opener_pos": "UTG+1",
+    }
+    try:
+        url = build_custom_spot_url(
+            {}, "preflop", 0, "SRP", opponent_role="opener",
+            depths=[10, 12, 14, 17, 20])
+    finally:
+        gtow_action_resolver.resolve_actions_for_deviation = old
+
+    params = parse_qs(urlparse(url).query)
+    assert_eq(params["depth"], ["14.125"])
+    assert_eq(params["depth_list"], ["10.125,12.125,14.125,17.125,20.125"])
+
+
+def test_exact_preflop_queue_uses_every_valid_depth_in_the_band():
+    import gtow_custom_url
+    from queue_feed import queue_drill_url_for_decisions
+
+    seen_depths = []
+    built_depths = []
+    old_builder = gtow_custom_url.build_custom_spot_url
+
+    def build(_hand, _street, _idx, _pot, *, depths=None, **_kwargs):
+        built_depths.append(depths)
+        return "https://app.gtowizard.com/practice/trainer?" + urlencode({
+            "fh_start_spot": "custom_spot",
+            "depth": "14.125",
+            "depth_list": ",".join(f"{depth}.125" for depth in depths),
+            "fh_groups_selection": "manual",
+            "fh_groups": "all",
+        })
+
+    def solution(**params):
+        seen_depths.append(params["depth"])
+        if params["depth"] == 12.125:  # this exact line is unavailable here
+            return None
+        hands = {
+            10.125: {"AA": 1.0}, 14.125: {"KK": 1.0},
+            17.125: {"QQ": 1.0}, 20.125: {"AKs": 1.0},
+        }
+        return _solution(hands[params["depth"]])
+
+    gtow_custom_url.build_custom_spot_url = build
+    try:
+        url = queue_drill_url_for_decisions(
+            [{
+                "gtow_hand_id": "h1", "street": "preflop", "decision_idx": 0,
+                "spot_category": "vsRaiseCall",
+                "spot_leaf": "BB_vsRaiseCall_vEP_OOP",
+                "position": "BB", "hero_hand": "72o",
+            }],
+            depths=[10, 12, 14, 17, 20],
+            hand_loader=lambda *_args, **_kwargs: {"hero_hand": "72o"},
+            resolver=lambda *_args: {
+                "gametype": "MTTGeneral", "depth": 14.125, "stacks": "",
+                "preflop_actions": "F-R2-F-F-C-F-F", "hero_pos": "BB",
+            },
+            solution_loader=solution,
+        )
+    finally:
+        gtow_custom_url.build_custom_spot_url = old_builder
+
+    params = parse_qs(urlparse(url).query)
+    groups = set(params["fh_groups"][0].split(","))
+    assert_eq(seen_depths, [10.125, 12.125, 14.125, 17.125, 20.125])
+    assert_eq(built_depths, [[10, 14, 17, 20]])
+    assert_eq(params["depth_list"], ["10.125,14.125,17.125,20.125"])
+    assert_true({"AA", "KK", "QQ", "AKs", "72o"}.issubset(groups))
+
+
+def test_icm_exact_preflop_queue_remains_single_depth():
+    import gtow_custom_url
+    from queue_feed import queue_drill_url_for_decisions
+
+    seen_depths = []
+    built_depths = []
+    old_builder = gtow_custom_url.build_custom_spot_url
+
+    def build(*_args, depths=None, **_kwargs):
+        built_depths.append(depths)
+        return ("https://app.gtowizard.com/practice/trainer?"
+                "fh_start_spot=custom_spot&depth=25.125&depth_list=25.125&"
+                "fh_groups_selection=manual&fh_groups=all")
+
+    gtow_custom_url.build_custom_spot_url = build
+    try:
+        queue_drill_url_for_decisions(
+            [{
+                "gtow_hand_id": "icm", "street": "preflop", "decision_idx": 0,
+                "spot_category": "vs3bet", "spot_leaf": "HJ_vs3bet_vLP_OOP",
+                "position": "HJ", "hero_hand": "AA",
+            }],
+            depths=[10, 12, 14, 17, 20],
+            hand_loader=lambda *_args, **_kwargs: {"hero_hand": "AA"},
+            resolver=lambda *_args: {
+                "gametype": "MTTGeneral_ICM8m1000PTPCT25", "depth": "25.125",
+                "stacks": "25.125-30.125", "preflop_actions": "R2-F-R5",
+                "hero_pos": "HJ",
+            },
+            solution_loader=lambda **params: (
+                seen_depths.append(params["depth"]) or _solution({"AA": 1.0})),
+        )
+    finally:
+        gtow_custom_url.build_custom_spot_url = old_builder
+
+    assert_eq(seen_depths, ["25.125"])
+    assert_eq(built_depths, [None])
 
 
 def test_postflop_custom_drill_keeps_full_starting_hand_range():

@@ -140,7 +140,7 @@ def classify_board(board: str) -> dict[str, str]:
 from urllib.parse import quote, urlencode
 
 from gtow_trainer_url import (_TRAINER_UI_DEFAULTS, _BASE_URL,
-                              trainer_solution_defaults)
+                              _format_depth, trainer_solution_defaults)
 
 _CUSTOM_DIALOGS = "trainer-advanced-filter-dialog_namespace-tra/alpha_tmpNamespace-tmp/primary"
 
@@ -187,6 +187,7 @@ def build_custom_spot_url(
     pot_type: str,
     include_board_texture: bool = False,
     opponent_role: Literal["villain", "opener"] = "villain",
+    depths: list[int] | None = None,
 ) -> str:
     """Build a GTOW custom-spot practice URL for a specific hand decision.
 
@@ -197,6 +198,9 @@ def build_custom_spot_url(
     is what "practice this spot" means for a texture-agnostic bucket.  The board
     is still classified below and can be emitted (``include_board_texture=True``)
     for the future per-texture focus-group feature.
+
+    ChipEV preflop callers may pass ``depths`` after verifying that this exact
+    action line exists at each depth. ICM and postflop URLs remain single-node.
 
     Raises CustomSpotBuildError when:
       - pot_type has no fh_actions mapping
@@ -241,12 +245,18 @@ def build_custom_spot_url(
     depth_str = f"{float(resolved['depth']):g}"
     if resolved["gametype"] == "MTTGeneral" and not depth_str.endswith(".125"):
         depth_str = f"{int(resolved['depth'])}.125"
+    depth_list = depth_str
+    if street == "preflop" and resolved["gametype"] == "MTTGeneral" and depths:
+        valid = [_format_depth(depth) for depth in depths]
+        depth_list = ",".join(valid)
+        if depth_str not in valid:
+            depth_str = valid[len(valid) // 2]
 
     params: list[tuple[str, str]] = []
     params.append(("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]))
     params.append(("gametype", resolved["gametype"]))
     params.append(("depth", depth_str))
-    params.append(("depth_list", depth_str))
+    params.append(("depth_list", depth_list))
     if stacks:
         params.append(("stacks", str(stacks)))
     params.extend(trainer_solution_defaults(resolved["gametype"]).items())
