@@ -723,17 +723,48 @@ def queue_drill_url_for_decisions(
             hands[key] = hand_loader(dec, detail_loader=detail_loader)
         return hands[key]
 
+    def exact_preflop_nodes(dec: dict, hand: dict):
+        resolved = resolver(
+            hand, "preflop", int(dec.get("decision_idx") or 0))
+        multi_depth = resolved.get("gametype") == "MTTGeneral" and bool(depths)
+        candidates = list(depths) if multi_depth else [resolved["depth"]]
+        nodes = []
+        valid_depths = []
+        for candidate in candidates:
+            value = float(candidate)
+            solver_depth = value + 0.125 if value.is_integer() else candidate
+            solution = solution_loader(
+                gametype=resolved.get("gametype") or "MTTGeneral",
+                depth=solver_depth,
+                stacks=resolved.get("stacks") or "",
+                preflop_actions=resolved.get("preflop_actions") or "",
+            )
+            if solution:
+                nodes.append((solution, resolved["hero_pos"]))
+                if multi_depth:
+                    valid_depths.append(int(value))
+        return nodes, valid_depths if multi_depth else None
+
     try:
         base_url = None
         base_decision = None
+        base_nodes = None
         for dec in reversed(decisions):
             base_url = None
+            base_nodes = None
             if decision_requires_exact_scope(dec):
                 try:
                     from gtow_custom_url import build_custom_spot_url
+                    hand = load_hand(dec)
+                    valid_depths = None
+                    if dec.get("street") == "preflop":
+                        base_nodes, valid_depths = exact_preflop_nodes(dec, hand)
+                        if not base_nodes:
+                            continue
                     base_url = build_custom_spot_url(
-                        load_hand(dec), dec.get("street") or "preflop",
+                        hand, dec.get("street") or "preflop",
                         int(dec.get("decision_idx") or 0), _exact_pot_type(dec),
+                        depths=valid_depths,
                         **({"opponent_role": "opener"}
                            if dec.get("spot_category") == "vsRaiseCall" else {}))
                 except Exception as exc:
@@ -750,9 +781,9 @@ def queue_drill_url_for_decisions(
         if not base_url:
             return None
 
-        # Exact/custom drills deal one concrete source node, so their hand
-        # filter must describe that same node rather than the whole queue
-        # family's union. Shortcut drills can still aggregate source nodes.
+        # Exact/custom drills keep one source action topology. ChipEV preflop
+        # may span every valid depth in its queue band, but it must not union
+        # unrelated source lines from the broader family.
         preflop = (
             [base_decision]
             if (base_decision and base_decision.get("street") == "preflop"
@@ -762,10 +793,13 @@ def queue_drill_url_for_decisions(
         if not preflop:
             return base_url
 
-        nodes = []
-        required_hands = []
+        nodes = list(base_nodes or [])
+        required_hands = [
+            base_decision.get("hero_hand")
+            or load_hand(base_decision).get("hero_hand") or ""
+        ] if base_nodes else []
         seen_params = set()
-        for dec in preflop:
+        for dec in ([] if base_nodes else preflop):
             hand = load_hand(dec)
             resolved = resolver(
                 hand, "preflop", int(dec.get("decision_idx") or 0))
