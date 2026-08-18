@@ -415,6 +415,15 @@ def test_prescription_attempt_starts_when_prescription_was_surfaced():
     }), surfaced)
 
 
+def test_display_only_trainer_upgrade_does_not_reset_attempt():
+    """GTOW's dialogs state changes on every open but is not drill identity."""
+    from telegram_bot.bot import _trainer_upgrade_resets_attempt
+
+    current = _trainer_url(dialogs="trainer-advanced-filter-dialog_namespace-x")
+    upgraded = _trainer_url(dialogs="")
+    assert_true(not _trainer_upgrade_resets_attempt(current, upgraded))
+
+
 def test_gtow_drill_queue_migration_tracks_binding_attempt_and_clear_reason():
     sql = (REPO_ROOT / "supabase/migrations/20260716190000_gtow_drill_queue_binding.sql"
            ).read_text()
