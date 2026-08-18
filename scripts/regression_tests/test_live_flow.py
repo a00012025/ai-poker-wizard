@@ -5198,7 +5198,8 @@ def test_remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
     assert_eq(args[2:], (0.5, 1))
 
 
-def test_open_queue_drill_rebuilds_old_range_and_patches_existing_binding():
+def test_open_queue_drill_rebuild_does_not_erase_completed_attempt():
+    """A harmless link refresh must not hide the just-finished 100 hands."""
     import asyncio
     import queue_feed as qf
     from telegram_bot.bot import _refresh_open_queue_drill_url
@@ -5243,9 +5244,10 @@ def test_open_queue_drill_rebuilds_old_range_and_patches_existing_binding():
     assert_not_in("gtow_drill_name=NULL", sql)
     for field in (
         "gtow_settings_hash=NULL", "gtow_drill_synced_at=NULL",
-        "gtow_training_started_at=NULL", "gtow_baseline_totals=NULL",
     ):
         assert_in(field, sql)
+    assert_not_in("gtow_training_started_at=NULL", sql)
+    assert_not_in("gtow_baseline_totals=NULL", sql)
 
 
 def test_depth_escalation_failure_is_honest_in_state_and_rendering():
