@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -434,11 +435,16 @@ async def _refresh_open_queue_drill_url(
     return await conn.fetchrow(
         "UPDATE drill_queue SET drill_url=$2, "
         "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
-        "gtow_training_started_at=NULL, gtow_baseline_totals=NULL, "
         "last_added=NOW() WHERE id=$1 RETURNING *",
         item["id"],
         rebuilt_url,
     )
+
+
+def _prescription_attempt_started_at(item: dict, fallback=None):
+    """Use the prescription surface time, never a later detail-menu open."""
+    starts = [item.get("gtow_training_started_at"), item.get("last_surfaced_at")]
+    return min(value for value in starts if value is not None) if any(starts) else fallback
 
 
 def _setup_logger() -> logging.Logger:
@@ -2476,7 +2482,7 @@ class PokerWizardBot:
                         "depth_scope, "
                         "gtow_drill_id, gtow_drill_name, gtow_settings_hash, "
                         "total_ev_loss_bb, gtow_target_hands, gtow_target_score, "
-                        "gtow_training_started_at "
+                        "gtow_training_started_at, last_surfaced_at "
                         "FROM drill_queue WHERE id=$1 FOR UPDATE",
                         queue_id,
                     )
@@ -2515,8 +2521,10 @@ class PokerWizardBot:
                     # the new prescription.
                     from gtow_trainer_url import apply_trainer_defaults
 
+                    attempt_reset = False
                     upgraded_url = apply_trainer_defaults(item["drill_url"])
                     if upgraded_url != item["drill_url"]:
+                        attempt_reset = True
                         item = await conn.fetchrow(
                             "UPDATE drill_queue SET drill_url=$2, "
                             "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
@@ -2556,8 +2564,7 @@ class PokerWizardBot:
                         "gtow_drill_name=$3, gtow_settings_hash=$4, "
                         "label=$6, "
                         "gtow_drill_synced_at=NOW(), "
-                        "gtow_training_started_at="
-                        "COALESCE(gtow_training_started_at, NOW()), "
+                        "gtow_training_started_at=$7, "
                         "gtow_baseline_totals="
                         "COALESCE(gtow_baseline_totals, $5::jsonb) "
                         "WHERE id=$1 RETURNING *",
@@ -2567,6 +2574,9 @@ class PokerWizardBot:
                         binding.settings_hash,
                         json.dumps(stats_json(binding.stats)),
                         drill_name,
+                        (datetime.now(timezone.utc) if attempt_reset else
+                         _prescription_attempt_started_at(
+                             item, datetime.now(timezone.utc))),
                     )
 
             def load_stats():

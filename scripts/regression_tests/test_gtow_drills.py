@@ -403,6 +403,18 @@ def test_gtow_attempt_stats_only_count_bound_drill_after_menu_open():
     assert_true(abs(stats.total_ev_loss_bb - 0.3) < 1e-9)
 
 
+def test_prescription_attempt_starts_when_prescription_was_surfaced():
+    """Opening details after a 100-hand session must not move the baseline."""
+    from telegram_bot.bot import _prescription_attempt_started_at
+
+    surfaced = datetime(2026, 8, 9, 13, 1, tzinfo=timezone.utc)
+    detail_opened = datetime(2026, 8, 18, 12, 40, tzinfo=timezone.utc)
+    assert_eq(_prescription_attempt_started_at({
+        "last_surfaced_at": surfaced,
+        "gtow_training_started_at": detail_opened,
+    }), surfaced)
+
+
 def test_gtow_drill_queue_migration_tracks_binding_attempt_and_clear_reason():
     sql = (REPO_ROOT / "supabase/migrations/20260716190000_gtow_drill_queue_binding.sql"
            ).read_text()
