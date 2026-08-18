@@ -447,6 +447,15 @@ def _prescription_attempt_started_at(item: dict, fallback=None):
     return min(value for value in starts if value is not None) if any(starts) else fallback
 
 
+def _trainer_upgrade_resets_attempt(current_url: str, upgraded_url: str) -> bool:
+    """Reset only when solver settings changed, not GTOW display state."""
+    from gtow_drill_service import settings_from_trainer_url, settings_hash
+
+    return settings_hash(settings_from_trainer_url(current_url)) != settings_hash(
+        settings_from_trainer_url(upgraded_url)
+    )
+
+
 def _setup_logger() -> logging.Logger:
     _LOG_DIR.mkdir(exist_ok=True)
     logger = logging.getLogger("poker_bot")
@@ -2524,7 +2533,8 @@ class PokerWizardBot:
                     attempt_reset = False
                     upgraded_url = apply_trainer_defaults(item["drill_url"])
                     if upgraded_url != item["drill_url"]:
-                        attempt_reset = True
+                        attempt_reset = _trainer_upgrade_resets_attempt(
+                            item["drill_url"], upgraded_url)
                         item = await conn.fetchrow(
                             "UPDATE drill_queue SET drill_url=$2, "
                             "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
