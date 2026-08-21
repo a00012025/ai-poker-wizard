@@ -6,8 +6,9 @@ def test_live_batch_eta_matches_observed_12_hand_runtime():
 
 
 def test_live_batch_eta_scales_by_typical_solver_throughput():
-    assert _estimate_live_batch_minutes(24) == (2, 4)
-    assert _estimate_live_batch_minutes(36) == (3, 6)
+    assert _estimate_live_batch_minutes(21) == (1, 2)
+    assert _estimate_live_batch_minutes(24) == (1, 2)
+    assert _estimate_live_batch_minutes(36) == (2, 3)
 
 
 def test_live_batch_eta_has_nonzero_floor():
