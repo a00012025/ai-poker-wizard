@@ -2679,13 +2679,67 @@ def severity(ev_loss) -> str:
 
 
 def process_batch(text: str, date_str: str | None = None,
-                  progress=print) -> dict:
+                  progress=print, *, _allow_parallel: bool = True) -> dict:
     """Parse + validate + grade a batch. Pure of DB — returns the full result."""
     from hand_validator import validate_hand
 
     date_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     base_dt = datetime.fromisoformat(f"{date_str}T12:00:00+00:00")
     blocks = split_batch(text)
+    workers = max(1, min(int(os.getenv("LIVE_GRADE_WORKERS", "3")), 4))
+    user_id = os.getenv("GTOW_USER_ID")
+    if _allow_parallel and user_id and len(blocks) > 1 and workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        from gto_api import clear_user_token, set_user_token
+        from gto_credentials import request_credentials
+
+        credentials = request_credentials(user_id=int(user_id))
+        completed = 0
+        progress_lock = threading.Lock()
+
+        def run_one(index_block):
+            nonlocal completed
+            index, block = index_block
+            set_user_token(credentials.access_token, credentials.client_id,
+                           credentials.user_id)
+            try:
+                single = process_batch(
+                    block, date_str, progress=lambda _msg: None,
+                    _allow_parallel=False)
+            finally:
+                clear_user_token()
+            entry = single["hands"][0]
+            entry["idx"] = index
+            played_at = base_dt.replace(minute=index % 60)
+            if entry.get("hand_row"):
+                entry["hand_row"]["played_at"] = played_at
+            for row in entry.get("dec_rows") or []:
+                row["played_at"] = played_at
+            with progress_lock:
+                completed += 1
+                progress(f"[{completed}/{len(blocks)}] completed")
+            return entry, single["totals"]
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(blocks))) as pool:
+            completed_hands = list(pool.map(run_one, enumerate(blocks, 1)))
+        hands = [entry for entry, _totals in completed_hands]
+        result = {
+            "date": date_str, "hands": hands,
+            "totals": {
+                "hands": len(hands),
+                **{
+                    key: sum(totals[key] for _entry, totals in completed_hands)
+                    for key in ("decisions", "graded", "mistakes", "parse_failed")
+                },
+            },
+            "queue": [],
+        }
+        all_dec_rows = [row for hand in hands if hand.get("ok")
+                        for row in (hand.get("dec_rows") or [])]
+        result["queue"] = select_queue_items(all_dec_rows)
+        return result
+
     result = {"date": date_str, "hands": [], "queue": [],
               "totals": {"hands": len(blocks), "decisions": 0, "graded": 0,
                          "mistakes": 0, "parse_failed": 0}}
@@ -2837,8 +2891,6 @@ def process_batch(text: str, date_str: str | None = None,
             log.debug("live review_url generation failed for %s", hand_id,
                       exc_info=True)
             entry["review_url"] = None
-        time.sleep(0.3)
-
     result["queue"] = select_queue_items(all_dec_rows)
     return result
 

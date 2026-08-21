@@ -1068,6 +1068,43 @@ def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
     ), solution_calls)
 
 
+def test_hh_check_hand_reuses_hero_bet_resolution_when_advancing():
+    """One hero bet needs one next-actions lookup, not the same lookup twice."""
+    import hh_deviation_check as hdc
+
+    next_calls = []
+    originals = {
+        "get_spot_solution": hdc.get_spot_solution,
+        "get_next_actions": hdc.get_next_actions,
+        "_normalize_preflop_action": hdc._normalize_preflop_action,
+    }
+
+    def fake_next(**kwargs):
+        next_calls.append(dict(kwargs))
+        return {"next_actions": {"available_actions": [
+            {"action": {"code": "R2", "betsize": "2", "allin": False}}
+        ]}}
+
+    hdc.get_spot_solution = lambda **_kwargs: None
+    hdc.get_next_actions = fake_next
+    hdc._normalize_preflop_action = lambda code, *_args, **_kwargs: code
+    try:
+        hdc.check_hand({
+            "hero_position": "BB", "hero_hand": "AJo", "effective_bb": 30,
+            "num_players": 8, "table_size": 8,
+            "preflop_actions": "F-F-F-F-F-R2-F-C",
+            "streets": [{"board": "Kc7d2h", "actions": [
+                {"position": "BB", "action": "R2", "size": 2},
+                {"position": "BTN", "action": "F"},
+            ]}],
+        }, emit_ungraded=True)
+    finally:
+        for name, value in originals.items():
+            setattr(hdc, name, value)
+
+    assert_eq(len(next_calls), 1, "hero bet branch should be resolved once")
+
+
 def test_find_action_by_pot_pct_exact_betsize_wins_over_pot_pct():
     """When hero's bb amount equals an available betsize exactly, return it
     even if pot-pct conversion would tie at a midpoint.

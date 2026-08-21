@@ -49,13 +49,13 @@ _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 def _estimate_live_batch_minutes(hand_count: int) -> tuple[int, int]:
     """Return a conservative ETA range for /live batch solver grading.
 
-    Observed throughput is roughly 6-12 hands/minute for typical live
-    shorthand batches, so 12 hands should read as about 1-2 minutes rather
-    than the old per-hand minute estimate.
+    Three-worker grading measured 21 postflop-heavy hands in 78 seconds.
+    Keep a conservative 12-18 hands/minute range because solver latency and
+    decisions per hand vary substantially.
     """
     n = max(1, hand_count)
-    low = max(1, (n + 11) // 12)
-    high = max(2, (n + 5) // 6)
+    low = max(1, n // 18)
+    high = max(2, (n + 11) // 12)
     return low, high
 
 
@@ -2241,6 +2241,7 @@ class PokerWizardBot:
             child_env.pop("POKER_BOT_PROCESS", None)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
+                "-u",
                 "scripts/live_flow.py",
                 "--file",
                 tmp_in,
@@ -2251,7 +2252,23 @@ class PokerWizardBot:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            out, _ = await proc.communicate()
+            if getattr(proc, "stdout", None) is None:  # unit-test/process fallback
+                out, _ = await proc.communicate()
+            else:
+                output = bytearray()
+                while line := await proc.stdout.readline():
+                    output.extend(line)
+                    match = re.match(
+                        rb"\[(\d+)/(\d+)\] (?:grading|completed)", line)
+                    if match:
+                        current, total = map(int, match.groups())
+                        try:
+                            await msg.edit_text(
+                                f"🃏 評分中：第 {current}/{total} 手…")
+                        except Exception:
+                            pass
+                await proc.wait()
+                out = bytes(output)
             if proc.returncode != 0 or not Path(tmp_out).exists():
                 tail = out.decode(errors="replace")[-500:]
                 await msg.edit_text(

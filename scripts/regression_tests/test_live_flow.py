@@ -89,8 +89,20 @@ def test_live_batch_subprocess_receives_owner_db_token():
     class _Proc:
         returncode = 0
 
+        class _Stdout:
+            def __init__(self):
+                self.lines = [b"[1/1] completed\n", b""]
+
+            async def readline(self):
+                return self.lines.pop(0)
+
+        stdout = _Stdout()
+
         async def communicate(self):
             return b"ok", b""
+
+        async def wait(self):
+            return 0
 
     async def fake_subprocess(*args, **kwargs):
         captured["env"] = kwargs.get("env")
@@ -187,7 +199,9 @@ def test_live_batch_subprocess_receives_owner_db_token():
     assert_eq(captured["reply_texts"][-1][0][0], "ok page 0")
     assert_true(captured["set_session_message"], "session message id stored")
     assert_eq(captured["set_session_args"], (77, 102))
-    assert_eq(captured["failure_edits"], [])
+    assert_true(any("第 1/1 手" in edit[0][0]
+                    for edit in captured["failure_edits"]),
+                "live batch must stream per-hand progress to Telegram")
 
 
 def test_live_batch_llm_api_failure_is_user_facing_and_not_persisted():
@@ -1335,11 +1349,57 @@ def test_live_process_batch_attempts_solver_for_unsized_preflop_raise():
     finally:
         (live_flow.parse_block, live_flow.grade_hand_with_escalation,
          live_flow.time.sleep) = originals
-
     assert_eq(len(calls), 1)
     assert_true(result["hands"][0]["ok"])
     assert_true(all(row["excluded"]
                     for row in result["hands"][0]["dec_rows"]))
+
+
+def test_live_process_batch_grades_independent_hands_in_parallel(monkeypatch):
+    import threading
+    import time
+    from types import SimpleNamespace
+    import gto_credentials
+    import live_flow
+
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_grade(_hand):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return {}, set(), {"attempted": False}
+
+    monkeypatch.setenv("GTOW_USER_ID", "42")
+    monkeypatch.setenv("LIVE_GRADE_WORKERS", "3")
+    monkeypatch.setattr(
+        gto_credentials, "request_credentials",
+        lambda **_kwargs: SimpleNamespace(
+            access_token="access", client_id="client", user_id=42))
+    monkeypatch.setattr(live_flow, "grade_hand_with_escalation", fake_grade)
+
+    text = "\n".join([
+        "Eff 8bb btn r2 hero sb fold Q9s",
+        "Eff 5bb hero hj all in JTo",
+        "Eff 10bb hero co raise AKo bb fold",
+    ])
+    result = live_flow.process_batch(text, "2026-08-21", progress=lambda _msg: None)
+
+    assert_true(peak >= 2, f"expected concurrent grading, peak={peak}")
+    assert_eq([hand["idx"] for hand in result["hands"]], [1, 2, 3])
+    assert_eq([hand["raw"] for hand in result["hands"]], text.splitlines())
+    monkeypatch.setenv("LIVE_GRADE_WORKERS", "1")
+    sequential = live_flow.process_batch(
+        text, "2026-08-21", progress=lambda _msg: None)
+    assert_eq(result["totals"], sequential["totals"])
+    assert_eq([hand["hand_id"] for hand in result["hands"]],
+              [hand["hand_id"] for hand in sequential["hands"]])
 
 
 def test_live_simple_preflop_fallback_parses_terse_fold_row():
