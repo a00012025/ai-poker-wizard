@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT))
 
 from card_display import cards_to_emoji
 from gto_formatter import normalize_hand_name
+from src.provider_errors import LLMAPIUnavailableError, is_llm_api_error
 
 log = logging.getLogger(__name__)
 
@@ -1844,7 +1845,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             return _replay_and_lock_live_tokens(block, tokenized)
         except LiveReplayError as exc:
             return {"_refused": [str(exc)]}
-        except Exception:
+        except Exception as exc:
             if attempt == 0:
                 time.sleep(1.0)
                 continue
@@ -1857,6 +1858,8 @@ def parse_block(block: str, client=None, model: str | None = None,
                     return _replay_and_lock_live_tokens(block, standard)
                 except LiveReplayError:
                     pass
+            if is_llm_api_error(exc):
+                raise LLMAPIUnavailableError(str(exc)) from exc
             return None
     return None
 

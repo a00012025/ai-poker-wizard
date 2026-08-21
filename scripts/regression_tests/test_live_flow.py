@@ -190,6 +190,57 @@ def test_live_batch_subprocess_receives_owner_db_token():
     assert_eq(captured["failure_edits"], [])
 
 
+def test_live_batch_llm_api_failure_is_user_facing_and_not_persisted():
+    import asyncio
+    import logging
+    import sys
+    import types
+    from src.telegram_bot.bot import PokerWizardBot
+
+    captured = {"saved": False, "edits": []}
+
+    class Message:
+        async def reply_text(self, *_args, **_kwargs):
+            return types.SimpleNamespace(
+                edit_text=lambda text: asyncio.sleep(0, result=captured["edits"].append(text)))
+
+    class Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"provider_errors.LLMAPIUnavailableError: quota exceeded", b""
+
+    async def fake_subprocess(*_args, **_kwargs):
+        return Proc()
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.log = logging.getLogger("regression-live-llm-api")
+    bot.db = types.SimpleNamespace(pool=None)
+    bot._get_user_refresh_token = lambda _uid: asyncio.sleep(0, result="token")
+    bot._user_label = lambda _update: "owner"
+    update = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=556028753),
+        effective_chat=types.SimpleNamespace(id=556028753),
+        message=Message(),
+    )
+    fake_live = types.SimpleNamespace(split_batch=lambda _text: ["hand"])
+    original_subprocess = asyncio.create_subprocess_exec
+    original_live = sys.modules.get("live_flow")
+    asyncio.create_subprocess_exec = fake_subprocess
+    sys.modules["live_flow"] = fake_live
+    try:
+        asyncio.run(bot._process_live_batch(update, "non-standard hand"))
+    finally:
+        asyncio.create_subprocess_exec = original_subprocess
+        if original_live is None:
+            sys.modules.pop("live_flow", None)
+        else:
+            sys.modules["live_flow"] = original_live
+
+    assert_eq(captured["edits"], ["❌ LLM API 暫時無法使用，請稍後再試。"])
+    assert_true(not captured["saved"])
+
+
 def test_live_split_batch():
     """Shorthand batches split on lines starting with 'Eff' — including the
     no-space form 'Eff17' (no word boundary between f and 1)."""
@@ -319,6 +370,7 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
 
 def test_live_standard_shorthand_parses_when_tokenizer_provider_is_down():
     """0819 batch must not turn ordinary shorthand into parse_failed."""
+    from google.genai import errors as genai_errors
     from live_flow import parse_block, split_batch
 
     text = """Eff 30bb +1 raise co call hero btn QdQc r7 +1 fold co call
@@ -338,12 +390,20 @@ Eff 25bb Hj r2.5 hero bb call 8c7h
         class models:
             @staticmethod
             def generate_content(**_kwargs):
-                raise RuntimeError("API key not valid")
+                raise genai_errors.ClientError(
+                    429, {"error": {"message": "API key not valid"}})
 
     hands = [parse_block(block, client=DownClient()) for block in split_batch(text)]
     assert_eq(len(hands), 3)
     assert_true(all(hand and not hand.get("_refused") for hand in hands), repr(hands))
     assert_eq([hand["hero_hand"] for hand in hands], ["QdQc", "A7o", "8c7h"])
+
+    from src.provider_errors import LLMAPIUnavailableError
+    with pytest.raises(LLMAPIUnavailableError):
+        parse_block(
+            "Eff 30bb hero btn QdQc raise\nAs8s6s hero bets half-pot",
+            client=DownClient(),
+        )
 
 
 def test_live_parse_block_icm_import_works_without_src_on_sys_path():
