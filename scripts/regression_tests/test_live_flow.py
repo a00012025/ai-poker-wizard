@@ -317,6 +317,35 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
 
 
+def test_live_standard_shorthand_parses_when_tokenizer_provider_is_down():
+    """0819 batch must not turn ordinary shorthand into parse_failed."""
+    from live_flow import parse_block, split_batch
+
+    text = """Eff 30bb +1 raise co call hero btn QdQc r7 +1 fold co call
+As8s6s x b3 call
+3c x x
+7d x x
+
+Eff 20bb sb call hero bb raise a7o to 3bb sb call
+QJ4r x b2 fold
+
+Eff 25bb Hj r2.5 hero bb call 8c7h
+9c8s4d x b2 call
+6d x x
+6h b3 call"""
+
+    class DownClient:
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                raise RuntimeError("API key not valid")
+
+    hands = [parse_block(block, client=DownClient()) for block in split_batch(text)]
+    assert_eq(len(hands), 3)
+    assert_true(all(hand and not hand.get("_refused") for hand in hands), repr(hands))
+    assert_eq([hand["hero_hand"] for hand in hands], ["QdQc", "A7o", "8c7h"])
+
+
 def test_live_parse_block_icm_import_works_without_src_on_sys_path():
     """Container CLI executes live_flow with repo root, not src as top-level."""
     import sys
