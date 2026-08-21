@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from src.gemini_session import GeminiSessionManager
 
 from card_display import cards_to_emoji
+from src.provider_errors import LLM_API_ERROR_MESSAGE, is_llm_api_error
 
 # Upload analysis timeout (seconds)
 ANALYSIS_TIMEOUT = 1800
@@ -1065,7 +1066,8 @@ class PokerWizardBot:
                     "你的 GTO Wizard token 已過期，請重新點擊書籤工具並貼上 /settoken 指令。"
                 )
                 return
-            await _show_err(f"❌ {str(e)}")
+            await _show_err(
+                LLM_API_ERROR_MESSAGE if is_llm_api_error(e) else f"❌ {str(e)}")
 
     async def _analyze_hh_hand(self, update: Update, hand: dict, user_text: str):
         """Run full GTO analysis on a specific HH hand and coach via LLM."""
@@ -1688,7 +1690,8 @@ class PokerWizardBot:
             self.log.error(
                 f"[{label}] Photo error after {elapsed:.1f}s: {e}", exc_info=True
             )
-            err_msg = f"❌ 分析截圖時發生錯誤：{e}"
+            err_msg = (LLM_API_ERROR_MESSAGE if is_llm_api_error(e)
+                       else f"❌ 分析截圖時發生錯誤：{e}")
             if gto_sent:
                 # status_msg was deleted after sending GTO summary;
                 # send a new reply so the user sees the error.
@@ -2251,7 +2254,9 @@ class PokerWizardBot:
             out, _ = await proc.communicate()
             if proc.returncode != 0 or not Path(tmp_out).exists():
                 tail = out.decode(errors="replace")[-500:]
-                await msg.edit_text(f"⚠️ 匯入失敗：\n{tail}")
+                await msg.edit_text(
+                    LLM_API_ERROR_MESSAGE if is_llm_api_error(tail)
+                    else f"⚠️ 匯入失敗：\n{tail}")
                 return
             result = _json.loads(Path(tmp_out).read_text())
             from live_flow import (

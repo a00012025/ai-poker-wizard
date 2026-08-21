@@ -440,6 +440,44 @@ def test_text_delivery_failure_restores_history(monkeypatch):
     assert session.histories[42] == ["old"]
 
 
+def test_text_parse_llm_api_failure_gets_stable_user_message(monkeypatch):
+    import src.telegram_bot.bot as bot_module
+    from google.genai import errors as genai_errors
+
+    class Session:
+        histories = {42: []}
+
+        def history_checkpoint(self, chat_id):
+            return tuple(self.histories.get(chat_id, ()))
+
+        def restore_history(self, chat_id, checkpoint):
+            self.histories[chat_id] = list(checkpoint)
+
+        async def send_message(self, *_args, **_kwargs):
+            raise genai_errors.ClientError(429, {"error": {"message": "quota"}})
+
+    bot = _bot(Session())
+    bot.db = None
+    bot._live_resend_pending = {}
+    bot._live_pending = set()
+    bot._find_hh_hand = lambda *_args: asyncio.sleep(0, result=None)
+    bot._get_user_refresh_token = lambda _uid: asyncio.sleep(0, result="r")
+    message = SimpleNamespace(text="Eff 30bb hero btn QdQc", chat=object())
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=42),
+        effective_user=SimpleNamespace(id=7, username="user", first_name="User"),
+        message=message,
+    )
+    status = FakeStatus()
+    monkeypatch.setattr(bot_module, "_TypingLoop", NoopTyping)
+    monkeypatch.setattr(
+        bot_module, "_send_status", lambda *_args: asyncio.sleep(0, result=status))
+
+    asyncio.run(bot._handle_message_inner(update, SimpleNamespace()))
+
+    assert status.edits[-1] == "❌ LLM API 暫時無法使用，請稍後再試。"
+
+
 def test_hh_delivery_failure_restores_history(monkeypatch):
     import src.telegram_bot.bot as bot_module
 

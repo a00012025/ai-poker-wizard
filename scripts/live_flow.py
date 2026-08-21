@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT))
 
 from card_display import cards_to_emoji
 from gto_formatter import normalize_hand_name
+from src.provider_errors import LLMAPIUnavailableError, is_llm_api_error
 
 log = logging.getLogger(__name__)
 
@@ -1678,6 +1679,115 @@ def _live_token_config(model: str):
     return types.GenerateContentConfig(**kwargs)
 
 
+def _lex_action(code: str, *, actor: str | None = None,
+                postflop_aggression: bool = False) -> dict:
+    source = actor
+    if code == "F":
+        return {"actor": actor, "action": "fold", "source": source}
+    if code == "C":
+        return {"actor": actor, "action": "call", "source": source}
+    if code == "X":
+        return {"actor": actor, "action": "check", "source": source}
+    if code == "XA":
+        return {"actor": actor, "action": "check_around", "source": source}
+    if code.startswith("AI"):
+        size = code[2:]
+        return {"actor": actor, "action": "all_in",
+                "size_bb": float(size) if size else None, "source": source}
+    size = code[1:]
+    return {"actor": actor,
+            "action": "raise" if postflop_aggression else "bet",
+            "size_bb": float(size) if size else None, "source": source}
+
+
+def _lex_standard_street_actions(tokens: list[str]) -> list[dict] | None:
+    """Tokenize the canonical x/b/c/f shorthand without an LLM."""
+    actions: list[dict] = []
+    aggression = False
+    i = 0
+    while i < len(tokens):
+        word = _clean_word(tokens[i])
+        if word in {"x", "check"}:
+            around = (i + 1 < len(tokens)
+                      and _clean_word(tokens[i + 1]) == "around")
+            actions.append(_lex_action("XA" if around else "X"))
+            i += 2 if around else 1
+            continue
+        if word in {"c", "call", "f", "fold"}:
+            actions.append(_lex_action("C" if word in {"c", "call"} else "F"))
+            i += 1
+            continue
+        if word in {"all", "ai", "jam", "shove"}:
+            i += 1
+            if word == "all" and i < len(tokens) and _clean_word(tokens[i]) == "in":
+                i += 1
+            size = _bb_number(tokens[i]) if i < len(tokens) else None
+            if size is not None:
+                i += 1
+            actions.append(_lex_action("AI" + (size or "")))
+            aggression = True
+            continue
+        match = re.fullmatch(r"(?:b|bet|r|raise)(\d+(?:\.\d+)?)(?:bb)?", word)
+        if match or word in {"b", "bet", "r", "raise"}:
+            size = match.group(1) if match else None
+            i += 1
+            if size is None and i < len(tokens):
+                size = _bb_number(tokens[i])
+                if size is not None:
+                    i += 1
+            actions.append(_lex_action("R" + (size or ""),
+                                       postflop_aggression=aggression))
+            aggression = True
+            continue
+        return None
+    return actions
+
+
+def _tokenize_standard_live_block(block: str) -> dict | None:
+    """Deterministic fast path for the documented live shorthand format."""
+    lines = [line.strip() for line in block.splitlines()
+             if line.strip() and not _is_noise(line)]
+    metadata = _extract_live_metadata(block)
+    hero = metadata.get("hero_position")
+    if not lines or not hero or not metadata.get("hero_hand"):
+        return None
+    header = re.split(r"\s+", lines[0])
+    events = _live_preflop_events(
+        header, hero, str(metadata.get("effective_bb") or ""))
+    if not events or not any(actor == hero for actor, _code in events):
+        return None
+    streets = []
+    for line in lines[1:]:
+        tokens = re.split(r"\s+", line)
+        literal_count = _street_literal_token_count(tokens)
+        actions = (_lex_standard_street_actions(tokens[literal_count:])
+                   if literal_count else None)
+        if actions is None:
+            return None
+        streets.append({"board_text": " ".join(tokens[:literal_count]),
+                        "actions": actions})
+    return {
+        **metadata,
+        "preflop_actions": [
+            _lex_action(code, actor=actor, postflop_aggression=True)
+            for actor, code in events
+        ],
+        "streets": streets,
+    }
+
+
+def _replay_and_lock_live_tokens(block: str, tokenized: dict) -> dict:
+    hand = replay_live_action_tokens(block, tokenized)
+    hand.update(_extract_live_icm_metadata(block, hand))
+    gated, notes = repair_card_literals_from_block(block, hand)
+    if gated is None:
+        return {"_refused": notes or ["牌面字面值衝突"]}
+    repairs = list(hand.get("_repairs") or []) + notes
+    if repairs:
+        gated["_repairs"] = repairs
+    return gated
+
+
 def parse_block(block: str, client=None, model: str | None = None,
                 extra_hint: str = "") -> dict | None:
     """Tokenize one live hand, deterministically replay it, then lock cards.
@@ -1705,6 +1815,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             }]
             structured_icm["_parse_flags"] = []
             return structured_icm
+    injected_client = client is not None
     client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     model = model or os.getenv(
         "GEMINI_LIVE_PARSE_MODEL", "gemini-3.6-flash")
@@ -1718,6 +1829,12 @@ def parse_block(block: str, client=None, model: str | None = None,
         }]
         fallback["_parse_flags"] = []
         return fallback
+    standard = _tokenize_standard_live_block(block)
+    if standard and not injected_client:
+        try:
+            return _replay_and_lock_live_tokens(block, standard)
+        except LiveReplayError:
+            pass
     for attempt in range(2):
         try:
             resp = client.models.generate_content(
@@ -1725,18 +1842,10 @@ def parse_block(block: str, client=None, model: str | None = None,
                 config=_live_token_config(model))
             tokenized = LiveTokenizedHand.model_validate_json(
                 resp.text or "").model_dump(exclude_none=True)
-            hand = replay_live_action_tokens(block, tokenized)
-            hand.update(_extract_live_icm_metadata(block, hand))
-            gated, notes = repair_card_literals_from_block(block, hand)
-            if gated is None:
-                return {"_refused": notes or ["牌面字面值衝突"]}
-            repairs = list(hand.get("_repairs") or []) + notes
-            if repairs:
-                gated["_repairs"] = repairs
-            return gated
+            return _replay_and_lock_live_tokens(block, tokenized)
         except LiveReplayError as exc:
             return {"_refused": [str(exc)]}
-        except Exception:
+        except Exception as exc:
             if attempt == 0:
                 time.sleep(1.0)
                 continue
@@ -1744,6 +1853,13 @@ def parse_block(block: str, client=None, model: str | None = None,
             if fallback and not _raw_street_lines(block):
                 fallback["_repairs"] = ["LLM tokenizer 失敗，使用 preflop deterministic parse"]
                 return fallback
+            if standard:
+                try:
+                    return _replay_and_lock_live_tokens(block, standard)
+                except LiveReplayError:
+                    pass
+            if is_llm_api_error(exc):
+                raise LLMAPIUnavailableError(str(exc)) from exc
             return None
     return None
 
