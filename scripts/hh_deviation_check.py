@@ -814,6 +814,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             action_type = act["action"]
             target_size = act.get("size", 0)
             pot_fraction = act.get("pot_fraction")
+            resolved_hero_action = None
 
             if pos == hero_pos:
                 # Query solver at this point
@@ -847,6 +848,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                                 avail, target_size)
                     except Exception:
                         taken_code = action_type
+                resolved_hero_action = taken_code
 
                 try:
                     sol_post = get_spot_solution(**params)
@@ -920,6 +922,8 @@ def check_hand(hand: dict, icm_params: dict | None = None,
             # Advance action strings
             if action_type in ("X", "C", "F"):
                 taken = action_type
+            elif resolved_hero_action is not None:
+                taken = resolved_hero_action
             elif action_type == "AI":
                 try:
                     params_adv = dict(

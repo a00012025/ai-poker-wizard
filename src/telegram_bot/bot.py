@@ -2241,6 +2241,7 @@ class PokerWizardBot:
             child_env.pop("POKER_BOT_PROCESS", None)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
+                "-u",
                 "scripts/live_flow.py",
                 "--file",
                 tmp_in,
@@ -2251,7 +2252,23 @@ class PokerWizardBot:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            out, _ = await proc.communicate()
+            if getattr(proc, "stdout", None) is None:  # unit-test/process fallback
+                out, _ = await proc.communicate()
+            else:
+                output = bytearray()
+                while line := await proc.stdout.readline():
+                    output.extend(line)
+                    match = re.match(
+                        rb"\[(\d+)/(\d+)\] (?:grading|completed)", line)
+                    if match:
+                        current, total = map(int, match.groups())
+                        try:
+                            await msg.edit_text(
+                                f"🃏 評分中：第 {current}/{total} 手…")
+                        except Exception:
+                            pass
+                await proc.wait()
+                out = bytes(output)
             if proc.returncode != 0 or not Path(tmp_out).exists():
                 tail = out.decode(errors="replace")[-500:]
                 await msg.edit_text(
