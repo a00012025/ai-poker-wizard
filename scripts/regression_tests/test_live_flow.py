@@ -2824,7 +2824,69 @@ def test_live_multiway_ledger_taxonomy_uses_simplified_hu_action_line():
     assert_eq(river["turn_seq"], "b-c")
     assert_eq(river["eff_stack"], "medium")
     assert_in("multiway_recast", river["approx_flags"])
+    assert_true(not river["excluded"], "structure-preserved B stays statistical")
+    assert_eq(river["ev_loss_bb"], 0.6714)
     assert_true("_multiway_projected_hand" not in json.loads(hand_row["parsed_json"]))
+
+
+def test_live_multiway_structure_recast_c_is_excluded_from_postflop_stats():
+    """0819 Hand 14: 3-bettor/cold-call pot cannot become CO-open vs BB SRP."""
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows, project_multiway_postflop
+
+    hand = {
+        "players_at_table": 8, "effective_bb": 35,
+        "hero_position": "CO", "hero_hand": "AQo",
+        "preflop_actions": "F-R2-F-F-R6-F-F-C-C",
+        "streets": [
+            {"board": "AcKd8h", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "UTG+1", "action": "X"},
+                {"position": "CO", "action": "R5", "size": 5},
+                {"position": "BB", "action": "C"},
+                {"position": "UTG+1", "action": "F"},
+            ]},
+            {"card": "Js", "actions": [
+                {"position": "BB", "action": "X"},
+                {"position": "CO", "action": "R6", "size": 6},
+                {"position": "BB", "action": "C"},
+            ]},
+            {"card": "Qc", "actions": [
+                {"position": "BB", "action": "AI15", "size": 15},
+                {"position": "CO", "action": "C"},
+            ]},
+        ],
+    }
+    projected, meta, reason = project_multiway_postflop(hand)
+    assert_true(projected is not None and reason is None)
+    assert_eq(projected["preflop_actions"].count("R"), 1)
+    hand["_multiway_projection"] = meta
+    hand["_multiway_projected_hand"] = projected
+    devmap = {
+        ("preflop", 0): {"hero_action": "R6", "gto_action": "R6",
+                          "hero_freq": 1.0, "ev_loss": 0.0},
+        ("flop", 0): {"hero_action": "R4.9", "gto_action": "R4.9",
+                       "hero_freq": 0.01, "ev_loss": 0.01},
+        ("turn", 0): {"hero_action": "R6", "gto_action": "R10.4",
+                       "hero_freq": 0.0, "ev_loss": 0.54},
+        ("river", 0): {"hero_action": "C", "gto_action": "C",
+                        "hero_freq": 1.0, "ev_loss": 0.0},
+    }
+
+    hand_row, decisions = build_hand_rows(
+        hand, "live:0819:h14", datetime(2026, 8, 19, tzinfo=timezone.utc),
+        "raw", devmap,
+    )
+
+    postflop = [row for row in decisions if row["street"] != "preflop"]
+    assert_true(postflop)
+    assert_true(all(row["excluded"] for row in postflop))
+    assert_true(all(row["ev_loss_bb"] is None for row in postflop))
+    assert_true(all("multiway_structure_recast" in row["approx_flags"]
+                    for row in postflop))
+    assert_true(any(not row["excluded"] for row in decisions
+                    if row["street"] == "preflop"))
+    assert_eq(hand_row["total_ev_loss_bb"], 0.0)
 
 
 def test_queue_source_normalization_repairs_legacy_missing_decision_index():
@@ -5135,6 +5197,19 @@ def test_live_report_shows_hu_projection_and_specific_multiway_failure():
     html, _p, _n = render_session_page(result, 0)
     assert_in("ℹ️ 翻後簡化：UTG+1 vs BB", html)
     assert_in("❓ flop 起未評分：多人池翻後無法可靠簡化", html)
+
+
+def test_live_report_explains_structure_recast_exclusion():
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [{
+        "street": "flop", "idx": 0, "leaf": "flop",
+        "ev_loss": None, "severity": "❓", "taken": "R5", "best": None,
+        "taken_label": None, "best_label": None, "gto_freq": None,
+        "ungraded_reason": "multiway_structure_recast", "discarded": False,
+        "limp_origin": False, "depth_escalated": None,
+    }]
+    html, _p, _n = render_session_page(result, 0)
+    assert_in("多人池簡化會改變 pot class 或 Hero／對手角色", html)
 
 
 def test_clean_hand_line():
