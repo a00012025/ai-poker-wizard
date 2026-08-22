@@ -2103,6 +2103,7 @@ def project_multiway_postflop(
         return None, None, None
 
     from analyze_hand import (
+        MULTIWAY_REAL_STRUCTURE_MARKER,
         _collapse_multiway_to_hu,
         _reaches_flop,
         _simplify_multiway,
@@ -2123,6 +2124,7 @@ def project_multiway_postflop(
     except Exception:
         log.warning("live multiway projection failed", exc_info=True)
         return None, None, "multiway_unresolved"
+    structure_preserved = MULTIWAY_REAL_STRUCTURE_MARKER in (note or "")
 
     if not active or hero not in active or len(active) != 2:
         villain = _multiway_hero_fold_aggressor(streets, hero)
@@ -2140,6 +2142,7 @@ def project_multiway_postflop(
             f"以 {villain} vs {hero} HU 節點近似；"
             "其他仍存活玩家只保留已投入籌碼，不視為精確三人解"
         )
+        structure_preserved = True
 
     projected = copy.deepcopy(hand)
     projected["preflop_actions_for_pot"] = (
@@ -2177,6 +2180,9 @@ def project_multiway_postflop(
         "label": " vs ".join(positions),
         "solver_depth_bb": projected["effective_bb"],
         "note": note,
+        "fidelity": (
+            "structure_preserved" if structure_preserved
+            else "structure_recast"),
     }
     return projected, meta, None
 
@@ -2451,6 +2457,7 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
     for spot in spots:
         key = (spot["street"], spot["decision_idx"])
         dev = devmap.get(key)
+        forced_unsolved_reason = None
         if icm_params and spot["street"] == "preflop":
             flags = ["icm_grading", "icm_stack_approximation"]
             if any(stack is None for stack in (hand.get("player_stacks") or [])):
@@ -2478,6 +2485,13 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                 and (spot.get("villain_cat") == "multi"
                      or hand.get("_multiway_projection"))):
             flags.append("multiway_recast")
+        if (spot["street"] != "preflop"
+                and (hand.get("_multiway_projection") or {}).get("fidelity")
+                == "structure_recast"):
+            flags.append("multiway_structure_recast")
+            forced_unsolved_reason = "multiway_structure_recast"
+            dev = None
+            excluded = True
         if spot["street"] != "preflop" and hand.get("_multiway_unresolved"):
             flags.append("multiway_unresolved")
         if parse_flags:
@@ -2485,7 +2499,8 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
             taken = spot.get("hero_action_raw")
             dev = None
         elif dev is None or dev.get("ungraded"):
-            reason = (dev or {}).get("reason", "not_graded")
+            reason = forced_unsolved_reason or (dev or {}).get(
+                "reason", "not_graded")
             flags.append(f"unsolved:{reason}")
             excluded = True
             taken = spot.get("hero_action_raw")
@@ -3319,6 +3334,8 @@ def render_session_page(result: dict, page: int = 0,
                     "no_solution": "solver 沒有此行動線的可用節點",
                     "not_graded": "此節點沒有可用評分",
                     "multiway_unresolved": "多人池翻後無法可靠簡化",
+                    "multiway_structure_recast": (
+                        "多人池簡化會改變 pot class 或 Hero／對手角色"),
                 }.get(reason, f"solver 未回傳可用結果（{reason}）")
                 L.append(f"　❓ {first['street']} 起未評分：{detail}")
         L.append("")
