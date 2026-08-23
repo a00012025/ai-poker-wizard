@@ -2659,6 +2659,12 @@ def test_queue_decision_url_uses_broad_enum_for_raise_call():
     assert_true("fh_opponent" not in params)
     assert_true("fh_rel_positions" not in params)
 
+    lp = parse_qs(urlparse(qf.queue_drill_url_for_decision({
+        "spot_category": "vsRaiseCall", "street": "preflop",
+        "position": "CO", "hero_cat": "LP", "eff_stack": "short",
+    })).query)
+    assert_eq(lp["fh_hero"], ["CO,BTN"])
+
 
 def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
     """Queue policy uses custom_spot only when no standard enum is faithful."""

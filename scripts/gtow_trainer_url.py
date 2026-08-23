@@ -378,7 +378,8 @@ def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
     depths = list(MTT_DEPTHS) if depths is None else depths
     try:
         if category in PREFLOP_CATS:
-            hero = [hero_pos] if hero_pos else CAT_POSITIONS.get(hero_cat, [])
+            hero = ([hero_pos] if category in ("RFI", "vsOpen") and hero_pos
+                    else CAT_POSITIONS.get(hero_cat, []))
             return build_drill_url(
                 category, "preflop", 20, hero, depths=depths)
     except (SpotNotSupportedError, ValueError):
