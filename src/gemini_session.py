@@ -2771,6 +2771,20 @@ class GeminiSessionManager:
                 # always assigned by poker order in deterministic code.  Ignore
                 # any legacy model-provided position labels.
                 self._normalize_text_action_tokens(hand, user_text)
+                streets = hand.get("streets") or []
+                last_actions = (streets[-1].get("actions") or []) if streets else []
+                if (
+                    hand.get("no_hero_hand")
+                    and re.search(r"\bc[\s-]?bet\s+(?:strategy|range)\b", user_text, re.I)
+                    and len(last_actions) == 1
+                    and last_actions[0].get("position") == hand.get("hero_position")
+                    and last_actions[0].get("action") == "C"
+                ):
+                    streets[-1]["actions"] = []
+                    self._logger.info(
+                        f"[chat={chat_id}] Interpreted c-bet strategy as a "
+                        "street-root range query"
+                    )
                 if not hand.get("preflop_actions"):
                     return None
                 self._fix_folded_players_guarded(hand, chat_id)

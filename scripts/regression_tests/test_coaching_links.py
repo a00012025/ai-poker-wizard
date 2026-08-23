@@ -690,6 +690,49 @@ def test_free_form_strategy_candidates_are_not_replayed_as_taken_actions():
     assert_eq(hand["preflop_actions"], "F-R2-F-F-F")
 
 
+def test_cbet_strategy_question_is_not_parsed_as_orphan_call():
+    """H3882: ``c bet strategy?`` names a range query, not Hero calling."""
+    import asyncio
+    import json
+    import logging
+    from types import SimpleNamespace
+    from gemini_session import GeminiSessionManager
+
+    class Models:
+        async def generate_content(self, **_kwargs):
+            return SimpleNamespace(text=json.dumps({"hand": {
+                "gametype": "MTTGeneral", "players_at_table": 8,
+                "effective_bb": 60, "hero_position": "BB",
+                "hero_hand": "AA", "no_hero_hand": True,
+                "preflop_events": [
+                    {"actor": "LJ", "action": "R2"},
+                    {"actor": "CO", "action": "C"},
+                    {"actor": "BTN", "action": "C"},
+                    {"actor": "BB", "action": "R11"},
+                    {"actor": "LJ", "action": "F"},
+                    {"actor": "CO", "action": "F"},
+                    {"actor": "BTN", "action": "C"},
+                ],
+                "streets": [{"board": "Ks9s2c", "actions": [
+                    {"position": "BB", "action": "C"},
+                ]}],
+            }}))
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session.client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    session.parse_model = "gemini-3.6-flash"
+    session.hand_contexts = {}
+    session._logger = logging.getLogger("cbet-range-parse")
+
+    hand = asyncio.run(session._parse_hand(
+        556028753,
+        "Eff 60bb lj raise 2bb co call btn call hero bb raise 11bb "
+        "lj fold co fold btn call\nKs9s2c hero c bet strategy?",
+    ))
+
+    assert_eq(hand["streets"][0]["actions"], [])
+
+
 def test_query_gto_h2643_redundant_overrides():
     """H2643 river follow-up: LLM sent redundant overrides (including a
     7-position preflop from a 7-max hand). The cached context has 8-position
