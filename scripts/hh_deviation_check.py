@@ -103,10 +103,10 @@ def _hero_continuation_context(pf_parts: list[str], num_players: int,
     return before_hero, None
 
 
-def _cold_caller_hu_prefix(prefix_parts: list[str], num_players: int,
-                           hero_pos: str, gametype: str, depth,
-                           stacks: str = "") -> str | None:
-    """Collapse pure cold callers while preserving Hero and last aggressor.
+def _cold_caller_reduced_prefix(prefix_parts: list[str], num_players: int,
+                                hero_pos: str, gametype: str, depth,
+                                stacks: str = "", keep: int = 0) -> str | None:
+    """Collapse excess cold callers while preserving Hero and last aggressor.
 
     Some GTOW ICM trees do not contain multiway call branches.  This creates
     the same honest HU approximation used by the main analyzer: cold callers
@@ -127,16 +127,17 @@ def _cold_caller_hu_prefix(prefix_parts: list[str], num_players: int,
     last_by_pos = {}
     for pos, code in attributed:
         last_by_pos[pos] = code
-    cold_callers = {
+    cold_callers = [
         pos for pos, code in last_by_pos.items()
         if code == "C" and pos not in {hero_pos, aggressor}
-    }
-    if not cold_callers:
+    ]
+    dropped = set(cold_callers[keep:])
+    if not dropped:
         return None
 
     collapsed = []
     for index, (pos, code) in enumerate(attributed):
-        if pos in cold_callers:
+        if pos in dropped:
             if index < num_players:
                 collapsed.append("F")
             continue
@@ -627,6 +628,24 @@ def check_hand(hand: dict, icm_params: dict | None = None,
     except Exception:
         sol = None
 
+    used_one_caller_fallback = False
+    if sol is None and not icm_gametype:
+        reduced_prefix = _cold_caller_reduced_prefix(
+            normalized_parts, num_players, hero_pos,
+            pf_gametype, pf_depth, pf_stacks, keep=1)
+        if reduced_prefix:
+            try:
+                sol = get_spot_solution(
+                    gametype=pf_gametype, depth=pf_depth,
+                    stacks=pf_stacks, preflop_actions=reduced_prefix)
+                used_one_caller_fallback = sol is not None
+                if used_one_caller_fallback:
+                    hero_pf_action = _normalize_preflop_action(
+                        hero_pf_action_raw, pf_gametype, pf_depth,
+                        reduced_prefix, pf_stacks)
+            except Exception:
+                sol = None
+
     # ICM fallback: if ICM query returned None, retry with chip EV
     if sol is None and icm_gametype and pf_gametype == icm_gametype:
         try:
@@ -672,6 +691,8 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                 "gto_freq": best_freq,
                 "all_freqs": freqs,
                 "hero_ev": hand_ev,
+                **({"approximation": "cold_callers_reduced_one"}
+                   if used_one_caller_fallback else {}),
                 **ev_entry,
             })
         elif emit_ungraded:
@@ -721,7 +742,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
 
             used_hu_fallback = False
             if sol2 is None:
-                hu_prefix = _cold_caller_hu_prefix(
+                hu_prefix = _cold_caller_reduced_prefix(
                     second_prefix_parts, num_players, hero_pos,
                     pf_gametype, pf_depth, pf_stacks)
                 if hu_prefix:

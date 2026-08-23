@@ -2924,6 +2924,8 @@ def process_batch(text: str, date_str: str | None = None,
                     "depth_escalated": next(
                         (int(f.split(":", 1)[1]) for f in d["approx_flags"]
                          if f.startswith("depth_escalated:")), None),
+                    "one_caller_approx": (
+                        "cold_callers_reduced_one" in d["approx_flags"]),
                     "depth_escalation_failed": "depth_escalation_failed" in d["approx_flags"],
                     "depth_escalation_offrange": next(
                         (int(f.split(":", 1)[1]) for f in d["approx_flags"]
@@ -3336,7 +3338,11 @@ def render_session_page(result: dict, page: int = 0,
                 continue
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
-            approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
+            approx = (
+                f"（於 {d['depth_escalated']}bb 近似）"
+                if d.get("depth_escalated")
+                else "（保留一位 caller 近似）" if d.get("one_caller_approx") else ""
+            )
             taken_label = _replace_display_bb(
                 d.get("taken_label"),
                 actual_sizes.get((d.get("street"), int(d.get("idx") or 0))))

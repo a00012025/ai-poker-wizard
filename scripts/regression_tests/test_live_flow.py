@@ -891,6 +891,60 @@ def test_live_token_replay_locks_named_preflop_size_to_raw_literal():
     )
 
 
+def test_live_preflop_grades_multi_caller_squeeze_with_one_caller_approximation():
+    """GTOW lacks the exact 3-cold-caller node but supports one caller."""
+    import hh_deviation_check as checker
+
+    calls = []
+    originals = (
+        checker.get_spot_solution, checker._normalize_preflop_action,
+        checker._get_preflop_hand_freqs, checker._get_action_evs_preflop,
+        checker._get_hand_ev, checker._get_action_label,
+    )
+    checker.get_spot_solution = lambda **kw: (
+        calls.append(kw["preflop_actions"])
+        or ({"action_solutions": []}
+            if kw["preflop_actions"] == "R2.3-F-F-C-F-F-F" else None)
+    )
+    checker._normalize_preflop_action = lambda code, *_args, **_kw: {
+        "R2": "R2.3", "R10": "R10.9"}.get(code, code)
+    checker._get_preflop_hand_freqs = lambda *_args: {"F": 1.0, "R10.9": 0.0}
+    checker._get_action_evs_preflop = lambda *_args: {"F": 0.0, "R10.9": -0.638}
+    checker._get_hand_ev = lambda *_args, **_kw: 0.0
+    checker._get_action_label = lambda _solutions, code: code
+    try:
+        dev = checker.check_hand({
+            "players_at_table": 8, "num_players": 8,
+            "effective_bb": 55, "hero_position": "BB", "hero_hand": "Ad3s",
+            "preflop_actions": "R2-F-F-C-F-C-C-R10-F-C-F-F",
+            "streets": [],
+        }, emit_ungraded=True)[0]
+    finally:
+        (checker.get_spot_solution, checker._normalize_preflop_action,
+         checker._get_preflop_hand_freqs, checker._get_action_evs_preflop,
+         checker._get_hand_ev, checker._get_action_label) = originals
+
+    assert_eq(calls[:2], ["R2.3-F-F-C-F-C-C", "R2.3-F-F-C-F-F-F"])
+    assert_eq(dev["hero_action"], "R10.9")
+    assert_eq(dev["ev_loss"], 0.638)
+    assert_eq(dev["approximation"], "cold_callers_reduced_one")
+
+
+def test_live_report_labels_one_caller_preflop_approximation():
+    from live_flow import render_session_page
+
+    result = _mk_result(1)
+    result["hands"][0]["decisions"] = [{
+        "street": "preflop", "idx": 0, "leaf": "BB_vsRaiseCall_vEP_OOP",
+        "ev_loss": 0.638, "severity": "❌", "taken": "R10.9", "best": "F",
+        "taken_label": "RAISE 10.9bb", "best_label": "Fold", "gto_freq": 1.0,
+        "ungraded_reason": None, "discarded": False, "limp_origin": False,
+        "depth_escalated": None, "one_caller_approx": True,
+    }]
+    html = render_session_page(result)[0]
+    assert_in("損失 0.64bb（保留一位 caller 近似）", html)
+
+
 def test_live_token_replay_keeps_explicit_lj_fold_and_hj_call():
     """Regression for Hand 3: explicit LJ fold cannot become a live ghost."""
     from live_flow import replay_live_action_tokens
