@@ -527,8 +527,7 @@ _QUEUE_DECISIONS_BY_STREET_SQL = _QUEUE_DECISION_SQL.replace(
     " AND d.decision_idx=$3", " ORDER BY d.decision_idx")
 
 _EXACT_SOURCE_CATEGORIES = {
-    "flop", "turn", "river", "vsOpen", "vsRaiseCall", "vsSqueeze",
-    "vs3bet", "vs4bet", "vsCold3bet", "vsCold4bet",
+    "flop", "turn", "river", "vsCold3bet", "vsCold4bet",
 }
 _PRESCRIPTION_SCOPE_SQL = """CASE
   WHEN spot_category IN ('flop','turn','river','vsOpen','vsRaiseCall',
@@ -620,10 +619,8 @@ def decision_requires_exact_scope(dec: dict) -> bool:
 def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> str | None:
     """Faithful queue Trainer URL for one joined ledger decision.
 
-    Postflop and preflop response spots require the source action history;
-    otherwise a shortcut can deal strategically different sizes/nodes. Failure
-    is honest ``None`` — never a nearby shortcut. RFI keeps its verified seat
-    shortcut because there is no preceding action node to pin.
+    Prefer GTOW's standard preflop enums; use an exact source only for spots
+    those enums cannot represent (postflop, cold raises, ICM, flat-vs-squeeze).
     """
     category = dec.get("spot_category")
     if decision_requires_exact_scope(dec):

@@ -351,7 +351,7 @@ def test_custom_preflop_url_can_cover_the_full_stack_band():
     assert_eq(params["depth_list"], ["10.125,12.125,14.125,17.125,20.125"])
 
 
-def test_exact_preflop_queue_uses_every_valid_depth_in_the_band():
+def test_custom_preflop_queue_uses_every_valid_depth_in_the_band():
     import gtow_custom_url
     from queue_feed import queue_drill_url_for_decisions
 
@@ -384,8 +384,8 @@ def test_exact_preflop_queue_uses_every_valid_depth_in_the_band():
         url = queue_drill_url_for_decisions(
             [{
                 "gtow_hand_id": "h1", "street": "preflop", "decision_idx": 0,
-                "spot_category": "vsRaiseCall",
-                "spot_leaf": "BB_vsRaiseCall_vEP_OOP",
+                "spot_category": "vsCold3bet",
+                "spot_leaf": "BB_vsCold3bet_vEP_OOP",
                 "position": "BB", "hero_hand": "72o",
             }],
             depths=[10, 12, 14, 17, 20],
@@ -428,6 +428,7 @@ def test_icm_exact_preflop_queue_remains_single_depth():
                 "gtow_hand_id": "icm", "street": "preflop", "decision_idx": 0,
                 "spot_category": "vs3bet", "spot_leaf": "HJ_vs3bet_vLP_OOP",
                 "position": "HJ", "hero_hand": "AA",
+                "gametype": "MTTGeneral_ICM8m1000PTPCT25",
             }],
             depths=[10, 12, 14, 17, 20],
             hand_loader=lambda *_args, **_kwargs: {"hero_hand": "AA"},
