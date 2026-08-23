@@ -82,7 +82,7 @@ class GeminiSessionManager:
             raise ValueError("GEMINI_API_KEY 環境變數未設定")
 
         self.client = genai.Client(api_key=api_key)
-        self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash")
+        self.parse_model = os.getenv("GEMINI_PARSE_MODEL", "gemini-3.6-flash")
         self.image_parse_model = os.getenv(
             "GEMINI_IMAGE_PARSE_MODEL", "gemini-pro-latest"
         )
@@ -2803,6 +2803,12 @@ class GeminiSessionManager:
             prompt += f"\n\n{feedback_hint}"
         self._logger.debug(f"[chat={chat_id}] Parse request: {user_text}")
 
+        thinking_config = (
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
+            if self.parse_model.startswith("gemini-3.")
+            else types.ThinkingConfig(thinking_budget=0)
+        )
+
         response = await asyncio.wait_for(
             self.client.aio.models.generate_content(
                 model=self.parse_model,
@@ -2813,7 +2819,7 @@ class GeminiSessionManager:
                 # vs 2.4s).  Disable it so text parse stays fast.
                 config=types.GenerateContentConfig(
                     temperature=0,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=thinking_config,
                 ),
             ),
             timeout=60,
