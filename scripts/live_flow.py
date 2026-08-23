@@ -1629,6 +1629,25 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
     for street in data.get("streets") or []:
         for token in street.get("actions") or []:
             _normalize_pot_fraction_token(token)
+    raw_header = re.split(r"\s+", raw_blocks[0].splitlines()[0].strip())
+    raw_events = _live_preflop_events(
+        raw_header, _norm_pos(str(data.get("hero_position") or "")) or "",
+        str(data.get("effective_bb") or ""))
+    raw_index = 0
+    for token in data.get("preflop_actions") or []:
+        actor = (_live_actor(token.get("actor"), data.get("hero_position"))
+                 or _actor_from_source(token.get("source"), data.get("hero_position")))
+        if (not actor or raw_index >= len(raw_events)
+                or actor != raw_events[raw_index][0]):
+            continue
+        raw_code = raw_events[raw_index][1]
+        if (token.get("action") in {"bet", "raise"}
+                and re.fullmatch(r"R\d+(?:\.\d+)?", raw_code)):
+            token["size_bb"] = float(raw_code[1:])
+        elif (token.get("action") == "all_in"
+              and re.fullmatch(r"AI\d+(?:\.\d+)?", raw_code)):
+            token["size_bb"] = float(raw_code[2:])
+        raw_index += 1
     data["streets"], token_repairs = _drop_uniquely_embedded_street(
         block, data.get("streets") or [])
     for token in data.get("preflop_actions") or []:
@@ -1640,6 +1659,9 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
                 and any(_canon_hand_token(word) == data["hero_hand"]
                         for word in source_tokens)
                 and not any(_bb_number_with_unit(word) is not None
+                            for word in source_tokens)
+                and not any(re.fullmatch(r"r\d+(?:\.\d+)?(?:bb)?",
+                                         _clean_word(word))
                             for word in source_tokens)
                 and "to" not in [_clean_word(word) for word in source_tokens]):
             token["size_bb"] = None
@@ -2887,6 +2909,8 @@ def process_batch(text: str, date_str: str | None = None,
             graded = dev is not None and not dev.get("ungraded")
             reason = next((f.split(":", 1)[1] for f in d["approx_flags"]
                            if f.startswith("unsolved:")), None)
+            if reason is None and "parse_uncertain" in d["approx_flags"]:
+                reason = "parse_uncertain"
             disp = {"street": d["street"], "idx": d["decision_idx"],
                     "leaf": d["spot_leaf"], "ev_loss": d["ev_loss_bb"],
                     "severity": severity(d["ev_loss_bb"] if not d["excluded"] else None),
@@ -2900,6 +2924,8 @@ def process_batch(text: str, date_str: str | None = None,
                     "depth_escalated": next(
                         (int(f.split(":", 1)[1]) for f in d["approx_flags"]
                          if f.startswith("depth_escalated:")), None),
+                    "one_caller_approx": (
+                        "cold_callers_reduced_one" in d["approx_flags"]),
                     "depth_escalation_failed": "depth_escalation_failed" in d["approx_flags"],
                     "depth_escalation_offrange": next(
                         (int(f.split(":", 1)[1]) for f in d["approx_flags"]
@@ -3312,7 +3338,11 @@ def render_session_page(result: dict, page: int = 0,
                 continue
             best = d["best_label"] or d["best"] or "?"
             freq = f"（{d['gto_freq']*100:.0f}%）" if d.get("gto_freq") else ""
-            approx = f"（於 {d['depth_escalated']}bb 近似）" if d.get("depth_escalated") else ""
+            approx = (
+                f"（於 {d['depth_escalated']}bb 近似）"
+                if d.get("depth_escalated")
+                else "（保留一位 caller 近似）" if d.get("one_caller_approx") else ""
+            )
             taken_label = _replace_display_bb(
                 d.get("taken_label"),
                 actual_sizes.get((d.get("street"), int(d.get("idx") or 0))))
@@ -3349,6 +3379,7 @@ def render_session_page(result: dict, page: int = 0,
                 detail = {
                     "no_solution": "solver 沒有此行動線的可用節點",
                     "not_graded": "此節點沒有可用評分",
+                    "parse_uncertain": "解析資訊不足，未納入評分",
                     "multiway_unresolved": "多人池翻後無法可靠簡化",
                     "multiway_structure_recast": (
                         "多人池簡化會改變 pot class 或 Hero／對手角色"),
