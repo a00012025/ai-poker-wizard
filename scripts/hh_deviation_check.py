@@ -812,6 +812,8 @@ def check_hand(hand: dict, icm_params: dict | None = None,
         for act in street["actions"]:
             pos = act["position"]
             action_type = act["action"]
+            is_allin = (bool(act.get("allin"))
+                        or str(action_type).upper().startswith(("AI", "ALL")))
             target_size = act.get("size", 0)
             pot_fraction = act.get("pot_fraction")
             resolved_hero_action = None
@@ -828,7 +830,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                 # Determine hero's taken action code
                 if action_type in ("X", "C", "F"):
                     taken_code = action_type
-                elif action_type == "AI":
+                elif is_allin:
                     try:
                         next_resp = get_next_actions(**params)
                         avail = next_resp["next_actions"]["available_actions"]
@@ -924,7 +926,7 @@ def check_hand(hand: dict, icm_params: dict | None = None,
                 taken = action_type
             elif resolved_hero_action is not None:
                 taken = resolved_hero_action
-            elif action_type == "AI":
+            elif is_allin:
                 try:
                     params_adv = dict(
                         gametype=gametype, depth=depth,

@@ -1068,6 +1068,57 @@ def test_hh_check_hand_advances_explicit_pot_fraction_on_solver_line():
     ), solution_calls)
 
 
+def test_hh_check_hand_advances_sized_allin_as_solver_allin():
+    """A parser-preserved ``AI19.5`` is semantic all-in, not a 19.5bb bet."""
+    import hh_deviation_check as hdc
+
+    solution_calls = []
+    originals = {
+        "get_spot_solution": hdc.get_spot_solution,
+        "get_next_actions": hdc.get_next_actions,
+        "_normalize_preflop_action": hdc._normalize_preflop_action,
+    }
+    available = [
+        {"action": {"code": "R19.5", "betsize": "19.5", "allin": False}},
+        {"action": {"code": "RAI", "betsize": "22.45", "allin": True}},
+    ]
+
+    def fake_solution(**kwargs):
+        solution_calls.append(dict(kwargs))
+        return None
+
+    hdc.get_spot_solution = fake_solution
+    hdc.get_next_actions = lambda **_kwargs: {
+        "next_actions": {"available_actions": available}}
+    hdc._normalize_preflop_action = lambda code, *_args, **_kwargs: code
+    try:
+        hdc.check_hand({
+            "hero_position": "CO", "hero_hand": "AsKh", "effective_bb": 28,
+            "num_players": 8, "table_size": 8,
+            "preflop_actions": "F-F-F-F-R2-F-C-F",
+            "streets": [
+                {"board": "Ts8s2c", "actions": [
+                    {"position": "SB", "action": "X"},
+                    {"position": "CO", "action": "R2", "size": 2},
+                    {"position": "SB", "action": "R6.5", "size": 6.5},
+                    {"position": "CO", "action": "C"},
+                ]},
+                {"card": "3d", "actions": [
+                    {"position": "SB", "action": "AI19.5", "size": 19.5},
+                    {"position": "CO", "action": "F"},
+                ]},
+            ],
+        }, emit_ungraded=True)
+    finally:
+        for name, value in originals.items():
+            setattr(hdc, name, value)
+
+    assert_true(any(
+        call.get("turn_actions") == "RAI"
+        for call in solution_calls
+    ), solution_calls)
+
+
 def test_hh_check_hand_reuses_hero_bet_resolution_when_advancing():
     """One hero bet needs one next-actions lookup, not the same lookup twice."""
     import hh_deviation_check as hdc
