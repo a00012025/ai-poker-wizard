@@ -2280,6 +2280,29 @@ def _run_analysis(hand: dict) -> dict:
             # If this is flop/turn with no actions but later streets exist,
             # both players checked through — record X-X for the API
             has_later = any(s.get("actions") for s in streets[street_idx + 1:])
+            if no_hero_hand and not has_later:
+                post_gametype = chipev_gametype if is_icm else gametype
+                post_depth = chipev_depth if is_icm else depth
+                if is_icm and street_idx == 0:
+                    chipev_preflop = _normalize_preflop_actions(
+                        hand["preflop_actions"], chipev_gametype, chipev_depth,
+                    )
+                street_states[street_name] = {
+                    "board": board, "flop_actions": flop_acts,
+                    "turn_actions": turn_acts, "river_actions": river_acts,
+                }
+                hero_spots.append({
+                    "street": street_name, "header": street_header,
+                    "params": {
+                        "gametype": post_gametype, "depth": post_depth,
+                        "preflop_actions": (
+                            chipev_preflop if is_icm else preflop_actions),
+                        "board": board, "flop_actions": flop_acts,
+                        "turn_actions": turn_acts, "river_actions": river_acts,
+                    },
+                    "solver_hero_pos": solver_hero_pos,
+                    "action_desc": None,
+                })
             if has_later:
                 if street_idx == 0:
                     flop_acts = "X-X"

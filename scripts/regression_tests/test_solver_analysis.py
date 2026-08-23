@@ -2285,3 +2285,62 @@ def test_grade_action_choice_never_charges_an_in_mix_action():
     assert_eq(best_ev, 0.0)
     assert_eq(hero_ev, 7.30)
     assert_eq(loss, 0.0, "negative noisy regret clamps to zero")
+
+
+def test_no_hero_hand_empty_flop_returns_range_strategy():
+    """A board-only range question queries the street root, not zero spots."""
+    import analyze_hand as ah
+
+    originals = {
+        "get_spot_solution": ah.get_spot_solution,
+        "_normalize_preflop_actions": ah._normalize_preflop_actions,
+    }
+    flop_solution = {
+        "game": {
+            "active_position": "BB", "board": "Ks9s2c", "pot": "29.1",
+            "bet_display_name": "BET", "current_street": {"type": "FLOP"},
+        },
+        "action_solutions": [
+            {"action": {"code": "X", "betsize": "0", "allin": False,
+                         "betsize_by_pot": None},
+             "total_frequency": 0.001, "total_combos": 0.1},
+            {"action": {"code": "R7.3", "betsize": "7.3", "allin": False,
+                         "betsize_by_pot": "0.25"},
+             "total_frequency": 0.566, "total_combos": 34.0},
+            {"action": {"code": "R14.55", "betsize": "14.55", "allin": False,
+                         "betsize_by_pot": "0.50"},
+             "total_frequency": 0.433, "total_combos": 26.0},
+        ],
+        "players_info": [{
+            "player": {"position": "BB"},
+            "simple_hand_counters": {
+                "AA": {"actions_total_frequencies": {"R7.3": 1.0},
+                       "actions_total_combos": {"R7.3": 6.0}},
+                "AKs": {"actions_total_frequencies": {"R14.55": 1.0},
+                        "actions_total_combos": {"R14.55": 4.0}},
+            },
+        }],
+    }
+
+    ah._normalize_preflop_actions = lambda actions, *_args, **_kwargs: actions
+    ah.get_spot_solution = lambda **params: (
+        flop_solution if params.get("board") == "Ks9s2c" else None)
+    try:
+        result = ah.analyze_hand_full({
+            "gametype": "MTTGeneral", "effective_bb": 60,
+            "players_at_table": 8, "hero_position": "BB",
+            "hero_hand": "AA", "no_hero_hand": True,
+            "preflop_actions": "F-F-R2-F-C-C-F-R11-F-F-C",
+            "streets": [{"board": "Ks9s2c", "actions": []}],
+        })
+    finally:
+        for name, value in originals.items():
+            setattr(ah, name, value)
+
+    flop = [spot for spot in result["hero_spots"] if spot["street"] == "flop"]
+    assert_eq(len(flop), 1)
+    assert_eq(flop[0]["params"]["board"], "Ks9s2c")
+    assert_eq(flop[0]["params"]["flop_actions"], "")
+    assert_in("BET 7.3（25% pot）: 56.6%", result["text"])
+    assert_in("AA", result["text"])
+    assert_in("AKs", result["text"])
