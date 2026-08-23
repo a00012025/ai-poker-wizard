@@ -119,10 +119,10 @@ def test_text_action_tokens_heads_up_bb_acts_first_postflop():
     )
 
 
-def test_h3870_text_repairs_short_preflop_and_missing_flop_check():
-    """H3870: source shorthand is authoritative when Flash drops a seat token
-    and the leading flop check.  The BB hero must remain in the hand; otherwise
-    analysis appends a ghost call and sends illegal ``RAI-F-C-C`` to GTOW.
+def test_h3870_text_replays_events_and_restores_missing_flop_check():
+    """H3870: semantic events survive a shifted model-authored action string.
+    The BB hero must remain in the hand; otherwise analysis appends a ghost
+    call and sends illegal ``RAI-F-C-C`` to GTOW.
     """
     import gemini_session as gs
 
@@ -134,6 +134,11 @@ Jd all in fold"""
         "gametype": "MTTGeneral", "players_at_table": 8,
         "effective_bb": 14, "hero_position": "BB", "hero_hand": "JhTd",
         "preflop_actions": "R2-F-F-F-F-C-C",
+        "preflop_events": [
+            {"actor": "UTG", "action": "R2"},
+            {"actor": "SB", "action": "C"},
+            {"actor": "BB", "action": "C"},
+        ],
         "streets": [
             {"board": "Ad7dJc", "actions": [
                 {"position": "SB", "action": "R2.5", "size": 2.5},

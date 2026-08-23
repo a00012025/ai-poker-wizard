@@ -25,7 +25,16 @@ PARSE_PROMPT = """\
   5人: HJ, CO, BTN, SB, BB
   4人: CO, BTN, SB, BB
   3人: BTN, SB, BB
+- preflop_events（必填）：依原文時間順序列出每個「實際發生」的 preflop 動作。
+  每項格式為 {"actor":"位置", "action":"代碼"}。actor 使用標準位置
+  UTG/UTG+1/UTG+2/LJ/HJ/CO/BTN/SB/BB；原文的 +1/u+1 轉成 UTG+1，
+  hero/我轉成 hero_position 的標準位置。action 使用 F/C/X/R{size}/AI{size}。
+  只列實際已發生的動作；「應該 call 還是 all-in？」等候選策略不是已發生動作，不能加入 events。
+  例：`Eff 14bb +1 raise hero btn all in 77`
+  → [{"actor":"UTG+1","action":"R2"},{"actor":"BTN","action":"AI14"}]
+  後端會由 events deterministic 產生座位字串；不要靠自己計算中間有幾個 F。
 - preflop_actions：必須列出所有位置的動作，用 - 分隔。F=Fold, C=Call, RX=Raise to X, AI=All-in, AI{size}=All-in for specific size
+  這是相容欄位；當 preflop_events 包含 Hero 的實際動作時，後端會忽略這個欄位並重新組裝。
   如果用戶有提到 all-in 的大小（如 "all in 10bb"），必須用 AI{size} 格式（如 AI10）！只有不知道大小時才用 AI。
   重要：即使某些位置之後 fold 了，他們初始的 raise/call 動作仍要保留！
   例1：CO raise 2bb, BB call → F-F-F-F-R2-F-F-C
@@ -102,6 +111,10 @@ JSON 格式（MTT Chip EV，預設）：
     "effective_bb": 32,
     "hero_position": "CO",
     "hero_hand": "66",
+    "preflop_events": [
+      {"actor": "CO", "action": "R2"},
+      {"actor": "BB", "action": "C"}
+    ],
     "preflop_actions": "F-F-F-F-R2-F-F-C",
     "streets": [
       {"board": "6hAc5d", "actions": "X-X"},
@@ -121,7 +134,12 @@ JSON 格式（Cash Game）：
     "effective_bb": 100,
     "hero_position": "BTN",
     "hero_hand": "AKs",
-    "preflop_actions": "F-F-R2.5-F-R8-F"
+    "preflop_events": [
+      {"actor": "CO", "action": "R2.5"},
+      {"actor": "BTN", "action": "R8"},
+      {"actor": "CO", "action": "C"}
+    ],
+    "preflop_actions": "F-F-R2.5-R8-F-F-C"
   }
 }
 ```
@@ -139,6 +157,7 @@ JSON 格式（ICM）：
     "effective_bb": 50,
     "hero_position": "SB",
     "hero_hand": "A5s",
+    "preflop_events": [],
     "preflop_actions": "F-F-F-F-F-F"
   }
 }

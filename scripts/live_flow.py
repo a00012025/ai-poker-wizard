@@ -895,6 +895,22 @@ def _events_to_preflop_actions(events: list[tuple[str, str]], players: int = 8) 
     return "-".join([t or "F" for t in first] + continuation)
 
 
+def preflop_events_to_actions(
+        events: list[dict], hero_position: str, players: int = 8) -> str | None:
+    """Build a positional action string from LLM-extracted actor events."""
+    pairs: list[tuple[str, str]] = []
+    for event in events or []:
+        actor = str(event.get("actor") or "")
+        position = (hero_position if _clean_word(actor) == "hero"
+                    else _norm_pos(actor))
+        action = str(event.get("action") or "").upper()
+        if not position or not re.fullmatch(
+                r"F|C|X|R\d*(?:\.\d+)?|AI\d*(?:\.\d+)?", action):
+            return None
+        pairs.append((position, action))
+    return _events_to_preflop_actions(pairs, players) if pairs else None
+
+
 def preflop_actions_for_pot_from_raw(raw_text: str, hand: dict) -> str | None:
     """Recover the real preflop contribution line from a live shorthand.
 
