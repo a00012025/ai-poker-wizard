@@ -848,6 +848,49 @@ def test_live_token_replay_assigns_continuation_actors_without_position_shift():
               [("SB", "X"), ("BTN", "R8"), ("SB", "F")])
 
 
+def test_live_token_replay_locks_named_preflop_size_to_raw_literal():
+    """Regression: Gemini dropped Hero's explicit r10 squeeze size."""
+    from live_flow import replay_live_action_tokens
+
+    block = (
+        "Eff 55bb UTG raise hj call btn call sb call Hero bb Ad3s r10 "
+        "fold call fold fold\n"
+        "Ks9s2c pot 28bb, b5 call\n"
+        "6h b15 call\n"
+        "6c all in 28bb call"
+    )
+    tokens = {
+        "effective_bb": 55, "hero_position": "BB", "hero_hand": "Ad3s",
+        "preflop_actions": [
+            {"actor": "UTG", "action": "raise", "source": "UTG raise"},
+            {"actor": "HJ", "action": "call", "source": "hj call"},
+            {"actor": "BTN", "action": "call", "source": "btn call"},
+            {"actor": "SB", "action": "call", "source": "sb call"},
+            {"actor": "HERO", "action": "raise",
+             "source": "Hero bb Ad3s r10"},
+            {"action": "fold", "source": "fold"},
+            {"action": "call", "source": "call"},
+            {"action": "fold", "source": "fold"},
+            {"action": "fold", "source": "fold"},
+        ],
+        "streets": [
+            {"board_text": "Ks9s2c", "actions": [
+                {"action": "bet", "size_bb": 5}, {"action": "call"}]},
+            {"board_text": "6h", "actions": [
+                {"action": "bet", "size_bb": 15}, {"action": "call"}]},
+            {"board_text": "6c", "actions": [
+                {"action": "all_in", "size_bb": 28}, {"action": "call"}]},
+        ],
+    }
+    hand = replay_live_action_tokens(block, tokens)
+    assert_eq(hand["preflop_actions"], "R2-F-F-C-F-C-C-R10-F-C-F-F")
+    assert_eq(hand["_parse_flags"], [])
+    assert_eq(
+        [[a["action"] for a in street["actions"]] for street in hand["streets"]],
+        [["R5", "C"], ["R15", "C"], ["AI28", "C"]],
+    )
+
+
 def test_live_token_replay_keeps_explicit_lj_fold_and_hj_call():
     """Regression for Hand 3: explicit LJ fold cannot become a live ghost."""
     from live_flow import replay_live_action_tokens
@@ -1315,6 +1358,11 @@ def test_live_process_batch_skips_solver_for_parse_uncertain_hand():
     assert_true(result["hands"][0]["ok"])
     assert_true(all(row["excluded"]
                     for row in result["hands"][0]["dec_rows"]))
+    assert_true(all(dec["ungraded_reason"] == "parse_uncertain"
+                    for dec in result["hands"][0]["decisions"]))
+    html = live_flow.render_session_page(result)[0]
+    assert_in("· ❓", html)
+    assert_in("解析資訊不足，未納入評分", html)
 
 
 def test_live_process_batch_attempts_solver_for_unsized_preflop_raise():
