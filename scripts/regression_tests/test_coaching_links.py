@@ -630,6 +630,43 @@ def test_real_hand_description_parsed():
         assert_eq(result, True, f"Hand description should look like a hand: {h!r}")
 
 
+def test_gemini36_text_parse_uses_supported_thinking_config():
+    """New-key projects reject 2.5 and Gemini 3.6 rejects thinking_budget=0."""
+    import asyncio
+    import json
+    import logging
+    from types import SimpleNamespace
+    from google.genai import types
+    from gemini_session import GeminiSessionManager
+
+    captured = {}
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(text=json.dumps({"hand": {
+                "gametype": "MTTGeneral", "players_at_table": 8,
+                "effective_bb": 14, "hero_position": "BTN", "hero_hand": "77",
+                "preflop_actions": "F-R2-F-F-F-AI14-F-F",
+                "streets": [],
+            }}))
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session.client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    session.parse_model = "gemini-3.6-flash"
+    session.hand_contexts = {}
+    session._logger = logging.getLogger("gemini36-parse-config")
+
+    hand = asyncio.run(session._parse_hand(
+        556028753, "Eff 14bb +1 raise hero btn all in 77"))
+
+    config = captured["config"].thinking_config
+    assert_eq(config.thinking_level, types.ThinkingLevel.LOW)
+    assert_eq(config.thinking_budget, None)
+    assert_eq(hand["hero_hand"], "77")
+    assert_eq(hand["hero_position"], "BTN")
+
+
 def test_query_gto_h2643_redundant_overrides():
     """H2643 river follow-up: LLM sent redundant overrides (including a
     7-position preflop from a 7-max hand). The cached context has 8-position
