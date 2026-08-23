@@ -2470,97 +2470,6 @@ class GeminiSessionManager:
         return result
 
     @staticmethod
-    def _text_position_action(segment: str) -> str | None:
-        """Extract one explicit preflop action from a position's text span."""
-        low = segment.lower()
-        allin = re.search(
-            r"(?:all\s*-?\s*in|allin|shove|jam|全下)" r"(?:\s*(\d+(?:\.\d+)?)\s*bb?)?",
-            low,
-        )
-        if allin:
-            return f"AI{float(allin.group(1)):g}" if allin.group(1) else "AI"
-        if re.search(r"\b(?:raise|open)\b|加注", low):
-            size = re.search(
-                r"(?:raise(?:\s+to)?|open(?:\s+to)?|加注(?:到)?)" r"\s*(\d+(?:\.\d+)?)",
-                low,
-            )
-            return f"R{float(size.group(1)):g}" if size else "R2"
-        if re.search(r"\blimp\b|\bcall\b|跟注", low):
-            return "C"
-        if re.search(r"\bfold\b|棄牌", low):
-            return "F"
-        if re.search(r"\bcheck\b|過牌", low):
-            return "X"
-        return None
-
-    @staticmethod
-    def _repair_short_text_preflop(hand: dict, user_text: str):
-        """Rebuild a truncated first round from explicit position/action prose.
-
-        Flash occasionally drops a fold placeholder even though the user names
-        every player who entered the pot.  H3870 became a seven-token 8-max
-        line, shifted both blind callers onto BTN/SB, and therefore removed the
-        real BB hero from every postflop street.  Only repair an objectively
-        short first round and only when the source line provides unique,
-        explicit position/action anchors including Hero.
-        """
-        from hh_parser import POSITION_ORDERS
-
-        n = hand.get("players_at_table", 8)
-        pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
-        parts = [p for p in str(hand.get("preflop_actions") or "").split("-") if p]
-        if len(parts) >= len(pos_order) or not user_text:
-            return
-
-        preflop_line = next(
-            (line.strip() for line in user_text.splitlines() if line.strip()),
-            "",
-        )
-        if not preflop_line:
-            return
-        position_re = re.compile(
-            r"(?<![A-Za-z0-9+])(?:hero\s+|我\s*)?"
-            r"(utg\+2|utg\+1|utg|lj|hj|co|btn|sb|bb)(?![A-Za-z0-9+])",
-            re.I,
-        )
-        matches = list(position_re.finditer(preflop_line))
-        explicit: dict[str, str] = {}
-        duplicate = False
-        for idx, match in enumerate(matches):
-            position = match.group(1).upper()
-            end = (
-                matches[idx + 1].start()
-                if idx + 1 < len(matches)
-                else len(preflop_line)
-            )
-            action = GeminiSessionManager._text_position_action(
-                preflop_line[match.end() : end]
-            )
-            if not action:
-                continue
-            if position in explicit:
-                duplicate = True
-                break
-            explicit[position] = action
-
-        hero_pos = str(hand.get("hero_position") or "").upper()
-        if duplicate or hero_pos not in explicit or len(explicit) < 2:
-            return
-        # Do not discard model-extracted voluntary actions unless the raw line
-        # accounts for at least as many entrants.  This keeps the repair narrow
-        # to a missing fold placeholder rather than guessing a complex line.
-        model_voluntary = sum(p not in ("F", "") for p in parts)
-        explicit_voluntary = sum(p not in ("F", "") for p in explicit.values())
-        if explicit_voluntary < model_voluntary:
-            return
-
-        rebuilt = ["F"] * len(pos_order)
-        for position, action in explicit.items():
-            if position in pos_order:
-                rebuilt[pos_order.index(position)] = action
-        hand["preflop_actions"] = "-".join(rebuilt)
-
-    @staticmethod
     def _text_street_action_tokens(user_text: str, card_text: str) -> str | None:
         """Read ordered shorthand actions from the source line for one street."""
         if not user_text or not card_text:
@@ -2621,10 +2530,20 @@ class GeminiSessionManager:
         hand["hero_hand"] = re.sub(r"10", "T", hand["hero_hand"])
         from hh_parser import POSITION_ORDERS
 
-        GeminiSessionManager._repair_short_text_preflop(hand, user_text)
-
         n = hand.get("players_at_table", 8)
         pos_order = POSITION_ORDERS.get(n, POSITION_ORDERS[8])
+        events = hand.get("preflop_events")
+        hero_position = str(hand.get("hero_position") or "")
+        if isinstance(events, list) and any(
+                isinstance(event, dict)
+                and str(event.get("actor") or "").upper()
+                in {"HERO", hero_position.upper()}
+                for event in events):
+            from live_flow import preflop_events_to_actions
+
+            rebuilt = preflop_events_to_actions(events, hero_position, n)
+            if rebuilt:
+                hand["preflop_actions"] = rebuilt
         first_round = str(hand.get("preflop_actions") or "").split("-")
         can_act = [
             position
@@ -2839,7 +2758,7 @@ class GeminiSessionManager:
             if (
                 hand
                 and hand.get("hero_position")
-                and hand.get("preflop_actions")
+                and (hand.get("preflop_events") or hand.get("preflop_actions"))
                 and hand.get("hero_hand")
             ):
                 repaired_hand = self._repair_text_hero_hand_literal(hand, user_text)
@@ -2852,6 +2771,8 @@ class GeminiSessionManager:
                 # always assigned by poker order in deterministic code.  Ignore
                 # any legacy model-provided position labels.
                 self._normalize_text_action_tokens(hand, user_text)
+                if not hand.get("preflop_actions"):
+                    return None
                 self._fix_folded_players_guarded(hand, chat_id)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:

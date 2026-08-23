@@ -647,7 +647,12 @@ def test_gemini36_text_parse_uses_supported_thinking_config():
             return SimpleNamespace(text=json.dumps({"hand": {
                 "gametype": "MTTGeneral", "players_at_table": 8,
                 "effective_bb": 14, "hero_position": "BTN", "hero_hand": "77",
-                "preflop_actions": "F-R2-F-F-F-AI14-F-F",
+                # Deliberately reproduce H3876's model-authored seat shift.
+                "preflop_actions": "F-R2-F-F-AI14-F-F-F",
+                "preflop_events": [
+                    {"actor": "UTG+1", "action": "R2"},
+                    {"actor": "BTN", "action": "AI14"},
+                ],
                 "streets": [],
             }}))
 
@@ -665,6 +670,24 @@ def test_gemini36_text_parse_uses_supported_thinking_config():
     assert_eq(config.thinking_budget, None)
     assert_eq(hand["hero_hand"], "77")
     assert_eq(hand["hero_position"], "BTN")
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F-AI14-F-F")
+
+
+def test_free_form_strategy_candidates_are_not_replayed_as_taken_actions():
+    from gemini_session import GeminiSessionManager
+
+    hand = {
+        "players_at_table": 8, "hero_position": "BTN", "hero_hand": "77",
+        "preflop_events": [{"actor": "UTG+1", "action": "R2"}],
+        # Decision-node prefix produced by the semantic parser. Hero has not
+        # taken either candidate from "call 還是 all-in".
+        "preflop_actions": "F-R2-F-F-F",
+        "streets": [],
+    }
+    GeminiSessionManager._normalize_text_action_tokens(
+        hand, "14bb BTN 77 面對 +1 open，應該 call 還是 all in？")
+
+    assert_eq(hand["preflop_actions"], "F-R2-F-F-F")
 
 
 def test_query_gto_h2643_redundant_overrides():
