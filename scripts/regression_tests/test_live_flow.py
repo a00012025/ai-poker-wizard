@@ -2512,7 +2512,7 @@ def test_live_queue_id_lookup_includes_depth_scope():
     ])
 
 
-def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
+def test_live_drill_url_uses_custom_only_without_a_standard_enum():
     """Postflop queue buttons should use the exact custom-spot builder when
     the representative parsed hand is available; bucket URLs can be ignored by
     GTOW and land on preflop/any-action."""
@@ -2552,10 +2552,11 @@ def test_live_drill_url_prefers_custom_spot_for_postflop_queue():
         gtow_custom_url.build_custom_spot_url = old
     assert_in("fh_start_spot=custom_spot", url)
     assert_in("fh_start_spot=custom_spot", cold_url)
-    assert_in("fh_start_spot=custom_spot", open_url)
+    assert_in("fh_start_spot=preflop", open_url)
+    assert_in("fh_actions=vsSRP", open_url)
     assert_eq(calls[0][1:], ("turn", 0, "squeezed"))
     assert_eq(calls[1][1:], ("preflop", 0, "squeezed"))
-    assert_eq(calls[2][1:], ("preflop", 0, "SRP"))
+    assert_eq(len(calls), 2)
 
 
 def test_live_drill_url_omits_failed_exact_postflop_link():
@@ -2630,8 +2631,43 @@ def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
     assert_in("fh_start_spot=custom_spot", items[0]["drill_url"])
 
 
+def test_queue_decision_url_uses_broad_enum_for_raise_call():
+    """SB raise-call drills cover every opener/caller combination GTOW supports."""
+    from urllib.parse import parse_qs, urlparse
+
+    import gtow_custom_url
+    import queue_feed as qf
+
+    old_builder = gtow_custom_url.build_custom_spot_url
+    gtow_custom_url.build_custom_spot_url = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("standard GTOW enum must be preferred"))
+    try:
+        url = qf.queue_drill_url_for_decision({
+            "spot_category": "vsRaiseCall",
+            "spot_leaf": "SB_vsRaiseCall_vMP_OOP",
+            "street": "preflop", "decision_idx": 0,
+            "position": "SB", "hero_cat": "SB", "villain_cat": "MP",
+            "ip_oop": "OOP", "eff_stack": "short", "pot_type": "SRP",
+        })
+    finally:
+        gtow_custom_url.build_custom_spot_url = old_builder
+
+    params = parse_qs(urlparse(url).query)
+    assert_eq(params["fh_start_spot"], ["preflop"])
+    assert_eq(params["fh_actions"], ["vsRaiseCall"])
+    assert_eq(params["fh_hero"], ["SB"])
+    assert_true("fh_opponent" not in params)
+    assert_true("fh_rel_positions" not in params)
+
+    lp = parse_qs(urlparse(qf.queue_drill_url_for_decision({
+        "spot_category": "vsRaiseCall", "street": "preflop",
+        "position": "CO", "hero_cat": "LP", "eff_stack": "short",
+    })).query)
+    assert_eq(lp["fh_hero"], ["CO,BTN"])
+
+
 def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
-    """Queue policy uses custom_spot for every source-dependent category."""
+    """Queue policy uses custom_spot only when no standard enum is faithful."""
     import queue_feed as qf
     import gtow_custom_url
 
@@ -2652,28 +2688,14 @@ def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
             "street": "preflop", "decision_idx": 0, "position": "BB",
             "pot_type": "Preflop",
         })
-        raise_call = qf.queue_drill_url_for_decision({
-            "spot_category": "vsRaiseCall", "spot_leaf": "BB_vsRaiseCall_vEP_OOP",
-            "street": "preflop", "decision_idx": 0, "position": "BB",
-            "pot_type": "SRP",
-        })
-        versus_open = qf.queue_drill_url_for_decision({
-            "spot_category": "vsOpen", "spot_leaf": "BB_vsOpen_EP",
-            "street": "preflop", "decision_idx": 0, "position": "BB",
-            "pot_type": "SRP",
-        })
     finally:
         qf._load_source_hand = old_load
         gtow_custom_url.build_custom_spot_url = old_build
     assert_in("fh_start_spot=custom_spot", post)
     assert_in("fh_start_spot=custom_spot", cold)
-    assert_in("fh_start_spot=custom_spot", raise_call)
-    assert_in("fh_start_spot=custom_spot", versus_open)
     assert_eq(seen, [
         ("turn", 1, "3bet", {}),
         ("preflop", 0, "squeezed", {}),
-        ("preflop", 0, "SRP", {"opponent_role": "opener"}),
-        ("preflop", 0, "SRP", {}),
     ])
 
 
@@ -3255,7 +3277,7 @@ def test_missing_token_size_excludes_live_decisions_from_stats():
 
 
 def test_shared_drill_url_policy():
-    """RFI is the shared shortcut; response drills require source history."""
+    """Standard preflop families share GTOW enum shortcuts."""
     from gtow_trainer_url import drill_url_for_spot
     from spot_leaderboard import _drill_url
     from live_flow import drill_url_for
@@ -3269,7 +3291,7 @@ def test_shared_drill_url_policy():
     assert_true(u_row and u_dec)
     assert_eq(u_row, u_dec)
     assert_in("fh_hero=BTN", u_row)
-    assert_eq(drill_url_for({**dec, "spot_category": "vsOpen"}), None)
+    assert_in("fh_actions=vsSRP", drill_url_for({**dec, "spot_category": "vsOpen"}))
     # postflop/cold spots require a source hand; unsupported category -> None
     u_pf = drill_url_for_spot("flop", hero_cat="BB", villain_cat="LP",
                               ip_oop="OOP", pot_type="SRP")
