@@ -371,17 +371,18 @@ def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
                        depths: list[int] | None = None) -> str | None:
     """Trainer deep link for a classified spot, or None when unsupported.
 
-    Standard preflop enums pin only hero's seat so GTOW can vary opponent seats
-    and action paths within the requested family. Postflop and cold-raise
-    categories require an exact source-hand custom spot.
+    Standard preflop enums pin the classified hero/opponent scope. Postflop and
+    cold-raise categories require an exact source-hand custom spot.
     """
     depths = list(MTT_DEPTHS) if depths is None else depths
+    opp = CAT_POSITIONS.get(villain_cat) if villain_cat in CAT_POSITIONS else None
     try:
         if category in PREFLOP_CATS:
             hero = ([hero_pos] if category in ("RFI", "vsOpen") and hero_pos
                     else CAT_POSITIONS.get(hero_cat, []))
             return build_drill_url(
-                category, "preflop", 20, hero, depths=depths)
+                category, "preflop", 20, hero, opponent_positions=opp,
+                rel_position=ip_oop, depths=depths)
     except (SpotNotSupportedError, ValueError):
         return None
     return None

@@ -2733,8 +2733,8 @@ def test_live_queue_uses_later_valid_source_when_first_custom_spot_fails():
     assert_in("fh_start_spot=custom_spot", items[0]["drill_url"])
 
 
-def test_queue_decision_url_uses_broad_enum_for_raise_call():
-    """SB raise-call drills cover every opener/caller combination GTOW supports."""
+def test_queue_decision_url_uses_scoped_enum_for_raise_call():
+    """Standard enums retain the queue leaf's opponent and position scope."""
     from urllib.parse import parse_qs, urlparse
 
     import gtow_custom_url
@@ -2758,14 +2758,31 @@ def test_queue_decision_url_uses_broad_enum_for_raise_call():
     assert_eq(params["fh_start_spot"], ["preflop"])
     assert_eq(params["fh_actions"], ["vsRaiseCall"])
     assert_eq(params["fh_hero"], ["SB"])
-    assert_true("fh_opponent" not in params)
-    assert_true("fh_rel_positions" not in params)
+    assert_eq(params["fh_opponent"], ["LJ,HJ"])
+    assert_eq(params["fh_rel_positions"], ["OOP"])
 
     lp = parse_qs(urlparse(qf.queue_drill_url_for_decision({
         "spot_category": "vsRaiseCall", "street": "preflop",
         "position": "CO", "hero_cat": "LP", "eff_stack": "short",
     })).query)
     assert_eq(lp["fh_hero"], ["CO,BTN"])
+
+
+def test_sb_vs_lp_open_queue_drill_pins_lp_opener():
+    """The exact reported queue leaf must not train SB vs every open seat."""
+    from urllib.parse import parse_qs, urlparse
+    from queue_feed import queue_drill_url_for_decision
+
+    url = queue_drill_url_for_decision({
+        "spot_category": "vsOpen", "spot_leaf": "SB_vsOpen_LP",
+        "street": "preflop", "position": "SB", "hero_cat": "SB",
+        "villain_cat": "LP", "eff_stack": "short",
+    })
+
+    params = parse_qs(urlparse(url).query)
+    assert_eq(params["fh_actions"], ["vsSRP"])
+    assert_eq(params["fh_hero"], ["SB"])
+    assert_eq(params["fh_opponent"], ["CO,BTN"])
 
 
 def test_queue_decision_url_requires_exact_source_for_postflop_and_cold3bet():
