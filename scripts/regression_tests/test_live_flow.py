@@ -2756,7 +2756,7 @@ def test_queue_decision_url_uses_scoped_enum_for_raise_call():
 
     params = parse_qs(urlparse(url).query)
     assert_eq(params["fh_start_spot"], ["preflop"])
-    assert_eq(params["fh_actions"], ["vsRaiseCall"])
+    assert_eq(params["fh_actions"], ["possibleSqueeze"])
     assert_eq(params["fh_hero"], ["SB"])
     assert_eq(params["fh_opponent"], ["LJ,HJ"])
     assert_eq(params["fh_rel_positions"], ["OOP"])

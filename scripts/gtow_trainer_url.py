@@ -160,7 +160,9 @@ class SpotNotSupportedError(ValueError):
 _CAT_TO_FH_ACTIONS: dict[str, str] = {
     "RFI": "RFI",
     "vsOpen": "vsSRP",
-    "vsRaiseCall": "vsRaiseCall",
+    # GTOW calls the raise+call state in which hero can squeeze
+    # ``possibleSqueeze``. ``vsRaiseCall`` is only our taxonomy name.
+    "vsRaiseCall": "possibleSqueeze",
     "vsSqueeze": "vsSqueeze",
     "vs3bet": "vs3bet",
     "vs4bet": "vs4bet",
