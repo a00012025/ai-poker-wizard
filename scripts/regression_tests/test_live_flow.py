@@ -4201,6 +4201,30 @@ def test_queue_drill_detail_completion_is_direct_and_not_threshold_gated():
     assert_true(any(button.get("text") == "✔ 完成" for button in flat))
 
 
+def test_queue_drill_refresh_shows_visible_success_time():
+    """An unchanged GTOW result must still visibly confirm the refresh."""
+    from types import SimpleNamespace
+    from telegram_bot.bot import _queue_drill_detail_payload
+
+    html, _buttons = _queue_drill_detail_payload(
+        {
+            "id": 39, "label": "SB OOP vs MP Open+Call (≤20bb)",
+            "spot_category": "vsRaiseCall",
+            "spot_leaf": "SB_vsRaiseCall_vMP_OOP",
+            "drill_url": "https://app.gtowizard.com/practice/trainer?a=1",
+            "n_sources": 4, "total_ev_loss_bb": 5.7,
+        },
+        SimpleNamespace(created=False, name="SB OOP vs MP Open+Call (≤20bb)"),
+        SimpleNamespace(total_hands=1, played_moves=1, gto_score=1.0,
+                        total_ev_loss_bb=0.0),
+        SimpleNamespace(sessions=1, total_hands=1, played_moves=1,
+                        gto_score=1.0, total_ev_loss_bb=0.0),
+        refreshed_at="01:23:45",
+    )
+
+    assert_in("成績已更新：01:23:45", html)
+
+
 
 def test_weekly_drill_detail_opens_new_message_without_replacing_plan():
     """A qdet callback from the weekly plan provisions the Drill as usual but
