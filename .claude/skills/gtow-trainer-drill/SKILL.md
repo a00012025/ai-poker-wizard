@@ -40,7 +40,7 @@ When you configure a drill and click **START TRAINING**, the SPA navigates to
 | `fh_hero` | hero position(s) | `UTG,UTG+1,LJ,HJ,CO,BTN,SB,BB` — comma = "any of" |
 | `fh_opponent` | opponent position(s) | same set, comma-separated |
 | `fh_rel_positions` | relative position | `IP` / `OOP` |
-| `fh_actions` | preflop action(s) | `RFI`, `vsSRP` (= "vs Open"), `vs3bet`, `vs4bet`, `vsRaiseCall`, `vsSqueeze`, `vsLimp`, `vsIso`, `StartOfHand` (= "From start") — comma-separated |
+| `fh_actions` | preflop action(s) | `RFI`, `vsSRP` (= "vs Open"), `possibleSqueeze` (= open + call), `vs3bet`, `vs4bet`, `vsSqueeze`, `vsLimp`, `vsIso`, `StartOfHand` (= "From start") — comma-separated |
 | `fh_start_spot` | where the drill starts | `preflop` / `flop` / `custom_spot` |
 | `preflop_actions` | exact preflop line (custom_spot) | e.g. `F-F-F-R2-F-F-F-C` |
 | `flop_actions` | exact flop line (custom_spot) | e.g. `X-R1.8-R4.8` |
@@ -54,8 +54,9 @@ When you configure a drill and click **START TRAINING**, the SPA navigates to
 `flop_actions` for that one hand. The `_tmp` suffix always = "this hand".
 
 **Label → value gotchas:** the UI label "vs Open" encodes as `fh_actions=vsSRP`;
-"From start" = `StartOfHand`. `vsIso`/`vsLimp`/`vs3bet`/`vs4bet`/`vsRaiseCall`/
-`vsSqueeze`/`RFI` match their labels. A flop drill with a specific action line
+"From start" = `StartOfHand`. Open + call uses `possibleSqueeze` (the repo's
+taxonomy name `vsRaiseCall` is not accepted by the Trainer SPA). `vsIso`/
+`vsLimp`/`vs3bet`/`vs4bet`/`vsSqueeze`/`RFI` match their labels. A flop drill with a specific action line
 uses `fh_start_spot=custom_spot` + `flop_actions=...`, not `fh_start_spot=flop`.
 
 Baseline UI flags (ranges visible, etc.) live in `scripts/gtow_trainer_url.py`

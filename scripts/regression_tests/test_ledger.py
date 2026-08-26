@@ -1572,7 +1572,7 @@ def test_build_drill_url_pins_position():
         pass
     # GTOW exposes raise+call as its own standard preflop enum.
     squeeze = build_drill_url("vsRaiseCall", "preflop", 20, ["BB"])
-    assert_in("fh_actions=vsRaiseCall", squeeze)
+    assert_in("fh_actions=possibleSqueeze", squeeze)
     # cold-facing 4bet has no GTOW shortcut and requires a source hand.
     try:
         build_drill_url("vsCold4bet", "preflop", 20, ["BB"])
