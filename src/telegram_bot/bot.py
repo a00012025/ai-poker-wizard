@@ -347,7 +347,8 @@ def _queue_source_payload(
 
 
 def _queue_drill_detail_payload(
-    item: dict, binding, lifetime, attempt, *, page: int = 0
+    item: dict, binding, lifetime, attempt, *, page: int = 0,
+    refreshed_at: str | None = None,
 ) -> tuple[str, list[list[dict]]]:
     """Render one queue prescription after its GTOW Drill is ensured."""
     from html import escape as _esc
@@ -363,6 +364,7 @@ def _queue_drill_detail_payload(
     lifetime_score = f"{lifetime.gto_score * 100:.1f}%" if lifetime.total_hands else "—"
     attempt_score = f"{attempt.gto_score * 100:.1f}%" if attempt.total_hands else "—"
     status = "✅ 本次 Drill 已達標" if passed else "⏳ 尚未達標"
+    refresh_line = f"• 🔄 成績已更新：{_esc(refreshed_at)}\n" if refreshed_at else ""
     html = (
         f"🎯 <b>{_esc(label)}</b>\n\n"
         f"<b>處方來源</b>\n"
@@ -380,6 +382,7 @@ def _queue_drill_detail_payload(
         f" · {attempt.played_moves} decisions\n"
         f"• Score：{attempt_score}（目標 ≥{target_score * 100:.0f}%）\n"
         f"• EV loss：{attempt.total_ev_loss_bb:.2f}bb\n"
+        f"{refresh_line}"
         f"• {status}\n\n"
         "門檻只用來標示是否達標；即使未達標，也可以隨時完成。"
     )
@@ -2483,6 +2486,7 @@ class PokerWizardBot:
         page: int = 0,
         *,
         new_message: bool = False,
+        refresh: bool = False,
     ):
         """Ensure/reuse the matching GTOW Drill, then show its practice card."""
         query = update.callback_query
@@ -2620,8 +2624,13 @@ class PokerWizardBot:
                 )
 
             lifetime, attempt = await asyncio.to_thread(load_stats)
+            refreshed_at = None
+            if refresh:
+                from queue_feed import TPE
+                refreshed_at = datetime.now(TPE).strftime("%H:%M:%S")
             html, buttons = _queue_drill_detail_payload(
-                dict(item), binding, lifetime, attempt, page=page
+                dict(item), binding, lifetime, attempt, page=page,
+                refreshed_at=refreshed_at,
             )
             await _present_queue_detail(
                 query,
@@ -3260,6 +3269,7 @@ class PokerWizardBot:
                 int(parts[1]),
                 int(parts[2]) if len(parts) > 2 else 0,
                 new_message=(data.startswith("qdet:") and origin == "plan"),
+                refresh=data.startswith("qdst:"),
             )
             return
 
