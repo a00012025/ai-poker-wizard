@@ -479,6 +479,7 @@ INITIAL_COACH_SYSTEM = """\
 - 有 EV 錯誤時優先解釋最昂貴或最早的根本偏差；沒有錯誤時，解釋最有意思的 mix、牌力角色、尺寸或跨街策略節奏。
 - 不可把「solver 保留這個 mix」當成主要洞見。下注／加注要說清楚 value 從哪些較差牌取得、bluff 讓哪些較好牌棄掉、protection 拒絕哪些落後但有改善 equity 的牌；過牌要說清楚 Hero 的 range 位置、目前領先／落後哪些範圍，以及保留 realization 或避免反擊的作用。
 - Exact combo action job 的 value／bluff／protection target 只要非空，每類至少點名一個主要 target；不能只說 range 是 merged 或 polar 就結束。
+- 骨架有 Same-class suit split 時必須解釋該花色 selector；把直接觀測到的頻率差與牌面可證明的 card-removal／後門潛力分開，不能宣稱單一唯一因果或泛化到所有同類牌面。
 - 若骨架列出對手的 indifferent 邊界，要指出這個 size 把哪些牌推進 fold／call／raise 混合的困難決策；不可把純 action 的牌說成 indifferent。
 - 若骨架證明 action range 偏極化，要交代價值端門檻、弱端組成與 Hero exact combo 在其中的角色；若是 merged，就明說它也包含哪些中等牌力，不可套用 nuts-or-air 口號。
 - 每次提到 range 都要直接寫清楚「誰、哪一街、哪個動作」，例如「HJ 的 Turn all-in range」；不可只寫無主詞的「整體 range」或「all-in range」。
@@ -491,6 +492,7 @@ INITIAL_COACH_SYSTEM = """\
 
 文字規則：
 - 像真人教練，以牌局理解為主；可以用自然段落或少量貼合內容的標題，不使用固定三段模板。
+- 同時講兩條 postflop 街時，以 `*Flop*`、`*Turn*` 等短標題分段；每街直接說該街洞見，不重複「先看整體 range／再看 exact combo」等固定開頭。
 - 不要解釋 LLM 如何判讀資料，也不要把「不同 node 分開判定」「最高頻不等於唯一正解」等內部查核規則當成 lesson，除非它直接回應使用者的疑問。
 - 不要用「先看 exact combo EV」「再服從 solver action」這類操作說明充當撲克洞見；要說這手牌在此牌局中的策略角色與可執行調整。
 - 結尾不必固定給 heuristic，也不要每手附上 generic node 邊界。低到達率只需說這個 combo 少量到達，說完就停止。

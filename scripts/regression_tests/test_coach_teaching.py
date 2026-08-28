@@ -17,6 +17,36 @@ def _arrays(default=0.0):
     return [default] * 1326
 
 
+def _aa_two_tone_suit_solution():
+    """AA uses the board-suit ace as the flop betting selector."""
+    import gto_formatter as gf
+
+    combos = {
+        "AdAc": (0.10, 0.90),
+        "AdAh": (0.11, 0.89),
+        "AdAs": (0.09, 0.91),
+        "AcAh": (0.82, 0.18),
+        "AcAs": (0.82, 0.18),
+        "AhAs": (0.82, 0.18),
+    }
+    player_range = _arrays()
+    check = _arrays()
+    bet = _arrays()
+    for combo, (check_frequency, bet_frequency) in combos.items():
+        idx = gf.combo_index_for_hand(combo)
+        player_range[idx] = 1.0
+        check[idx] = check_frequency
+        bet[idx] = bet_frequency
+    return {
+        "game": {"active_position": "CO", "board": "Td9h7d"},
+        "action_solutions": [
+            {"action": {"code": "X"}, "strategy": check, "evs": _arrays()},
+            {"action": {"code": "R1.95", "betsize_by_pot": 0.33},
+             "strategy": bet, "evs": _arrays()},
+        ],
+    }, {"range": player_range}
+
+
 def _live_qdjd_turn_jam_context():
     """live:2026-08-15:b5807e517b — CO faces HJ's turn all-in."""
     import gto_formatter as gf
@@ -1165,9 +1195,69 @@ def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     assert_in("protection／equity denial", prompt)
     assert_in("indifferent 邊界", prompt)
     fallback = ct.render_fallback(digest)
+    assert_in("*Flop*", fallback)
+    assert_in("*Turn*", fallback)
+    assert_eq(fallback.count("先看整體 range"), 0)
     assert_in("merged／線性", fallback)
     assert_in("明顯偏極化", prompt)
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+
+
+def test_coach_teaching_ignores_numerical_noise_in_better_hand_folds():
+    """A microscopic solver fold must not become 'the straight folds'."""
+    import coach_teaching as ct
+
+    bucket = {
+        "share": 0.0000087,
+        "mass": 0.0057,
+        "classes": [{"hand_class": "86o", "mass": 0.0030}],
+        "categories": [{"label": "順子", "mass": 0.0038}],
+    }
+    assert_eq(ct._target_names(bucket), [])
+
+
+def test_coach_teaching_names_non_flush_air_folds_separately():
+    """Flop protection wording distinguishes folding air from flush draws."""
+    import coach_teaching as ct
+
+    decision = {
+        "opponent_response_profile": {
+            "actor": "BB",
+            "targets": {"folds_worse_with_equity": {"categories": [
+                {"category": "no_made_hand", "label": "未成牌"},
+                {"category": "ace_high", "label": "A 高"},
+                {"category": "king_high", "label": "K 高"},
+            ]}},
+            "indifferent": {},
+            "unpaired_response": {
+                "non_flush": {"mass": 100, "fold": 0.70},
+                "flush_draw": {"mass": 20, "continue": 0.70, "raise": 0.10},
+            },
+        },
+        "hero_role": {"made_hand": "overpair", "live_draws": []},
+    }
+    story = ct._aggression_job_story(decision)
+    assert_in(
+        "沒有同花聽牌的未成牌、A 高與 K 高",
+        story["fold_pressure_summary"],
+    )
+    assert_in("同花聽牌則多數繼續", story["interpretation"])
+
+
+def test_coach_teaching_surfaces_two_tone_pair_suit_selector():
+    """A material AA suit split becomes a cautious, grounded coaching fact."""
+    import coach_teaching as ct
+
+    solution, player_info = _aa_two_tone_suit_solution()
+    story = ct._same_class_suit_story(solution, player_info, "AsAh")
+    assert_true(story is not None)
+    assert_eq(story["suit_card"], "Ad")
+    assert_true(story["with_suit_aggression"] > 0.85)
+    assert_true(story["without_suit_aggression"] < 0.20)
+    assert_true(not story["hero_has_suit_card"])
+    assert_in("雙方塊同花聽牌", story["interpretation"])
+    assert_in("後門 A-high 同花潛力", story["interpretation"])
+    assert_in("節點特定的 combo selector", story["interpretation"])
 
 
 def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
@@ -1201,7 +1291,8 @@ def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     assert_not_in("結論只適用於目前深度、牌面與 action line", prompt)
 
     fallback = ct.render_fallback(digest)
-    assert_in("先看整體 range", fallback)
+    assert_in("*Turn*", fallback)
+    assert_in("UTG+1 的 Turn bet 50% pot range", fallback)
     assert_in("價值端", fallback)
     assert_in("弱端", fallback)
     assert_not_in("過牌的理由", fallback)
