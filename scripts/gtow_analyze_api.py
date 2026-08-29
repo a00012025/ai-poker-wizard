@@ -203,9 +203,10 @@ def iter_all_hands(since_iso: str, until_iso: str | None = None,
 def hand_detail(gtow_hand_id: str, request_fn=None, throttle: bool = True) -> dict | None:
     """Return the hand detail dict, or None if the hand has no retrievable
     analysis yet (204 no-solution / 403 forbidden / 404 upload still
-    processing). Callers should skip None hands and let a later run retry.
+    processing / 500 detail failure after retries). Callers should skip None
+    hands and let a later run retry.
 
     throttle=False lets a concurrent sweep manage its own pacing (see _request)."""
     return _request("GET", f"{API_BASE}/v4/hand-history/hands/{gtow_hand_id}/",
-                    request_fn=request_fn, soft_statuses=(204, 403, 404),
+                    request_fn=request_fn, soft_statuses=(204, 403, 404, 500),
                     throttle=throttle)

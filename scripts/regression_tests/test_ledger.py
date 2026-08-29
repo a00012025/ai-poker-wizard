@@ -81,6 +81,31 @@ def test_analyze_api_hand_detail_soft_404_returns_none():
         assert_eq(gapi.hand_detail("x", request_fn=fk), None)
 
 
+def test_analyze_api_hand_detail_soft_500_after_retries_only():
+    """A single detail resource still returning 500 after retries stays pending;
+    list endpoint 500s remain fatal so service-wide failures stay visible."""
+    import gtow_analyze_api as gapi
+
+    def server_error(method, url, **kw):
+        class R:
+            status_code = 500
+            content = b"Server Error"
+            def json(self): return {}
+        return R()
+
+    old_retries = gapi._MAX_RETRIES
+    gapi._MAX_RETRIES = 0
+    try:
+        assert_eq(gapi.hand_detail("broken", request_fn=server_error), None)
+        try:
+            gapi.list_hands("2026-08-29T00:00:00Z", request_fn=server_error)
+            assert_true(False, "list endpoint 500 must remain fatal")
+        except RuntimeError:
+            pass
+    finally:
+        gapi._MAX_RETRIES = old_retries
+
+
 def test_analyze_api_invalid_hand_is_typed_but_other_400_is_fatal():
     """GTOW's permanent per-hand validation failures are typed so a detail
     sweep can isolate that hand; unrelated 400s must remain fatal."""
