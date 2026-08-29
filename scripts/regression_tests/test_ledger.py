@@ -81,9 +81,9 @@ def test_analyze_api_hand_detail_soft_404_returns_none():
         assert_eq(gapi.hand_detail("x", request_fn=fk), None)
 
 
-def test_analyze_api_incorrect_actions_is_typed_but_other_400_is_fatal():
-    """Only GTOW's exact permanent per-hand validation failure is typed so a
-    detail sweep can isolate that hand; unrelated 400s must remain fatal."""
+def test_analyze_api_invalid_hand_is_typed_but_other_400_is_fatal():
+    """GTOW's permanent per-hand validation failures are typed so a detail
+    sweep can isolate that hand; unrelated 400s must remain fatal."""
     import gtow_analyze_api as gapi
 
     def response(body):
@@ -95,14 +95,15 @@ def test_analyze_api_incorrect_actions_is_typed_but_other_400_is_fatal():
             return R()
         return fake_request
 
-    try:
-        gapi.hand_detail(
-            "invalid-actions",
-            request_fn=response({"code": "VALIDATION_ERROR", "detail": "Incorrect actions"}),
-        )
-        assert_true(False, "expected typed invalid-actions error")
-    except gapi.InvalidHandActionsError:
-        pass
+    for detail in ("Incorrect actions", "Invalid input"):
+        try:
+            gapi.hand_detail(
+                "invalid-actions",
+                request_fn=response({"code": "VALIDATION_ERROR", "detail": detail}),
+            )
+            assert_true(False, f"expected typed invalid-hand error for {detail}")
+        except gapi.InvalidHandActionsError:
+            pass
 
     try:
         gapi.hand_detail(

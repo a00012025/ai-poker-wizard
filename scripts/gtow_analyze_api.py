@@ -158,7 +158,7 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
                 payload = None
             if (isinstance(payload, dict)
                     and payload.get("code") == "VALIDATION_ERROR"
-                    and payload.get("detail") == "Incorrect actions"):
+                    and payload.get("detail") in ("Incorrect actions", "Invalid input")):
                 raise InvalidHandActionsError(
                     f"GTOW Analyze rejected hand actions for {url}"
                 )
