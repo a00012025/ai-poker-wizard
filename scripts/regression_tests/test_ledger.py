@@ -95,13 +95,18 @@ def test_analyze_api_invalid_hand_is_typed_but_other_400_is_fatal():
             return R()
         return fake_request
 
-    for detail in ("Incorrect actions", "Invalid input"):
+    invalid_hands = (
+        {"code": "VALIDATION_ERROR", "detail": "Incorrect actions"},
+        {"code": "VALIDATION_ERROR", "detail": "Invalid input"},
+        {"code": "NO_MORE_PLAYERS", "detail": "No more players"},
+    )
+    for body in invalid_hands:
         try:
             gapi.hand_detail(
                 "invalid-actions",
-                request_fn=response({"code": "VALIDATION_ERROR", "detail": detail}),
+                request_fn=response(body),
             )
-            assert_true(False, f"expected typed invalid-hand error for {detail}")
+            assert_true(False, f"expected typed invalid-hand error for {body}")
         except gapi.InvalidHandActionsError:
             pass
 
