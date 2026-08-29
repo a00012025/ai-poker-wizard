@@ -156,9 +156,12 @@ def _request(method: str, url: str, request_fn=None, _sleep=time.sleep,
                 payload = r.json()
             except (ValueError, TypeError):
                 payload = None
-            if (isinstance(payload, dict)
-                    and payload.get("code") == "VALIDATION_ERROR"
-                    and payload.get("detail") in ("Incorrect actions", "Invalid input")):
+            if (isinstance(payload, dict) and
+                    (payload.get("code"), payload.get("detail")) in (
+                        ("VALIDATION_ERROR", "Incorrect actions"),
+                        ("VALIDATION_ERROR", "Invalid input"),
+                        ("NO_MORE_PLAYERS", "No more players"),
+                    )):
                 raise InvalidHandActionsError(
                     f"GTOW Analyze rejected hand actions for {url}"
                 )
