@@ -18,6 +18,43 @@ from card_display import cards_to_emoji
 
 MAX_EVIDENCE_CHARS = 28_000
 MAX_EVIDENCE_LINES = 180
+_HAND_CLASS_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])([2-9TJQKA]{2}[so]?)(?![A-Za-z0-9])(?!\s*%)", re.I
+)
+
+
+def suppress_exhaustive_hand_lists(text: str, max_examples: int = 3) -> str:
+    """Keep representative hands while removing unreadable solver dumps."""
+    rows = []
+    examples_used = 0
+    for line in (text or "").splitlines():
+        hands = []
+        for match in _HAND_CLASS_TOKEN_RE.finditer(line):
+            raw = match.group(1)
+            hand = raw[:2].upper() + raw[2:].lower()
+            if hand not in hands:
+                hands.append(hand)
+        if not hands:
+            rows.append(line)
+            continue
+        if len(hands) == 1 and re.search(r"【|\bhero\b|這手|我的", line, re.I):
+            rows.append(line)
+            continue
+        examples_left = max(0, max_examples - examples_used)
+        if len(hands) <= examples_left:
+            rows.append(line)
+            examples_used += len(hands)
+            continue
+        parts = re.split(r"[:：]", line, maxsplit=1)
+        prefix = parts[0].rstrip() if len(parts) > 1 else "代表牌"
+        examples = hands[:examples_left]
+        rows.append(
+            f"{prefix}："
+            + (f"代表如 {'、'.join(examples)}；" if examples else "")
+            + "其餘逐手牌清單省略，改由教練重點解讀。"
+        )
+        examples_used += len(examples)
+    return "\n".join(rows)
 
 
 @dataclass(frozen=True)
@@ -159,6 +196,7 @@ PLANNER_SYSTEM = """\
 - 當前牌局若同一街列出多個 decision，問題提到後一次 fold/call/raise/all-in 時，必須傳 decision_index；不可默認抓第一個 node。
 - 「對手某街的下注/加注範圍」用 query_coach_facts(intent=villain_range)；「對手面對我的下注會 call/fold 哪些牌」用 fold_equity，兩者不可混淆。
 - 單純列出目前行動者某街各 action 的完整 range，用 query_gto(street, position, include_range=true)，不要逐手查詢。
+- 若完整 range 問題同時問「為什麼」，除了 query_gto 的精簡 range 摘要，也呼叫 query_coach_facts(intent=why_action) 取得可驗證的教練原因；不可只貼 action-by-action 牌表。
 - 若完整 range 問題明確問 Hero／我的範圍，且當前牌局有 exact Hero combo，query_gto 同時傳 hand 並保留 include_range=true；工具會回完整 range 並額外提供該花色 combo，避免把 169 class 平均套到 exact suit。
 - 假設 action line 若不知道正確 action code，先 query_next_actions，再根據回傳 code 查 query_gto。
 - query_next_actions 只證明某動作「可用」，不證明該 combo 應採用它；要回答推薦頻率/EV，仍必須 query_gto 或 query_coach_facts。
@@ -197,6 +235,7 @@ FINAL_COACH_SYSTEM = """\
 
 文字規則：
 - 精簡、自然、可學習。通常 2-4 段，每段 1-3 句。
+- 禁止轉貼完整 range、逐 combo 或逐手牌清單。用牌力層級、blocker／攤牌價值特徵與動作傾向做教練摘要；整篇最多點名 3 個代表 hand class。
 - 用「*核心判斷*」「*為什麼*」「*你要記得*」等 Telegram 單星號標題；不用 #、表格或雙星號。
 - 若證據已寫 range 頂端／中段／底端，優先用這個易懂標籤，不要再重複 percentile 數字。
 - 具體牌與牌面使用花色 emoji；標準術語如 GTO、EV、SPR、IP、OOP、range、equity、all-in 可直接用英文。
@@ -306,6 +345,8 @@ def audit_evidence_answer(answer: str, bundle: EvidenceBundle, fact_refs: Iterab
     """Reject unsupported concrete claims while leaving explanatory prose free."""
     refs = list(fact_refs or [])
     violations: list[str] = []
+    if suppress_exhaustive_hand_lists(answer) != answer:
+        violations.append("exhaustive hand list")
     unknown = sorted(set(refs) - bundle.fact_ids)
     if unknown:
         violations.append("unknown fact refs: " + ", ".join(unknown))
@@ -696,13 +737,15 @@ def render_safe_fallback(bundle: EvidenceBundle) -> str:
         if item.source == "query_gto" and item.args.get("include_range")
     ]
     if full_range_items:
-        # The user explicitly requested the range artifact.  A narrator audit
-        # failure must not degrade that deterministic output to the first six
-        # summary lines and silently discard the combo list (H3874).
         rows = []
         for item in full_range_items:
             rows.extend(item.facts)
-        return "*完整 solver 範圍*\n" + "\n".join(rows)
+        return (
+            "*教練摘要*\n"
+            "先看牌力層級與動作傾向，不背完整牌表。這份 action table 能確認怎麼 mix；"
+            "若沒有額外因果資料，我不會硬編 blocker 或 EV 理由。\n"
+            + suppress_exhaustive_hand_lists("\n".join(rows))
+        )
 
     candidates = []
     for item in tool_items:

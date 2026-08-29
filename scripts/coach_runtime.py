@@ -28,6 +28,7 @@ from coach_evidence import (
     parse_structured_answer,
     repair_guidance_for_violations,
     render_safe_fallback,
+    suppress_exhaustive_hand_lists,
 )
 from coach_prompts import FOLLOWUP_REQUEST, _needs_solver_grounding, _normalize_terms
 
@@ -594,5 +595,6 @@ async def run_evidence_chat(
 
     if not accepted:
         accepted = display_exact_cards(render_safe_fallback(bundle))
+    accepted = suppress_exhaustive_hand_lists(accepted)
     deps.accept_history(chat_id, user_text, accepted)
     return accepted
