@@ -420,31 +420,6 @@ async def _present_queue_detail(
                 raise
 
 
-async def _refresh_open_queue_drill_url(
-    conn, item, *, user_id: int, refresh_token: str
-):
-    """Replace a stale persisted drill URL before opening it."""
-    from queue_feed import (_as_list, depths_for_scope,
-                            queue_drill_url_from_sources)
-
-    rebuilt_url = await queue_drill_url_from_sources(
-        conn,
-        _as_list(item["source_hands"]),
-        depths=depths_for_scope(item["depth_scope"]),
-        solver_user_id=user_id,
-        solver_refresh_token=refresh_token,
-    )
-    if not rebuilt_url or rebuilt_url == item["drill_url"]:
-        return item
-    return await conn.fetchrow(
-        "UPDATE drill_queue SET drill_url=$2, "
-        "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
-        "last_added=NOW() WHERE id=$1 RETURNING *",
-        item["id"],
-        rebuilt_url,
-    )
-
-
 def _prescription_attempt_started_at(item: dict, fallback=None):
     """Use the prescription surface time, never a later detail-menu open."""
     starts = [item.get("gtow_training_started_at"), item.get("last_surfaced_at")]
@@ -2531,14 +2506,6 @@ class PokerWizardBot:
                             new_message=new_message,
                         )
                         return
-                    # Rebuild on every open so old persisted links inherit the
-                    # latest exact source node and hand-range curriculum.
-                    item = await _refresh_open_queue_drill_url(
-                        conn,
-                        item,
-                        user_id=update.effective_user.id,
-                        refresh_token=refresh_token,
-                    )
                     if not item["drill_url"]:
                         await _present_queue_detail(
                             query,
@@ -2615,15 +2582,14 @@ class PokerWizardBot:
                              item, datetime.now(timezone.utc))),
                     )
 
-            def load_stats():
-                return (
-                    client.drill_totals(binding.drill_id),
-                    client.attempt_stats(
-                        binding.drill_id, item["gtow_training_started_at"]
-                    ),
-                )
-
-            lifetime, attempt = await asyncio.to_thread(load_stats)
+            lifetime, attempt = await asyncio.gather(
+                asyncio.to_thread(client.drill_totals, binding.drill_id),
+                asyncio.to_thread(
+                    client.attempt_stats,
+                    binding.drill_id,
+                    item["gtow_training_started_at"],
+                ),
+            )
             refreshed_at = None
             if refresh:
                 from queue_feed import TPE
