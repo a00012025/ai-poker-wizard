@@ -3758,6 +3758,9 @@ def _format_for_telegram(text: str) -> str:
     Does NOT support: **bold**, # headers, tables, * bullets.
     """
     import re
+    from coach_evidence import suppress_exhaustive_hand_lists
+
+    text = suppress_exhaustive_hand_lists(text)
 
     # * bullet points → • (must do BEFORE bold processing)
     # Matches: "* text" or "*   text" at start of line

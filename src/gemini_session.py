@@ -4245,19 +4245,22 @@ class GeminiSessionManager:
             format_hand_detail,
             format_range_by_action,
         )
+        from coach_evidence import suppress_exhaustive_hand_lists
 
         parts = [format_action_summary(solution)]
 
         if position and include_range:
             parts.append("")
-            parts.append(format_range_by_action(solution, position))
+            parts.append(suppress_exhaustive_hand_lists(
+                format_range_by_action(solution, position)))
 
         if hand and position:
             parts.append("")
             parts.append(format_hand_detail(solution, hand, position))
         elif position and not include_range:
             parts.append("")
-            parts.append(format_range_by_action(solution, position))
+            parts.append(suppress_exhaustive_hand_lists(
+                format_range_by_action(solution, position)))
         elif hand:
             # Hand specified but no position — use active position
             active_pos = solution["game"]["active_position"]

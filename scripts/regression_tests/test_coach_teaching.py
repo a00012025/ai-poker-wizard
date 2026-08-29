@@ -3072,8 +3072,8 @@ def test_evidence_safe_fallback_shows_tool_facts_not_internal_context():
     assert_not_in("hand_id", answer)
 
 
-def test_h3874_range_fallback_preserves_complete_solver_range():
-    """A verifier fallback must not collapse a requested range to six facts."""
+def test_range_fallback_returns_coach_summary_not_complete_hand_list():
+    """A verifier fallback must stay readable instead of dumping the artifact."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
 
     bundle = EvidenceBundle()
@@ -3092,11 +3092,47 @@ def test_h3874_range_fallback_preserves_complete_solver_range():
 
     answer = render_safe_fallback(bundle)
 
-    assert_in("完整 solver 範圍", answer)
+    assert_in("教練摘要", answer)
     assert_in("All-in（97 combos）", answer)
     assert_in("Fold（1107 combos）", answer)
-    assert_in("【UTG KTs】", answer, "last lines must not be cut by the six-line fallback")
-    assert_not_in("核心資料", answer)
+    assert_not_in("55+, A8s+, ATo+, KTs+, KQo", answer)
+    assert_not_in("完整 solver 範圍", answer)
+
+
+def test_exhaustive_range_text_is_reduced_to_representative_examples():
+    from coach_evidence import suppress_exhaustive_hand_lists
+
+    answer = suppress_exhaustive_hand_lists(
+        "同花 (4 combos, 7%): AJs(33%), A9s(14%), QJs(74%), Q9s(22%), "
+        "Q8s(34%), Q7s(5%), Q6s(0%), Q5s(3%)"
+    )
+
+    assert_in("同花 (4 combos, 7%)", answer)
+    assert_in("代表如", answer)
+    assert_not_in("Q7s", answer)
+    assert_not_in("Q6s", answer)
+    assert_not_in("Q5s", answer)
+
+
+def test_telegram_output_boundary_never_sends_complete_hand_lists():
+    from telegram_bot.bot import _format_for_telegram
+
+    formatted = _format_for_telegram(
+        "【BB 的策略分佈】\n"
+        "同花: AJs, A9s, QJs, Q9s, Q8s, Q7s, Q6s, Q5s, Q4s, Q3s"
+    )
+
+    assert_in("代表如", formatted)
+    assert_not_in("Q7s", formatted)
+    assert_not_in("Q3s", formatted)
+
+    multiline = _format_for_telegram(
+        "同花: AJs, A9s\n順子: QJs, QJo\n兩對: ATs, KTs"
+    )
+    assert_in("AJs", multiline)
+    assert_in("QJs", multiline)
+    assert_not_in("QJo", multiline)
+    assert_not_in("ATs", multiline)
 
 
 def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable():
