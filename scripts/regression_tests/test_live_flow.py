@@ -5587,58 +5587,6 @@ def test_remove_source_hand_preserves_old_drill_url_when_rebuild_returns_none():
     assert_eq(args[2:], (0.5, 1))
 
 
-def test_open_queue_drill_rebuild_does_not_erase_completed_attempt():
-    """A harmless link refresh must not hide the just-finished 100 hands."""
-    import asyncio
-    import queue_feed as qf
-    from telegram_bot.bot import _refresh_open_queue_drill_url
-
-    calls = []
-
-    async def rebuild(_conn, sources, depths=None, **credentials):
-        calls.append((sources, depths, credentials))
-        return "https://gtowizard.com/drills?fh_groups=AA%2CKK"
-
-    class Conn:
-        async def fetchrow(self, sql, *args):
-            calls.append((sql, args))
-            return {**item, "drill_url": args[1]}
-
-    item = {
-        "id": 7,
-        "source_hands": [{"hand_id": "h1", "street": "preflop",
-                          "decision_idx": 0}],
-        "depth_scope": "short",
-        "drill_url": "https://gtowizard.com/drills?fh_groups=all",
-        "gtow_drill_id": "stale",
-    }
-    old_rebuild = qf.queue_drill_url_from_sources
-    qf.queue_drill_url_from_sources = rebuild
-    try:
-        refreshed = asyncio.run(_refresh_open_queue_drill_url(
-            Conn(), item, user_id=99, refresh_token="refresh"))
-    finally:
-        qf.queue_drill_url_from_sources = old_rebuild
-
-    assert_eq(refreshed["drill_url"],
-              "https://gtowizard.com/drills?fh_groups=AA%2CKK")
-    assert_eq(refreshed["gtow_drill_id"], "stale")
-    assert_eq(calls[0], (
-        item["source_hands"], list(qf.depths_for_scope("short")),
-        {"solver_user_id": 99, "solver_refresh_token": "refresh"},
-    ))
-    sql, args = calls[1]
-    assert_eq(args, (7, refreshed["drill_url"]))
-    assert_not_in("gtow_drill_id=NULL", sql)
-    assert_not_in("gtow_drill_name=NULL", sql)
-    for field in (
-        "gtow_settings_hash=NULL", "gtow_drill_synced_at=NULL",
-    ):
-        assert_in(field, sql)
-    assert_not_in("gtow_training_started_at=NULL", sql)
-    assert_not_in("gtow_baseline_totals=NULL", sql)
-
-
 def test_depth_escalation_failure_is_honest_in_state_and_rendering():
     import live_flow
 

@@ -415,6 +415,131 @@ def test_prescription_attempt_starts_when_prescription_was_surfaced():
     }), surfaced)
 
 
+def test_open_queue_drill_uses_persisted_url_without_rebuilding():
+    """Opening a saved prescription must not rerun slow solver URL discovery."""
+    import asyncio
+    import threading
+    import time
+    import queue_feed
+    import gtow_drill_service
+    from telegram_bot.bot import PokerWizardBot
+
+    item = {
+        "id": 139, "kind": "drill", "spot_leaf": "BB_vsOpen_MP",
+        "spot_category": "vsOpen", "label": "BB vs MP Open (≤20bb)",
+        "drill_url": _trainer_url(gmff_variant="with_limps"),
+        "source_hands": [], "n_sources": 10, "total_ev_loss_bb": 3.2,
+        "bias_direction": None, "bias_n": None, "bias_ev_loss_bb": None,
+        "bias_share": None, "depth_scope": "short",
+        "gtow_drill_id": "80af61e6-ac0b-4c38-9e2d-3d5855fc0c96",
+        "gtow_drill_name": "BB vs MP Open (≤20bb)",
+        "gtow_settings_hash": "saved", "gtow_target_hands": 30,
+        "gtow_target_score": 0.9, "gtow_training_started_at": None,
+        "last_surfaced_at": datetime(2026, 8, 29, tzinfo=timezone.utc),
+    }
+
+    class ContextManager:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Conn:
+        def transaction(self):
+            return ContextManager()
+
+        async def fetchrow(self, sql, *args):
+            if sql.startswith("SELECT"):
+                return item
+            return {**item, "gtow_training_started_at": item["last_surfaced_at"]}
+
+        async def fetchval(self, *_args):
+            return None
+
+    conn = Conn()
+
+    class Pool:
+        def acquire(self):
+            return ContextManager()
+
+    class Query:
+        def __init__(self):
+            self.edits = []
+
+        async def answer(self, *_args, **_kwargs):
+            pass
+
+        async def edit_message_text(self, *args, **kwargs):
+            self.edits.append((args, kwargs))
+
+    query = Query()
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=7),
+        effective_user=SimpleNamespace(id=7),
+    )
+    context = SimpleNamespace(bot=SimpleNamespace())
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def read_stats(value):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return value
+
+    class Client:
+        def __init__(self, *_args):
+            pass
+
+        def ensure_drill(self, *_args, **_kwargs):
+            from gtow_drill_service import DrillStats
+            return SimpleNamespace(
+                drill_id=item["gtow_drill_id"], name=item["gtow_drill_name"],
+                settings_hash="saved", created=False,
+                stats=DrillStats(),
+            )
+
+        def drill_totals(self, _drill_id):
+            return read_stats(SimpleNamespace(
+                total_hands=0, played_moves=0, gto_score=0.0,
+                total_ev_loss_bb=0.0))
+
+        def attempt_stats(self, _drill_id, _started_at):
+            return read_stats(SimpleNamespace(
+                sessions=0, total_hands=0, played_moves=0, gto_score=0.0,
+                total_ev_loss_bb=0.0))
+
+    async def token(_user_id):
+        return "refresh"
+
+    async def forbidden_rebuild(*_args, **_kwargs):
+        raise AssertionError("saved queue drill URL was unnecessarily rebuilt")
+
+    old_client = gtow_drill_service.GTOWDrillClient
+    old_rebuild = queue_feed.queue_drill_url_from_sources
+    gtow_drill_service.GTOWDrillClient = Client
+    queue_feed.queue_drill_url_from_sources = forbidden_rebuild
+    try:
+        bot = PokerWizardBot(session_manager=SimpleNamespace(),
+                             db=SimpleNamespace(pool=Pool()))
+        bot._get_user_refresh_token = token
+        asyncio.run(bot._queue_drill_detail(update, context, item["id"]))
+    finally:
+        gtow_drill_service.GTOWDrillClient = old_client
+        queue_feed.queue_drill_url_from_sources = old_rebuild
+
+    assert_eq(len(query.edits), 1)
+    assert_in("BB vs MP Open", query.edits[0][0][0])
+    assert_eq(max_active, 2, "independent GTOW stats reads should overlap")
+
+
 def test_display_only_trainer_upgrade_does_not_reset_attempt():
     """GTOW's dialogs state changes on every open but is not drill identity."""
     from telegram_bot.bot import _trainer_upgrade_resets_attempt
