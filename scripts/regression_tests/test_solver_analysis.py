@@ -2281,10 +2281,27 @@ def test_grade_action_choice_never_charges_an_in_mix_action():
     assert_eq(loss, 0.0)
 
     recommendation, best_ev, hero_ev, loss = _grade_action_choice(freqs, evs, "RAI")
-    assert_eq(recommendation, "F")
+    assert_eq(recommendation, "C")
     assert_eq(best_ev, 0.0)
     assert_eq(hero_ev, 7.30)
     assert_eq(loss, 0.0, "negative noisy regret clamps to zero")
+
+
+def test_grade_action_choice_recommends_dominant_mix_for_off_tree_raise():
+    """Session 19 Hand 9: recommend the 55%-frequency 12.5bb raise, not the
+    22%-frequency all-in whose raw combo EV is only numerically highest."""
+    from hh_deviation_check import _grade_action_choice
+
+    freqs = {"C": 0.22, "R12.5": 0.55, "RAI": 0.219}
+    evs = {"C": 8.56, "R5": 9.1637, "R12.5": 9.2848, "RAI": 9.2901}
+
+    recommendation, best_ev, hero_ev, loss = _grade_action_choice(
+        freqs, evs, "R5")
+
+    assert_eq(recommendation, "R12.5")
+    assert_eq(best_ev, 9.2901)
+    assert_eq(hero_ev, 9.1637)
+    assert_true(abs(loss - 0.1264) < 1e-9)
 
 
 def test_no_hero_hand_empty_flop_returns_range_strategy():
