@@ -443,8 +443,8 @@ def _best_in_mix(freqs: dict, action_evs: dict,
     Per-combo action EVs are noisy for sizes the solver plays ~never; measuring
     EV loss against a 0%-frequency "higher EV" size fabricates a mistake for an
     action that is genuinely in the GTO mix (H2 turn: hero's 15% bet was flagged
-    a ❌ 大失誤 against a 0%-frequency size). Restrict the recommendation and the
-    EV-loss basis to in-mix actions so both stay consistent and noise-free.
+    a ❌ 大失誤 against a 0%-frequency size). Restrict the EV-loss basis to
+    in-mix actions so it stays noise-free.
 
     Falls back to any action present in both dicts if nothing clears the floor.
     Returns (code, ev), or (None, None) when no EVs are available.
@@ -467,8 +467,8 @@ def _grade_action_choice(freqs: dict, action_evs: dict | None,
     approved action and therefore has zero actionable regret.  GTOW's raw
     per-action EV arrays can use terminal accounting that differs by action;
     comparing those numbers inside the mix fabricated large losses for valid
-    calls/folds (real A6s regression).  Off-mix actions are still compared with
-    the highest-EV action among the solver's supported mix.
+    calls/folds (real A6s regression). Off-mix actions recommend the dominant
+    branch while EV loss still uses the highest-EV action in the supported mix.
     """
     if not freqs:
         return None, None, None, None
@@ -477,9 +477,8 @@ def _grade_action_choice(freqs: dict, action_evs: dict | None,
     if freqs.get(hero_code, 0.0) >= floor:
         recommendation = max(freqs, key=freqs.get)
         return recommendation, hero_ev, hero_ev, 0.0 if hero_ev is not None else None
-    recommendation, best_ev = _best_in_mix(freqs, action_evs, floor=floor)
-    if recommendation is None:
-        recommendation = max(freqs, key=freqs.get)
+    recommendation = max(freqs, key=freqs.get)
+    _, best_ev = _best_in_mix(freqs, action_evs, floor=floor)
     loss = (
         max(0.0, best_ev - hero_ev)
         if best_ev is not None and hero_ev is not None else None
