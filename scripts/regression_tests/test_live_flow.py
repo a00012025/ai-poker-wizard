@@ -5816,15 +5816,35 @@ def test_overwrite_hand_failed_replacement_is_non_destructive():
     assert_eq(out["error"], "replacement_failed")
     assert_true(not conn.touched, "no DB mutation path touched")
 
-    conn2 = Conn()
-    out2 = asyncio.run(overwrite_hand(
-        conn2, 42, 0, {"ok": True, "error": None, "dec_rows": [
-            _resend_dec_row("new-hand", excluded=True)], "decisions": []}))
-    assert_true(not out2["ok"], "fully ungraded replacement rejected")
-    assert_true(not conn2.touched, "ungraded replacement also leaves DB untouched")
+
+def test_ungraded_resend_can_replace_only_an_ungraded_session_hand():
+    from live_flow import resend_entry_can_replace
+
+    corrected = {
+        "ok": True,
+        "raw": (
+            "Eff 100bb +1 call lj r3.5 hero hj call QdTd co call btn call "
+            "bb call +1 call\n"
+            "Ac9d5d pot 23bb, x x x b6 call r40 fold fold fold fold call\n"
+            "Js x all in call"
+        ),
+        "dec_rows": [_resend_dec_row("corrected", excluded=True)],
+        "decisions": [{"street": "preflop", "ungraded_reason": "offrange"}],
+    }
+    parse_failed = {"ok": False, "error": "parse_failed", "dec_rows": []}
+    graded = {"ok": True, "dec_rows": [_resend_dec_row("old-graded")]}
+
+    assert_true(
+        resend_entry_can_replace(parse_failed, corrected),
+        "a parsed correction should replace a parse-failed summary",
+    )
+    assert_true(
+        not resend_entry_can_replace(graded, corrected),
+        "an ungraded correction must not erase an already graded hand",
+    )
 
 
-def test_apply_live_resend_overwrites_session_and_edits_original_message():
+def test_apply_live_resend_updates_parse_failed_summary_with_ungraded_correction():
     import asyncio
     import logging
     import os
@@ -5837,6 +5857,8 @@ def test_apply_live_resend_overwrites_session_and_edits_original_message():
     captured = {"acquires": 0}
     result = _mk_result(2)
     result["date"] = "2026-07-24"
+    result["hands"][1] = {
+        "idx": 2, "ok": False, "error": "parse_failed", "dec_rows": []}
     session = {"id": 42, "chat_id": 99, "message_id": 777,
                "result": result}
 
@@ -5878,8 +5900,15 @@ def test_apply_live_resend_overwrites_session_and_edits_original_message():
             acquires_during_process=captured["acquires"],
             token_during_process=getattr(gto_api._thread_local, "access_token", None),
         )
-        new = _mk_hand(2, sev="❌")
-        new["dec_rows"] = [_resend_dec_row("new-hand", ev=0.5)]
+        new = _mk_hand(2)
+        new["decisions"] = [{
+            "street": "preflop", "idx": 0, "leaf": "l", "ev_loss": None,
+            "severity": "❓", "ungraded_reason": "offrange",
+            "discarded": False, "limp_origin": False,
+        }]
+        new["raw"] = block
+        new["dec_rows"] = [
+            _resend_dec_row("new-hand", ev=None, excluded=True)]
         return new
 
     async def fake_overwrite(_conn, sid, hand_idx, new_entry):
@@ -5905,7 +5934,8 @@ def test_apply_live_resend_overwrites_session_and_edits_original_message():
     fake_live = SimpleNamespace(
         load_session=fake_load, process_resend_block=fake_process,
         overwrite_hand=fake_overwrite,
-        resend_entry_is_graded=lambda entry: bool(entry.get("ok") and entry.get("dec_rows")),
+        resend_entry_can_replace=lambda _old, entry: bool(
+            entry.get("ok") and entry.get("dec_rows")),
         resend_failure_message=lambda _idx, _entry: "failed",
         set_session_message=lambda _conn, _sid, _mid: None,
         render_session_page=lambda res, page: (f"rendered page {page} mistakes {res['totals']['mistakes']}", False, False),
@@ -5949,7 +5979,8 @@ def test_apply_live_resend_overwrites_session_and_edits_original_message():
     assert_eq(captured["acquires_during_process"], 1)  # initial read released before write acquire
     assert_eq(captured["hand_idx"], 1)
     assert_eq(captured["sid"], 42)
-    assert_eq(captured["new_entry"]["decisions"][0]["severity"], "❌")
+    assert_eq(captured["new_entry"]["decisions"][0]["severity"], "❓")
+    assert_true(captured["new_entry"]["dec_rows"][0]["excluded"])
     assert_true(captured.get("status_deleted"), "status message removed")
     assert_eq(captured["edit"][1]["chat_id"], 99)
     assert_eq(captured["edit"][1]["message_id"], 777)
@@ -6036,7 +6067,8 @@ def test_apply_live_resend_failed_replacement_is_non_destructive():
 
     captured = {"overwrite": False}
     session = {"id": 42, "chat_id": 99, "message_id": 777,
-               "result": {"date": "2026-07-24", "hands": []}}
+               "result": {"date": "2026-07-24", "hands": [
+                   {"idx": 1, "ok": False, "error": "parse_failed"}]}}
 
     class Acquire:
         async def __aenter__(self):
@@ -6074,7 +6106,7 @@ def test_apply_live_resend_failed_replacement_is_non_destructive():
     fake_live = SimpleNamespace(
         load_session=fake_load, process_resend_block=fake_process,
         overwrite_hand=fake_overwrite,
-        resend_entry_is_graded=lambda entry: False,
+        resend_entry_can_replace=lambda _old, _entry: False,
         resend_failure_message=lambda idx, entry: f"failure {idx} {entry['error']}",
         render_session_page=None, session_page_buttons=None, set_session_message=None,
     )
@@ -6163,7 +6195,8 @@ def test_apply_live_resend_fallback_persists_new_message_id():
     fake_live = SimpleNamespace(
         load_session=fake_load, process_resend_block=fake_process,
         overwrite_hand=fake_overwrite, set_session_message=fake_set_message,
-        resend_entry_is_graded=lambda entry: bool(entry.get("ok") and entry.get("dec_rows")),
+        resend_entry_can_replace=lambda _old, entry: bool(
+            entry.get("ok") and entry.get("dec_rows")),
         resend_failure_message=lambda _idx, _entry: "failed",
         render_session_page=lambda _res, page: (f"fallback page {page}", False, False),
         session_page_buttons=lambda _res, _sid, _page: [],
