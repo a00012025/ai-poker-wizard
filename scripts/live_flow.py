@@ -3029,6 +3029,12 @@ def resend_entry_is_graded(entry: dict) -> bool:
         not d.get("excluded") for d in (entry.get("dec_rows") or [])))
 
 
+def resend_entry_can_replace(old_entry: dict, new_entry: dict) -> bool:
+    """Allow ungraded corrections only when they cannot erase graded data."""
+    return bool(new_entry.get("ok") and (
+        resend_entry_is_graded(new_entry) or not resend_entry_is_graded(old_entry)))
+
+
 def resend_failure_message(hand_idx: int, entry: dict) -> str:
     """Owner-facing message for a failed corrected block; no DB changes made."""
     if entry.get("ok") and not resend_entry_is_graded(entry):
@@ -3047,11 +3053,10 @@ async def overwrite_hand(conn, session_id: int, hand_idx: int,
                          new_entry: dict, page: int | None = None) -> dict:
     """Atomically overwrite one hand's ledger/queue/session footprint.
 
-    ``new_entry`` must already be parsed/graded off the event loop. Failed or
-    ungraded replacements are deliberately non-destructive and return
-    ``ok=False`` without deleting old ledger rows or updating ``live_sessions``.
+    ``new_entry`` must already be parsed/graded off the event loop. Failed
+    replacements and ungraded replacements of graded hands are non-destructive.
     """
-    if not resend_entry_is_graded(new_entry):
+    if not new_entry.get("ok"):
         return {"ok": False, "error": "replacement_failed", "entry": new_entry}
 
     async with conn.transaction():
@@ -3061,6 +3066,8 @@ async def overwrite_hand(conn, session_id: int, hand_idx: int,
 
         result = session["result"]
         old = result["hands"][hand_idx]
+        if not resend_entry_can_replace(old, new_entry):
+            return {"ok": False, "error": "replacement_failed", "entry": new_entry}
         old_hand_id = old.get("hand_id")
 
         if old_hand_id:

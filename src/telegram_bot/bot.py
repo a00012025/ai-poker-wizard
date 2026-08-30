@@ -2304,7 +2304,7 @@ class PokerWizardBot:
             overwrite_hand,
             process_resend_block,
             render_session_page,
-            resend_entry_is_graded,
+            resend_entry_can_replace,
             resend_failure_message,
             session_page_buttons,
             set_session_message,
@@ -2339,7 +2339,8 @@ class PokerWizardBot:
                 _clear()
 
         new_entry = await asyncio.to_thread(_process_with_token)
-        if not resend_entry_is_graded(new_entry):
+        old_entry = session_hint["result"]["hands"][hand_idx]
+        if not resend_entry_can_replace(old_entry, new_entry):
             await msg.edit_text(resend_failure_message(hand_idx, new_entry))
             return
 
