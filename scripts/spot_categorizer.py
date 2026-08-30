@@ -323,7 +323,7 @@ def compute_pot_type_from_preflop(preflop_actions: str,
         return "squeezed" if squeeze else "3bet"
     if max_level == 1:
         return "limp" if any_call_before_raise else "SRP"
-    return "unopened"
+    return "limp" if any_call_before_raise else "unopened"
 
 
 def compute_pot_type(preflop_line_key: str) -> str:

@@ -1696,6 +1696,45 @@ def test_live_walk_spots_from_parsed():
     assert_true(ls[1]["limp_origin"])
 
 
+def test_live_multiway_limp_pot_is_not_recast_as_srp(monkeypatch):
+    """Session 19 Hand 7: LJ limp, BTN call, BB check stays a limp pot."""
+    from datetime import datetime, timezone
+    import hh_deviation_check
+    import live_flow
+
+    block = ("Eff 20bb Lj call hero btn call Jd9c bb x\n"
+             "7hThJs x b3 call fold\n"
+             "2s x b3 call\n"
+             "8s x all in fold")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    hand = live_flow.parse_block(block)
+    assert_eq(hand["preflop_actions"], "F-F-C-F-F-C-F-X")
+
+    monkeypatch.setattr(hh_deviation_check, "check_hand", lambda *_a, **_k: [])
+    devmap = live_flow.grade_hand(hand)
+    assert_true(hand.get("_multiway_unresolved"))
+    assert_true(not hand.get("_multiway_projection"))
+
+    hand_row, decisions = live_flow.build_hand_rows(
+        hand, "live:2026-08-30:7828caa1d5",
+        datetime(2026, 8, 30, tzinfo=timezone.utc), block, devmap)
+    assert_eq(hand_row["pot_type"], "limp")
+    postflop = [row for row in decisions if row["street"] != "preflop"]
+    assert_true(postflop)
+    assert_true(all(row["limp_origin"] for row in postflop))
+    assert_true(all(row["pot_type"] == "limp" for row in postflop))
+
+    result = {"totals": {"hands": 1, "decisions": len(decisions)}, "queue": [],
+              "hands": [{"idx": 7, "ok": True, "hand_row": hand_row,
+                         "decisions": [{"street": "flop", "idx": 0,
+                                        "ev_loss": None, "severity": "❓",
+                                        "discarded": False,
+                                        "ungraded_reason": "multiway_unresolved"}]}]}
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_in("limp", html)
+    assert_not_in("翻後簡化", html)
+
+
 def test_live_repair_hu_pot_and_ghost():
     """Deterministic parse repairs: phantom checks on folded seats stripped,
     ghost caller folded + missing continuation call appended, HU street
@@ -5138,12 +5177,15 @@ def test_live_report_uses_compact_pot_labels_and_hides_unopened():
         "squeezed": "Squeeze Pot",
         "3bet": "3B Pot",
         "4bet": "4B Pot",
+        "limped": "limp",
     }
     for pot_type, label in expected.items():
         result = _mk_result(1)
         result["hands"][0]["hand_row"]["pot_type"] = pot_type
         html, _prev, _next = live_flow.render_session_page(result, 0)
         assert_in(label, html)
+        if pot_type == "limped":
+            assert_not_in("跛入池", html)
 
     result = _mk_result(1)
     result["hands"][0]["hand_row"]["pot_type"] = "unopened"

@@ -2148,10 +2148,14 @@ def project_multiway_postflop(
     )
     from gto_api import nearest_depth
     from hh_parser import POSITION_ORDERS
+    from spot_categorizer import compute_pot_type_from_preflop
 
     preflop = hand.get("preflop_actions") or ""
     if len(_reaches_flop(preflop)) <= 2:
         return None, None, None
+    if compute_pot_type_from_preflop(
+            preflop, int(hand.get("players_at_table") or 8)) == "limp":
+        return None, None, "multiway_unresolved"
 
     hero = hand.get("hero_position")
     try:
@@ -3200,7 +3204,7 @@ def _failure_help(h: dict) -> tuple[str, str]:
 PER_PAGE = 10
 
 _POT_TYPE_ZH = {
-    "single_raised": "SRP", "srp": "SRP", "limped": "跛入池",
+    "single_raised": "SRP", "srp": "SRP", "limped": "limp",
     "3bet": "3B Pot", "4bet": "4B Pot", "5bet": "5B Pot",
     "squeezed": "Squeeze Pot", "cold4bet": "4B Pot",
     "unopened": "",
