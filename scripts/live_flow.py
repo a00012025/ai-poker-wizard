@@ -2557,6 +2557,9 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                 total_loss += max(ev_loss, 0.0)
             else:
                 flags.append("no_ev")
+                excluded = True
+                if taken_freq is not None and taken_freq <= 0:
+                    flags.append("off_tree_action")
             if spot["street"] != "preflop" and _sizing_snap(taken, spot.get("hero_size")):
                 flags.append("sizing_snap")
 
@@ -2915,9 +2918,14 @@ def process_batch(text: str, date_str: str | None = None,
                            if f.startswith("unsolved:")), None)
             if reason is None and "parse_uncertain" in d["approx_flags"]:
                 reason = "parse_uncertain"
+            if reason is None and "off_tree_action" in d["approx_flags"]:
+                reason = "off_tree_action"
+            elif reason is None and "no_ev" in d["approx_flags"]:
+                reason = "no_ev"
             disp = {"street": d["street"], "idx": d["decision_idx"],
                     "leaf": d["spot_leaf"], "ev_loss": d["ev_loss_bb"],
-                    "severity": severity(d["ev_loss_bb"] if not d["excluded"] else None),
+                    "severity": ("❌" if reason == "off_tree_action" else
+                                 severity(d["ev_loss_bb"] if not d["excluded"] else None)),
                     "taken": d["taken_code"], "best": d["best_code"],
                     "taken_label": _display_taken_label(dev, spot) if graded else None,
                     "best_label": dev.get("gto_action_label") if graded else None,
@@ -3030,7 +3038,8 @@ def process_resend_block(block: str, date_str: str | None = None) -> dict:
 def resend_entry_is_graded(entry: dict) -> bool:
     """True only for replacement hands safe to apply destructively."""
     return bool(entry.get("ok") and any(
-        not d.get("excluded") for d in (entry.get("dec_rows") or [])))
+        not d.get("excluded") and d.get("ev_loss_bb") is not None
+        for d in (entry.get("dec_rows") or [])))
 
 
 def resend_entry_can_replace(old_entry: dict, new_entry: dict) -> bool:
@@ -3255,6 +3264,22 @@ def _zero_frequency_low_loss(d: dict, h: dict | None = None) -> bool:
     )
 
 
+def _restore_persisted_no_ev_reason(h: dict) -> None:
+    """Repair live_sessions rows saved before no-EV decisions were surfaced."""
+    flags = {
+        (row.get("street"), row.get("decision_idx")): row.get("approx_flags") or []
+        for row in h.get("dec_rows") or []
+    }
+    for decision in h.get("decisions") or []:
+        if decision.get("ungraded_reason") is not None:
+            continue
+        row_flags = flags.get((decision.get("street"), decision.get("idx")), [])
+        if "no_ev" in row_flags:
+            off_tree = _taken_frequency(decision, h) == 0
+            decision["ungraded_reason"] = "off_tree_action" if off_tree else "no_ev"
+            decision["severity"] = "❌" if off_tree else "❓"
+
+
 def _hand_desc_line(h: dict) -> str:
     if not h.get("ok"):
         title, _help = _failure_help(h)
@@ -3276,6 +3301,8 @@ def render_session_page(result: dict, page: int = 0,
         raise ValueError("per_page must be positive")
     t = result["totals"]
     hands = result["hands"]
+    for hand in hands:
+        _restore_persisted_no_ev_reason(hand)
     pages = max(1, (len(hands) + per_page - 1) // per_page)
     page = max(0, min(page, pages - 1))
     lo, hi = page * per_page, page * per_page + per_page
@@ -3387,6 +3414,21 @@ def render_session_page(result: dict, page: int = 0,
             if unsolved:
                 first = unsolved[0]
                 reason = first.get("ungraded_reason")
+                if reason in {"no_ev", "off_tree_action"}:
+                    taken_freq = _taken_frequency(first, h) or 0.0
+                    best = first.get("best_label") or first.get("best") or "?"
+                    best_freq = first.get("gto_freq") or 0.0
+                    taken = first.get("taken_label") or first.get("taken") or "?"
+                    marker = "❌" if reason == "off_tree_action" else "❓"
+                    detail = ("此動作不在這手牌的 solver 策略中；EV loss 無法可靠計算"
+                              if reason == "off_tree_action"
+                              else "solver 未提供 action EV，未計分")
+                    L.append(
+                        f"　{marker} {first['street']} {escape(str(taken))}"
+                        f"（GTO {taken_freq*100:.0f}%）→ 建議 {escape(str(best))}"
+                        f"（{best_freq*100:.0f}%）；{detail}")
+                    L.append("")
+                    continue
                 detail = {
                     "no_solution": "solver 沒有此行動線的可用節點",
                     "not_graded": "此節點沒有可用評分",

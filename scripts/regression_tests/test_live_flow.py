@@ -5194,6 +5194,44 @@ def test_live_report_uses_compact_pot_labels_and_hides_unopened():
     assert_not_in("未開池", html)
 
 
+def test_live_9max_utg_call_uses_8max_approx_without_false_checkmark(monkeypatch):
+    """Session 20 Hand 8: UTG9 -> UTG is the intended 8-max approximation,
+    but ATo call at 0% with no action EV must never render as a standard hand."""
+    import gtow_solution_url
+    import live_flow
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setattr(gtow_solution_url, "build_last_hero_hand_url",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(live_flow, "grade_hand_with_escalation", lambda _hand: ({
+        ("preflop", 0): {
+            "hero_action": "C", "hero_action_label": "Call", "hero_freq": 0.0,
+            "gto_action": "F", "gto_action_label": "Fold", "gto_freq": 1.0,
+            "all_freqs": {"F": 1.0},
+        },
+    }, set(), {"attempted": False}))
+
+    result = live_flow.process_batch(
+        "Eff 27bb utg9 r2 hero +1 call ATo",
+        date_str="2026-08-30", progress=lambda _message: None)
+    hand = result["hands"][0]
+    parsed = json.loads(hand["hand_row"]["parsed_json"])
+    assert_eq(parsed["players_at_table"], 8)
+    assert_eq(parsed["hero_position"], "UTG+1")
+    assert_eq(parsed["preflop_actions"], "R2-C-F-F-F-F-F-F")
+    assert_eq(hand["decisions"][0]["ungraded_reason"], "off_tree_action")
+    assert_eq(hand["decisions"][0]["severity"], "❌")
+
+    # Existing live_sessions payloads have the row flag but not the display
+    # reason. Rendering must repair them without requiring another resend.
+    hand["decisions"][0]["ungraded_reason"] = None
+    hand["decisions"][0]["severity"] = "❓"
+    html, _prev, _next = live_flow.render_session_page(result, 0)
+    assert_in("Hand 1</b> · UTG+1 ATo · 27bb · SRP · ❌", html)
+    assert_in("❌ preflop Call（GTO 0%）→ 建議 Fold（100%）", html)
+    assert_in("EV loss 無法可靠計算", html)
+
+
 def test_live_report_displays_hand_classes_without_exact_suits():
     import live_flow
 
@@ -5875,6 +5913,9 @@ def test_ungraded_resend_can_replace_only_an_ungraded_session_hand():
     }
     parse_failed = {"ok": False, "error": "parse_failed", "dec_rows": []}
     graded = {"ok": True, "dec_rows": [_resend_dec_row("old-graded")]}
+    stale_no_ev = {"ok": True, "dec_rows": [
+        _resend_dec_row("old-no-ev", ev=None, excluded=False)
+    ]}
 
     assert_true(
         resend_entry_can_replace(parse_failed, corrected),
@@ -5883,6 +5924,10 @@ def test_ungraded_resend_can_replace_only_an_ungraded_session_hand():
     assert_true(
         not resend_entry_can_replace(graded, corrected),
         "an ungraded correction must not erase an already graded hand",
+    )
+    assert_true(
+        resend_entry_can_replace(stale_no_ev, corrected),
+        "a no-EV row was never graded and must remain correctable",
     )
 
 
