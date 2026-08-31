@@ -2278,6 +2278,7 @@ def grade_hand(hand: dict) -> dict[tuple[str, int], dict]:
     from hh_deviation_check import check_hand
     h = copy.deepcopy(hand)
     h.setdefault("num_players", h.get("players_at_table", 8))
+    _annotate_real_pot_fractions(h)
     icm_params = _resolve_live_icm_params(h)
     if icm_params:
         hand["_icm_params"] = copy.deepcopy(icm_params)
