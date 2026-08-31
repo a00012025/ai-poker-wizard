@@ -3038,7 +3038,8 @@ def process_resend_block(block: str, date_str: str | None = None) -> dict:
 def resend_entry_is_graded(entry: dict) -> bool:
     """True only for replacement hands safe to apply destructively."""
     return bool(entry.get("ok") and any(
-        not d.get("excluded") for d in (entry.get("dec_rows") or [])))
+        not d.get("excluded") and d.get("ev_loss_bb") is not None
+        for d in (entry.get("dec_rows") or [])))
 
 
 def resend_entry_can_replace(old_entry: dict, new_entry: dict) -> bool:

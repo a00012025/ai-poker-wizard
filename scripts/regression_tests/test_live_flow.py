@@ -5913,6 +5913,9 @@ def test_ungraded_resend_can_replace_only_an_ungraded_session_hand():
     }
     parse_failed = {"ok": False, "error": "parse_failed", "dec_rows": []}
     graded = {"ok": True, "dec_rows": [_resend_dec_row("old-graded")]}
+    stale_no_ev = {"ok": True, "dec_rows": [
+        _resend_dec_row("old-no-ev", ev=None, excluded=False)
+    ]}
 
     assert_true(
         resend_entry_can_replace(parse_failed, corrected),
@@ -5921,6 +5924,10 @@ def test_ungraded_resend_can_replace_only_an_ungraded_session_hand():
     assert_true(
         not resend_entry_can_replace(graded, corrected),
         "an ungraded correction must not erase an already graded hand",
+    )
+    assert_true(
+        resend_entry_can_replace(stale_no_ev, corrected),
+        "a no-EV row was never graded and must remain correctable",
     )
 
 
