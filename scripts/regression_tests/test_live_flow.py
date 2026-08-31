@@ -2007,6 +2007,43 @@ def test_live_multiway_grading_keeps_exact_preflop_and_uses_hu_postflop():
     assert_eq(hand["_multiway_projection"]["label"], "UTG+1 vs BB")
 
 
+def test_live_hu_grading_uses_real_pot_fraction_like_review_link():
+    """Session 19 Hand 9: grader and GTOW review URL must snap the river bet
+    from the same 2/7-pot signal instead of absolute bb on different trees."""
+    import hh_deviation_check
+    from live_flow import grade_hand
+
+    hand = {
+        "players_at_table": 8, "effective_bb": 25,
+        "hero_position": "BB", "hero_hand": "Ts9h",
+        "preflop_actions": "F-F-F-F-F-F-R2-C",
+        "streets": [
+            {"board": "Qc9cJs", "actions": [
+                {"position": "SB", "action": "R1", "size": 1.0},
+                {"position": "BB", "action": "C"}]},
+            {"card": "6d", "actions": [
+                {"position": "SB", "action": "X"},
+                {"position": "BB", "action": "X"}]},
+            {"card": "9s", "actions": [
+                {"position": "SB", "action": "R2", "size": 2.0},
+                {"position": "BB", "action": "R5", "size": 5.0},
+                {"position": "SB", "action": "F"}]},
+        ],
+    }
+    captured = []
+    original = hh_deviation_check.check_hand
+    hh_deviation_check.check_hand = lambda candidate, **_kwargs: (
+        captured.append(candidate) or [])
+    try:
+        grade_hand(hand)
+    finally:
+        hh_deviation_check.check_hand = original
+
+    river = captured[0]["streets"][2]["actions"]
+    assert_true(abs(river[0]["pot_fraction"] - 2 / 7) < 1e-9)
+    assert_true(abs(river[1]["pot_fraction"] - 3 / 11) < 1e-9)
+
+
 def test_live_icm_grade_passes_partial_stacks_and_average_to_solver():
     """Explicit live ICM metadata reaches check_hand instead of Chip EV."""
     import hh_deviation_check
