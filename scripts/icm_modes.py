@@ -176,10 +176,8 @@ def find_stacks(
 ) -> tuple[str, str] | tuple[str, str, dict]:
     """Find the nearest stack configuration for an ICM gametype.
 
-    Uses a three-component distance metric:
-    1. Log-ratio distance  — scale-invariant proportion matching
-    2. Rank inversion penalty — preserves who covers whom (ICM critical)
-    3. Min stack penalty   — shortest stack depth drives push/fold ranges
+    Preserves pairwise cover relationships first (ICM critical), then breaks
+    ties with log-ratio distance and a shortest-stack penalty.
 
     Active positions (haven't folded yet) are weighted 3× more heavily
     than already-folded positions.
@@ -278,7 +276,6 @@ def find_stacks(
                 break  # first non-fold ends the fold prefix
 
     active_weight = 3.0
-    inversion_penalty = 0.5
     min_stack_weight = 3.0
 
     if empty_seats is None:
@@ -294,6 +291,25 @@ def find_stacks(
     if real_folded:
         folded_min_stack = min(real_folded)
 
+    active_idx = [i for i in range(len(player_stacks))
+                  if i not in folded
+                  and player_stacks[i] is not None
+                  and player_stacks[i] > 0]
+
+    def _rank_mismatches(config_stacks: list[float]) -> int:
+        """Cover relationships are a hard priority, including false ties."""
+        mismatches = 0
+        for ii in range(len(active_idx)):
+            for jj in range(ii + 1, len(active_idx)):
+                ai, aj = active_idx[ii], active_idx[jj]
+                actual_cmp = (player_stacks[ai] > player_stacks[aj]) \
+                    - (player_stacks[ai] < player_stacks[aj])
+                config_cmp = (config_stacks[ai] > config_stacks[aj]) \
+                    - (config_stacks[ai] < config_stacks[aj])
+                if actual_cmp != 0 and actual_cmp != config_cmp:
+                    mismatches += 1
+        return mismatches
+
     def _icm_distance(config_stacks: list[float]) -> float:
         n = len(player_stacks)
 
@@ -308,26 +324,7 @@ def find_stacks(
             log_dist += active_weight * abs(
                 math.log(a) - math.log(c))
 
-        # --- ② Rank inversion penalty (active positions only) ---
-        # Count pairwise inversions: if actual[i] < actual[j] but
-        # config[i] > config[j], the cover relationship is flipped.
-        active_idx = [i for i in range(n)
-                      if i not in folded
-                      and player_stacks[i] is not None
-                      and player_stacks[i] > 0]
-        inversions = 0
-        for ii in range(len(active_idx)):
-            for jj in range(ii + 1, len(active_idx)):
-                ai, aj = active_idx[ii], active_idx[jj]
-                actual_cmp = (player_stacks[ai] > player_stacks[aj]) \
-                    - (player_stacks[ai] < player_stacks[aj])
-                config_cmp = (config_stacks[ai] > config_stacks[aj]) \
-                    - (config_stacks[ai] < config_stacks[aj])
-                if actual_cmp != 0 and config_cmp != 0 \
-                        and actual_cmp != config_cmp:
-                    inversions += 1
-
-        # --- ③ Short stack penalties (position-independent) ---
+        # --- ② Short stack penalties (position-independent) ---
         # a) Folded shortest stack: match against the smallest
         #    non-active config stack.  The ICM pressure comes from
         #    *having* a short stack, not which seat it occupies.
@@ -351,11 +348,14 @@ def find_stacks(
                     math.log(min_actual) - math.log(min_config))
 
         return (log_dist
-                + inversion_penalty * inversions
                 + min_stack_weight * short_penalty
                 + min_stack_weight * min_penalty)
 
-    best = min(configs, key=lambda c: _icm_distance(c["stacks_bb"]))
+    # A numerically close config that flips who covers whom is strategically
+    # farther away than a slightly wider stack gap. Rank preservation therefore
+    # sorts first; log/short-stack distance breaks ties.
+    best = min(configs, key=lambda c: (
+        _rank_mismatches(c["stacks_bb"]), _icm_distance(c["stacks_bb"])))
 
     depth_str = best["depth"]
     stacks_str = "-".join(best["stacks"])

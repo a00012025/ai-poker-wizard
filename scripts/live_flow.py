@@ -60,6 +60,7 @@ LIVE_DEC_COLS = [
     "gtow_hand_id", "street", "decision_idx", "source", "grader",
     "depth_band", "position", "pot_type", "facing",
     "taken_code", "best_code", "ev_loss_bb", "taken_freq",
+    "strategy_context",
     "gametype", "confidence", "approx_flags", "excluded", "played_at",
     # taxonomy columns (same set backfill_spots maintains for online rows)
     "spot_category", "spot_leaf", "spot_keys", "hero_cat", "villain_cat",
@@ -2576,7 +2577,12 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
                 icm_params.get("gametype", "MTTGeneral")
                 if icm_params and spot["street"] == "preflop"
                 else "MTTGeneral"
-            ), "confidence": parse_conf,
+            ),
+            "strategy_context": (
+                "icm" if icm_params and spot["street"] == "preflop"
+                else "icm_postflop_chipev" if icm_params else "chipev"
+            ),
+            "confidence": parse_conf,
             "approx_flags": flags, "excluded": excluded, "played_at": played_at,
             "spot_category": spot["category"], "spot_leaf": spot["leaf"],
             "spot_keys": spot["keys"], "hero_cat": spot["hero_cat"],

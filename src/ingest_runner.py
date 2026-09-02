@@ -301,6 +301,7 @@ async def _pass(env: dict, progress, ingest_args: tuple, label: str):
     if rc != 0 or not summary:
         raise RuntimeError(f"{label}失敗 (rc={rc}): {_tail(out)}")
     for args, stage in ((("scripts/backfill_spots.py",), "補 spot 分類"),
+                        (("scripts/archive_icm_regrade.py", "--fetch-missing"), "FT ICM 重評"),
                         (("scripts/ledger_sessions.py", "--rebuild"), "重建 sessions")):
         await progress(f"{stage}…", stage=stage)
         rc, out = await _run_script(env, *args)

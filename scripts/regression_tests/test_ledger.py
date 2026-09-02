@@ -189,6 +189,7 @@ def test_distill_river_blunder_hand():
     assert_eq(pre["correctness"], "BEST_MOVE")
     assert_eq(pre["ev_loss_bb"], 0.0)
     assert_eq(pre["depth_band"], "25_40")
+    assert_eq(pre["strategy_context"], "chipev")
 
     flop = decs[1]
     assert_eq(flop["correctness"], "CORRECT_MOVE")
@@ -220,6 +221,21 @@ def test_distill_preflop_fold_hand():
     assert_eq(decs[0]["correctness"], "BEST_MOVE")
     assert_eq(decs[0]["depth_band"], "15_25")
     assert_eq(hand["total_ev_loss_bb"], 0.0)
+
+
+def test_distill_marks_icm_as_a_dimension_not_a_new_taxonomy():
+    from ledger_distill import distill_hand
+    rows = _load_fix("list_rows.json")
+    lr = rows["bed8860a-442b-4478-a9b4-8acfd52b6143"]
+    det = _load_fix("detail_bed8860a.json")
+    for point in det["game_analysis"]["game_points"]:
+        point["gametype"] = "MTTGeneral_ICM8m1000PTFT"
+
+    _, decs = distill_hand(lr, det)
+
+    assert_true("spot_leaf" not in decs[0], "full-detail taxonomy stays owned by backfill_spots")
+    assert_eq(decs[0]["strategy_context"], "icm")
+    assert_not_in("chipev_grading", decs[0]["approx_flags"])
 
 
 def _list_only_row(**overrides):
@@ -255,6 +271,7 @@ def test_list_only_distill_preflop_fold_is_complete_and_provenanced():
     assert_eq(d["best_code"], "F")
     assert_eq(d["ev_loss_bb"], 0.0)
     assert_eq(d["approx_flags"], ["list_only"])
+    assert_eq(d["strategy_context"], "chipev")
     assert_eq(d["spot_leaf"], "SB_RFI")
     assert_eq(d["pot_type"], "unopened")
 

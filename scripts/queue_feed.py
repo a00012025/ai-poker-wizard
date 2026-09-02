@@ -69,7 +69,7 @@ LIVE_QUEUE_PATTERN_MIN_TOTAL_BB = 0.5
 # The honest predicate — reused VERBATIM from spot_leaderboard so the queue and
 # the leak board see the same population (NOT discarded strips discarded:* buckets).
 _HONEST = ("NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL "
-           "AND source='online' AND confidence >= 0.8")
+           "AND source='online' AND strategy_context='chipev' AND confidence >= 0.8")
 _APPROX_KEYS = ("sizing_snap", "missing_solver_depth", "analyzer_approximation")
 
 

@@ -30,7 +30,7 @@ def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
     source='online' only (§5.2): live hands are selectively recorded, so their
     averages are biased — they must never blend into the summary stats."""
     where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
-             "source='online'", "confidence >= 0.8"]
+             "source='online'", "strategy_context='chipev'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -45,7 +45,7 @@ def _summary_sql(category: str | None, hero_cat: str | None, days: int | None):
 
 def _top_spots_sql(category: str | None, hero_cat: str | None, days: int | None, limit: int):
     where = ["NOT excluded", "NOT discarded", "spot_parent IS NOT NULL",
-             "source='online'", "confidence >= 0.8"]
+             "source='online'", "strategy_context='chipev'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -64,7 +64,7 @@ def _excluded_count_sql(category: str | None, days: int | None):
     """Excluded/discarded caveat count with the SAME scope (source/category/
     window) as the summary stats it is shown beside — a wider-scope count would
     misstate the honesty caveat (§5.2)."""
-    where = ["(excluded OR discarded)", "source='online'"]
+    where = ["(excluded OR discarded)", "source='online'", "strategy_context='chipev'"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -98,7 +98,7 @@ def progress_sql(category: str | None, spot_leaf: str | None):
     (§7.3). Returns (sql, args) with the LIMIT (weeks) as the LAST positional
     parameter, to be appended by the caller."""
     where = ["NOT excluded", "NOT discarded", "spot_leaf IS NOT NULL",
-             "source='online'", "confidence >= 0.8"]
+             "source='online'", "strategy_context='chipev'", "confidence >= 0.8"]
     args: list = []
     if category:
         args.append(category); where.append(f"spot_category = ${len(args)}")
@@ -141,7 +141,7 @@ def _hands_sql(category: str | None, spot: str | None, min_ev_loss: float,
     queue / 線下 sections, never blended into this list (their Analyze review
     links would be meaningless anyway)."""
     where = ["NOT d.excluded", "NOT d.discarded", "d.source='online'",
-             "d.confidence >= 0.8", "d.ev_loss_bb >= $1"]
+             "d.strategy_context='chipev'", "d.confidence >= 0.8", "d.ev_loss_bb >= $1"]
     args: list = [float(min_ev_loss)]
     if category:
         args.append(category); where.append(f"d.spot_category = ${len(args)}")
