@@ -174,3 +174,13 @@ def test_archive_regrader_bootstraps_owner_db_session_for_cli():
     calls.clear()
     assert ensure_cli_credentials({"GTOW_USER_ID": "7"}, lambda **kwargs: calls.append(kwargs))
     assert calls == []
+
+
+def test_fetched_detail_cache_permission_error_does_not_block_regrade(tmp_path):
+    from archive_icm_regrade import cache_fetched_detail
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError("container-owned archive directory")
+
+    assert cache_fetched_detail({"id": "h1"}, tmp_path / "h1.json.gz",
+                                open_gzip=denied) is False

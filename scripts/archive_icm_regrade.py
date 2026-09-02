@@ -99,6 +99,7 @@ def render_summary(counts: dict) -> str:
         f"淘汰尾段 {counts.get('ft_monotone_tail', 0)} 場",
         f"• stack distribution 不夠接近：{counts.get('preflop_unmatched_stack', 0)}",
         f"• archive detail 缺失：{counts.get('preflop_missing_detail', 0)}",
+        f"• detail 已抓到但 cache 唯讀：{counts.get('detail_cache_write_failed', 0)}",
         f"• ICM node 無法可靠評分：{counts.get('preflop_ungraded', 0)}",
         f"• ICM provider 暫時失敗：{counts.get('preflop_provider_error', 0)}",
         f"• stack match 合格、等待重評：{counts.get('preflop_ready', 0)}",
@@ -130,6 +131,17 @@ def ensure_cli_credentials(env=os.environ, bootstrap=None) -> bool:
         from gto_owner_token import bootstrap_owner_db_token
         bootstrap = bootstrap_owner_db_token
     return bool(bootstrap(verbose=True))
+
+
+def cache_fetched_detail(detail: dict, path: Path, *, open_gzip=gzip.open) -> bool:
+    """Best-effort raw cache; a container-owned volume must not block grading."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open_gzip(path, "wt") as fh:
+            json.dump(detail, fh)
+        return True
+    except OSError:
+        return False
 
 
 def _preflop_points(detail: dict) -> list[dict]:
@@ -295,13 +307,13 @@ async def run(conn, *, max_stack_gap_bb: float = DEFAULT_MAX_STACK_GAP_BB,
             if detail:
                 if not dry_run:
                     _list_path, raw_path = raw_paths(hand["gtow_hand_id"], hand["played_at"])
-                    raw_path.parent.mkdir(parents=True, exist_ok=True)
-                    with gzip.open(raw_path, "wt") as fh:
-                        json.dump(detail, fh)
-                    rel = str(raw_path.relative_to(ROOT))
-                    await conn.execute(
-                        "UPDATE ledger_hands SET raw_path=$2,detail_status='fetched' "
-                        "WHERE gtow_hand_id=$1", hand["gtow_hand_id"], rel)
+                    if cache_fetched_detail(detail, raw_path):
+                        rel = str(raw_path.relative_to(ROOT))
+                        await conn.execute(
+                            "UPDATE ledger_hands SET raw_path=$2,detail_status='fetched' "
+                            "WHERE gtow_hand_id=$1", hand["gtow_hand_id"], rel)
+                    else:
+                        counts["detail_cache_write_failed"] += 1
         if detail is None and (not raw_path or not raw_path.exists()):
             counts["preflop_missing_detail"] += len(preflop)
             if not dry_run:
