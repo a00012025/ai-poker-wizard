@@ -123,6 +123,15 @@ def _is_pko(name: str | None) -> bool:
     return "bounty" in value or "pko" in value or "knockout" in value
 
 
+def ensure_cli_credentials(env=os.environ, bootstrap=None) -> bool:
+    if env.get("GTOW_USER_ID") or env.get("GTOW_REFRESH_TOKEN"):
+        return True
+    if bootstrap is None:
+        from gto_owner_token import bootstrap_owner_db_token
+        bootstrap = bootstrap_owner_db_token
+    return bool(bootstrap(verbose=True))
+
+
 def _preflop_points(detail: dict) -> list[dict]:
     return [
         gp for gp in ((detail.get("game_analysis") or {}).get("game_points") or [])
@@ -385,6 +394,9 @@ async def main() -> int:
     parser.add_argument("--fetch-missing", action="store_true",
                         help="fetch missing FT details from GTOW before regrading")
     args = parser.parse_args()
+    if not args.scan_only and not ensure_cli_credentials():
+        print("ICM regrade requires a synchronized owner GTOW DB session")
+        return 2
     conn = await asyncpg.connect(os.environ["SUPABASE_CONN"], statement_cache_size=0)
     try:
         if args.dry_run or args.scan_only:

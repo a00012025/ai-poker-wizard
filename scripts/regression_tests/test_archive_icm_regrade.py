@@ -163,3 +163,14 @@ def test_icm_stack_matcher_prioritizes_cover_relationships():
         icm_modes._load_game_modes = original
 
     assert stacks == "60.125-5.125-25.125"
+
+
+def test_archive_regrader_bootstraps_owner_db_session_for_cli():
+    from archive_icm_regrade import ensure_cli_credentials
+
+    calls = []
+    assert ensure_cli_credentials({}, lambda **kwargs: calls.append(kwargs) or True)
+    assert calls == [{"verbose": True}]
+    calls.clear()
+    assert ensure_cli_credentials({"GTOW_USER_ID": "7"}, lambda **kwargs: calls.append(kwargs))
+    assert calls == []
