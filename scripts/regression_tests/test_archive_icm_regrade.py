@@ -184,3 +184,20 @@ def test_fetched_detail_cache_permission_error_does_not_block_regrade(tmp_path):
 
     assert cache_fetched_detail({"id": "h1"}, tmp_path / "h1.json.gz",
                                 open_gzip=denied) is False
+
+
+def test_missing_ft_details_use_shared_concurrent_fetcher():
+    import asyncio
+    from archive_icm_regrade import fetch_missing_details
+
+    calls = []
+
+    async def fake_fetch(ids, on_progress=None):
+        calls.append(ids)
+        on_progress(2, 2)
+        return {hand_id: {"id": hand_id} for hand_id in ids}
+
+    result = asyncio.run(fetch_missing_details(["h1", "h2"], fetcher=fake_fetch))
+
+    assert calls == [["h1", "h2"]]
+    assert sorted(result) == ["h1", "h2"]

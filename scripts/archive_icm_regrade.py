@@ -21,7 +21,6 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
-import gtow_analyze_api as gapi
 from gto_api import find_closest_action, get_next_actions, get_spot_solution
 from gto_formatter import normalize_hand_name
 from hh_deviation_check import (
@@ -31,9 +30,9 @@ from hh_deviation_check import (
 )
 from icm_modes import find_icm_params
 from ledger_distill import decode_gtow_depth
-from ledger_ingest import raw_paths
 
 DEFAULT_MAX_STACK_GAP_BB = 5.0
+ICM_RAW = ROOT / "data" / "gtow_raw" / "icm_regrade"
 _STREET = {"PREFLOP": "preflop", "FLOP": "flop", "TURN": "turn", "RIVER": "river"}
 
 
@@ -142,6 +141,19 @@ def cache_fetched_detail(detail: dict, path: Path, *, open_gzip=gzip.open) -> bo
         return True
     except OSError:
         return False
+
+
+async def fetch_missing_details(hand_ids: list[str], fetcher=None) -> dict:
+    if not hand_ids:
+        return {}
+    if fetcher is None:
+        from ledger_ingest import _fetch_details_concurrent
+        fetcher = _fetch_details_concurrent
+    return await fetcher(
+        hand_ids,
+        on_progress=lambda done, total: print(
+            f"  ICM detail sweep: {done}/{total}", flush=True),
+    )
 
 
 def _preflop_points(detail: dict) -> list[dict]:
@@ -273,6 +285,20 @@ async def run(conn, *, max_stack_gap_bb: float = DEFAULT_MAX_STACK_GAP_BB,
     for row in decision_rows:
         decisions_by_hand[row["gtow_hand_id"]].append(dict(row))
 
+    final_flags = {"archive_icm_regraded", "icm_regrade_unmatched_stack",
+                   "icm_regrade_ungraded"}
+    missing_ids = []
+    if fetch_missing and not scan_only:
+        for hand in ft_hands:
+            preflop = [d for d in decisions_by_hand[hand["gtow_hand_id"]]
+                       if d["street"] == "preflop"]
+            raw_path = ROOT / hand["raw_path"] if hand.get("raw_path") else None
+            if (preflop
+                    and not all(_flags(d["approx_flags"]) & final_flags for d in preflop)
+                    and (not raw_path or not raw_path.exists())):
+                missing_ids.append(hand["gtow_hand_id"])
+    fetched_details = await fetch_missing_details(missing_ids) if missing_ids else {}
+
     for hand in ft_hands:
         decisions = decisions_by_hand[hand["gtow_hand_id"]]
         postflop = [d for d in decisions if d["street"] != "preflop"]
@@ -291,29 +317,21 @@ async def run(conn, *, max_stack_gap_bb: float = DEFAULT_MAX_STACK_GAP_BB,
         preflop = [d for d in decisions if d["street"] == "preflop"]
         if not preflop:
             continue
-        final_flags = {"archive_icm_regraded", "icm_regrade_unmatched_stack",
-                       "icm_regrade_ungraded"}
         if all(_flags(d["approx_flags"]) & final_flags for d in preflop):
             continue
         raw_path = ROOT / hand["raw_path"] if hand.get("raw_path") else None
-        detail = None
-        if (not raw_path or not raw_path.exists()) and fetch_missing and not scan_only:
-            try:
-                detail = gapi.hand_detail(hand["gtow_hand_id"])
-            except Exception as exc:
-                detail = None
-                if verbose:
-                    print(f"DETAIL_ERROR {hand['gtow_hand_id']} {exc}")
-            if detail:
-                if not dry_run:
-                    _list_path, raw_path = raw_paths(hand["gtow_hand_id"], hand["played_at"])
-                    if cache_fetched_detail(detail, raw_path):
-                        rel = str(raw_path.relative_to(ROOT))
-                        await conn.execute(
-                            "UPDATE ledger_hands SET raw_path=$2,detail_status='fetched' "
-                            "WHERE gtow_hand_id=$1", hand["gtow_hand_id"], rel)
-                    else:
-                        counts["detail_cache_write_failed"] += 1
+        detail = fetched_details.get(hand["gtow_hand_id"])
+        if not isinstance(detail, dict):
+            detail = None
+        if detail and not dry_run:
+            raw_path = ICM_RAW / f"{hand['gtow_hand_id']}.json.gz"
+            if cache_fetched_detail(detail, raw_path):
+                rel = str(raw_path.relative_to(ROOT))
+                await conn.execute(
+                    "UPDATE ledger_hands SET raw_path=$2,detail_status='fetched' "
+                    "WHERE gtow_hand_id=$1", hand["gtow_hand_id"], rel)
+            else:
+                counts["detail_cache_write_failed"] += 1
         if detail is None and (not raw_path or not raw_path.exists()):
             counts["preflop_missing_detail"] += len(preflop)
             if not dry_run:
