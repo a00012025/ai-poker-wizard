@@ -52,6 +52,7 @@ DEC_COLS = [
     "played_depth_bb", "solver_depth_bb",
     "taken_code", "best_code", "correctness", "ev_loss_bb", "ev_loss_pct_pot",
     "taken_freq", "freq_diff", "gto_score", "hand_eq", "pot_bb", "gametype",
+    "strategy_context",
     "confidence", "approx_flags", "excluded", "played_at",
     "spot_category", "spot_leaf", "spot_parent", "spot_keys",
     "hero_cat", "villain_cat", "ip_oop", "flop_seq", "turn_seq",

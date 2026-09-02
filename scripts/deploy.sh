@@ -39,6 +39,7 @@ supabase db push
 # honest online rows remain partial.  Run before the bot/weekly job can publish
 # a mixed-schema training focus.
 python scripts/backfill_spots.py
+python scripts/archive_icm_regrade.py --fetch-missing
 
 # Canonicalize every historical/open drill row after taxonomy migrations.
 # The command is transactional and refuses to commit if any visible source

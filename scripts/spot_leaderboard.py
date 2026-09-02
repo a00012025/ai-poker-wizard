@@ -72,6 +72,7 @@ SELECT spot_leaf, spot_category,
        mode() WITHIN GROUP (ORDER BY street)     street
 FROM ledger_decisions
 WHERE NOT excluded AND NOT discarded AND spot_leaf IS NOT NULL AND source='{source}'
+  AND strategy_context='chipev'
   AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
 GROUP BY spot_leaf, spot_category
 HAVING count(*) >= $1
@@ -93,7 +94,7 @@ SELECT d.id, d.gtow_hand_id, d.street, d.decision_idx, d.spot_category,
        h.preflop_depth_bb
 FROM ledger_decisions d JOIN ledger_hands h ON h.gtow_hand_id = d.gtow_hand_id
 WHERE d.spot_leaf = $1 AND d.ev_loss_bb > 0 AND NOT d.excluded AND d.source='{source}'{win}
-  AND d.confidence >= {MIN_TRAINING_CONFIDENCE}
+  AND d.strategy_context='chipev' AND d.confidence >= {MIN_TRAINING_CONFIDENCE}
 ORDER BY d.ev_loss_bb DESC LIMIT 2
 """
 
@@ -106,6 +107,7 @@ SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
 FROM ledger_decisions
 WHERE spot_leaf=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
   AND source='{source}' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
+  AND strategy_context='chipev'
 GROUP BY eff_stack
 """
 
@@ -124,6 +126,7 @@ WITH base AS (
   SELECT * FROM ledger_decisions
   WHERE NOT excluded AND NOT discarded AND spot_parent IS NOT NULL
     AND spot_leaf IS NOT NULL AND source='{source}'
+    AND strategy_context='chipev'
     AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
 ), parent_stats AS (
   SELECT spot_parent diagnosis_key, spot_category,
@@ -159,6 +162,7 @@ SELECT eff_stack, count(*) n, avg(ev_loss_bb) avg_ev
 FROM ledger_decisions
 WHERE spot_parent=$1 AND NOT excluded AND NOT discarded AND eff_stack IS NOT NULL
   AND source='{source}' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}
+  AND strategy_context='chipev'
 GROUP BY eff_stack
 """
 
@@ -168,7 +172,8 @@ def global_avg_sql(since=None, source="online") -> str:
     win = " AND played_at >= $1" if since else ""
     return f"""SELECT avg(ev_loss_bb) FROM ledger_decisions
 WHERE NOT excluded AND NOT discarded AND spot_parent IS NOT NULL
-  AND source='{source}' AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}"""
+  AND source='{source}' AND strategy_context='chipev'
+  AND confidence >= {MIN_TRAINING_CONFIDENCE}{win}"""
 
 
 def action_bias_sql(level: str = "parent", since=None, source="online") -> str:
@@ -179,7 +184,8 @@ def action_bias_sql(level: str = "parent", since=None, source="online") -> str:
     return f"""SELECT taken_code, best_code, ev_loss_bb
 FROM ledger_decisions
 WHERE {column}=$1 AND NOT excluded AND NOT discarded AND source='{source}'
-  AND confidence >= {MIN_TRAINING_CONFIDENCE} AND ev_loss_bb >= {LOSSY_MIN_BB}{win}
+  AND strategy_context='chipev' AND confidence >= {MIN_TRAINING_CONFIDENCE}
+  AND ev_loss_bb >= {LOSSY_MIN_BB}{win}
 ORDER BY ev_loss_bb DESC"""
 
 
