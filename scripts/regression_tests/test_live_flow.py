@@ -1219,6 +1219,42 @@ def test_live_token_replay_refuses_missing_metadata_and_actor_conflicts():
         assert_in("expected", str(exc))
 
 
+def test_live_token_replay_completes_forced_hu_call_before_flop():
+    from live_flow import replay_live_action_tokens
+
+    raw = (
+        "Eff 20bb Sb call hero bb r2.5 32o\n"
+        "3d8d6h x x\n"
+        "3s b4.5 call\n"
+        "5s b6 all in fold"
+    )
+    tokenized = {
+        "effective_bb": 20, "hero_position": "BB", "hero_hand": "32o",
+        "preflop_actions": [
+            {"actor": "SB", "action": "call"},
+            {"actor": "HERO", "action": "raise", "size_bb": 2.5},
+        ],
+        "streets": [
+            {"board_text": "3d8d6h", "actions": [
+                {"action": "check"}, {"action": "check"}]},
+            {"board_text": "3s", "actions": [
+                {"action": "bet", "size_bb": 4.5}, {"action": "call"}]},
+            {"board_text": "5s", "actions": [
+                {"action": "bet", "size_bb": 6},
+                {"action": "all_in"}, {"action": "fold"}]},
+        ],
+    }
+
+    hand = replay_live_action_tokens(raw, tokenized)
+    assert_eq(hand["preflop_actions"], "F-F-F-F-F-F-C-R2.5-C")
+    forced = [row for row in hand["_parse_trace"]
+              if row.get("resolution") == "forced_call_to_reach_flop"]
+    assert_eq(forced, [{
+        "street": "preflop", "actor": "SB", "action": "C",
+        "resolution": "forced_call_to_reach_flop",
+    }])
+
+
 def test_live_token_replay_drops_only_uniquely_embedded_extra_flop():
     from live_flow import replay_live_action_tokens
 
