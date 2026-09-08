@@ -1292,7 +1292,7 @@ def _token_action_code(
 
 def _replay_preflop(
         tokens: list[dict], hero: str, effective_bb: float,
-        order: list[str]) -> tuple[str, dict]:
+        order: list[str], reaches_postflop: bool = False) -> tuple[str, dict]:
     active = set(order)
     involved: set[str] = set()
     all_in: set[str] = set()
@@ -1400,6 +1400,15 @@ def _replay_preflop(
     for seat in list(pending):
         if seat not in involved:
             implicit_fold(seat)
+    # In a heads-up pot, a recorded flop proves the sole responder to the
+    # final raise called. Live shorthand commonly omits this forced action.
+    if (reaches_postflop and len(active - all_in) == 2 and len(pending) == 1
+            and pending[0] in involved):
+        actor = pending.pop(0)
+        events.append((actor, "C"))
+        contributions[actor] = current_bet
+        trace.append({"street": "preflop", "actor": actor, "action": "C",
+                      "resolution": "forced_call_to_reach_flop"})
     line = _events_to_preflop_actions(events, players=len(order))
     if not line:
         raise LiveReplayError("could not assemble preflop actions")
@@ -1685,7 +1694,8 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
         raise LiveReplayError(f"hero_position not valid for 8-max: {hero}")
 
     preflop, state = _replay_preflop(
-        data.get("preflop_actions") or [], hero, effective_bb, order)
+        data.get("preflop_actions") or [], hero, effective_bb, order,
+        reaches_postflop=bool(data.get("streets")))
     streets, street_trace, street_flags = _replay_streets(
         data.get("streets") or [], hero, effective_bb, order, state)
     hand = {
