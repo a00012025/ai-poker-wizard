@@ -412,6 +412,10 @@ def test_live_final_player_count_header_preserves_ft_metadata():
     assert_eq(metadata["phase"], "FT")
     assert_eq(metadata["players_remaining"], 6)
     assert_eq(metadata["average_stack_bb"], 20.0)
+    assert_eq(
+        metadata["player_stacks"],
+        [0.0, 0.0, None, None, 22.0, None, 50.0, None],
+    )
 
     for header, remaining in [
         ("FT 6 left avg 20bb hero co has 22bb r2 AdAs", 6),
@@ -424,6 +428,16 @@ def test_live_final_player_count_header_preserves_ft_metadata():
         )
         assert_eq(parsed["phase"], "FT", header)
         assert_eq(parsed.get("players_remaining"), remaining, header)
+
+    five_left = _extract_live_icm_metadata(
+        "Final 5 avg 25bb co has 6bb, hj has 32bb r2 "
+        "hero sb has 28bb all in AQo",
+        {"players_at_table": 8, "hero_position": "SB", "effective_bb": 28},
+    )
+    assert_eq(
+        five_left["player_stacks"],
+        [0.0, 0.0, 0.0, 32.0, 6.0, None, 28.0, None],
+    )
 
 
 def test_live_parse_block_uses_structured_icm_metadata_without_llm():
