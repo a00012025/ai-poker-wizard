@@ -361,6 +361,71 @@ def test_live_split_batch_keeps_each_explicit_icm_hand_separate():
     assert_in("avg 18bb", blocks[1])
 
 
+def test_live_split_batch_recognizes_final_player_count_headers():
+    from live_flow import _is_header, split_batch
+
+    text = """Eff 18bb btn r2 hero bb call Jd7h
+Tc2c8d x b2 r4.5 fold
+
+Final 6 avg 20bb, Hero co has 22bb r2 AdAs sb has 50bb call bb fold
+4dJd9h x x
+3h b3 call
+Jc x x
+
+Final 5 avg 25bb co has 6bb, hj has 32bb r2 hero sb has 28bb all in AQo
+
+Eff 17bb Hero sb call 7s4s bb x
+AsQh3h b1.2 call
+7d x b2.8 call
+9d x x
+
+Eff 17bb Sb call hero bb Tc8h x
+QcJc2d b1 call
+Ts b2 call
+9d b4 call
+Lose to K5o"""
+
+    blocks = split_batch(text)
+    assert_eq(len(blocks), 5)
+    assert_eq([block.splitlines()[0] for block in blocks], [
+        "Eff 18bb btn r2 hero bb call Jd7h",
+        "Final 6 avg 20bb, Hero co has 22bb r2 AdAs sb has 50bb call bb fold",
+        "Final 5 avg 25bb co has 6bb, hj has 32bb r2 hero sb has 28bb all in AQo",
+        "Eff 17bb Hero sb call 7s4s bb x",
+        "Eff 17bb Sb call hero bb Tc8h x",
+    ])
+    assert_true(_is_header("Final 6 avg 20bb, Hero co has 22bb r2 AdAs"))
+    assert_true(_is_header("FT 6 left avg 20bb hero co 22bb r2 AdAs"))
+    assert_true(_is_header("Final table avg 20bb hero co 22bb r2 AdAs"))
+    assert_true(_is_header("ICM FT avg 20bb hero co 22bb r2 AdAs"))
+
+
+def test_live_final_player_count_header_preserves_ft_metadata():
+    from live_flow import _extract_live_icm_metadata
+
+    metadata = _extract_live_icm_metadata(
+        "Final 6 avg 20bb, Hero co has 22bb r2 AdAs "
+        "sb has 50bb call bb fold",
+        {"players_at_table": 8, "hero_position": "CO", "effective_bb": 22},
+    )
+    assert_eq(metadata["tournament_type"], "icm")
+    assert_eq(metadata["phase"], "FT")
+    assert_eq(metadata["players_remaining"], 6)
+    assert_eq(metadata["average_stack_bb"], 20.0)
+
+    for header, remaining in [
+        ("FT 6 left avg 20bb hero co has 22bb r2 AdAs", 6),
+        ("Final table avg 20bb hero co has 22bb r2 AdAs", None),
+        ("ICM FT avg 20bb hero co has 22bb r2 AdAs", None),
+    ]:
+        parsed = _extract_live_icm_metadata(
+            header,
+            {"players_at_table": 8, "hero_position": "CO", "effective_bb": 22},
+        )
+        assert_eq(parsed["phase"], "FT", header)
+        assert_eq(parsed.get("players_remaining"), remaining, header)
+
+
 def test_live_parse_block_uses_structured_icm_metadata_without_llm():
     """The reported partial-stack shorthand is deterministic in /live too."""
     from live_flow import parse_block

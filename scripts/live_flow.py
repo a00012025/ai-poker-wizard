@@ -86,6 +86,7 @@ _HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOK
 _STAGE_HEADER_RE = re.compile(
     r"^\s*(?:"
     r"(?:(?:near(?:\s+the)?|stone|soft)\s+bubble)\b"
+    r"|ft\b|final\s+(?:table\b|[2-9]\b)"
     r"|(?:泡泡時間|正泡|軟泡)(?=\s|[:：,，.;；。!?！？-]|$)"
     r")",
     re.IGNORECASE,
@@ -1147,7 +1148,14 @@ def _extract_live_metadata(block: str) -> dict:
 def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     """Extract explicit ICM phase, average, and sparse named seat stacks."""
     low = block.lower()
-    if "icm" not in low and "泡沫" not in block and "決賽桌" not in block:
+    final_count = re.search(
+        r"\bfinal\s+([2-9])\b|\b(?:ft|final\s+table)\s+([2-9])\s+"
+        r"(?:left|remaining)\b",
+        low,
+    )
+    is_ft = bool(final_count or "final table" in low
+                 or "決賽桌" in block or re.search(r"\bft\b", low))
+    if ("icm" not in low and "泡沫" not in block and not is_ft):
         return {}
 
     players = int(hand.get("players_at_table") or 8)
@@ -1157,7 +1165,7 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         return {}
 
     phase = "BUBBLE"
-    if "final table" in low or "決賽桌" in block or re.search(r"\bft\b", low):
+    if is_ft:
         phase = "FT"
     pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
     if pct_match:
@@ -1166,6 +1174,9 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         phase = f"PCT{nearest}"
 
     out: dict = {"tournament_type": "icm", "phase": phase}
+    if final_count:
+        out["players_remaining"] = int(
+            final_count.group(1) or final_count.group(2))
     avg_match = re.search(
         r"\b(?:avg|average)\s*(?:stack)?\s*(\d+(?:\.\d+)?)\s*bb\b"
         r"|均碼\s*(\d+(?:\.\d+)?)\s*bb",
