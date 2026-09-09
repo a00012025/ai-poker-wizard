@@ -1188,6 +1188,12 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
 
     pos_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
     stacks: list[float | None] = [None] * players
+    if final_count:
+        active_positions = set(POSITION_ORDERS.get(
+            int(out["players_remaining"]), []))
+        for index, position in enumerate(order):
+            if position not in active_positions:
+                stacks[index] = 0.0
     for match in re.finditer(
         rf"\b({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
         r"(\d+(?:\.\d+)?)\s*bb\b",
@@ -1202,6 +1208,8 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         low,
         re.I,
     ):
+        if avg_match and avg_match.start() <= match.start() < avg_match.end():
+            continue
         pos = _norm_pos(match.group(2))
         if pos in order:
             stacks[order.index(pos)] = float(match.group(1))
