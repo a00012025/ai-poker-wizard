@@ -411,10 +411,11 @@ def test_live_final_player_count_header_preserves_ft_metadata():
     assert_eq(metadata["tournament_type"], "icm")
     assert_eq(metadata["phase"], "FT")
     assert_eq(metadata["players_remaining"], 6)
+    assert_eq(metadata["players_at_table"], 6)
     assert_eq(metadata["average_stack_bb"], 20.0)
     assert_eq(
         metadata["player_stacks"],
-        [0.0, 0.0, None, None, 22.0, None, 50.0, None],
+        [None, None, 22.0, None, 50.0, None],
     )
 
     for header, remaining in [
@@ -436,8 +437,62 @@ def test_live_final_player_count_header_preserves_ft_metadata():
     )
     assert_eq(
         five_left["player_stacks"],
-        [0.0, 0.0, 0.0, 32.0, 6.0, None, 28.0, None],
+        [32.0, 6.0, None, 28.0, None],
     )
+
+
+def test_live_final_five_uses_five_handed_icm_matcher(monkeypatch):
+    import icm_modes
+    from live_flow import _resolve_live_icm_params, parse_block
+
+    hand = parse_block(
+        "Final 5 avg 25bb co has 6bb, hj has 32bb r2 "
+        "hero sb has 28bb all in AQo"
+    )
+    captured = {}
+
+    def fake_find(**kwargs):
+        captured.update(kwargs)
+        return {"gametype": "MTTGeneral_ICM5m1000PTFT"}
+
+    monkeypatch.setattr(icm_modes, "find_icm_params", fake_find)
+    result = _resolve_live_icm_params(hand)
+
+    assert_eq(hand["players_at_table"], 5)
+    assert_eq(hand["preflop_actions"], "R2-F-F-AI28-F")
+    assert_eq(captured["players_at_table"], 5)
+    assert_eq(captured["player_stacks"], [32.0, 6.0, None, 28.0, None])
+    assert_eq(result["gametype"], "MTTGeneral_ICM5m1000PTFT")
+
+
+def test_icm_five_handed_grading_uses_native_preflop_prefix(monkeypatch):
+    import hh_deviation_check as deviation
+
+    calls = []
+    monkeypatch.setattr(
+        deviation, "_normalize_preflop_action",
+        lambda code, *_args, **_kwargs: code,
+    )
+    monkeypatch.setattr(
+        deviation, "get_spot_solution",
+        lambda **kwargs: calls.append(kwargs) or None,
+    )
+
+    deviation.check_hand({
+        "num_players": 5,
+        "effective_bb": 28,
+        "hero_position": "SB",
+        "hero_hand": "AQo",
+        "preflop_actions": "R2-F-F-AI28-F",
+        "streets": [],
+    }, icm_params={
+        "gametype": "MTTGeneral_ICM5m1000PTFT",
+        "depth": "40.125",
+        "stacks": "40.125-10.125-25.125-30.125-20.125",
+    })
+
+    assert_eq(calls[0]["gametype"], "MTTGeneral_ICM5m1000PTFT")
+    assert_eq(calls[0]["preflop_actions"], "R2-F-F")
 
 
 def test_live_parse_block_uses_structured_icm_metadata_without_llm():
