@@ -207,6 +207,13 @@ class _LiveStatus:
     async def settle(self, final_text: str) -> None:
         await self._edit(final_text)
 
+    async def dismiss(self) -> None:
+        try:
+            await self.bot.delete_message(
+                chat_id=self.chat_id, message_id=self.message_id)
+        except Exception as e:  # already deleted / unavailable — never fatal
+            logger.debug(f"Live status delete skipped: {e}")
+
     async def _edit(self, text: str) -> None:
         try:
             await self.bot.edit_message_text(
@@ -536,8 +543,10 @@ async def process_next(pool, bot, db, application=None) -> bool:
                                     allow_full_sweep=allow_full_sweep)
         notified = await _finish(pool, bot, req_id, user_id, ok=True, text=result)
         if live is not None:
-            await live.settle("✅ 同步完成 · 結果見下方 ↓" if notified
-                              else "✅ 已是最新，沒有新手牌進來")
+            if notified:
+                await live.settle("✅ 同步完成 · 結果見下方 ↓")
+            else:
+                await live.dismiss()
         # Skip the auto-review when the sync added nothing new — re-pushing the
         # same session's digest on every idle sync tap is noise (§7-11 依從).
         if "沒有新手牌" not in result:
