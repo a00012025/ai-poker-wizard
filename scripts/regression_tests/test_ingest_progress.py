@@ -132,6 +132,7 @@ def test_render_status_summary_hides_tiny_stages():
 class _FakeBot:
     def __init__(self, fail_not_modified=False):
         self.edits = []
+        self.deleted = []
         self.fail_not_modified = fail_not_modified
 
     async def edit_message_text(self, *, chat_id, message_id, text, **kw):
@@ -139,6 +140,9 @@ class _FakeBot:
             from telegram.error import BadRequest
             raise BadRequest("Message is not modified")
         self.edits.append(text)
+
+    async def delete_message(self, *, chat_id, message_id):
+        self.deleted.append((chat_id, message_id))
 
 
 def test_live_status_debounces_rapid_same_stage_updates():
@@ -225,6 +229,14 @@ def test_live_status_swallows_not_modified():
 
     ok = asyncio.run(run())
     assert_true(ok, "BadRequest not-modified swallowed")
+
+
+def test_live_status_dismisses_message():
+    from src.ingest_runner import _LiveStatus
+
+    bot = _FakeBot()
+    asyncio.run(_LiveStatus(bot, chat_id=1, message_id=2).dismiss())
+    assert_eq(bot.deleted, [(1, 2)])
 
 
 # ── process_next wiring (fresh-send path, bar edit, settle) ─────────────────
@@ -321,6 +333,52 @@ def test_process_next_sends_live_bar_and_settles():
     # The bar was settled to a terminal state pointing at the result.
     assert_true(any("結果見下方" in e for e in bot.edits),
                 f"settle edit present: {bot.edits}")
+
+
+def test_process_next_deletes_live_status_when_no_hands(monkeypatch):
+    import ledger_service
+    import src.ingest_runner as ir
+
+    class Live:
+        dismissed = False
+        settled = []
+
+        async def update(self, *_args, **_kwargs):
+            pass
+
+        async def settle(self, text):
+            self.settled.append(text)
+
+        async def dismiss(self):
+            self.dismissed = True
+
+    live = Live()
+
+    async def value(item):
+        return item
+
+    async def nothing(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(ir, "_expire_stale", nothing)
+    monkeypatch.setattr(ir, "_claim_next", lambda _pool: value({
+        "id": "req-idle", "user_id": 42, "mode": "incremental"}))
+    monkeypatch.setattr(ir, "_recent_permanent_mismatch",
+                        lambda *_args: value(False))
+    monkeypatch.setattr(ir, "_init_live_status",
+                        lambda *_args: value(live))
+    monkeypatch.setattr(ir, "run_pipeline", lambda *_args, **_kwargs:
+                        value("本次同步結果：\n• 新增手牌：0"))
+    monkeypatch.setattr(ir, "_finish", lambda *_args, **_kwargs:
+                        value(False))
+    monkeypatch.setattr(ir, "_send_session_review", nothing)
+    monkeypatch.setattr(ledger_service, "resolve_owner_chat_id",
+                        lambda _pool: value(42))
+
+    asyncio.run(ir.process_next(object(), object(), _FakeDB()))
+
+    assert_true(live.dismissed)
+    assert_eq(live.settled, [])
 
 
 def test_pass_surfaces_detail_write_as_heartbeat_progress():
