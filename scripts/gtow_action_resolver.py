@@ -394,6 +394,7 @@ def _identify_villain(
     hero_pos_8max: str,
     preflop_codes: str,
     street: str,
+    positions: list[str] | None = None,
 ) -> str | None:
     """Identify the HU postflop opponent.
 
@@ -401,7 +402,7 @@ def _identify_villain(
     position with a non-fold action. For postflop, also sanity-checks that
     streets[] has <=2 distinct actors.
     """
-    positions = POSITION_ORDERS[MTT_TREE_SIZE]
+    positions = positions or POSITION_ORDERS[MTT_TREE_SIZE]
     tokens = preflop_codes.split("-") if preflop_codes else []
     last_villain: str | None = None
     for pos, tok in zip(positions, tokens):
@@ -491,7 +492,9 @@ def resolve_actions_for_deviation(
             gametype = "MTTGeneral"
         depth = nearest_cash_depth(effective_bb) if _is_cash(gametype) else nearest_depth(effective_bb)
 
-    if _is_cash(gametype):
+    native_icm_preflop = (
+        street == "preflop" and str(gametype).startswith("MTTGeneral_ICM"))
+    if _is_cash(gametype) or native_icm_preflop:
         padded_preflop = raw_preflop
         padded_preflop_for_pot = raw_preflop_for_pot
         hero_pos_8 = hero_pos_raw
@@ -505,7 +508,9 @@ def resolve_actions_for_deviation(
 
     if street == "preflop":
         tokens = padded_preflop.split("-") if padded_preflop else []
-        positions = POSITION_ORDERS[MTT_TREE_SIZE] if not _is_cash(gametype) else POSITION_ORDERS[players]
+        positions = (POSITION_ORDERS[players]
+                     if _is_cash(gametype) or native_icm_preflop
+                     else POSITION_ORDERS[MTT_TREE_SIZE])
         actors = _replay_preflop_actors(tokens, positions)
         hero_actions = [i for i, actor in enumerate(actors) if actor == hero_pos_8]
         if action_index >= len(hero_actions):
@@ -593,9 +598,11 @@ def resolve_actions_for_deviation(
 
     history_spot = _count(preflop_codes) + _count(flop_codes) + _count(turn_codes) + _count(river_codes)
 
-    villain_pos = _identify_villain(hand_data, hero_pos_8, preflop_codes, street)
-    positions = (POSITION_ORDERS[players] if _is_cash(gametype)
+    positions = (POSITION_ORDERS[players]
+                 if _is_cash(gametype) or native_icm_preflop
                  else POSITION_ORDERS[MTT_TREE_SIZE])
+    villain_pos = _identify_villain(
+        hand_data, hero_pos_8, preflop_codes, street, positions)
     preflop_tokens = [token for token in preflop_codes.split("-") if token]
     preflop_actors = _replay_preflop_actors(preflop_tokens, positions)
     opener_pos = next((pos for pos, code in zip(preflop_actors, preflop_tokens)
