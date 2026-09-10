@@ -91,6 +91,11 @@ _STAGE_HEADER_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_FINAL_COUNT_RE = re.compile(
+    r"\bfinal\s+([2-9])\b|\b(?:ft|final\s+table)\s+([2-9])\s+"
+    r"(?:left|remaining)\b",
+    re.IGNORECASE,
+)
 # a whole line that is only a hand result / annotation — never a decision
 _RESULT_RE = re.compile(r"^(hero\s+)?(wins?|won|loses?|lost|chop|split)"
                         r"(\s+(to\s+)?\S.*)?$", re.IGNORECASE)
@@ -988,7 +993,8 @@ def parse_simple_preflop_block(block: str) -> dict | None:
         start = 2
     if pos is None and toks and _clean_word(toks[0]) == "icm":
         pos = next((_norm_pos(tok) for tok in toks[1:] if _norm_pos(tok)), None)
-    order = POSITION_ORDERS.get(8)
+    players = int(_extract_live_metadata(block).get("players_at_table") or 8)
+    order = POSITION_ORDERS.get(players)
     if not pos or not order or pos not in order:
         return None
     eff = _effective_bb_from_preflop_tokens(toks, hero_idx)
@@ -997,12 +1003,12 @@ def parse_simple_preflop_block(block: str) -> dict | None:
         return None
     events = _live_preflop_events(toks, pos, eff)
     if events:
-        preflop = _events_to_preflop_actions(events, players=8)
+        preflop = _events_to_preflop_actions(events, players=players)
     else:
         code = _action_code_from_tokens(toks, start, default_stack=eff)
         preflop = None
         if code is not None:
-            parts = ["F"] * 8
+            parts = ["F"] * players
             if code != "F":
                 parts[order.index(pos)] = code
             preflop = "-".join(parts)
@@ -1015,7 +1021,7 @@ def parse_simple_preflop_block(block: str) -> dict | None:
             effective_value = min(effective_value, float(shove.group(1)))
     hand = {
         "gametype": "MTTGeneral",
-        "players_at_table": 8,
+        "players_at_table": players,
         "effective_bb": effective_value,
         "hero_position": pos,
         "hero_hand": hero_hand,
@@ -1142,23 +1148,25 @@ def _extract_live_metadata(block: str) -> dict:
     out = {"hero_hand": hero_hand, "hero_position": hero_position}
     if effective is not None:
         out["effective_bb"] = float(effective)
+    final_count = _FINAL_COUNT_RE.search(block)
+    if final_count:
+        out["players_at_table"] = int(
+            final_count.group(1) or final_count.group(2))
     return out
 
 
 def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     """Extract explicit ICM phase, average, and sparse named seat stacks."""
     low = block.lower()
-    final_count = re.search(
-        r"\bfinal\s+([2-9])\b|\b(?:ft|final\s+table)\s+([2-9])\s+"
-        r"(?:left|remaining)\b",
-        low,
-    )
+    final_count = _FINAL_COUNT_RE.search(low)
     is_ft = bool(final_count or "final table" in low
                  or "決賽桌" in block or re.search(r"\bft\b", low))
     if ("icm" not in low and "泡沫" not in block and not is_ft):
         return {}
 
-    players = int(hand.get("players_at_table") or 8)
+    remaining = int(final_count.group(1) or final_count.group(2)) \
+        if final_count else None
+    players = remaining or int(hand.get("players_at_table") or 8)
     from hh_parser import POSITION_ORDERS
     order = POSITION_ORDERS.get(players)
     if not order:
@@ -1174,9 +1182,8 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         phase = f"PCT{nearest}"
 
     out: dict = {"tournament_type": "icm", "phase": phase}
-    if final_count:
-        out["players_remaining"] = int(
-            final_count.group(1) or final_count.group(2))
+    if remaining:
+        out.update(players_remaining=remaining, players_at_table=remaining)
     avg_match = re.search(
         r"\b(?:avg|average)\s*(?:stack)?\s*(\d+(?:\.\d+)?)\s*bb\b"
         r"|均碼\s*(\d+(?:\.\d+)?)\s*bb",
@@ -1188,12 +1195,6 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
 
     pos_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
     stacks: list[float | None] = [None] * players
-    if final_count:
-        active_positions = set(POSITION_ORDERS.get(
-            int(out["players_remaining"]), []))
-        for index, position in enumerate(order):
-            if position not in active_positions:
-                stacks[index] = 0.0
     for match in re.finditer(
         rf"\b({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
         r"(\d+(?:\.\d+)?)\s*bb\b",
@@ -1708,9 +1709,10 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
     effective_bb = float(data["effective_bb"])
     if effective_bb <= 0:
         raise LiveReplayError("effective_bb must be positive")
-    order = POSITION_ORDERS[8]
+    players = int(data.get("players_at_table") or 8)
+    order = POSITION_ORDERS[players]
     if hero not in order:
-        raise LiveReplayError(f"hero_position not valid for 8-max: {hero}")
+        raise LiveReplayError(f"hero_position not valid for {players}-max: {hero}")
 
     preflop, state = _replay_preflop(
         data.get("preflop_actions") or [], hero, effective_bb, order,
@@ -1718,7 +1720,7 @@ def replay_live_action_tokens(block: str, tokenized: dict) -> dict:
     streets, street_trace, street_flags = _replay_streets(
         data.get("streets") or [], hero, effective_bb, order, state)
     hand = {
-        "gametype": "MTTGeneral", "players_at_table": 8,
+        "gametype": "MTTGeneral", "players_at_table": players,
         "effective_bb": effective_bb, "hero_position": hero,
         "hero_hand": data["hero_hand"], "preflop_actions": preflop,
         "streets": streets,

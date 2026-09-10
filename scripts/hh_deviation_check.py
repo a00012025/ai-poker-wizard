@@ -589,27 +589,30 @@ def check_hand(hand: dict, icm_params: dict | None = None,
     # ── Preflop: hero's first decision ──
     hero_idx_n = pos_order_n.index(hero_pos)
     hero_idx_8 = POSITION_ORDER_8MAX.index(hero_pos)
-
-    # Build preflop actions before hero (in 8-max format)
+    pf_parts_n = hand["preflop_actions"].split("-")
     pf_parts_8 = pf_8max.split("-")
-    pf_before_hero = "-".join(pf_parts_8[:hero_idx_8]) if hero_idx_8 > 0 else ""
+    pf_parts_solver = pf_parts_n if icm_gametype else pf_parts_8
+    hero_idx_solver = hero_idx_n if icm_gametype else hero_idx_8
 
     # Choose preflop gametype/depth/stacks (ICM if available, else chip EV)
     pf_gametype = icm_gametype or gametype
     pf_depth = icm_depth or depth
     pf_stacks = icm_stacks or ""
 
-    # Normalize preflop actions up to hero
-    normalized_parts = []
-    for i in range(hero_idx_8):
-        code = pf_parts_8[i]
-        so_far = "-".join(normalized_parts) if normalized_parts else ""
-        norm_code = _normalize_preflop_action(code, pf_gametype, pf_depth, so_far, pf_stacks)
-        normalized_parts.append(norm_code)
+    def _normalized_prefix(parts, mode, mode_depth, mode_stacks=""):
+        normalized = []
+        for code in parts:
+            so_far = "-".join(normalized)
+            normalized.append(_normalize_preflop_action(
+                code, mode, mode_depth, so_far, mode_stacks))
+        return normalized
+
+    # ICM modes use their native table size; chip EV uses padded 8-max.
+    normalized_parts = _normalized_prefix(
+        pf_parts_solver[:hero_idx_solver], pf_gametype, pf_depth, pf_stacks)
     pf_before_hero_norm = "-".join(normalized_parts) if normalized_parts else ""
 
     # Get hero's actual first preflop action
-    pf_parts_n = hand["preflop_actions"].split("-")
     if hero_idx_n < len(pf_parts_n):
         hero_pf_action_raw = pf_parts_n[hero_idx_n]
     else:
@@ -647,9 +650,15 @@ def check_hand(hand: dict, icm_params: dict | None = None,
 
     # ICM fallback: if ICM query returned None, retry with chip EV
     if sol is None and icm_gametype and pf_gametype == icm_gametype:
+        chip_parts = _normalized_prefix(
+            pf_parts_8[:hero_idx_8], gametype, depth)
+        chip_prefix = "-".join(chip_parts)
         try:
             sol = get_spot_solution(gametype=gametype, depth=depth,
-                                    preflop_actions=pf_before_hero_norm)
+                                    preflop_actions=chip_prefix)
+            if sol is not None:
+                hero_pf_action = _normalize_preflop_action(
+                    hero_pf_action_raw, gametype, depth, chip_prefix)
         except Exception:
             sol = None
 
@@ -714,13 +723,9 @@ def check_hand(hand: dict, icm_params: dict | None = None,
     ) or any(code.startswith(("R", "AI")) for code in before_hero_cont)
 
     if has_reraise and hero_cont_raw:
-        # Normalize full first round in 8-max
-        full_first_round = []
-        for i in range(min(len(pf_parts_8), 8)):
-            code = pf_parts_8[i]
-            so_far = "-".join(full_first_round) if full_first_round else ""
-            norm_code = _normalize_preflop_action(code, pf_gametype, pf_depth, so_far, pf_stacks)
-            full_first_round.append(norm_code)
+        solver_round_len = num_players if icm_gametype else 8
+        full_first_round = _normalized_prefix(
+            pf_parts_solver[:solver_round_len], pf_gametype, pf_depth, pf_stacks)
 
         # Include every intervening continuation action so the solver query
         # lands on hero's actual node (e.g. CO folds before BTN faces squeeze).
@@ -755,9 +760,16 @@ def check_hand(hand: dict, icm_params: dict | None = None,
 
             # ICM fallback for re-raise spot
             if sol2 is None and icm_gametype and pf_gametype == icm_gametype:
+                chip_second_parts = _normalized_prefix(
+                    pf_parts_8[:8] + before_hero_cont, gametype, depth)
+                chip_second_prefix = "-".join(chip_second_parts)
                 try:
                     sol2 = get_spot_solution(gametype=gametype, depth=depth,
-                                              preflop_actions=second_prefix)
+                                              preflop_actions=chip_second_prefix)
+                    if sol2 is not None:
+                        hero_cont = _normalize_preflop_action(
+                            hero_cont_raw, gametype, depth,
+                            chip_second_prefix)
                 except Exception:
                     sol2 = None
 
