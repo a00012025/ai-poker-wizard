@@ -1914,6 +1914,42 @@ def test_build_last_hero_hand_url_reconstructs_icm_params_from_parsed_hand():
     assert_eq(qs["preflop_actions"], ["F-F-F-R2-F-R12-F-F"])
 
 
+def test_live_five_handed_icm_review_url_keeps_native_action_width(monkeypatch):
+    import gtow_action_resolver
+    from gtow_solution_url import build_last_hero_hand_url
+
+    seen = []
+
+    def fake_next(**kwargs):
+        seen.append(kwargs["preflop_actions"])
+        return {"next_actions": {"available_actions": [
+            {"action": {"code": "R2", "betsize": 2}},
+        ]}}
+
+    monkeypatch.setattr(gtow_action_resolver, "get_next_actions", fake_next)
+    hand = {
+        "gametype": "MTTGeneral", "tournament_type": "icm", "phase": "FT",
+        "players_at_table": 5, "players_remaining": 5,
+        "average_stack_bb": 25, "effective_bb": 28,
+        "player_stacks": [32, 6, None, 28, None],
+        "hero_position": "SB", "hero_hand": "AQo",
+        "preflop_actions": "R2-F-F-AI28-F", "streets": [],
+        "_icm_params": {
+            "gametype": "MTTGeneral_ICM5m1000PTFT", "depth": "40.125",
+            "stacks": "40.125-10.125-25.125-30.125-20.125",
+        },
+    }
+
+    url = build_last_hero_hand_url(
+        hand, [{"street": "preflop", "decision_idx": 0}])
+    qs = parse_qs(urlparse(url).query)
+
+    assert_eq(seen, [""])
+    assert_eq(qs["gametype"], ["MTTGeneral_ICM5m1000PTFT"])
+    assert_eq(qs["preflop_actions"], ["R2-F-F"])
+    assert_eq(qs["history_spot"], ["3"])
+
+
 def test_build_node_url_for_street_uses_resolved_spot_params():
     """build_node_url_for_street: turn link uses the turn spot's snapped codes."""
     from gtow_solution_url import build_node_url_for_street
