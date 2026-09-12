@@ -2037,6 +2037,27 @@ def test_coach_teaching_fallback_is_short_and_teachable():
     assert_not_in("blocker", no_blocker_answer)
 
 
+def test_coach_teaching_distinguishes_actual_size_from_solver_bucket():
+    """A 38% real bet mapped to 58% must retain both labels in coaching."""
+    import coach_teaching as ct
+
+    context = _h3818_like_context()
+    context["hero_spots"][0]["actual_pot_pct"] = 0.38
+    digest = ct.build_teaching_digest(context)
+    decision = digest["decisions"][0]
+
+    assert_eq(
+        decision["actual_action"]["label"],
+        "實戰 bet 38% pot（映射 solver bucket：bet 58% pot）",
+    )
+    assert_in("實戰 bet 38% pot", ct.render_prompt_block(digest))
+    assert_in("映射 solver bucket：bet 58% pot", ct.render_prompt_block(digest))
+    fallback = ct.render_fallback(digest)
+    assert_in("實戰 bet 38% pot（映射 solver bucket：bet 58% pot）", fallback)
+    audit = ct.audit_draft(fallback, digest)
+    assert_true(audit.ok, str(audit.violations))
+
+
 def test_coach_teaching_keeps_low_reach_node_with_caveat():
     """Low-reach river: keep useful node facts, but downgrade confidence."""
     import coach_teaching as ct

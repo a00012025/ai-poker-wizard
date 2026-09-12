@@ -334,6 +334,31 @@ def _exact_actions(solution: dict, combo_idx: int) -> list[dict]:
     return rows
 
 
+def _label_actual_size(actual: dict | None, spot: dict) -> dict | None:
+    """Keep the real bet size visible when analysis maps it to a solver bucket."""
+    if not actual or not str(actual.get("code") or "").startswith("R"):
+        return actual
+    actual_ratio = spot.get("actual_pot_pct")
+    solver_ratio = actual.get("pot_ratio")
+    if actual_ratio is None or solver_ratio is None:
+        return actual
+    actual_ratio = _float(actual_ratio, -1.0)
+    if actual_ratio < 0 or abs(actual_ratio - _float(solver_ratio, -1.0)) < 0.005:
+        return actual
+    row = dict(actual)
+    solver_label = row["label"]
+    verb = solver_label.split(" ", 1)[0]
+    row.update({
+        "label": (
+            f"實戰 {verb} {_pct(actual_ratio)}% pot"
+            f"（映射 solver bucket：{solver_label}）"
+        ),
+        "actual_pot_ratio": actual_ratio,
+        "solver_label": solver_label,
+    })
+    return row
+
+
 def _preflop_decision(context: dict, spot: dict, solution: dict,
                       hero_hand: str) -> dict | None:
     """Build the exact-combo verdict needed to cover one preflop decision.
@@ -372,7 +397,10 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
         prefix_tokens = [token for token in str(prefix).split("-") if token]
         if len(prefix_tokens) < len(full_tokens):
             actual_code = full_tokens[len(prefix_tokens)]
-    actual = next((row for row in actions if row["code"] == actual_code), None)
+    actual = _label_actual_size(
+        next((row for row in actions if row["code"] == actual_code), None),
+        spot,
+    )
     best = (
         actual
         if actual and actual.get("frequency", 0.0) >= 0.01
@@ -446,13 +474,13 @@ def _off_tree_decision(context: dict, spot: dict, solution: dict,
             "X": "check", "C": "call", "F": "fold", "RAI": "all-in",
         }.get(actual_code, "實戰動作")
         pot_ratio = -1.0
-    actual = {
+    actual = _label_actual_size({
         "code": actual_code,
         "label": actual_label,
         "frequency": 0.0,
         "ev_bb": 0.0,
         "pot_ratio": pot_ratio,
-    }
+    }, spot)
     range_plan = _range_plan(solution)
     villain = next((position for position in players if position != hero), None)
     return {
@@ -2170,7 +2198,10 @@ def _decision(context: dict, spot: dict, solution: dict, hero_hand: str) -> dict
     if not actions:
         return None
     actual_code = spot.get("taken_code")
-    actual = next((row for row in actions if row["code"] == actual_code), None)
+    actual = _label_actual_size(
+        next((row for row in actions if row["code"] == actual_code), None),
+        spot,
+    )
     best = (
         actual
         if actual and actual.get("frequency", 0.0) >= 0.01
@@ -2452,6 +2483,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
                 allowed_percentages.add(round(100 * action["frequency"], 1))
                 if action["pot_ratio"] >= 0:
                     allowed_percentages.add(round(100 * action["pot_ratio"], 1))
+                if action.get("actual_pot_ratio") is not None:
+                    allowed_percentages.add(round(100 * action["actual_pot_ratio"], 1))
         for action in row.get("available_actions") or []:
             if action.get("frequency", 0.0) >= 0.005 and action.get("pot_ratio", -1.0) >= 0:
                 allowed_percentages.add(round(100 * action["pot_ratio"], 1))
