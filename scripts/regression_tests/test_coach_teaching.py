@@ -2000,7 +2000,7 @@ def test_coach_teaching_audit_allows_explanation_but_rejects_invented_nuts():
 
     long_draft = good.replace(
         "先看強牌結構",
-        "先看強牌結構，" + "不要逐項重述 solver 資料，" * 30,
+        "先看強牌結構，" + "不要逐項重述 solver 資料，" * 120,
     )
     long_audit = ct.audit_draft(long_draft, digest)
     assert_in("response too long", long_audit.violations)
@@ -2256,6 +2256,18 @@ def test_initial_coach_followups_are_constrained_to_pipeline_answerability():
     assert_in("不可問「什麼情況選某個 mix 分支」", INITIAL_COACH_SYSTEM)
 
 
+def test_initial_coach_contract_teaches_range_before_exact_combo():
+    """The narrator must turn solver facts into a reusable range lesson."""
+    from gemini_session import INITIAL_COACH_SYSTEM
+
+    assert_in("位置與 preflop role", INITIAL_COACH_SYSTEM)
+    assert_in("range equity", INITIAL_COACH_SYSTEM)
+    assert_in("頂端／強端", INITIAL_COACH_SYSTEM)
+    assert_in("action range", INITIAL_COACH_SYSTEM)
+    assert_in("exact combo", INITIAL_COACH_SYSTEM)
+    assert_in("可帶到下一手", INITIAL_COACH_SYSTEM)
+
+
 def test_coach_hand_uses_shared_followup_extractor():
     """Initial coaching strips and stores only pipeline-answerable followups."""
     import asyncio
@@ -2317,6 +2329,42 @@ def test_session_grounded_initial_narrator_does_not_fall_back_to_another_llm():
     ))
     assert_in("solver 事實卡", answer)
     assert_not_in("gemini", answer.lower())
+
+
+def test_initial_coach_provider_failure_uses_fallback_once():
+    """A provider outage must not audit and retry its deterministic fallback."""
+    import asyncio
+    import logging
+    import types as py_types
+
+    import gemini_session as gs
+
+    context = _h3818_like_context()
+    gs.GeminiSessionManager._initial_teaching_block(context)
+    manager = gs.GeminiSessionManager.__new__(gs.GeminiSessionManager)
+    manager._logger = logging.getLogger("coach-provider-fallback-once-test")
+    manager._openai_coach_client = object()
+    manager.coach_narrator_model = "test-model"
+    manager.histories = {}
+    calls = 0
+    original_fallback = gs.render_teaching_fallback
+
+    async def failing_openai(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("quota exhausted")
+
+    manager._call_openai_narrator = py_types.MethodType(failing_openai, manager)
+    gs.render_teaching_fallback = lambda digest: "deterministic fallback"
+    try:
+        answer = asyncio.run(manager._verified_initial_coaching(
+            7, "card", context, "H3912", disable_tools=True,
+        ))
+    finally:
+        gs.render_teaching_fallback = original_fallback
+
+    assert_eq(answer, "deterministic fallback")
+    assert_eq(calls, 1)
 
 
 def test_coach_teaching_ignores_zero_frequency_ev_noise():
@@ -2468,6 +2516,91 @@ def test_coach_teaching_fallback_self_audits_supported_shapes():
         fallback = ct.render_fallback(digest)
         audit = ct.audit_draft(fallback, digest)
         assert_true(audit.ok, f"{audit.violations}: {fallback}")
+
+
+def test_coach_teaching_rejects_truncated_narration():
+    """A token-limited draft must be repaired instead of ending mid-thought."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    audit = ct.audit_draft(
+        "River 時 HJ 的 range equity 雖然落後，但這個 combo 的",
+        digest,
+    )
+
+    assert_in("coaching response appears truncated", audit.violations)
+
+
+def test_coach_teaching_actor_audit_keeps_adjacent_roles_separate():
+    """HJ opener and BTN 3-bettor in one sentence are two actor claims."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    decision = digest["decisions"][0]
+    decision["hero"] = "HJ"
+    decision["villain"] = "BTN"
+    decision["node_context"].update({
+        "hero_preflop_role": "opener",
+        "villain_preflop_role": "3bettor",
+    })
+
+    violations = ct._audit_actor_contract(
+        "HJ 作為 OOP 的 opener，面對 IP 的 BTN 3-bettor。", digest,
+    )
+
+    assert_eq(violations, [])
+
+    assert_eq(
+        ct._audit_actor_contract(
+            "這條線是 HJ OOP 對 BTN 3-bettor。", digest,
+        ),
+        [],
+    )
+
+
+def test_coach_teaching_allows_negated_polarization_claim():
+    """Saying an action range is not polar must not be audited as polar."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    for decision in digest["decisions"]:
+        decision["size_structure"] = None
+        decision["action_range_profile"] = {"shape": "mixed"}
+
+    audit = ct.audit_draft(
+        "River 的 action range 包含中段牌力，並非純極化。", digest,
+    )
+
+    assert_not_in("unsupported polarization claim", audit.violations)
+
+
+def test_coach_teaching_allows_detailed_grounded_explanation():
+    """Useful range teaching may exceed the old terse 900-character ceiling."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    answer = ct.render_fallback(digest)
+    answer += "\n\n" + "這個 combo 的動作仍以骨架判定為準。" * 45
+    compact_length = len("".join(answer.split()))
+    assert_true(900 < compact_length < 1400)
+
+    audit = ct.audit_draft(answer, digest)
+
+    assert_not_in("response too long", audit.violations)
+
+
+def test_coach_teaching_allows_solved_opponent_response_claims():
+    """Fetched response ranges may support who continues or folds."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3818_like_context())
+    digest["decisions"][0]["opponent_response_profile"] = {"overall": {"fold": 0.5}}
+
+    audit = ct.audit_draft(
+        "River 時 BTN 的 AKo 會棄牌，AA 仍會跟注。", digest,
+    )
+
+    assert_not_in("unsupported opponent-response claim", audit.violations)
 
 
 def test_coach_teaching_mixed_action_is_frequency_preference_not_error():
@@ -3114,7 +3247,7 @@ def test_exhaustive_range_text_is_reduced_to_representative_examples():
     assert_not_in("Q5s", answer)
 
 
-def test_telegram_output_boundary_never_sends_complete_hand_lists():
+def test_telegram_output_boundary_does_not_rewrite_coaching_content():
     from telegram_bot.bot import _format_for_telegram
 
     formatted = _format_for_telegram(
@@ -3122,17 +3255,17 @@ def test_telegram_output_boundary_never_sends_complete_hand_lists():
         "同花: AJs, A9s, QJs, Q9s, Q8s, Q7s, Q6s, Q5s, Q4s, Q3s"
     )
 
-    assert_in("代表如", formatted)
-    assert_not_in("Q7s", formatted)
-    assert_not_in("Q3s", formatted)
+    assert_in("AJs, A9s, QJs, Q9s", formatted)
+    assert_in("Q7s", formatted)
+    assert_in("Q3s", formatted)
 
     multiline = _format_for_telegram(
         "同花: AJs, A9s\n順子: QJs, QJo\n兩對: ATs, KTs"
     )
     assert_in("AJs", multiline)
     assert_in("QJs", multiline)
-    assert_not_in("QJo", multiline)
-    assert_not_in("ATs", multiline)
+    assert_in("QJo", multiline)
+    assert_in("ATs", multiline)
 
 
 def test_evidence_safe_fallback_hides_range_mix_when_exact_combo_is_unavailable():

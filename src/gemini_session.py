@@ -27,6 +27,10 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
+class _DeterministicCoachFallback(str):
+    """Marks safe local prose so the verifier does not retry a failed provider."""
+
+
 def new_request_id() -> str:
     """Generate a short request id (8 hex chars)."""
     return uuid.uuid4().hex[:8]
@@ -93,12 +97,12 @@ class GeminiSessionManager:
         )
         self.coach_narrator_reasoning = os.getenv(
             "OPENAI_COACH_REASONING_EFFORT",
-            "low",
+            "medium",
         )
         self.coach_narrator_max_output_tokens = int(
             os.getenv(
                 "OPENAI_COACH_MAX_OUTPUT_TOKENS",
-                "900",
+                "1800",
             )
         )
         self.coach_max_tool_calls = int(
@@ -3162,9 +3166,9 @@ class GeminiSessionManager:
                     model=getattr(self, "coach_narrator_model", "gpt-5.6-terra"),
                     max_tool_calls=getattr(self, "coach_max_tool_calls", 4),
                     max_evidence_rounds=getattr(self, "coach_max_evidence_rounds", 2),
-                    reasoning=getattr(self, "coach_narrator_reasoning", "low"),
+                    reasoning=getattr(self, "coach_narrator_reasoning", "medium"),
                     max_output_tokens=getattr(
-                        self, "coach_narrator_max_output_tokens", 900
+                        self, "coach_narrator_max_output_tokens", 1800
                     ),
                     logger=getattr(self, "_logger", logging.getLogger(__name__)),
                     analyze_hand=self._analyze_parsed_hand_context,
@@ -3230,18 +3234,24 @@ class GeminiSessionManager:
                 )
             if digest:
                 try:
-                    return render_teaching_fallback(digest)
+                    return _DeterministicCoachFallback(
+                        render_teaching_fallback(digest)
+                    )
                 except Exception:
-                    return "已有 solver 事實卡，但教練模型暫時無法完成解釋。"
+                    return _DeterministicCoachFallback(
+                        "已有 solver 事實卡，但教練模型暫時無法完成解釋。"
+                    )
             return (
                 "目前教練模型暫時無法完成解釋；已有 solver 數據仍會保留，"
                 "但我不會改用另一個模型猜測策略。"
             )
         if digest:
             try:
-                return render_teaching_fallback(digest)
+                return _DeterministicCoachFallback(render_teaching_fallback(digest))
             except Exception:
-                return "已有 solver 事實卡，但教練模型目前未設定。"
+                return _DeterministicCoachFallback(
+                    "已有 solver 事實卡，但教練模型目前未設定。"
+                )
         return "目前未設定 GPT 教練模型，無法產生教練解釋。"
 
     async def _verified_initial_coaching(
@@ -3283,6 +3293,10 @@ class GeminiSessionManager:
                     disable_tools=disable_tools,
                     system_override=narrator_system,
                 )
+                if isinstance(draft, _DeterministicCoachFallback):
+                    self.histories[chat_id] = history_before_draft
+                    self._append_accepted_history(chat_id, user_text, draft)
+                    return draft
                 if not digest:
                     self.histories[chat_id] = history_before_draft
                     self._append_accepted_history(chat_id, user_text, draft)

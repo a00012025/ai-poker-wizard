@@ -3401,12 +3401,23 @@ def _audit_actor_contract(body: str, digest: dict) -> list[str]:
         }
         for actor, expected_role in role_by_actor.items():
             for match in re.finditer(
-                rf"(?<![A-Za-z0-9+]){re.escape(actor)}(?![A-Za-z0-9+])[^。；\n]{{0,24}}"
+                rf"(?<![A-Za-z0-9+]){re.escape(actor)}(?![A-Za-z0-9+])[^。；，,\n]{{0,24}}"
                 rf"({'|'.join(_ROLE_PATTERNS.values())})",
                 body,
                 re.I,
             ):
-                claimed = _claimed_role(match.group(0))
+                fragment = match.group(0)
+                mentioned = {
+                    position.upper().replace("UTG1", "UTG+1").replace("UTG2", "UTG+2")
+                    for position in re.findall(
+                        r"(?<![A-Za-z0-9+])(UTG\+?[12]?|LJ|HJ|CO|BTN|SB|BB)(?![A-Za-z0-9+])",
+                        fragment,
+                        re.I,
+                    )
+                }
+                if mentioned - {actor}:
+                    continue
+                claimed = _claimed_role(fragment)
                 if claimed and not _role_matches(claimed, expected_role):
                     violations.append(
                         f"actor role mismatch {actor}:{claimed}!={expected_role}"
@@ -4134,7 +4145,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     ):
         violations.append("unsupported future action plan")
-    if re.search(
+    if not supports_response and re.search(
         r"(?:對手|Villain|UTG\+?[12]?|LJ|HJ|CO|BTN|SB|BB)[^。；\n]{0,36}"
         r"(?:一定|會|不會|很難|容易|可以|足以|無法|更有可能|較可能)[^。；\n]{0,16}"
         r"(?:跟注|棄牌|call|fold)|"
@@ -4224,6 +4235,13 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     for sentence in re.split(r"[。！？\n]", body):
         if not re.search(r"極化|polarized|polarization", sentence, re.I):
             continue
+        if re.search(
+            r"(?:並非|不是|不屬於|非)\s*(?:純|完全)?\s*極化|"
+            r"(?:not|isn['’]?t)\s+(?:purely\s+)?polar",
+            sentence,
+            re.I,
+        ):
+            continue
         named = {
             street for alias, street in _STREET_ALIASES.items()
             if re.search(re.escape(alias), sentence, re.I)
@@ -4290,6 +4308,8 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     compact_length = len(re.sub(r"\s+", "", body))
     if compact_length < 20:
         violations.append("coaching response too short")
+    elif body.rstrip()[-1] not in "。！？.!?）)」』】]":
+        violations.append("coaching response appears truncated")
     grounded_terms = re.compile(
         r"(?:"
         r"check|bet|call|fold|raise|all[- ]?in|"
@@ -4303,7 +4323,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     )
     if compact_length >= 20 and not grounded_terms.search(body):
         violations.append("missing grounded teaching content")
-    response_limit = min(900, 520 + max(0, len(_covered_decisions(digest)) - 2) * 80)
+    response_limit = 1400
     if compact_length > response_limit:
         violations.append("response too long")
     medium_decisions = [
