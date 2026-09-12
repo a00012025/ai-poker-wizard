@@ -492,13 +492,14 @@ def _cat_zh(name: str) -> str:
     return _CAT_ZH.get(name, name)
 
 
-def _fmt_actions(actions: dict, *, facing_bet: bool = False) -> str:
+def _fmt_actions(actions: dict, *, facing_bet: bool = False,
+                 open_limp: bool = False) -> str:
     parts = []
     for code, fr in sorted(actions.items(), key=lambda kv: -kv[1]):
         if code == "X":
             label = "過牌"
         elif code == "C":
-            label = "跟注"
+            label = "Limp" if open_limp else "跟注"
         elif code == "F":
             label = "棄牌"
         elif code == "RAI":
@@ -551,7 +552,8 @@ def _resolve_class_in_range(sol: dict, actor: str, token: str):
     return (best[0], best[1]) if best else (None, None)
 
 
-def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
+def _why_hand_lines(name: str, hf: dict, facts: Facts, *,
+                    show_equity: bool = True, open_limp: bool = False) -> None:
     facts.allowed_claims |= canonical_forms(name)
     if _RE_COMBO.fullmatch(name or ""):
         display_name = cards_to_emoji(name)
@@ -560,9 +562,21 @@ def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
     else:
         display_name = name
     head = f"  {display_name}："
+    if not show_equity and hf.get("actions"):
+        facts.lines.append(
+            head
+            + "solver 動作："
+            + _fmt_actions(
+                hf["actions"],
+                facing_bet=hf.get("facing_bet", False),
+                open_limp=open_limp,
+            )
+        )
+        facts.numbers |= {_pct(v) for v in hf["actions"].values()}
+        return
     # Skip the per-combo equity when the hand barely reaches this node
     # (off-strategy line) — the sentinel eq would be a misleading '0%'.
-    if hf.get("eq") is not None and not hf.get("low_weight"):
+    if show_equity and hf.get("eq") is not None and not hf.get("low_weight"):
         head += f"equity {_pct(hf['eq'])}%"
         facts.numbers.add(_pct(hf["eq"]))
         if hf.get("percentile") is not None:
@@ -573,7 +587,7 @@ def _why_hand_lines(name: str, hf: dict, facts: Facts) -> None:
     facts.lines.append(head)
     if hf.get("actions"):
         facts.lines.append(
-            f"      solver 動作：{_fmt_actions(hf['actions'], facing_bet=hf.get('facing_bet', False))}"
+            f"      solver 動作：{_fmt_actions(hf['actions'], facing_bet=hf.get('facing_bet', False), open_limp=open_limp)}"
         )
         facts.numbers |= {_pct(v) for v in hf["actions"].values()}
 
@@ -605,6 +619,14 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
     hero_hand = _hero_hand(ctx.hand_context)
     actor = _acting_position(sol)
     board = (sol.get("game") or {}).get("board") or ""
+    street = (spot or {}).get("street") or ""
+    preflop_tokens = [
+        token for token in str(((spot or {}).get("params") or {}).get("preflop_actions") or "").split("-")
+        if token
+    ]
+    open_limp = street == "preflop" and not any(
+        token.startswith(("R", "AI")) for token in preflop_tokens
+    )
     # The question may name one or more specific hands (e.g. "為什麼 A3 check 但
     # Q9 bet"); answer about each, read from the acting player's range. Falls
     # back to hero's own hand when none are named / resolvable.
@@ -620,11 +642,28 @@ def fetch_why_action(ctx: Ctx) -> Facts | None:
             resolved.append((name, hf))
     if not resolved:
         return None
+    node_label = "Preflop" if street == "preflop" else board
     facts = Facts(intent="why_action",
-                  title=f"{actor} 在 {board} 的 solver 決策數據：")
+                  title=f"{actor} 在 {node_label} 的 solver 決策數據：")
     facts.allowed_claims |= canonical_forms(hero_hand or "")
     for name, hf in resolved:
-        _why_hand_lines(name, hf, facts)
+        _why_hand_lines(
+            name, hf, facts,
+            show_equity=street != "preflop",
+            open_limp=open_limp,
+        )
+    resolved_actions = {name: hf.get("actions") or {} for name, hf in resolved}
+    if (
+        open_limp
+        and resolved_actions.get("AA", {}).get("C", 0) >= 0.99
+        and resolved_actions.get("KK", {}).get("C", 0) > 0
+        and resolved_actions.get("KK", {}).get("RAI", 0) > 0
+    ):
+        facts.lines.append(
+            "教練解讀（由策略結構支持，不是 solver 明列的唯一因果）："
+            "AA 不需要靠 fold equity 保護牌力，solver 把它留在 Limp 以保護 limp range；"
+            "KK 同樣保留 Limp，但後續仍可能被高牌 A 改善，所以同時分配直接全下。"
+        )
     facts.meta = {"hero_hand": hero_hand, "board": board,
                   "hands": [n for n, _ in resolved]}
     # This causal card is for Hero's exact combo only, not arbitrary named

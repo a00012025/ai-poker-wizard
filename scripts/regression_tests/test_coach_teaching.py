@@ -3324,6 +3324,16 @@ def test_evidence_repair_guidance_explains_frequency_is_not_ev_rank():
     assert_in("高頻 raise 不代表", guidance)
 
 
+def test_h3914_exhaustive_list_repair_keeps_the_questioned_hands_only():
+    """H3914: a why-answer repair must not repeat another long range dump."""
+    from coach_evidence import repair_guidance_for_violations
+
+    guidance = repair_guidance_for_violations(["exhaustive hand list"])
+
+    assert_in("只保留使用者問的手牌", guidance)
+    assert_in("最多 3 個 hand class", guidance)
+
+
 def test_evidence_safe_fallback_prioritizes_causal_facts_over_titles():
     """Even a failed narrator leaves a compact learnable evidence card."""
     from coach_evidence import EvidenceBundle, render_safe_fallback
@@ -3529,6 +3539,43 @@ def test_openai_followup_uses_tool_evidence_then_saves_only_verified_history():
     assert_eq(len(manager.histories[7]), 2)
     assert_in("對手 turn", manager._content_text(manager.histories[7][0]))
     assert_in("頂對", manager._content_text(manager.histories[7][1]))
+
+
+def test_h3914_deterministic_preflop_explanation_skips_narrator_retries():
+    """A complete grounded why-card is already the answer; do not rewrite it."""
+    import asyncio
+    import json as _json
+    import types as py_types
+
+    planner = py_types.SimpleNamespace(
+        id="plan-h3914", usage=None, output_text="",
+        output=[py_types.SimpleNamespace(
+            type="function_call", name="query_coach_facts",
+            arguments=_json.dumps({"intent": "why_action", "street": "preflop"}),
+            call_id="call-h3914",
+        )],
+    )
+    after_tool = py_types.SimpleNamespace(
+        id="plan-h3914-done", usage=None, output_text="NO_TOOL", output=[],
+    )
+    manager, api = _evidence_manager([planner, after_tool])
+
+    async def fake_execute(*args, **kwargs):
+        return (
+            "HJ 在 Preflop 的 solver 決策數據：\n"
+            "AA：solver 動作：Limp 100%\n"
+            "KK：solver 動作：Limp 56% | 全下 44%\n"
+            "教練解讀（由策略結構支持，不是 solver 明列的唯一因果）："
+            "AA 保護 limp range；KK 還要處理高牌 A 改善。"
+        )
+
+    manager._execute_coach_tool = fake_execute
+    answer = asyncio.run(manager.run_evidence(
+        7, "為什麼 HJ 10bb 的 AA 是 100% Limp，而 KK 只以 44% all-in？",
+    ))
+
+    assert_in("AA 保護 limp range", answer)
+    assert_eq(len(api.calls), 2)
 
 
 def test_openai_hero_range_query_is_enriched_with_exact_combo():

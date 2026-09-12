@@ -506,6 +506,16 @@ async def run_evidence_chat(
         deps.accept_history(chat_id, user_text, answer)
         return answer
 
+    if any(
+        line.strip().startswith("教練解讀")
+        for item in solver_items
+        for line in item.facts
+    ):
+        answer = display_exact_cards(render_safe_fallback(bundle))
+        answer = suppress_exhaustive_hand_lists(answer)
+        deps.accept_history(chat_id, user_text, answer)
+        return answer
+
     final_input = (
         f"當前牌局：\n{hand_context}\n\n"
         f"對話歷史：\n{history_text}\n\n"
