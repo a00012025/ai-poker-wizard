@@ -243,6 +243,34 @@ def test_plain_followup_never_calls_tools_and_commits_only_final_answer():
     assert harness.accepted == [(7, "你好", answer)]
 
 
+def test_grounded_preflop_explanation_skips_narrator_retries():
+    harness = Harness(
+        [
+            _response(
+                calls=[_call(
+                    "query_coach_facts",
+                    {"intent": "why_action", "street": "preflop"},
+                )],
+                response_id="plan-h3914",
+            ),
+        ],
+        tool_result=(
+            "HJ 在 Preflop 的 solver 決策數據：\n"
+            "AA：solver 動作：Limp 100%\n"
+            "KK：solver 動作：Limp 56% | 全下 44%\n"
+            "教練解讀（由策略結構支持，不是 solver 明列的唯一因果）："
+            "AA 保護 limp range；KK 還要處理高牌 A 改善。"
+        ),
+    )
+
+    answer = asyncio.run(harness.workflow.run(
+        7, "為什麼 HJ 10bb 的 AA 是 100% Limp，而 KK 只以 44% all-in？",
+    ))
+
+    assert "AA 保護 limp range" in answer
+    assert len(harness.model_calls) == 1
+
+
 def test_range_query_preserves_whole_range_and_exact_hero_combo():
     context = {"hand": {"hero_position": "BTN", "hero_hand": "AhKh"}}
     harness = Harness(

@@ -343,6 +343,126 @@ def test_coach_facts_why_named_hand():
     assert_true(any("solver 動作" in ln for ln in facts.lines), "shows action frequencies")
 
 
+def test_h3914_preflop_why_uses_limp_labels_without_fake_equity():
+    """H3914: unopened preflop C is Limp and zero equity is not real evidence."""
+    import coach_facts as cf
+    import gto_formatter as gf
+
+    counters = {
+        "AA": {
+            "total_combos_available": 6,
+            "total_combos": 6,
+            "total_frequency": 1.0,
+            "hand_ev": 5.85,
+            "hand_eq": 0.0,
+            "actions_total_frequencies": {"C": 1.0},
+            "actions_total_combos": {"C": 6.0},
+        },
+        "KK": {
+            "total_combos_available": 6,
+            "total_combos": 6,
+            "total_frequency": 1.0,
+            "hand_ev": 4.49,
+            "hand_eq": 0.0,
+            "actions_total_frequencies": {"C": 0.555, "RAI": 0.445},
+            "actions_total_combos": {"C": 3.33, "RAI": 2.67},
+        },
+    }
+    solution = {
+        "game": {
+            "active_position": "HJ", "board": "",
+            "current_street": {"type": "preflop"},
+        },
+        "players_info": [{
+            "player": {"position": "HJ"},
+            "range": [1.0] * 169,
+            "simple_hand_counters": counters,
+        }],
+        "action_solutions": [
+            {"action": {"code": code}, "strategy": [0.0] * 169}
+            for code in ("F", "C", "RAI")
+        ],
+    }
+    context = {
+        "hero_position": "HJ",
+        "hero_hand": "AA",
+        "hand": {"hero_hand": "AA", "no_hero_hand": True},
+        "hero_spots": [{
+            "street": "preflop", "taken_code": "RAI",
+            "params": {"preflop_actions": "F-F-F"},
+        }],
+        "solutions": [solution],
+    }
+
+    facts = cf.fetch_why_action(cf.Ctx(
+        question="為什麼 HJ 10bb 的 AA 是 100% Limp，而 KK 只以 44% all-in？",
+        hand_context=context,
+    ))
+
+    rendered = facts.render()
+    assert_in("HJ 在 Preflop", rendered)
+    assert_in("AA：", rendered)
+    assert_in("Limp 100%", rendered)
+    assert_in("KK：", rendered)
+    assert_in("Limp 56% | 全下 44%", rendered)
+    assert_in("保護 limp range", rendered)
+    assert_in("高牌 A 改善", rendered)
+    assert_not_in("equity 0%", rendered)
+
+    detail = gf.format_hand_detail(solution, "AA", "HJ")
+    assert_in("EV: 5.85bb", detail)
+    assert_not_in("Equity: 0.0%", detail)
+
+    from coach_evidence import (
+        EvidenceBundle,
+        audit_evidence_answer,
+        render_safe_fallback,
+        suppress_exhaustive_hand_lists,
+    )
+
+    bundle = EvidenceBundle()
+    bundle.add_text("query_coach_facts", {"intent": "why_action"}, rendered)
+    bundle.add_text(
+        "query_gto", {"hand": "AA"},
+        "【HJ 在 Preflop】底池 2.5bb\nFold 72%\nLimp 4%\nEV 5.85bb",
+    )
+    fallback = render_safe_fallback(bundle)
+    assert_in("核心判斷", fallback)
+    assert_in("為什麼", fallback)
+    assert_in("保護 limp range", fallback)
+    assert_in("高牌 A 改善", fallback)
+    assert_not_in("Fold 72%", fallback)
+    assert_not_in("核心資料", fallback)
+
+    concise = (
+        "AA 純 Limp。\n"
+        "KK 以 Limp 56% 與 all-in 44% 混合。\n"
+        "AA 保護 limp range，KK 還要處理高牌 A 改善。"
+    )
+    assert_eq(suppress_exhaustive_hand_lists(concise), concise)
+    audit = audit_evidence_answer(
+        concise, bundle, bundle.fact_ids, require_refs=True,
+    )
+    assert_true(audit.ok, str(audit.violations))
+
+    ev_bundle = EvidenceBundle()
+    ev_bundle.add_text(
+        "query_gto", {"hand": "AA"},
+        "【HJ AA】\nEV: 5.85bb\nLimp: 100% EV 5.85bb",
+    )
+    ev_bundle.add_text(
+        "query_gto", {"hand": "KK"},
+        "【HJ KK】\nEV: 4.49bb\nLimp: 56% EV 4.49bb\nAll-in: 44% EV 4.49bb",
+    )
+    bad_ev = audit_evidence_answer(
+        "AA 與 KK 兩手的策略 EV 都相同。",
+        ev_bundle,
+        ev_bundle.fact_ids,
+        require_refs=True,
+    )
+    assert_in("cross-hand EV equality", bad_ev.violations)
+
+
 def test_coach_facts_hero_specific_combo():
     """coach_facts: hero's SPECIFIC combo (AdKd) beats the normalized class (AKs).
 

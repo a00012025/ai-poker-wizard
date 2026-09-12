@@ -398,7 +398,11 @@ def format_hand_detail(spot_solution: dict, hand_name: str, position: str) -> st
     lines = [
         f"【{position} {hand_name}】",
         f"  Range 頻率: {freq_in_range*100:.1f}%（{combos_in_range:.1f}/{combos_avail:.0f} combos）",
-        f"  EV: {ev:.2f}bb | Equity: {eq*100:.1f}%",
+        (
+            f"  EV: {ev:.2f}bb"
+            if len(player_info.get("range") or []) == 169
+            else f"  EV: {ev:.2f}bb | Equity: {eq*100:.1f}%"
+        ),
     ]
 
     # Per-action breakdown (with per-action EV if available)

@@ -3324,6 +3324,16 @@ def test_evidence_repair_guidance_explains_frequency_is_not_ev_rank():
     assert_in("高頻 raise 不代表", guidance)
 
 
+def test_h3914_exhaustive_list_repair_keeps_the_questioned_hands_only():
+    """H3914: a why-answer repair must not repeat another long range dump."""
+    from coach_evidence import repair_guidance_for_violations
+
+    guidance = repair_guidance_for_violations(["exhaustive hand list"])
+
+    assert_in("只保留使用者問的手牌", guidance)
+    assert_in("最多 3 個 hand class", guidance)
+
+
 def test_evidence_safe_fallback_prioritizes_causal_facts_over_titles():
     """Even a failed narrator leaves a compact learnable evidence card."""
     from coach_evidence import EvidenceBundle, render_safe_fallback

@@ -26,7 +26,7 @@ _HAND_CLASS_TOKEN_RE = re.compile(
 def suppress_exhaustive_hand_lists(text: str, max_examples: int = 3) -> str:
     """Keep representative hands while removing unreadable solver dumps."""
     rows = []
-    examples_used = 0
+    seen_examples = set()
     for line in (text or "").splitlines():
         hands = []
         for match in _HAND_CLASS_TOKEN_RE.finditer(line):
@@ -40,20 +40,21 @@ def suppress_exhaustive_hand_lists(text: str, max_examples: int = 3) -> str:
         if len(hands) == 1 and re.search(r"【|\bhero\b|這手|我的", line, re.I):
             rows.append(line)
             continue
-        examples_left = max(0, max_examples - examples_used)
-        if len(hands) <= examples_left:
+        new_hands = [hand for hand in hands if hand not in seen_examples]
+        examples_left = max(0, max_examples - len(seen_examples))
+        if len(new_hands) <= examples_left:
             rows.append(line)
-            examples_used += len(hands)
+            seen_examples.update(new_hands)
             continue
         parts = re.split(r"[:：]", line, maxsplit=1)
         prefix = parts[0].rstrip() if len(parts) > 1 else "代表牌"
-        examples = hands[:examples_left]
+        examples = new_hands[:examples_left]
         rows.append(
             f"{prefix}："
             + (f"代表如 {'、'.join(examples)}；" if examples else "")
             + "其餘逐手牌清單省略，改由教練重點解讀。"
         )
-        examples_used += len(examples)
+        seen_examples.update(examples)
     return "\n".join(rows)
 
 
@@ -218,6 +219,7 @@ FINAL_COACH_SYSTEM = """\
 - 若問題需要下一個尚未指定的對手 action，answer 要先說目前能確認什麼，再明確說必須指定哪個 action；此時 needs_more_evidence=true，但不可用理論補成完整答案。
 - 低頻不等於 EV 錯誤；EV 嚴重度只依證據。
 - 動作頻率只證明 solver 如何 mix；除非證據明列 action EV、regret 或 EV 差距，不得把 100%／高頻動作改寫成「EV 最高」「EV 更高」。
+- 比較多個 hand class 時，不得把「同一手牌的兩個 action EV 相同」誤寫成「兩手牌的 EV 相同」。
 - Mixed strategy 是 solver 的隨機頻率，不是依玩家當下「想不想、敢不敢、能不能承受」來選；只能說按頻率 randomize，或描述主要／次要分支。
 - Hand-class 平均（例如 A9s）不是 exact combo（例如 A♦9♦）策略；若工具沒回 exact combo 的 action 分配，就不要替該花色宣告 call／fold／raise 頻率或建議。
 - 若 exact combo 在該 node 的 range／strategy 不可用或 reach 近 0，不得把「整體 range 的 action summary」或 hand-class 平均當成該 combo 的答案；要直接說無法可靠判定，類別數字只能標成參考。
@@ -433,6 +435,21 @@ def audit_evidence_answer(answer: str, bundle: EvidenceBundle, fact_refs: Iterab
     )
     if ev_comparison_claim and not supports_ev_comparison:
         violations.append("unsupported EV ranking from action frequency")
+    cross_hand_equal_claim = re.search(
+        r"(?:兩手|二者|兩者|[2-9TJQKA]{2}[so]?[^。；\n]{0,20}"
+        r"[2-9TJQKA]{2}[so]?)[^。；\n]{0,36}\bEV\b[^。；\n]{0,12}"
+        r"(?:相同|一樣|無差|沒差)",
+        normalized_answer,
+        re.I,
+    )
+    hand_evs = re.findall(
+        r"【[^】]*\b([2-9TJQKA]{2}[so]?)】[\s\S]{0,100}?"
+        r"\bEV:\s*(-?\d+(?:\.\d+)?)bb",
+        normalized_evidence,
+        re.I,
+    )
+    if cross_hand_equal_claim and len({float(value) for _, value in hand_evs}) > 1:
+        violations.append("cross-hand EV equality")
 
     current_hand_text = "\n".join(
         "\n".join(item.facts)
@@ -525,6 +542,7 @@ def audit_evidence_answer(answer: str, bundle: EvidenceBundle, fact_refs: Iterab
     # while preventing cross-section joins.
     action_aliases = {
         "call": (r"\bcall\b", r"跟注"),
+        "limp": (r"\blimp\b",),
         "fold": (r"\bfold\b", r"棄牌"),
         "raise": (r"\braise\b", r"加注", r"all[- ]?in", r"全下"),
         "bet": (r"\bbet\b", r"下注"),
@@ -747,6 +765,30 @@ def render_safe_fallback(bundle: EvidenceBundle) -> str:
             + suppress_exhaustive_hand_lists("\n".join(rows))
         )
 
+    interpretation = next(
+        (
+            line.strip(" •")
+            for item in tool_items
+            for line in item.facts
+            if line.strip().startswith("教練解讀")
+        ),
+        None,
+    )
+    if interpretation:
+        action_lines = [
+            line.strip(" •")
+            for item in tool_items
+            for line in item.facts
+            if "solver 動作" in line
+        ][:3]
+        explanation = interpretation.split("：", 1)[-1]
+        return (
+            "*核心判斷*\n"
+            + "\n".join(f"• {line}" for line in action_lines)
+            + "\n\n*為什麼*\n"
+            + explanation
+        )
+
     candidates = []
     for item in tool_items:
         for line in item.facts:
@@ -755,7 +797,7 @@ def render_safe_fallback(bundle: EvidenceBundle) -> str:
                 continue
             priority = 2
             if re.search(
-                r"solver 動作|exact-combo|Hero range 角色|因果優先序|"
+                r"solver 動作|教練解讀|exact-combo|Hero range 角色|因果優先序|"
                 r"Range equity gate|Range 強端|可辨認強牌|Pot-odds gate|"
                 r"Size construction|GTOW removal",
                 stripped,
@@ -788,6 +830,11 @@ def repair_guidance_for_violations(violations: Iterable[str]) -> str:
             "不要使用『EV 最高／更高／較高』。頻率不是 EV 排名；改成逐字引用 solver 的 "
             "mix，並用已列出的 range 角色／因果優先序解釋。若問題比較 raise 與 call，"
             "可明說高頻 raise 不代表它的 EV 高於低頻 call。"
+        )
+    if "cross-hand EV equality" in joined:
+        guidance.append(
+            "不要說兩個不同 hand class 的 EV 相同。只能在同一手牌內比較"
+            "各 action EV；本題 AA 與 KK 的 headline EV 不同。"
         )
     if "unconditioned range category" in joined:
         guidance.append(
@@ -828,6 +875,11 @@ def repair_guidance_for_violations(violations: Iterable[str]) -> str:
         guidance.append(
             "刪除『equity／percentile／range 頂端，因此 bet／raise』。改成先引用 exact "
             "combo 的 solver mix，再用證據明列的牌型角色或 causal mechanism 解釋。"
+        )
+    if "exhaustive hand list" in joined:
+        guidance.append(
+            "只保留使用者問的手牌與回答必需的對照；整篇最多 3 個 hand class，"
+            "刪除其他代表牌清單，把篇幅用在直接解釋『為什麼』。"
         )
     if "action-line label" in joined:
         guidance.append(
