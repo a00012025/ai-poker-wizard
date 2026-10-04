@@ -6529,6 +6529,7 @@ def test_live_squeeze_fold_report_preserves_both_preflop_decisions(monkeypatch):
 
     raw = "Eff 27bb lj r2 hero co call 6d5d btn r7 lj fold hero fold"
     hand = parse_simple_preflop_block(raw)
+    assert hand is not None
     assert hand["hero_hand"] == "6d5d"
     assert hand["hero_position"] == "CO"
     assert hand["effective_bb"] == 27
