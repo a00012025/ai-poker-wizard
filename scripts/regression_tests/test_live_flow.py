@@ -6520,3 +6520,53 @@ def test_apply_live_resend_fallback_persists_new_message_id():
     assert_eq(captured["set_sid"], 42)
     assert_eq(captured["set_message_id"], 902)
     assert_in("fallback page 0", update.message.replies[-1][0][0])
+
+
+def test_live_squeeze_fold_report_preserves_both_preflop_decisions(monkeypatch):
+    """Reported 65dd hand: the offrange fold must not disappear behind the call."""
+    from datetime import datetime, timezone
+    from live_flow import parse_simple_preflop_block, build_hand_rows
+
+    raw = "Eff 27bb lj r2 hero co call 6d5d btn r7 lj fold hero fold"
+    hand = parse_simple_preflop_block(raw)
+    assert hand is not None
+    assert hand["hero_hand"] == "6d5d"
+    assert hand["hero_position"] == "CO"
+    assert hand["effective_bb"] == 27
+    row, decisions = build_hand_rows(hand, "live:test", datetime.now(timezone.utc), raw, {
+        ("preflop", 0): {"hero_action": "C", "gto_action": "F", "hero_freq": 0,
+                           "gto_freq": 1, "ev_loss": 0.097},
+        ("preflop", 1): {"ungraded": True, "reason": "offrange"},
+    })
+    assert [d["taken_code"] for d in decisions] == ["C", "F"]
+    assert decisions[1]["excluded"] is True
+    assert decisions[1]["ev_loss_bb"] is None
+    result = _mk_result(1)
+    result["hands"][0]["hand_row"] = row
+    result["hands"][0]["decisions"] = [
+        {"street": "preflop", "idx": 0, "taken": "C", "taken_label": "Call",
+         "best": "F", "best_label": "Fold", "gto_freq": 1, "taken_freq": 0,
+         "ev_loss": 0.097, "severity": "✅", "discarded": False},
+        {"street": "preflop", "idx": 1, "taken": "F", "taken_label": None,
+         "best": None, "ev_loss": None, "severity": "❓", "discarded": False,
+         "ungraded_reason": "offrange"},
+    ]
+    before = copy.deepcopy(result)
+    html, _, _ = render_session_page(result)
+    assert "preflop 實際動作：Call → Fold" in html
+    assert "☑️ preflop Call" in html  # The first call remains a real deviation.
+    assert "preflop 起未評分" in html
+    assert "Fold（未評分）" in html
+    assert result == before  # Rendering must not fabricate a grade for the fold.
+    import live_flow
+    monkeypatch.setattr(live_flow, "parse_block", lambda _raw: copy.deepcopy(hand))
+    monkeypatch.setattr(live_flow, "grade_hand_with_escalation", lambda _hand: ({
+        ("preflop", 0): {"hero_action": "C", "gto_action": "F", "hero_freq": 0,
+                           "gto_freq": 1, "ev_loss": 0.097,
+                           "hero_action_label": "Call", "gto_action_label": "Fold"},
+        ("preflop", 1): {"ungraded": True, "reason": "offrange"},
+    }, set(), {}))
+    fresh = live_flow.process_batch(raw, "2026-10-03", progress=lambda _msg: None)
+    assert fresh["hands"][0]["decisions"][1]["taken_label"] == "Fold"
+    assert fresh["totals"]["decisions"] == 2
+    assert fresh["totals"]["graded"] == 1

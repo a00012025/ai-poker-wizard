@@ -2965,7 +2965,8 @@ def process_batch(text: str, date_str: str | None = None,
                     "severity": ("❌" if reason == "off_tree_action" else
                                  severity(d["ev_loss_bb"] if not d["excluded"] else None)),
                     "taken": d["taken_code"], "best": d["best_code"],
-                    "taken_label": _display_taken_label(dev, spot) if graded else None,
+                    "taken_label": (_display_taken_label(dev, spot) if graded else
+                                    {"F": "Fold", "C": "Call", "X": "Check"}.get(d["taken_code"])),
                     "best_label": dev.get("gto_action_label") if graded else None,
                     "gto_freq": dev.get("gto_freq") if graded else None,
                     "taken_freq": d.get("taken_freq") if graded else None,
@@ -3391,6 +3392,14 @@ def render_session_page(result: dict, page: int = 0,
             L.append(
                 "　ℹ️ 翻後簡化："
                 f"{escape(h['multiway_projection'].get('label') or '?')}")
+        preflop_decisions = [d for d in h["decisions"] if d["street"] == "preflop"]
+        if len(preflop_decisions) > 1:
+            # Show the played line even when a later node cannot be graded.
+            # A deviation-only report otherwise looks like Call replaced Fold.
+            actions = [d.get("taken_label") or
+                       {"F": "Fold", "C": "Call", "X": "Check"}.get(d.get("taken"), d.get("taken")) or "?"
+                       for d in preflop_decisions]
+            L.append(f"　preflop 實際動作：{escape(' → '.join(actions))}")
         has_offrange = any(
             d.get("ungraded_reason") == "offrange"
             for d in h.get("decisions") or [])
@@ -3442,6 +3451,12 @@ def render_session_page(result: dict, page: int = 0,
             first = offrange[0]
             L.append(f"　❓ {first['street']} 起未評分：偏離 GTO 建議後，"
                      f"你的牌已在該線範圍外")
+            for decision in offrange:
+                taken = (decision.get("taken_label") or
+                         {"F": "Fold", "C": "Call", "X": "Check"}.get(decision.get("taken"), decision.get("taken")))
+                if taken:
+                    L.append(f"　實際 {decision['street']} 動作 #{int(decision.get('idx') or 0) + 1}："
+                             f"{escape(str(taken))}（未評分）")
             if any(d.get("depth_escalation_failed") for d in offrange):
                 L.append("　（升格評分失敗，保留原深度未評分）")
         else:
