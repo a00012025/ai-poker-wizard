@@ -1052,12 +1052,23 @@ class LiveLexStreet(BaseModel):
     actions: list[LiveLexAction] = Field(default_factory=list)
 
 
+class LiveSeatStack(BaseModel):
+    position: Literal["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    stack_bb: float = Field(gt=0, allow_inf_nan=False)
+
+
 class LiveTokenizedHand(BaseModel):
     """Gemini's narrow contract: lexical facts, never a completed hand."""
 
     effective_bb: float | None = None
     hero_position: str | None = None
     hero_hand: str | None = None
+    players_at_table: int | None = Field(default=None, ge=2, le=9)
+    tournament_type: Literal["icm"] | None = None
+    phase: Literal["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
+                   "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"] | None = None
+    average_stack_bb: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    player_stacks: list[LiveSeatStack] = Field(default_factory=list)
     preflop_actions: list[LiveLexAction] = Field(default_factory=list)
     streets: list[LiveLexStreet] = Field(default_factory=list)
 
@@ -1086,7 +1097,16 @@ Rules:
 - board_text copies the leading board/card text on each street line.
 - Extract effective stack, hero position and hero hand only when present.
   Leave missing fields null; never assume 100bb or invent cards/suits.
-- Ignore pot annotations, results, "wins", and tournament-stage notes.
+- Extract tournament_type=icm and phase from tournament-stage notes:
+  near/approaching bubble = BUBBLEEARLY, bubble = BUBBLEMID,
+  stone/exact bubble = BUBBLELATE, final table = FT. Percent remaining maps
+  to the nearest PCT75/PCT50/PCT25/PCT10/PCT5. Missing phase stays null.
+- average_stack_bb is the tournament average, NOT hero/effective stack.
+  player_stacks contains ONLY explicitly stated seats and their original
+  stack_bb (including hero), never fill unknown seats with avg/effective BB.
+  Extract players_at_table only when stated; never infer remaining players
+  or tournament size from "near bubble".
+- Ignore pot annotations, results, and "wins".
 - One input contains one hand. Never merge a second hand into the first.
 """
 
@@ -1161,7 +1181,8 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     final_count = _FINAL_COUNT_RE.search(low)
     is_ft = bool(final_count or "final table" in low
                  or "決賽桌" in block or re.search(r"\bft\b", low))
-    if ("icm" not in low and "泡沫" not in block and not is_ft):
+    if ("icm" not in low and "泡沫" not in block and not is_ft
+            and hand.get("tournament_type") != "icm"):
         return {}
 
     remaining = int(final_count.group(1) or final_count.group(2)) \
@@ -1172,7 +1193,11 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     if not order:
         return {}
 
-    phase = "BUBBLE"
+    phase = hand.get("phase") or "BUBBLE"
+    if re.search(r"\b(?:near|approaching|early)\s+bubble\b|接近泡沫|泡沫前", low):
+        phase = "BUBBLEEARLY"
+    elif re.search(r"\b(?:stone|exact|late)\s+bubble\b|正泡沫", low):
+        phase = "BUBBLELATE"
     if is_ft:
         phase = "FT"
     pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
@@ -1182,6 +1207,8 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         phase = f"PCT{nearest}"
 
     out: dict = {"tournament_type": "icm", "phase": phase}
+    if hand.get("average_stack_bb") is not None:
+        out["average_stack_bb"] = hand["average_stack_bb"]
     if remaining:
         out.update(players_remaining=remaining, players_at_table=remaining)
     avg_match = re.search(
@@ -1194,7 +1221,7 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
         out["average_stack_bb"] = float(avg_match.group(1) or avg_match.group(2))
 
     pos_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
-    stacks: list[float | None] = [None] * players
+    stacks: list[float | None] = list(hand.get("player_stacks") or [None] * players)
     for match in re.finditer(
         rf"\b({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
         r"(\d+(?:\.\d+)?)\s*bb\b",
@@ -1847,7 +1874,22 @@ def _tokenize_standard_live_block(block: str) -> dict | None:
 
 
 def _replay_and_lock_live_tokens(block: str, tokenized: dict) -> dict:
+    from hh_parser import POSITION_ORDERS
+
+    metadata = LiveTokenizedHand.model_validate(tokenized)
     hand = replay_live_action_tokens(block, tokenized)
+    for key in ("tournament_type", "phase", "average_stack_bb"):
+        value = getattr(metadata, key)
+        if value is not None:
+            hand[key] = value
+    if metadata.player_stacks:
+        order = POSITION_ORDERS[hand["players_at_table"]]
+        stacks = [None] * len(order)
+        for seat in metadata.player_stacks:
+            if seat.position not in order or stacks[order.index(seat.position)] is not None:
+                raise LiveReplayError(f"invalid/duplicate stack seat: {seat.position}")
+            stacks[order.index(seat.position)] = seat.stack_bb
+        hand["player_stacks"] = stacks
     hand.update(_extract_live_icm_metadata(block, hand))
     gated, notes = repair_card_literals_from_block(block, hand)
     if gated is None:
@@ -2293,6 +2335,8 @@ def _resolve_live_icm_params(hand: dict) -> dict | None:
     stacks = hand.get("player_stacks")
     if not stacks:
         stacks = [float(hand.get("effective_bb") or 20)] * players
+    from hh_parser import POSITION_ORDERS
+    hero_idx = POSITION_ORDERS[players].index(hand["hero_position"])
     return find_icm_params(
         player_stacks=stacks,
         pko=hand.get("pko", False),
@@ -2300,7 +2344,8 @@ def _resolve_live_icm_params(hand: dict) -> dict | None:
         players_remaining=hand.get("players_remaining"),
         phase=hand.get("phase"),
         players_at_table=players,
-        preflop_actions=hand.get("preflop_actions", ""),
+        # Match the decision node, not the recorded hero fold/result.
+        preflop_actions="-".join(hand.get("preflop_actions", "").split("-")[:hero_idx]),
         average_stack_bb=hand.get("average_stack_bb"),
     )
 

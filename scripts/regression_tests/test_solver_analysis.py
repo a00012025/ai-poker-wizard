@@ -2361,3 +2361,26 @@ def test_no_hero_hand_empty_flop_returns_range_strategy():
     assert_in("BET 7.3（25% pot）: 56.6%", result["text"])
     assert_in("AA", result["text"])
     assert_in("AKs", result["text"])
+
+
+def test_icm_fold_analysis_matches_before_hero_decision(monkeypatch):
+    import icm_modes
+    from analyze_hand import analyze_hand_full
+
+    class Resolved(Exception):
+        pass
+
+    def capture(**kwargs):
+        assert kwargs['preflop_actions'] == 'F-F'
+        assert kwargs['player_stacks'] == [None, None, 16, None, None, None, None, 80]
+        raise Resolved
+
+    monkeypatch.setattr(icm_modes, 'find_icm_params', capture)
+    with pytest.raises(Resolved):
+        analyze_hand_full({
+            'tournament_type': 'icm', 'phase': 'BUBBLEEARLY',
+            'players_at_table': 8, 'hero_position': 'LJ', 'hero_hand': '88',
+            'effective_bb': 16, 'average_stack_bb': 30,
+            'player_stacks': [None, None, 16, None, None, None, None, 80],
+            'preflop_actions': 'F-F-F-F-F-F-F-F',
+        })

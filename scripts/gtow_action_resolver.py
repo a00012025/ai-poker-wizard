@@ -464,8 +464,10 @@ def resolve_actions_for_deviation(
         icm_params = hand_data.get("_icm_params")
         if not icm_params and hand_data.get("tournament_type") == "icm":
             from icm_modes import find_icm_params
+            from position_constants import POSITION_ORDERS as icm_orders
             players = int(hand_data.get("players_at_table") or 8)
             player_stacks = hand_data.get("player_stacks") or [effective_bb] * players
+            hero_idx = icm_orders[players].index(hero_pos_raw)
             icm_params = find_icm_params(
                 player_stacks=player_stacks,
                 pko=hand_data.get("pko", False),
@@ -473,7 +475,7 @@ def resolve_actions_for_deviation(
                 players_remaining=hand_data.get("players_remaining"),
                 phase=hand_data.get("phase"),
                 players_at_table=players,
-                preflop_actions=raw_preflop,
+                preflop_actions="-".join(raw_preflop.split("-")[:hero_idx]),
                 average_stack_bb=hand_data.get("average_stack_bb"),
             )
         if icm_params:
