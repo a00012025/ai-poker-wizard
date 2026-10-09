@@ -6731,3 +6731,38 @@ def test_live_llm_percent_takes_precedence_over_generic_bubble_alias():
         'hero hj has 14bb r2 KcQs bb call\nTs8c3d x x', client=client)
     assert hand['players_remaining_percent'] == 16.4
     assert hand['phase'] == '16.4%'
+
+
+def test_live_token_schema_serializes_through_real_genai_client_without_network():
+    import httpx
+    from google import genai
+    from live_flow import _live_token_config
+
+    requests = []
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'candidates': [{'content': {
+            'parts': [{'text': '{}'}], 'role': 'model'}, 'finishReason': 'STOP'}]})
+    http = httpx.Client(transport=httpx.MockTransport(respond))
+    client = genai.Client(api_key='offline-test',http_options={'httpx_client': http})
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',contents='offline',config=_live_token_config('gemini-3.6-flash'))
+        assert response.text == '{}'
+        assert len(requests) == 1
+        schema = requests[0]['generationConfig']['responseSchema']
+        assert 'players_remaining_percent' in schema['properties']
+    finally:
+        client.close()
+        http.close()
+
+
+@pytest.mark.parametrize('payload', [
+    {'average_stack_bb': 0}, {'players_remaining_percent': 0},
+    {'player_stacks': [{'position': 'HJ', 'stack_bb': 0}]},
+])
+def test_live_token_schema_still_rejects_zero_amounts(payload):
+    from pydantic import ValidationError
+    from live_flow import LiveTokenizedHand
+    with pytest.raises(ValidationError):
+        LiveTokenizedHand.model_validate(payload)

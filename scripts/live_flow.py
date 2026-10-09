@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -1054,7 +1054,14 @@ class LiveLexStreet(BaseModel):
 
 class LiveSeatStack(BaseModel):
     position: Literal["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
-    stack_bb: float = Field(gt=0, allow_inf_nan=False)
+    stack_bb: float = Field(ge=0, allow_inf_nan=False)
+
+    @field_validator("stack_bb")
+    @classmethod
+    def _require_positive(cls, value):
+        if value <= 0:
+            raise ValueError("stack_bb must be positive")
+        return value
 
 
 class LiveTokenizedHand(BaseModel):
@@ -1066,11 +1073,19 @@ class LiveTokenizedHand(BaseModel):
     players_at_table: int | None = Field(default=None, ge=2, le=9)
     tournament_type: Literal["icm"] | None = None
     phase: Literal["FT", "FT2", "FT3"] | None = None
-    players_remaining_percent: float | None = Field(default=None, gt=0, le=100, allow_inf_nan=False)
-    average_stack_bb: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Gemini supports minimum, not exclusiveMinimum; local validators still reject zero.
+    players_remaining_percent: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    average_stack_bb: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     player_stacks: list[LiveSeatStack] = Field(default_factory=list)
     preflop_actions: list[LiveLexAction] = Field(default_factory=list)
     streets: list[LiveLexStreet] = Field(default_factory=list)
+
+    @field_validator("players_remaining_percent", "average_stack_bb")
+    @classmethod
+    def _require_positive(cls, value):
+        if value is not None and value <= 0:
+            raise ValueError("percentage and average stack must be positive")
+        return value
 
 
 LIVE_TOKEN_PROMPT = """You are a lexical tokenizer for live poker shorthand.
