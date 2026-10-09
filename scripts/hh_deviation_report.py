@@ -13,16 +13,13 @@ from gto_formatter import normalize_hand_name
 
 
 _PHASE_LABELS = {
-    "START": "起始",
+    "START": "100%",
     "PCT75": "75%",
     "PCT50": "50%",
     "PCT37": "37%",
     "PCT25": "25%",
     "PCT10": "10%",
     "PCT5": "5%",
-    "BUBBLEEARLY": "泡沫前期",
-    "BUBBLEMID": "泡沫中期",
-    "BUBBLELATE": "泡沫後期",
     "FT": "決賽桌",
     "T2": "兩桌",
     "T3": "三桌",
@@ -32,12 +29,13 @@ _PHASE_LABELS = {
 def _extract_icm_phase_label(gametype: str) -> str:
     """Extract human-readable ICM phase from gametype like 'MTTGeneral_ICM8m1000PTPCT25'."""
     import re
+    bubble = re.search(r"m(\d+)PTBUBBLE(\d+)PT$", gametype)
+    if bubble:
+        return f"{int(bubble.group(2)) / int(bubble.group(1)) * 100:g}%"
     m = re.search(r"PT(.+)$", gametype)
     if not m:
         return "ICM"
     raw = m.group(1)
-    # Handle bubble variants like "BUBBLE152PT" → "BUBBLELATE"
-    # The raw value after PT is the phase code
     return _PHASE_LABELS.get(raw, raw)
 
 

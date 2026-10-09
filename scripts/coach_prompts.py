@@ -67,7 +67,8 @@ ICM 支援：
   "pko": true/false（是否 PKO/bounty 錦標賽，預設 false）
   "tournament_size": 1000 或 200（錦標賽人數，預設 1000）
   "players_remaining": 數字（剩餘人數，例如 152）
-  "phase": 階段名稱（可選，如 "BUBBLE", "FT", "PCT25" 等）
+  "players_remaining_percent": 原始剩餘選手百分比（剩餘人數 / 初始參賽人數 × 100），保留小數，例如 16.4% → 16.4；未知時不填
+  "phase": 僅限 "FT"、"FT2"、"FT3"，其餘一律使用 players_remaining_percent
   "average_stack_bb": 用戶明確提供的全賽事均碼 bb（例如 "avg 25bb" → 25）；這是解的 metadata 約束，不是任何座位的籌碼
   "player_stacks": [每個位置的籌碼]（按位置順序排列，如 [50, 30, 45, 20, 35, 25, 15, 40]）。只知道部分位置時，未知位置用 null，不能擅自補成與 Hero 相同；例如只知道 8-max HJ=28、BTN=14 → [null, null, null, 28, null, 14, null, null]
 - 決賽桌（FT）桌位規則（重要！）：
@@ -77,22 +78,18 @@ ICM 支援：
   → players_at_table: 8
   → player_stacks: [0, 0, 8, 0, 23, 10, 18, 23]（UTG=0, UTG+1=0, LJ=8, HJ=0, CO=23, BTN=10, SB=18, BB=23）
   只有用戶明確說了「X 人桌」（如「6人桌決賽桌」）時，才用 X 人格式。
-- 用戶說「ICM bubble 50bb」且沒提到個別籌碼 → 不需要 player_stacks，只需 tournament_type + phase
+- 用戶說「ICM bubble 50bb」且沒提到個別籌碼 → 不需要 player_stacks，只需 tournament_type + players_remaining_percent: 15.2
 - 如果用戶問某個位置的「範圍」或「策略」而沒有指定具體手牌（如「CO 的 open 範圍如何」「LJ 整體下注頻率」），
   仍然要提取手牌 JSON！hero_hand 設為 "AA"（佔位用），hero_position 設為用戶問的位置，
   並加上 "no_hero_hand": true。系統會自動分析該位置的完整範圍，不會顯示 AA 的具體策略。
-- phase 對應規則：
-  early/開始 → "START"
-  75% left → "PCT75"
-  50% left → "PCT50"
-  25% left → "PCT25"
-  其他剩餘百分比 → 選最接近的內建階段（75/50/25/10/5；例如 30% → "PCT25"）
-  bubble → "BUBBLE"（泡沫）
-  10% left → "PCT10"
-  5% left → "PCT5"
+- ICM 百分比規則：
+  明確剩餘百分比原樣提取，禁止四捨五入成 PCT 桶；例如 30% → players_remaining_percent: 30，16.4% → 16.4
+  near/stone/soft bubble 統一採用 owner 慣例 players_remaining_percent: 15.2，不分 early/mid/late；明確百分比優先
+  early/開始 → players_remaining_percent: 100
   final table/FT → "FT"
-  兩桌 → "T2"
-  三桌 → "T3"
+  兩桌/FT2 → "FT2"
+  三桌/FT3 → "FT3"
+  FT/FT2/FT3 優先於百分比；solver 匹配由後端決定，不由 LLM 選擇 library bucket
 
 遊戲格式（game_format）：
 - 預設為 MTT（不需要 game_format 欄位）
@@ -152,7 +149,7 @@ JSON 格式（ICM）：
     "tournament_type": "icm",
     "tournament_size": 1000,
     "players_remaining": 152,
-    "phase": "BUBBLE",
+    "players_remaining_percent": 15.2,
     "player_stacks": [50, 50, 50, 50, 50, 50, 50, 50],
     "effective_bb": 50,
     "hero_position": "SB",

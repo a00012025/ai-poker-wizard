@@ -510,7 +510,7 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
         "btn has 14bb all in hero call",
         client=NoClient(),
     )
-    assert_eq(hand["phase"], "PCT25")
+    assert_eq(hand["phase"], "30%")
     assert_eq(hand["average_stack_bb"], 25.0)
     assert_eq(hand["player_stacks"], [None, None, None, 28.0, None, 14.0, None, None])
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
@@ -593,7 +593,7 @@ def test_live_icm_multiraise_line_preserves_hero_fourbet_fold_node():
         "bb has 20bb call, utg raise to 15bb, hero fold"
     )
 
-    assert_eq(hand["phase"], "PCT25")
+    assert_eq(hand["phase"], "18%")
     assert_eq(hand["hero_position"], "LJ")
     assert_eq(hand["hero_hand"], "JJ")
     assert_eq(
@@ -612,7 +612,7 @@ def test_live_icm_multiway_bubble_line_preserves_final_hero_fold_node():
         "co has 40bb raise to 9bb, btn has 40bb call, hero fold"
     )
 
-    assert_eq(hand["phase"], "BUBBLEEARLY")
+    assert_eq(hand["phase"], "15.2%")
     assert_eq(hand["hero_position"], "LJ")
     assert_eq(hand["hero_hand"], "A5s")
     assert_eq(
@@ -6587,7 +6587,8 @@ def test_live_reported_near_bubble_hands(block, hero, cards, average, stack, lin
     monkeypatch.setenv('GEMINI_API_KEY', 'offline-test')
     hand = live_flow.parse_block(block)
     assert hand['tournament_type'] == 'icm'
-    assert hand['phase'] == 'BUBBLEEARLY'
+    assert hand['phase'] == '15.2%'
+    assert hand['players_remaining_percent'] == 15.2
     assert hand['hero_position'] == hero
     assert hand['hero_hand'] == cards
     assert hand['effective_bb'] == stack
@@ -6616,8 +6617,8 @@ def test_live_icm_fold_matches_stacks_before_hero_decision(monkeypatch):
     import icm_modes
     import live_flow
     monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
-        'name': 'MTTGeneral_ICM8m1000PTBUBBLE180PT', 'players': 8,
-        'info': {'tournament_phase': 'BUBBLEEARLY', 'tournament_players': 1000},
+        'name': 'MTTGeneral_ICM8m1000PTBUBBLE152PT', 'players': 8,
+        'info': {'tournament_phase': 'BUBBLELATE', 'tournament_players': 1000, 'players_remaining': 152},
         'game_modes': [
             {'depth': '23.125', 'stacks': [f'{s + .125}' for s in [23, 29, 75, 35, 16, 20, 26, 17]],
              'info': {'avg_stack': 30}},
@@ -6627,7 +6628,7 @@ def test_live_icm_fold_matches_stacks_before_hero_decision(monkeypatch):
     }])
     hand = live_flow.parse_simple_preflop_block(
         'Icm near bubble avg 30bb bb has 80bb, hero lj has 16bb fold 88')
-    hand['phase'] = 'BUBBLEEARLY'
+    hand['phase'] = '15.2%'
     result = live_flow._resolve_live_icm_params(hand)
     assert result['solver_stacks'][2] == 16
     assert result['solver_stacks'][7] == 80
@@ -6639,7 +6640,7 @@ def test_live_llm_icm_metadata_survives_replay(monkeypatch):
     from types import SimpleNamespace
     payload = {
         'effective_bb': 14, 'hero_position': 'HJ', 'hero_hand': 'KcQs',
-        'tournament_type': 'icm', 'phase': 'BUBBLEEARLY', 'average_stack_bb': 30,
+        'tournament_type': 'icm', 'players_remaining_percent': 15.2, 'average_stack_bb': 30,
         'player_stacks': [ {'position': 'HJ', 'stack_bb': 14},
                            {'position': 'BB', 'stack_bb': 80}],
         'preflop_actions': [{'actor': 'HJ', 'action': 'raise', 'size_bb': 2},
@@ -6653,15 +6654,80 @@ def test_live_llm_icm_metadata_survives_replay(monkeypatch):
     hand = live_flow.parse_block(
         'ICM approaching the money, average thirty blinds, hero hj fourteen blinds '
         'r2 KcQs, big blind eighty blinds call\nTs8c3d x x', client=client)
-    assert hand['phase'] == 'BUBBLEEARLY'
+    assert hand['phase'] == '15.2%'
+    assert hand['players_remaining_percent'] == 15.2
     assert hand['average_stack_bb'] == 30
     assert hand['player_stacks'] == [None, None, None, 14, None, None, None, 80]
 
 
 @pytest.mark.parametrize('field,value', [('average_stack_bb', -30), ('average_stack_bb', float('inf')),
-                                        ('phase', 'not-a-phase')])
+                                        ('phase', 'not-a-phase'), ('players_remaining_percent', 0),
+                                        ('players_remaining_percent', 101), ('players_remaining_percent', float('nan'))])
 def test_live_llm_icm_metadata_rejects_invalid_values(field, value):
     from live_flow import LiveTokenizedHand
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         LiveTokenizedHand.model_validate({field: value})
+
+
+@pytest.mark.parametrize('percent', [15, 15.2, 16.4, 18, 30, 100])
+def test_live_icm_retains_exact_remaining_percent(percent):
+    from live_flow import parse_simple_preflop_block
+    hand = parse_simple_preflop_block(
+        f'ICM {percent}% avg 30bb hero hj has 14bb all in AQs')
+    assert hand['players_remaining_percent'] == percent
+    assert hand['phase'] == f'{percent:g}%'
+
+
+@pytest.mark.parametrize('stage', ['near bubble', 'stone bubble', 'soft bubble'])
+def test_live_bubble_aliases_share_one_percent(stage):
+    from live_flow import parse_simple_preflop_block
+    hand = parse_simple_preflop_block(
+        f'ICM {stage} avg 30bb hero hj has 14bb all in AQs')
+    assert hand['players_remaining_percent'] == 15.2
+    assert hand['phase'] == '15.2%'
+
+
+@pytest.mark.parametrize('stage', ['FT', 'FT2', 'FT3'])
+def test_live_final_tables_are_not_percent_matched(stage):
+    from live_flow import parse_simple_preflop_block, split_batch
+    raw = f'{stage} 15% avg 30bb hero hj has 14bb all in AQs'
+    assert len(split_batch(raw + '\n' + raw)) == 2
+    hand = parse_simple_preflop_block(raw)
+    assert hand['phase'] == stage
+    assert 'players_remaining_percent' not in hand
+
+
+def test_live_icm_percent_reaches_grading_resolver(monkeypatch):
+    import icm_modes
+    from live_flow import _resolve_live_icm_params
+    seen = {}
+    monkeypatch.setattr(icm_modes, 'find_icm_params', lambda **kwargs: seen.update(kwargs) or {})
+    _resolve_live_icm_params({
+        'tournament_type': 'icm', 'players_remaining_percent': 16.4,
+        'players_at_table': 8, 'hero_position': 'HJ', 'effective_bb': 14,
+        'player_stacks': [None, None, None, 14, None, None, None, 80],
+        'preflop_actions': 'F-F-F-F-F-F-F-F',
+    })
+    assert seen['players_remaining_percent'] == 16.4
+
+
+def test_live_llm_percent_takes_precedence_over_generic_bubble_alias():
+    import live_flow
+    from types import SimpleNamespace
+    payload = {
+        'effective_bb': 14, 'hero_position': 'HJ', 'hero_hand': 'KcQs',
+        'tournament_type': 'icm', 'players_remaining_percent': 16.4,
+        'average_stack_bb': 30,
+        'preflop_actions': [{'actor': 'HJ', 'action': 'raise', 'size_bb': 2},
+                            {'actor': 'BB', 'action': 'call'}],
+        'streets': [{'board_text': 'Ts8c3d', 'actions': [
+            {'action': 'check'}, {'action': 'check'}]}],
+    }
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=lambda **kwargs:
+        SimpleNamespace(text=json.dumps(payload))))
+    hand = live_flow.parse_block(
+        'ICM near bubble remaining sixteen point four percent, avg 30bb '
+        'hero hj has 14bb r2 KcQs bb call\nTs8c3d x x', client=client)
+    assert hand['players_remaining_percent'] == 16.4
+    assert hand['phase'] == '16.4%'

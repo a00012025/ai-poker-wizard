@@ -1802,6 +1802,147 @@ def test_icm_gametype_lookup():
     assert_in("BUBBLE", gt)
 
 
+
+
+def _fake_icm_mode(name, players=8, remaining=250, total=1000, phase="PCT25", hidden=False):
+    return {
+        "name": name,
+        "players": players,
+        "info": {
+            "players_remaining": remaining,
+            "tournament_players": total,
+            "tournament_phase": phase,
+        },
+        "game_modes": [{
+            "depth": "25.125",
+            "stacks": ["25.125"] * players,
+            "info": {"hidden": hidden, "avg_stack": 25},
+        }],
+    }
+
+
+def test_icm_gametype_percent_matches_closest_actual_solution(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTPCT10", remaining=100, phase="PCT10"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE152PT", remaining=152, phase="BUBBLE152PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE160PT", remaining=160, phase="BUBBLE160PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE180PT", remaining=180, phase="BUBBLE180PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTPCT25", remaining=250, phase="PCT25"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=15),
+              "MTTGeneral_ICM8m1000PTBUBBLE152PT")
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=16),
+              "MTTGeneral_ICM8m1000PTBUBBLE160PT")
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=18),
+              "MTTGeneral_ICM8m1000PTBUBBLE180PT")
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=30),
+              "MTTGeneral_ICM8m1000PTPCT25")
+
+
+def test_icm_legacy_percent_phases_use_percent_matching(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE152PT", remaining=152, phase="BUBBLE152PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE160PT", remaining=160, phase="BUBBLE160PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTPCT25", remaining=250, phase="PCT25"),
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTSTART", remaining=1000, phase="START"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(phase="15%"),
+              "MTTGeneral_ICM8m1000PTBUBBLE152PT")
+    assert_eq(icm_modes.find_gametype(phase="16.1%"),
+              "MTTGeneral_ICM8m1000PTBUBBLE160PT")
+    assert_eq(icm_modes.find_gametype(phase="PCT30"),
+              "MTTGeneral_ICM8m1000PTPCT25")
+    assert_eq(icm_modes.find_gametype(phase="START"),
+              "MTTGeneral_ICM8m1000PTSTART")
+    assert_eq(icm_modes.find_gametype(phase="BUBBLEEARLY"),
+              "MTTGeneral_ICM8m1000PTBUBBLE152PT")
+
+
+def test_icm_explicit_final_table_phase_beats_percent(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE152PT", remaining=152, phase="BUBBLE152PT"),
+        _fake_icm_mode("MTTGeneral_ICM8m200PTT2", remaining=16, total=200, phase="T2"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(phase="FT2", players_remaining_percent=15.2),
+              "MTTGeneral_ICM8m200PTT2")
+
+
+def test_icm_explicit_final_table_phase_no_family_is_chipev(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE152PT", remaining=152, phase="BUBBLE152PT"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(phase="FT2", players_remaining_percent=15.2),
+              "MTTGeneral")
+
+
+def test_icm_percent_without_metadata_is_honest_no_match(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTPCT25", remaining=0, phase="PCT25"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=25), "MTTGeneral")
+
+
+def test_icm_percent_matching_filters_visibility_table_pko_and_size_fallback(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTPCT16HIDDEN", remaining=160, hidden=True),
+        _fake_icm_mode("MTTGeneral_ICM7m1000PTPCT16", players=7, remaining=160, phase="PCT16"),
+        _fake_icm_mode("MTTGeneral_ICMPKO8m1000PTPCT16", remaining=160, phase="PCT16"),
+        _fake_icm_mode("MTTGeneral_ICM8m200PTPCT16", remaining=32, total=200, phase="PCT16"),
+    ])
+
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=16, tournament_size=1000),
+              "MTTGeneral_ICM8m200PTPCT16")
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=16, tournament_size=1000, pko=True),
+              "MTTGeneral_ICMPKO8m1000PTPCT16")
+    assert_eq(icm_modes.find_gametype(players_remaining_percent=16, tournament_size=500),
+              "MTTGeneral_ICM8m200PTPCT16")
+
+
+def test_icm_percent_validation_and_find_params_pass_through(monkeypatch):
+    import icm_modes
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [
+        _fake_icm_mode("MTTGeneral_ICM8m1000PTBUBBLE152PT", remaining=152, phase="BUBBLE152PT"),
+    ])
+
+    for bad in [0, -1, 101, float("inf"), float("nan")]:
+        with pytest.raises(ValueError):
+            icm_modes.find_gametype(players_remaining_percent=bad)
+    for bad_phase in ["0%", "101%", "nan%"]:
+        with pytest.raises(ValueError):
+            icm_modes.find_gametype(phase=bad_phase)
+
+    result = icm_modes.find_icm_params(
+        player_stacks=[25] * 8,
+        players_remaining_percent=15.2,
+    )
+    assert_eq(result["gametype"], "MTTGeneral_ICM8m1000PTBUBBLE152PT")
+
+    monkeypatch.setattr(icm_modes, "_load_game_modes", lambda: [])
+    result = icm_modes.find_icm_params(
+        player_stacks=[None, 25, None, 25],
+        players_remaining_percent=15.2,
+    )
+    assert_eq(result["gametype"], "MTTGeneral")
+
+
 def test_icm_stacks_matching():
     """ICM: find_stacks returns matching stack configuration."""
     from icm_modes import find_gametype, find_stacks

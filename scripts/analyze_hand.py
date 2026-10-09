@@ -1868,6 +1868,7 @@ def _run_analysis(hand: dict) -> dict:
                 pko=hand.get("pko", False),
                 tournament_size=hand.get("tournament_size", 1000),
                 players_remaining=hand.get("players_remaining"),
+                players_remaining_percent=hand.get("players_remaining_percent"),
                 phase=hand.get("phase"),
                 players_at_table=num_players,
                 # Match stacks before hero acts, even when the recorded action is fold.
@@ -1891,6 +1892,7 @@ def _run_analysis(hand: dict) -> dict:
                 pko=hand.get("pko", False),
                 tournament_size=hand.get("tournament_size", 1000),
                 players_remaining=hand.get("players_remaining"),
+                players_remaining_percent=hand.get("players_remaining_percent"),
                 phase=hand.get("phase"),
             )
             eff = hand["effective_bb"]

@@ -473,6 +473,7 @@ def resolve_actions_for_deviation(
                 pko=hand_data.get("pko", False),
                 tournament_size=hand_data.get("tournament_size", 1000),
                 players_remaining=hand_data.get("players_remaining"),
+                players_remaining_percent=hand_data.get("players_remaining_percent"),
                 phase=hand_data.get("phase"),
                 players_at_table=players,
                 preflop_actions="-".join(raw_preflop.split("-")[:hero_idx]),
