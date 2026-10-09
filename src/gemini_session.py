@@ -2800,6 +2800,8 @@ class GeminiSessionManager:
                     )
                 if not hand.get("preflop_actions"):
                     return None
+                from live_flow import _extract_live_icm_metadata
+                hand.update(_extract_live_icm_metadata(user_text, hand))
                 self._fix_folded_players_guarded(hand, chat_id)
                 return hand
         except (json.JSONDecodeError, AttributeError) as e:

@@ -993,3 +993,33 @@ def test_icm_ft_image_parse_fields_flow():
     assert_eq(result["is_icm"], True)
     assert_eq(result["hero_position"], "BB")
     assert_true("ICM" in result["text"], "output should mention ICM")
+
+
+def test_primary_llm_hand_parser_preserves_literal_percent_over_legacy_bucket():
+    import asyncio
+    from types import SimpleNamespace
+    from gemini_session import GeminiSessionManager
+
+    calls = []
+    class Models:
+        async def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(text=json.dumps({'hand': {
+                'gametype': 'MTTGeneral', 'tournament_type': 'icm', 'phase': 'PCT25',
+                'players_at_table': 8, 'effective_bb': 14,
+                'hero_position': 'HJ', 'hero_hand': 'KcQs',
+                'preflop_actions': 'F-F-F-R2-F-F-F-C',
+                'streets': [{'board': 'Ts8c3d', 'actions': 'X-X'}],
+            }}))
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session.client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    session.parse_model = 'gemini-3.6-flash'
+    session.hand_contexts = {}
+    session._logger = logging.getLogger('icm-exact-percent-parse')
+    hand = asyncio.run(session._parse_hand(
+        1, 'ICM 16.4% avg 30bb bb has 80bb hero hj has 14bb r2 KcQs bb call\nTs8c3d x x'))
+    assert len(calls) == 1
+    assert hand['players_remaining_percent'] == 16.4
+    assert hand['phase'] == '16.4%'
+    assert hand['average_stack_bb'] == 30
+    assert hand['player_stacks'] == [None, None, None, 14, None, None, None, 80]
