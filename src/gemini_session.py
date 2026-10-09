@@ -2058,7 +2058,7 @@ class GeminiSessionManager:
             "icm" in low
             or "決賽桌" in text
             or "final table" in low
-            or re.search(r"\bft\b", low)
+            or re.search(r"\b(?:ft[23]?|t[23])\b", low)
         )
         position_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
         named_stack_patterns = (
@@ -2247,16 +2247,7 @@ class GeminiSessionManager:
         else:
             hero_hand = hero_hand.upper()
 
-        phase = (
-            "FT"
-            if ("final table" in low or "決賽桌" in text or re.search(r"\bft\b", low))
-            else "BUBBLE"
-        )
-        pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
-        if pct_match:
-            pct = int(pct_match.group(1))
-            nearest_pct = min((75, 50, 25, 10, 5), key=lambda value: abs(value - pct))
-            phase = f"PCT{nearest_pct}"
+        phase = ""
 
         average_match = re.search(
             r"\b(?:avg|average)\s*(?:stack)?\s*(\d+(?:\.\d+)?)\s*bb\b"
@@ -2280,6 +2271,24 @@ class GeminiSessionManager:
             "no_hero_hand": hand_match is None,
             "preflop_actions": action_line,
         }
+        try:
+            from live_flow import _extract_live_icm_metadata
+
+            live_meta = _extract_live_icm_metadata(text, hand)
+        except (ImportError, ValueError):
+            live_meta = {}
+        for key in (
+            "phase",
+            "players_remaining_percent",
+            "average_stack_bb",
+            "players_remaining",
+            "players_at_table",
+            "player_stacks",
+        ):
+            if key in live_meta:
+                hand[key] = live_meta[key]
+        if not hand.get("phase"):
+            hand["phase"] = "BUBBLE"
         if average_stack_bb is not None:
             hand["average_stack_bb"] = average_stack_bb
         return hand
@@ -4752,7 +4761,7 @@ class GeminiSessionManager:
                 "\n"
                 "ICM 查詢：用戶提到 ICM / 錦標賽壓力 / 泡沫期 / 決賽桌 / 剩多少%人 時，必須使用 icm_phase 參數。\n"
                 "同時指定 num_players（桌上人數）和 effective_bb。\n"
-                "例：ICM 25% 8人桌 20bb → icm_phase='PCT25', num_players=8, effective_bb=20\n"
+                "例：ICM 30% 8人桌 20bb → icm_phase='30%', num_players=8, effective_bb=20\n"
                 "例：決賽桌 6人 30bb → icm_phase='FT', num_players=6, effective_bb=30"
             )
 
@@ -4813,7 +4822,7 @@ class GeminiSessionManager:
             "例：查詢 UTG+1 open 後 BTN 3bet 範圍 → preflop_actions_override='F-R2-F-F-F'\n"
             "\n"
             "ICM 查詢：用戶提到 ICM / 錦標賽壓力 / 泡沫期 / 決賽桌 時，使用 icm_phase 參數。\n"
-            "例：ICM 25% 8人桌 20bb → icm_phase='PCT25', num_players=8, effective_bb=20"
+            "例：ICM 30% 8人桌 20bb → icm_phase='30%', num_players=8, effective_bb=20"
         )
 
         return "\n".join(lines)

@@ -1,5 +1,6 @@
 """Regression tests extracted from the legacy monolithic suite."""
 
+import pytest
 import json
 import logging
 import os
@@ -1217,3 +1218,17 @@ def test_find_action_by_pot_pct_dead_money_pot_ignores_exact_betsize():
     # No dead money (real ≈ solver pot): exact-betsize shortcut still applies.
     assert_eq(_find_action_by_pot_pct(avail, 2.7, 5.5), "R2.75",
               "without dead money, a bet equal to a bucket size keeps that bucket")
+
+
+@pytest.mark.parametrize(('gametype', 'label'), [
+    ('MTTGeneral_ICM8m1000PTBUBBLE152PT', '15.2%'),
+    ('MTTGeneral_ICM8m1000PTBUBBLE160PT', '16%'),
+    ('MTTGeneral_ICM8m1000PTBUBBLE180PT', '18%'),
+    ('MTTGeneral_ICM8m200PTBUBBLE31PT', '15.5%'),
+    ('MTTGeneral_ICM8m1000PTFT', '決賽桌'),
+    ('MTTGeneral_ICM8m1000PTT2', '兩桌'),
+    ('MTTGeneral_ICM8m1000PTT3', '三桌'),
+])
+def test_icm_report_labels_bubble_solutions_as_percent(gametype, label):
+    from hh_deviation_report import _extract_icm_phase_label
+    assert _extract_icm_phase_label(gametype) == label

@@ -48,22 +48,8 @@ _BASE_TOOLS = (
                 },
                 "icm_phase": {
                     "description": "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip "
-                    "EV。常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, "
-                    "FT=決賽桌。",
-                    "enum": [
-                        "START",
-                        "PCT75",
-                        "PCT50",
-                        "PCT25",
-                        "PCT10",
-                        "PCT5",
-                        "BUBBLEEARLY",
-                        "BUBBLEMID",
-                        "BUBBLELATE",
-                        "FT",
-                        "T2",
-                        "T3",
-                    ],
+                    "EV。請保留用戶說的剩餘人數百分比字串（如 15.2%、30%），"
+                    "或使用 FT/FT2/FT3；舊的 PCT25/PCT10 等也可接受。",
                     "type": "string",
                 },
                 "player_stacks": {
@@ -164,22 +150,8 @@ _BASE_TOOLS = (
                 },
                 "icm_phase": {
                     "description": "ICM 錦標賽階段。指定後會使用 ICM solver 而非 Chip "
-                    "EV。常見階段：START=初期, PCT25=剩25%人, BUBBLEMID=泡沫期, "
-                    "FT=決賽桌。",
-                    "enum": [
-                        "START",
-                        "PCT75",
-                        "PCT50",
-                        "PCT25",
-                        "PCT10",
-                        "PCT5",
-                        "BUBBLEEARLY",
-                        "BUBBLEMID",
-                        "BUBBLELATE",
-                        "FT",
-                        "T2",
-                        "T3",
-                    ],
+                    "EV。請保留用戶說的剩餘人數百分比字串（如 15.2%、30%），"
+                    "或使用 FT/FT2/FT3；舊的 PCT25/PCT10 等也可接受。",
                     "type": "string",
                 },
                 "player_stacks": {

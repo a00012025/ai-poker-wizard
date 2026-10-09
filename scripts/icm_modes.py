@@ -46,12 +46,37 @@ def _parse_stacks(stacks: list[str]) -> list[float]:
     return [float(s) - 0.125 for s in stacks]
 
 
+def _validate_remaining_percent(percent: float | int) -> float:
+    percent = float(percent)
+    if not math.isfinite(percent) or percent <= 0 or percent > 100:
+        raise ValueError("players_remaining_percent must be finite and > 0 and <= 100")
+    return percent
+
+
+def _percent_from_phase(phase_upper: str) -> float | None:
+    if phase_upper in {"START", "EARLY"}:
+        return 100.0
+    if phase_upper in {"BUBBLE", "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE"}:
+        return 15.2
+    if phase_upper.startswith("PCT") and phase_upper[3:]:
+        try:
+            return _validate_remaining_percent(float(phase_upper[3:]))
+        except ValueError:
+            if phase_upper[3:].lower() in {"nan", "inf", "+inf", "-inf"} or phase_upper[3:].replace(".", "", 1).lstrip("+-").isdigit():
+                raise
+            return None
+    if phase_upper.endswith("%"):
+        return _validate_remaining_percent(float(phase_upper[:-1]))
+    return None
+
+
 def find_gametype(
     players_at_table: int = 8,
     pko: bool = False,
     tournament_size: int = 1000,
     players_remaining: int | None = None,
     phase: str | None = None,
+    players_remaining_percent: float | int | None = None,
 ) -> str:
     """Find the best matching ICM gametype.
 
@@ -61,10 +86,14 @@ def find_gametype(
         tournament_size: 1000 or 200
         players_remaining: Approximate players remaining (optional if phase given)
         phase: Direct phase name override (START, PCT75, BUBBLE, FT, etc.)
+        players_remaining_percent: Percent of the tournament field remaining.
 
     Returns:
         Gametype string like 'MTTGeneral_ICM8m1000PTPCT25'
     """
+    if players_remaining_percent is not None:
+        players_remaining_percent = _validate_remaining_percent(players_remaining_percent)
+
     modes = _load_game_modes()
     pko_str = "PKO" if pko else ""
 
@@ -103,25 +132,60 @@ def find_gametype(
     if not candidates:
         return "MTTGeneral"  # fallback to chip EV
 
-    # Phase-based matching
-    if phase:
-        phase_upper = phase.upper().replace(" ", "")
-        # Map common user inputs to phase names
-        phase_map = {
-            "START": "START", "EARLY": "START",
-            "PCT75": "PCT75", "75%": "PCT75",
-            "PCT50": "PCT50", "50%": "PCT50",
-            "PCT25": "PCT25", "25%": "PCT25",
-            "PCT10": "PCT10", "10%": "PCT10",
-            "PCT5": "PCT5", "5%": "PCT5",
-            "BUBBLE": "BUBBLEMID", "BUBBLEEARLY": "BUBBLEEARLY",
-            "BUBBLEMID": "BUBBLEMID", "BUBBLELATE": "BUBBLELATE",
-            "FT": "FT", "FINALTABLE": "FT",
-            "T2": "T2", "T3": "T3",
-        }
-        target_phase = phase_map.get(phase_upper, phase_upper)
+    phase_upper = phase.upper().replace(" ", "") if phase else ""
+    explicit_phase_map = {
+        "FT": "FT", "FINALTABLE": "FT",
+        "FT2": "T2", "FT3": "T3",
+        "T2": "T2", "T3": "T3",
+    }
 
-        # Filter by matching table size and tournament size
+    # Final-table phases are different solution families; keep them explicit.
+    if phase_upper in explicit_phase_map:
+        target_phase = explicit_phase_map[phase_upper]
+        phase_matches = [
+            c for c in candidates
+            if c["phase"] == target_phase
+            and c["players"] == players_at_table
+            and c["tournament_players"] == tournament_size
+        ]
+        if not phase_matches:
+            phase_matches = [
+                c for c in candidates
+                if c["phase"] == target_phase
+                and c["players"] == players_at_table
+            ]
+        return phase_matches[0]["name"] if phase_matches else "MTTGeneral"
+
+    if players_remaining_percent is None and phase_upper:
+        players_remaining_percent = _percent_from_phase(phase_upper)
+
+    if players_remaining_percent is not None:
+        percent_matches = [
+            c for c in candidates
+            if c["players"] == players_at_table
+            and c["tournament_players"] == tournament_size
+            and c["phase"] not in {"FT", "T2", "T3"}
+            and c["remaining"]
+            and c["tournament_players"]
+        ]
+        if not percent_matches:
+            percent_matches = [
+                c for c in candidates
+                if c["players"] == players_at_table
+                and c["phase"] not in {"FT", "T2", "T3"}
+                and c["remaining"]
+                and c["tournament_players"]
+            ]
+        if percent_matches:
+            return min(
+                percent_matches,
+                key=lambda c: abs(c["remaining"] / c["tournament_players"] * 100 - players_remaining_percent),
+            )["name"]
+        return "MTTGeneral"
+
+    # Phase-based matching for non-percent legacy names.
+    if phase_upper:
+        target_phase = phase_upper
         phase_matches = [
             c for c in candidates
             if c["phase"] == target_phase
@@ -374,6 +438,7 @@ def find_icm_params(
     players_at_table: int | None = None,
     preflop_actions: str = "",
     average_stack_bb: float | None = None,
+    players_remaining_percent: float | int | None = None,
 ) -> dict:
     """High-level: find gametype + stacks for an ICM scenario.
 
@@ -390,6 +455,7 @@ def find_icm_params(
             positions for smarter stack matching.
         average_stack_bb: Explicit tournament average stack in bb. Constrains
             selection using each GTOW config's metadata ``avg_stack``.
+        players_remaining_percent: Percent of the tournament field remaining.
 
     Returns:
         Dict with keys: gametype, depth, stacks, approximation_note
@@ -417,12 +483,14 @@ def find_icm_params(
         tournament_size=tournament_size,
         players_remaining=players_remaining,
         phase=phase,
+        players_remaining_percent=players_remaining_percent,
     )
 
     if gametype == "MTTGeneral":
         # Fallback to chip EV
         from gto_api import nearest_depth
-        avg = sum(player_stacks) / len(player_stacks)
+        known = [s for s in player_stacks if s is not None and s > 0]
+        avg = sum(known) / len(known) if known else 20.0
         return {
             "gametype": "MTTGeneral",
             "depth": nearest_depth(avg),

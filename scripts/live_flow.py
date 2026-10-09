@@ -86,7 +86,7 @@ _HEADER_FIRST = {"eff", "eff.", "effective", "有效", "hero", "icm"} | _POS_TOK
 _STAGE_HEADER_RE = re.compile(
     r"^\s*(?:"
     r"(?:(?:near(?:\s+the)?|stone|soft)\s+bubble)\b"
-    r"|ft\b|final\s+(?:table\b|[2-9]\b)"
+    r"|ft[23]?\b|final\s+(?:table\b|[2-9]\b)"
     r"|(?:泡泡時間|正泡|軟泡)(?=\s|[:：,，.;；。!?！？-]|$)"
     r")",
     re.IGNORECASE,
@@ -1065,8 +1065,8 @@ class LiveTokenizedHand(BaseModel):
     hero_hand: str | None = None
     players_at_table: int | None = Field(default=None, ge=2, le=9)
     tournament_type: Literal["icm"] | None = None
-    phase: Literal["START", "PCT75", "PCT50", "PCT25", "PCT10", "PCT5",
-                   "BUBBLEEARLY", "BUBBLEMID", "BUBBLELATE", "FT", "T2", "T3"] | None = None
+    phase: Literal["FT", "FT2", "FT3"] | None = None
+    players_remaining_percent: float | None = Field(default=None, gt=0, le=100, allow_inf_nan=False)
     average_stack_bb: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     player_stacks: list[LiveSeatStack] = Field(default_factory=list)
     preflop_actions: list[LiveLexAction] = Field(default_factory=list)
@@ -1097,10 +1097,13 @@ Rules:
 - board_text copies the leading board/card text on each street line.
 - Extract effective stack, hero position and hero hand only when present.
   Leave missing fields null; never assume 100bb or invent cards/suits.
-- Extract tournament_type=icm and phase from tournament-stage notes:
-  near/approaching bubble = BUBBLEEARLY, bubble = BUBBLEMID,
-  stone/exact bubble = BUBBLELATE, final table = FT. Percent remaining maps
-  to the nearest PCT75/PCT50/PCT25/PCT10/PCT5. Missing phase stays null.
+- Extract tournament_type=icm from tournament-stage notes. Copy the EXACT
+  players_remaining_percent (remaining players / original entries * 100),
+  including decimals. NEVER round it into PCT buckets or bubble early/mid/late.
+  All bubble notes, including near/stone/soft bubble, use the owner's
+  convention of 15.2%, unless an explicit percentage is given.
+  phase is only FT/FT2/FT3 for final one/two/three tables; these take priority
+  over percentages. Otherwise leave phase null. Unknown percentage stays null.
 - average_stack_bb is the tournament average, NOT hero/effective stack.
   player_stacks contains ONLY explicitly stated seats and their original
   stack_bb (including hero), never fill unknown seats with avg/effective BB.
@@ -1177,11 +1180,14 @@ def _extract_live_metadata(block: str) -> dict:
 
 def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     """Extract explicit ICM phase, average, and sparse named seat stacks."""
-    low = block.lower()
+    low = block.splitlines()[0].lower() if block.splitlines() else ""
     final_count = _FINAL_COUNT_RE.search(low)
+    ft_match = re.search(r"\bft([23])?\b", low)
     is_ft = bool(final_count or "final table" in low
-                 or "決賽桌" in block or re.search(r"\bft\b", low))
-    if ("icm" not in low and "泡沫" not in block and not is_ft
+                 or "決賽桌" in block or ft_match
+                 or hand.get("phase") in {"FT", "FT2", "FT3"})
+    is_bubble = bool(re.search(r"\bbubble\b|泡沫|正泡|軟泡|泡泡時間", low))
+    if ("icm" not in low and not is_bubble and not is_ft
             and hand.get("tournament_type") != "icm"):
         return {}
 
@@ -1193,20 +1199,19 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     if not order:
         return {}
 
-    phase = hand.get("phase") or "BUBBLE"
-    if re.search(r"\b(?:near|approaching|early)\s+bubble\b|接近泡沫|泡沫前", low):
-        phase = "BUBBLEEARLY"
-    elif re.search(r"\b(?:stone|exact|late)\s+bubble\b|正泡沫", low):
-        phase = "BUBBLELATE"
+    out: dict = {"tournament_type": "icm"}
     if is_ft:
-        phase = "FT"
-    pct_match = re.search(r"(?:icm\s*)?(\d{1,2})\s*%", low)
-    if pct_match:
-        pct = int(pct_match.group(1))
-        nearest = min((75, 50, 25, 10, 5), key=lambda value: abs(value - pct))
-        phase = f"PCT{nearest}"
-
-    out: dict = {"tournament_type": "icm", "phase": phase}
+        out["phase"] = ("FT" + (ft_match.group(1) or "") if ft_match
+                        else hand.get("phase") or "FT")
+    else:
+        percent = hand.get("players_remaining_percent")
+        if is_bubble and percent is None:
+            percent = 15.2
+        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", low)
+        if pct_match:
+            percent = float(pct_match.group(1))
+        if percent is not None:
+            out.update(players_remaining_percent=percent, phase=f"{percent:g}%")
     if hand.get("average_stack_bb") is not None:
         out["average_stack_bb"] = hand["average_stack_bb"]
     if remaining:
@@ -1878,7 +1883,7 @@ def _replay_and_lock_live_tokens(block: str, tokenized: dict) -> dict:
 
     metadata = LiveTokenizedHand.model_validate(tokenized)
     hand = replay_live_action_tokens(block, tokenized)
-    for key in ("tournament_type", "phase", "average_stack_bb"):
+    for key in ("tournament_type", "phase", "players_remaining_percent", "average_stack_bb"):
         value = getattr(metadata, key)
         if value is not None:
             hand[key] = value
@@ -2342,6 +2347,7 @@ def _resolve_live_icm_params(hand: dict) -> dict | None:
         pko=hand.get("pko", False),
         tournament_size=hand.get("tournament_size", 1000),
         players_remaining=hand.get("players_remaining"),
+        players_remaining_percent=hand.get("players_remaining_percent"),
         phase=hand.get("phase"),
         players_at_table=players,
         # Match the decision node, not the recorded hero fold/result.

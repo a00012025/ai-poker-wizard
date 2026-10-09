@@ -767,7 +767,8 @@ def test_structured_partial_icm_decision_preserves_named_stacks():
 
     assert_true(hand is not None, "explicit partial ICM decision should parse deterministically")
     assert_eq(hand["players_at_table"], 8)
-    assert_eq(hand["phase"], "PCT25", "30% remaining should use the nearest PCT25 library")
+    assert_eq(hand["phase"], "30%", "30% remaining must stay exact until ICM resolver chooses the nearest GTOW mode")
+    assert_eq(hand["players_remaining_percent"], 30.0)
     assert_eq(hand["hero_position"], "HJ")
     assert_eq(hand["hero_hand"], "ATo")
     assert_eq(
@@ -796,6 +797,74 @@ def test_structured_partial_icm_decision_preserves_explicit_average_stack():
         "avg 25bb must not be mistaken for a player's stack",
     )
 
+
+
+def test_structured_range_icm_percent_keeps_exact_phase():
+    """Range-only ICM text keeps the user's exact remaining percent for resolver matching."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "ICM 16.4% stack size 20/18/22/30/25/16/14/12 hero hj open range"
+    )
+
+    assert_true(hand is not None)
+    assert_eq(hand["phase"], "16.4%")
+    assert_eq(hand["players_remaining_percent"], 16.4)
+    assert_eq(hand["hero_position"], "HJ")
+
+
+def test_structured_icm_near_bubble_percent_keeps_gtow_exact_value():
+    """Near-bubble shorthand must preserve 15.2%, not map to old bubble buckets."""
+    from gemini_session import GeminiSessionManager
+
+    hand = GeminiSessionManager._parse_structured_icm_range_query(
+        "ICM 15.2% stack size 20/18/22/30/25/16/14/12 hero hj open range"
+    )
+
+    assert_true(hand is not None)
+    assert_eq(hand["phase"], "15.2%")
+    assert_eq(hand["players_remaining_percent"], 15.2)
+
+
+def test_structured_icm_ft2_ft3_preserve_stage():
+    """FT2/FT3 are explicit late-stage modes, not generic final table."""
+    from gemini_session import GeminiSessionManager
+
+    for stage in ("FT2", "FT3"):
+        hand = GeminiSessionManager._parse_structured_icm_range_query(
+            f"ICM {stage} stack size 20/18/22/30/25/16/14/12 hero hj open range"
+        )
+        assert_true(hand is not None, stage)
+        assert_eq(hand["phase"], stage)
+        assert_true("players_remaining_percent" not in hand, stage)
+
+
+def test_standalone_icm_tool_routes_percent_phase_to_resolver(monkeypatch):
+    """Tool-built standalone ICM contexts pass exact percentage phase into icm_modes."""
+    import icm_modes
+    from gemini_session import GeminiSessionManager
+
+    seen = {}
+
+    def fake_find_icm_params(**kwargs):
+        seen.update(kwargs)
+        return {
+            "gametype": "MTTGeneral_ICM8m1000PTBUBBLE164PT",
+            "depth": "20.125",
+            "stacks": "20.125-20.125-20.125-20.125-20.125-20.125-20.125-20.125",
+        }
+
+    monkeypatch.setattr(icm_modes, "find_icm_params", fake_find_icm_params)
+
+    ctx = GeminiSessionManager()._build_standalone_context({
+        "street": "preflop",
+        "effective_bb": 20,
+        "num_players": 8,
+        "icm_phase": "16.4%",
+    })
+
+    assert_true(ctx is not None)
+    assert_eq(seen["phase"], "16.4%")
 
 def test_icm_no_hero_range_coach_summary_keeps_approximation_context():
     """ICM range coaching: no-hero FT response should be explanatory but deterministic."""
