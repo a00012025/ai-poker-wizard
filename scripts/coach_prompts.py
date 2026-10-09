@@ -149,7 +149,7 @@ JSON 格式（ICM）：
     "tournament_type": "icm",
     "tournament_size": 1000,
     "players_remaining": 152,
-    "phase": "BUBBLE",
+    "players_remaining_percent": 15.2,
     "player_stacks": [50, 50, 50, 50, 50, 50, 50, 50],
     "effective_bb": 50,
     "hero_position": "SB",
