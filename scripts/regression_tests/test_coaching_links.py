@@ -2084,3 +2084,25 @@ def test_text_split_flow_skips_gto_card_for_range_only_query():
     }
     sent, _ = _run_split_flow(fake_ctx, fake_hand, "HJ 開牌範圍是什麼")
     assert_eq(len(sent), 0, "no GTO card should fire for a range-only query")
+
+
+def test_persisted_icm_fold_review_matches_before_hero_decision(monkeypatch):
+    import icm_modes
+    from gtow_action_resolver import resolve_actions_for_deviation
+
+    class Resolved(Exception):
+        pass
+
+    def capture(**kwargs):
+        assert kwargs['preflop_actions'] == 'F-F'
+        raise Resolved
+
+    monkeypatch.setattr(icm_modes, 'find_icm_params', capture)
+    with pytest.raises(Resolved):
+        resolve_actions_for_deviation({
+            'tournament_type': 'icm', 'phase': 'BUBBLEEARLY',
+            'players_at_table': 8, 'hero_position': 'LJ', 'hero_hand': '88',
+            'effective_bb': 16, 'average_stack_bb': 30,
+            'player_stacks': [None, None, 16, None, None, None, None, 80],
+            'preflop_actions': 'F-F-F-F-F-F-F-F',
+        }, 'preflop', 0)

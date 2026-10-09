@@ -1870,7 +1870,8 @@ def _run_analysis(hand: dict) -> dict:
                 players_remaining=hand.get("players_remaining"),
                 phase=hand.get("phase"),
                 players_at_table=num_players,
-                preflop_actions=hand.get("preflop_actions", ""),
+                # Match stacks before hero acts, even when the recorded action is fold.
+                preflop_actions="-".join(hand.get("preflop_actions", "").split("-")[:hero_preflop_idx]),
                 average_stack_bb=hand.get("average_stack_bb"),
             )
             gametype = icm_params["gametype"]

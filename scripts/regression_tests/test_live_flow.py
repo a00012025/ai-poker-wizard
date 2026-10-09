@@ -612,7 +612,7 @@ def test_live_icm_multiway_bubble_line_preserves_final_hero_fold_node():
         "co has 40bb raise to 9bb, btn has 40bb call, hero fold"
     )
 
-    assert_eq(hand["phase"], "BUBBLE")
+    assert_eq(hand["phase"], "BUBBLEEARLY")
     assert_eq(hand["hero_position"], "LJ")
     assert_eq(hand["hero_hand"], "A5s")
     assert_eq(
@@ -6570,3 +6570,98 @@ def test_live_squeeze_fold_report_preserves_both_preflop_decisions(monkeypatch):
     assert fresh["hands"][0]["decisions"][1]["taken_label"] == "Fold"
     assert fresh["totals"]["decisions"] == 2
     assert fresh["totals"]["graded"] == 1
+
+
+@pytest.mark.parametrize(('block', 'hero', 'cards', 'average', 'stack', 'line'), [
+    ('Icm near bubble avg 35bb hero hj has 14bb all in AQs',
+     'HJ', 'AQs', 35, 14, 'F-F-F-AI14-F-F-F-F'),
+    ('Icm near bubble avg 30bb bb has 80bb, hero lj has 16bb fold 88',
+     'LJ', '88', 30, 16, 'F-F-F-F-F-F-F-F'),
+    ('Icm near bubble avg 30bb, bb has 80bb, hero hj has 14bb r2 KcQs bb call\n'
+     'Ts8c3d x x\nJc x x\n6c b2 fold',
+     'HJ', 'KcQs', 30, 14, 'F-F-F-R2-F-F-F-C'),
+])
+def test_live_reported_near_bubble_hands(block, hero, cards, average, stack, line, monkeypatch):
+    import live_flow
+    # Exercise parse_block's deterministic paths without credentials or Gemini.
+    monkeypatch.setenv('GEMINI_API_KEY', 'offline-test')
+    hand = live_flow.parse_block(block)
+    assert hand['tournament_type'] == 'icm'
+    assert hand['phase'] == 'BUBBLEEARLY'
+    assert hand['hero_position'] == hero
+    assert hand['hero_hand'] == cards
+    assert hand['effective_bb'] == stack
+    assert hand['average_stack_bb'] == average
+    assert hand['preflop_actions'] == line
+    from hh_parser import POSITION_ORDERS
+    order = POSITION_ORDERS[8]
+    expected = [None] * 8
+    expected[order.index(hero)] = stack
+    if '80bb' in block:
+        expected[-1] = 80
+    assert hand['player_stacks'] == expected
+    if '\n' in block:
+        assert hand['streets'] == [
+            {'street': 'flop', 'board': 'Ts8c3d', 'actions': [
+                {'position': 'BB', 'action': 'X'}, {'position': 'HJ', 'action': 'X'}]},
+            {'street': 'turn', 'card': 'Jc', 'actions': [
+                {'position': 'BB', 'action': 'X'}, {'position': 'HJ', 'action': 'X'}]},
+            {'street': 'river', 'card': '6c', 'actions': [
+                {'position': 'BB', 'action': 'R2', 'size': 2.0},
+                {'position': 'HJ', 'action': 'F'}]},
+        ]
+
+
+def test_live_icm_fold_matches_stacks_before_hero_decision(monkeypatch):
+    import icm_modes
+    import live_flow
+    monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
+        'name': 'MTTGeneral_ICM8m1000PTBUBBLE180PT', 'players': 8,
+        'info': {'tournament_phase': 'BUBBLEEARLY', 'tournament_players': 1000},
+        'game_modes': [
+            {'depth': '23.125', 'stacks': [f'{s + .125}' for s in [23, 29, 75, 35, 16, 20, 26, 17]],
+             'info': {'avg_stack': 30}},
+            {'depth': '30.125', 'stacks': [f'{s + .125}' for s in [30, 30, 16, 30, 30, 30, 30, 80]],
+             'info': {'avg_stack': 30}},
+        ],
+    }])
+    hand = live_flow.parse_simple_preflop_block(
+        'Icm near bubble avg 30bb bb has 80bb, hero lj has 16bb fold 88')
+    hand['phase'] = 'BUBBLEEARLY'
+    result = live_flow._resolve_live_icm_params(hand)
+    assert result['solver_stacks'][2] == 16
+    assert result['solver_stacks'][7] == 80
+    assert result['solver_average_bb'] == 30
+
+
+def test_live_llm_icm_metadata_survives_replay(monkeypatch):
+    import live_flow
+    from types import SimpleNamespace
+    payload = {
+        'effective_bb': 14, 'hero_position': 'HJ', 'hero_hand': 'KcQs',
+        'tournament_type': 'icm', 'phase': 'BUBBLEEARLY', 'average_stack_bb': 30,
+        'player_stacks': [ {'position': 'HJ', 'stack_bb': 14},
+                           {'position': 'BB', 'stack_bb': 80}],
+        'preflop_actions': [{'actor': 'HJ', 'action': 'raise', 'size_bb': 2},
+                            {'actor': 'BB', 'action': 'call'}],
+        'streets': [{'board_text': 'Ts8c3d', 'actions': [
+            {'action': 'check'}, {'action': 'check'}]}],
+    }
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=lambda **kwargs:
+        SimpleNamespace(text=json.dumps(payload))))
+    # Natural language not supported by the literal metadata regex.
+    hand = live_flow.parse_block(
+        'ICM approaching the money, average thirty blinds, hero hj fourteen blinds '
+        'r2 KcQs, big blind eighty blinds call\nTs8c3d x x', client=client)
+    assert hand['phase'] == 'BUBBLEEARLY'
+    assert hand['average_stack_bb'] == 30
+    assert hand['player_stacks'] == [None, None, None, 14, None, None, None, 80]
+
+
+@pytest.mark.parametrize('field,value', [('average_stack_bb', -30), ('average_stack_bb', float('inf')),
+                                        ('phase', 'not-a-phase')])
+def test_live_llm_icm_metadata_rejects_invalid_values(field, value):
+    from live_flow import LiveTokenizedHand
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        LiveTokenizedHand.model_validate({field: value})
