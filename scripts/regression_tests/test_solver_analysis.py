@@ -1997,8 +1997,8 @@ def test_icm_partial_stacks_prioritize_known_positions():
     assert_eq(metadata["avg_stack"], 21, "must preserve config metadata, not recompute it")
 
 
-def test_icm_explicit_average_stack_constrains_config_pool():
-    """ICM: avg 25bb selects metadata avg_stack=25 before seat-distance ranking."""
+def test_icm_explicit_average_is_soft_when_known_seats_match_better():
+    """ICM: an exact average must not exclude a closer known HJ/BTN match."""
     import icm_modes
 
     original = icm_modes._load_game_modes
@@ -2034,9 +2034,9 @@ def test_icm_explicit_average_stack_constrains_config_pool():
     finally:
         icm_modes._load_game_modes = original
 
-    assert_eq(depth, "25.125")
-    assert_eq(metadata["avg_stack"], 25)
-    assert_eq(stacks, "25.125-37.125-19.125-20.125-16.125-12.125-18.125-53.125")
+    assert_eq(depth, "17.125")
+    assert_eq(metadata["avg_stack"], 20)
+    assert_eq(stacks, "17.125-8.125-29.125-26.125-32.125-14.125-23.125-11.125")
 
 
 def test_icm_find_params():
@@ -2525,3 +2525,90 @@ def test_icm_fold_analysis_matches_before_hero_decision(monkeypatch):
             'player_stacks': [None, None, 16, None, None, None, None, 80],
             'preflop_actions': 'F-F-F-F-F-F-F-F',
         })
+
+
+@pytest.mark.parametrize(('known', 'prefix', 'average', 'expected'), [
+    ([None, None, 16, None, None, None, None, 80], 'F-F', 30, [26, 58, 18, 66, 34, 82, 42, 74]),
+    ([None, None, None, 14, None, None, None, 80], 'F-F-F', 30, [100, 35, 50, 15, 30, 25, 20, 45]),
+    ([None, None, None, 14, None, None, None, None], 'F-F-F', 35, [20, 33, 51, 15, 50, 45, 25, 41]),
+])
+def test_icm_reported_stacks_outweigh_average_pool(known, prefix, average, expected, monkeypatch):
+    import icm_modes
+    profiles = [
+        (30, [22, 26, 28, 38, 24, 32, 36, 34]),
+        (30, [15, 20, 50, 35, 40, 25, 10, 45]),
+        (25, [34, 17, 16, 30, 29, 9, 21, 44]),
+        (50, [26, 58, 18, 66, 34, 82, 42, 74]),
+        (40, [100, 35, 50, 15, 30, 25, 20, 45]),
+        (35, [20, 33, 51, 15, 50, 45, 25, 41]),
+        (20, [24, 27, 16, 14, 22, 26, 13, 18]),
+    ]
+    gametype = 'MTTGeneral_ICM8m1000PTBUBBLE152PT'
+    monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
+        'name': gametype, 'players': 8,
+        'info': {'players_remaining': 152, 'tournament_players': 1000, 'tournament_phase': 'BUBBLELATE'},
+        'game_modes': [{'depth': str(stacks[0] + .125),
+                        'stacks': [str(s + .125) for s in stacks],
+                        'info': {'avg_stack': avg}} for avg, stacks in profiles],
+    }])
+    params = icm_modes.find_icm_params(
+        player_stacks=known, preflop_actions=prefix,
+        players_remaining_percent=15.2, average_stack_bb=average)
+    assert params['gametype'] == gametype
+    assert params['user_stacks'] == known
+    assert params['solver_stacks'] == expected
+    assert f'用戶全賽事均碼: {average:g}bb' in params['approximation_note']
+
+
+def test_icm_average_breaks_equally_good_known_stack_matches(monkeypatch):
+    import icm_modes
+    monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
+        'name': 'TEST', 'game_modes': [
+            {'depth': '15.125', 'stacks': ['15.125', '80.125'], 'info': {'avg_stack': 50}},
+            {'depth': '15.125', 'stacks': ['15.125', '80.125'], 'info': {'avg_stack': 30}},
+        ],
+    }])
+    _, _, metadata = icm_modes.find_stacks('TEST', [16,80], target_average_bb=30, return_metadata=True)
+    assert metadata['avg_stack'] == 30
+
+
+@pytest.mark.parametrize('average', [0, -1, float('nan'), float('inf')])
+def test_icm_stack_matching_rejects_invalid_average(average, monkeypatch):
+    import icm_modes
+    monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
+        'name': 'TEST', 'game_modes': [{
+            'depth': '16.125', 'stacks': ['16.125', '80.125'], 'info': {'avg_stack': 30}}],
+    }])
+    with pytest.raises(ValueError, match='target_average_bb'):
+        icm_modes.find_stacks('TEST', [16,80], target_average_bb=average)
+
+
+def test_icm_missing_average_metadata_is_not_fabricated(monkeypatch):
+    import icm_modes
+    gametype='MTTGeneral_ICM8m1000PTBUBBLE152PT'
+    monkeypatch.setattr(icm_modes, '_load_game_modes', lambda: [{
+        'name': gametype, 'players': 8,
+        'info': {'players_remaining': 152, 'tournament_players': 1000},
+        'game_modes': [
+            {'depth': '16.125', 'stacks': ['20.125','20.125','16.125','20.125','20.125','20.125','20.125','80.125'], 'info': {}},
+            {'depth': '28.125', 'stacks': ['30.125']*8, 'info': {'avg_stack': 30}},
+        ],
+    }])
+    result=icm_modes.find_icm_params(
+        [None,None,16,None,None,None,None,80], players_remaining_percent=15.2,
+        preflop_actions='F-F', average_stack_bb=30)
+    assert result['solver_stacks'][2:3] == [16]
+    assert result['solver_average_bb'] is None
+    assert 'Solver metadata 均碼: 未提供' in result['approximation_note']
+
+
+def test_icm_average_only_uses_available_metadata(monkeypatch):
+    import icm_modes
+    monkeypatch.setattr(icm_modes,'_load_game_modes',lambda:[{
+        'name':'TEST','game_modes':[
+            {'depth':'16.125','stacks':['16.125','80.125'],'info':{}},
+            {'depth':'30.125','stacks':['30.125','30.125'],'info':{'avg_stack':30}},
+        ],
+    }])
+    _,_,meta=icm_modes.find_stacks('TEST',[None,None],target_average_bb=35,return_metadata=True)
+    assert meta['avg_stack']==30
