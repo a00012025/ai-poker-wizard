@@ -1232,3 +1232,29 @@ def test_find_action_by_pot_pct_dead_money_pot_ignores_exact_betsize():
 def test_icm_report_labels_bubble_solutions_as_percent(gametype, label):
     from hh_deviation_report import _extract_icm_phase_label
     assert _extract_icm_phase_label(gametype) == label
+
+
+def test_preflop_omitted_response_replays_continuations_to_next_hero_actor():
+    """H3944: an omitted Hero response uses provided continuation tokens first."""
+    from analyze_hand import _preflop_omitted_response_prefix
+
+    prefix = _preflop_omitted_response_prefix(
+        "R2.1-F-R6.1-RAI-F-F-F-F-F".split("-"),
+        num_players=8,
+        hero_idx=2,
+    )
+
+    assert_eq(prefix, "R2.1-F-R6.1-RAI-F-F-F-F-F")
+
+
+def test_preflop_omitted_response_rejects_actor_mismatch():
+    """Do not invent folds to force the next actor to be Hero."""
+    from analyze_hand import _preflop_omitted_response_prefix
+
+    prefix = _preflop_omitted_response_prefix(
+        "R2.1-F-R6.1-RAI-F-F-F-F".split("-"),
+        num_players=8,
+        hero_idx=2,
+    )
+
+    assert_eq(prefix, None)

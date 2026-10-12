@@ -1291,7 +1291,7 @@ class GeminiSessionManager:
                 else:
                     coaching_instruction = (
                         "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
-                        "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
+                        "先回答用戶問題，沒有特定問題時才總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
                         "策略重點自然解釋。若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
@@ -1558,7 +1558,7 @@ class GeminiSessionManager:
             else:
                 img_coaching_instruction = (
                     "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
-                    "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
+                    "先回答用戶問題，沒有特定問題時才總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
                     "策略重點自然解釋。"
                 )
             # Verified generation (retries transient 503/500 internally;
@@ -3343,6 +3343,7 @@ class GeminiSessionManager:
                     "不要改成逐街清單或固定三段模板；也不要重述第一則 solver 卡片。"
                     "只可使用下列骨架中的因果材料，不得從一般牌理補出未列出的聽牌、"
                     "blocker target、牌型、combo 或數字。\n\n"
+                    f"使用者原問題：{user_text}\n\n"
                     f"{render_teaching_prompt_block(digest)}"
                 )
                 # The rejected prose must not become context for its own

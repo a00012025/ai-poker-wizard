@@ -1260,7 +1260,7 @@ def test_coach_teaching_surfaces_two_tone_pair_suit_selector():
     assert_in("節點特定的 combo selector", story["interpretation"])
 
 
-def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
+def test_pure_solver_bet_after_check_is_range_context_and_never_justifies_check():
     """H3856: a zero-frequency check cannot receive a fabricated check story."""
     import coach_teaching as ct
 
@@ -1279,12 +1279,8 @@ def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     )
 
     prompt = ct.render_prompt_block(digest)
-    assert_in("Range-first overview", prompt)
+    assert_in("Range context", prompt)
     assert_in("solver 建議進攻分支 bet 50% pot", prompt)
-    assert_true(
-        prompt.index("Range-first overview") < prompt.index("Exact combo action job"),
-        "whole-range structure must be presented before the exact combo job",
-    )
     assert_in("近乎純進攻", prompt)
     assert_in("不得替 0% 過牌補理由", prompt)
     assert_not_in("適用邊界", prompt)
@@ -1293,11 +1289,28 @@ def test_pure_solver_bet_after_check_is_range_first_and_never_justifies_check():
     fallback = ct.render_fallback(digest)
     assert_in("*Turn*", fallback)
     assert_in("UTG+1 的 Turn bet 50% pot range", fallback)
-    assert_in("價值端", fallback)
-    assert_in("弱端", fallback)
+    assert_in("check 有實質 EV 損失", fallback)
+    assert_in("QdJd 是 range 偏下段的第二對", fallback)
+    assert_in("向 JJ、87s 取 value", fallback)
     assert_not_in("過牌的理由", fallback)
     assert_not_in("免費保留", fallback)
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+
+
+def test_coach_teaching_accepts_concise_conclusion_evidence_reason():
+    """Initial coach may teach the key point without a forced range inventory."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_pure_aggression_after_check_context())
+    answer = (
+        "整手最需要修正的是 Turn check：solver 幾乎純用 bet 50% pot。"
+        "關鍵證據是 Q🔷J🔷 在這個節點不是用來控制底池的 bluff candidate；"
+        "它被分到進攻線，因為 check 犧牲太多 EV。"
+    )
+
+    audit = ct.audit_draft(answer, digest)
+
+    assert_true(audit.ok, f"{audit.violations}: {answer}")
 
 
 def test_raise_facing_bet_names_protection_and_indifferent_targets():
@@ -1743,6 +1756,9 @@ def test_coach_teaching_category_audit_separates_draws_and_human_trips_wording()
         ["unsupported category straight_draw"],
     )
     assert_eq(ct._audit_unsupported_categories("HJ 的三條更多。", {"trips"}), [])
+    assert_eq(ct._audit_unsupported_categories("LJ 用 AJ 同花 3bet。", set()), [])
+    assert_eq(ct._audit_unsupported_categories("HJ range 有 AK同花 和 AKo。", set()), [])
+    assert_in("unsupported category flush", ct._audit_unsupported_categories("HJ 有更多同花。", set()))
     assert_eq(ct._audit_unsupported_categories("HJ 的三條更多。", {"set"}), [])
 
     ownership_digest = {"decisions": [{
@@ -2191,6 +2207,7 @@ def test_session_initial_coaching_accepts_grounded_repair():
     manager.coach_narrator_model = "test-model"
     manager.histories = {2: ["base-history"]}
     observed_histories = []
+    observed_prompts = []
     drafts = iter([
         (
             "*核心判斷*\nRiver bet 正確。\n\n"
@@ -2210,13 +2227,15 @@ def test_session_initial_coaching_accepts_grounded_repair():
     ])
 
     async def fake_chat(self, prompt, system, usage_acc=None):
+        observed_prompts.append(prompt)
         observed_histories.append(list(self.histories[2]))
         self.histories[2].append(f"internal-draft-{len(observed_histories)}")
         return next(drafts)
 
     manager._call_openai_narrator = py_types.MethodType(fake_chat, manager)
+    original_question = "面對對手全下，我應該跟注還是棄牌？對方範圍有哪些牌？"
     answer = asyncio.run(manager._verified_initial_coaching(
-        2, "prompt", context, "H3818", disable_tools=True,
+        2, "prompt", context, original_question, disable_tools=True,
     ))
     assert_in("range 底端的未成牌", answer)
     assert_in("blocker 對這個 bluff 不利", answer)
@@ -2227,6 +2246,7 @@ def test_session_initial_coaching_accepts_grounded_repair():
         "repair must not see the rejected draft in conversation history",
     )
     assert_in("FOLLOWUP: River 為什麼能下注？", answer)
+    assert_in(f"使用者原問題：{original_question}", observed_prompts[1])
 
 
 def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
@@ -2241,6 +2261,10 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
         async def create(self, **kwargs):
             assert_eq(kwargs["model"], "gpt-5.6-terra")
             assert_in("Deterministic 教學骨架", kwargs["instructions"])
+            assert_in("結論 → 關鍵 solver 證據 → 具體原因", kwargs["instructions"])
+            assert_in("range 結構只有在真的有助於理解時才引用", kwargs["instructions"])
+            assert_in("使用者問特定決策或範圍時，先回答該問題", kwargs["instructions"])
+            assert_not_in("可帶到下一手", kwargs["instructions"])
             details = py_types.SimpleNamespace(reasoning_tokens=7)
             usage = py_types.SimpleNamespace(
                 input_tokens=100,
@@ -2277,16 +2301,14 @@ def test_initial_coach_followups_are_constrained_to_pipeline_answerability():
     assert_in("不可問「什麼情況選某個 mix 分支」", INITIAL_COACH_SYSTEM)
 
 
-def test_initial_coach_contract_teaches_range_before_exact_combo():
-    """The narrator must turn solver facts into a reusable range lesson."""
+def test_initial_coach_contract_is_conclusion_first_and_range_optional():
+    """Initial narrator contract favors useful narration over range inventory."""
     from gemini_session import INITIAL_COACH_SYSTEM
 
-    assert_in("位置與 preflop role", INITIAL_COACH_SYSTEM)
-    assert_in("range equity", INITIAL_COACH_SYSTEM)
-    assert_in("頂端／強端", INITIAL_COACH_SYSTEM)
-    assert_in("action range", INITIAL_COACH_SYSTEM)
+    assert_in("結論 → 關鍵 solver 證據 → 具體原因", INITIAL_COACH_SYSTEM)
+    assert_in("range 結構只有在真的有助於理解時才引用", INITIAL_COACH_SYSTEM)
     assert_in("exact combo", INITIAL_COACH_SYSTEM)
-    assert_in("可帶到下一手", INITIAL_COACH_SYSTEM)
+    assert_not_in("可帶到下一手", INITIAL_COACH_SYSTEM)
 
 
 def test_coach_hand_uses_shared_followup_extractor():
@@ -2298,7 +2320,10 @@ def test_coach_hand_uses_shared_followup_extractor():
 
     context = {"text": "solver card"}
 
-    async def generate_initial(*args, **kwargs):
+    captured_prompts = []
+
+    async def generate_initial(chat_id, prompt, *args, **kwargs):
+        captured_prompts.append(prompt)
         return "回答本文\nFOLLOWUP: Turn 對手下注 50% pot，Hero AhKh 要怎麼打？"
 
     workflow = ChatWorkflow(WorkflowDeps(
@@ -2323,6 +2348,7 @@ def test_coach_hand_uses_shared_followup_extractor():
         source_instruction="instruction",
     ))
     assert_eq(answer, "回答本文")
+    assert_in("先回答用戶問的決策或範圍", captured_prompts[0])
     assert_eq(context["followup_questions"],
               ["Turn 對手下注 50% pot，Hero AhKh 要怎麼打？"])
 
@@ -3824,3 +3850,229 @@ def test_openai_followup_can_chain_next_actions_into_strategy_query():
     assert_in("call", answer)
     assert_eq([name for name, _ in called], ["query_next_actions", "query_gto"])
     assert_eq(api.calls[1]["previous_response_id"], "plan-next")
+
+
+def _h3944_zero_preflop_range_context():
+    import coach_teaching as ct
+    from hh_deviation_check import HAND_TO_169
+
+    def arr(default=0.0):
+        return [default] * 169
+
+    lj_range = arr()
+    hj_range = arr()
+    fold = arr()
+    call = arr()
+    for hand, freq in {"77": 1.0, "88": 1.0, "99": 0.9649, "TT": 1.0,
+                       "JJ": 1.0, "QQ": 1.0, "KK": 1.0, "AA": 1.0,
+                       "AKs": 1.0, "AKo": 1.0}.items():
+        idx = HAND_TO_169[hand]
+        lj_range[idx] = 1.0
+        call[idx] = freq
+        fold[idx] = 1.0 - freq
+    for hand, combos in {"AKo": 12.0, "AA": 6.0, "JJ": 6.0, "KK": 6.0,
+                         "QQ": 6.0, "AKs": 4.0, "AQs": 1.6}.items():
+        idx = HAND_TO_169[hand]
+        hj_range[idx] = combos / (12.0 if hand.endswith("o") else 6.0 if len(hand) == 2 else 4.0)
+
+    def counters(range_arr, action_freqs=None):
+        from hh_deviation_check import HANDS_169
+        out = {}
+        for hand, idx in HAND_TO_169.items():
+            weight = range_arr[idx]
+            if weight <= 0:
+                continue
+            combos_avail = 12.0 if hand.endswith("o") else 6.0 if len(hand) == 2 else 4.0
+            total = weight * combos_avail
+            row = {"name": hand, "total_combos_available": combos_avail,
+                   "total_combos": total, "total_frequency": weight,
+                   "actions_total_combos": {}, "actions_total_frequencies": {}}
+            if action_freqs:
+                for code, freqs in action_freqs.items():
+                    freq = freqs[idx]
+                    if freq > 0:
+                        row["actions_total_frequencies"][code] = freq
+                        row["actions_total_combos"][code] = total * freq
+            out[hand] = row
+        return out
+
+    solution = {
+        "game": {"active_position": "LJ", "board": "", "pot": "35.7",
+                 "current_street": {"type": "PREFLOP"},
+                 "players": [{"position": "LJ"}, {"position": "HJ"}]},
+        "players_info": [
+            {"player": {"position": "LJ"}, "range": lj_range,
+             "simple_hand_counters": counters(lj_range, {"F": fold, "C": call})},
+            {"player": {"position": "HJ"}, "range": hj_range,
+             "simple_hand_counters": counters(hj_range)},
+        ],
+        "action_solutions": [
+            {"action": {"code": "F", "display_name": "FOLD"}, "strategy": fold, "evs": arr()},
+            {"action": {"code": "C", "type": "CALL", "display_name": "CALL", "allin": True}, "strategy": call, "evs": arr()},
+        ],
+    }
+    return {
+        "hero_position": "LJ", "hero_hand": "AJs",
+        "preflop_actions": "R2.1-F-R6.1-RAI-F-F-F-F-F",
+        "hero_spots": [{"street": "preflop", "solver_hero_pos": "LJ",
+                         "params": {"preflop_actions": "R2.1-F-R6.1-RAI-F-F-F-F-F"}}],
+        "solutions": [solution],
+    }
+
+
+def test_coach_teaching_keeps_preflop_range_fact_when_exact_hand_is_zero_reach():
+    """H3944: AJs is absent, but the LJ node still has useful range evidence."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    assert_true(digest is not None)
+    decision = digest["all_decisions"][0]
+    assert_true(decision.get("preflop_range_only"))
+    prompt = ct.render_prompt_block(digest)
+    assert_in("AJs 在此 node 沒有 exact-combo 策略", prompt)
+    assert_in("LJ 整體 Call", prompt)
+    assert_in("77+~", prompt)
+    assert_in("HJ Preflop all-in range", prompt)
+    assert_in("AKo", prompt)
+    assert_in("AQs", prompt)
+    assert_not_in("AJs call", prompt)
+    assert_not_in("AJs fold", prompt)
+
+    answer = "AJs 這手沒有 exact-combo 策略，不能判定 call 或 fold；可用的事實是 LJ 整體會用 77+~、AKs、AKo 去跟，HJ Preflop all-in range 主要是 AKo、AA、JJ、KK、QQ、AKs、AQs。"
+    assert_true(ct.audit_draft(answer, digest).ok)
+
+
+def test_coach_teaching_audit_rejects_positive_pot_control_after_negation():
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    bad = "Preflop 這個 all-in node 沒有 exact-combo 策略；這不是控制底池，但其實還是控制底池。這個說法把 solver 節點重新包裝成底池控制理由，會誤導使用者。"
+    audit = ct.audit_draft(bad, digest)
+    assert_in("unsupported induced-action explanation", audit.violations)
+
+
+def test_coach_teaching_audit_rejects_unsupported_difficult_decision_phrase():
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    audit = ct.audit_draft("Preflop 這個 all-in 讓對手陷入困難決策，所以 Hero 可以用 AJs 跟注施壓；但骨架沒有列出這種邊界，這句是在補未驗證原因。", digest)
+    assert_in("unsupported indifferent-response claim", audit.violations)
+
+
+def test_coach_teaching_range_only_rejects_exact_response_but_allows_earlier_node_call():
+    """H3944: final HJ jam node has no AJs response, but earlier UTG-open node may still be described."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+
+    bad = ct.audit_draft("AJs 這裡可以跟注 HJ all-in。", digest)
+    assert_in("range-only exact response claim", bad.violations)
+
+    good = ct._audit_range_only_exact_response(
+        "AJs 面對 UTG open 原本 solver call 100%；但面對 HJ all-in 這個 node 沒有 exact-combo 策略。",
+        digest,
+    )
+    assert_eq(good, [])
+
+
+def test_coach_teaching_range_only_fallback_is_self_audited_with_verified_mixed_99():
+    """The deterministic fallback may mention verified 99(4%) but must still audit cleanly."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    fallback = ct.render_fallback(digest)
+
+    assert_in("99(4%)", fallback)
+    assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+
+
+def test_coach_teaching_range_only_rejects_continue_defend_response_but_allows_unavailable_caveat():
+    """Unknown AJs response cannot be renamed continue/defend advice."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+
+    bad = ct.audit_draft("AJs 這裡可以繼續防守 HJ all-in。", digest)
+    assert_in("range-only exact response claim", bad.violations)
+
+    good = ct.audit_draft(
+        "AJs 這裡沒有 exact-combo 策略，不能判定是否繼續防守 HJ all-in。",
+        digest,
+    )
+    assert_true(good.ok, good.violations)
+
+
+def test_coach_teaching_range_only_allows_verified_lj_call_range_only():
+    """Only verified range-only actor/action/classes should pass."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+
+    allowed = ct.audit_draft(
+        "LJ 在這個 facing node 的 Call range 包含 77+、AKs、AKo。",
+        digest,
+    )
+    assert_true(allowed.ok, allowed.violations)
+
+    bad_lj = ct.audit_draft("LJ 在這個 facing node 會 call AQs。", digest)
+    assert_in("range-only unverified response range", bad_lj.violations)
+
+    bad_hj = ct.audit_draft("HJ 在這個 node 會 call AQs。", digest)
+    assert_in("range-only unverified response range", bad_hj.violations)
+
+
+def test_coach_teaching_fallback_summary_uses_coverage_ev_loss_before_range_only_focus():
+    """A range-only selected focus must not hide an earlier known EV loss."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    digest["allowed_bb"].append(0.32)
+    digest["allowed_percentages"].append(60.0)
+    digest["all_decisions"].insert(0, {
+        "street": "preflop",
+        "coverage_label": "Preflop ①",
+        "coverage_verdict": "raise 60% pot 有實質 EV 損失，應偏向 call",
+        "coverage_reason": "這個 hand class 在目前 preflop node 幾乎純用 call",
+        "ev_loss_bb": 0.32,
+        "ev_loss_pot": 0.01,
+        "actual_action": {"code": "R6.1", "frequency": 0.0},
+        "range_plan": {"facing_bet": False},
+    })
+
+    fallback = ct.render_fallback(digest)
+
+    assert_in("Preflop ①", fallback)
+    assert_in("0.32bb", fallback)
+    assert_not_in("整手沒有實質 EV 損失", fallback)
+
+
+def test_range_only_cannot_compare_unknown_exact_response_ev():
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    digest["allowed_bb"].append(0.32)
+    for claim in [
+        "AJs 這裡跟注 EV 比 fold 好，而且這是面對 HJ all-in 的回答；"
+        "目前雖然標成沒有 exact-combo 策略，但我仍然判定跟注比較賺。",
+        "UTG open 後，AJs 面對 HJ all-in 跟注 EV 比 fold 好。",
+        "AJs 沒有個別策略；這裡跟注 EV 比較好。",
+        "AJs 面對 HJ all-in 這裡跟注 EV 是 0.32bb，這個回應已由 solver 評分。",
+    ]:
+        audit = ct.audit_draft(claim, digest)
+        assert_in("range-only exact response claim", audit.violations)
+
+
+def test_range_only_can_reference_verified_earlier_preflop_actor():
+    import coach_teaching as ct
+
+    context = _h3944_zero_preflop_range_context()
+    context["solutions"][0]["game"]["players"] = [
+        {"position": position}
+        for position in ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    ]
+    digest = ct.build_teaching_digest(context)
+    audit = ct.audit_draft(
+        "UTG 開池、LJ 3bet 後，HJ 的 Preflop all-in range 包含 AKs、AKo。",
+        digest,
+    )
+    assert_true(audit.ok, audit.violations)

@@ -67,6 +67,44 @@ MULTIWAY_SPR_MAX_REDUCTION = float(os.getenv("MULTIWAY_SPR_MAX_REDUCTION", "0.75
 # to the real-structure branch, where preflop and postflop stay consistent.
 MULTIWAY_REAL_STRUCTURE_MARKER = "保留真實下注結構"
 
+def _is_preflop_allin_code(code: str) -> bool:
+    return code == "RAI" or code.startswith("AI")
+
+
+def _preflop_omitted_response_prefix(
+    pf_parts: list[str], num_players: int, hero_idx: int,
+) -> str | None:
+    """Return the provided prefix only when the next unresolved actor is Hero.
+
+    Parser output sometimes omits Hero's final response to an all-in.  We may
+    surface that missing decision, but only after replaying the continuation
+    tokens the parser did provide; otherwise we query the wrong actor's node.
+    """
+    if len(pf_parts) < num_players:
+        return None
+    active = [
+        i for i in range(num_players)
+        if pf_parts[i] not in ("F", "") and not _is_preflop_allin_code(pf_parts[i])
+    ]
+    prefix_parts = list(pf_parts[:num_players])
+    cont_idx = 0
+    for code in pf_parts[num_players:]:
+        if not active:
+            return None
+        cont_idx %= len(active)
+        prefix_parts.append(code)
+        if code == "F" or _is_preflop_allin_code(code):
+            active.pop(cont_idx)
+        else:
+            cont_idx += 1
+    if not active:
+        return None
+    cont_idx %= len(active)
+    if active[cont_idx] != hero_idx:
+        return None
+    return "-".join(prefix_parts)
+
+
 def _nearest_depth_for_gametype(bb: float, gametype: str) -> float:
     """Snap tournament depth; AVAILABLE_DEPTHS includes HU short-stack trees."""
     return nearest_depth(bb)
@@ -2210,13 +2248,19 @@ def _run_analysis(hand: dict) -> dict:
         first_round = pf_parts[:num_players]
         if hero_idx < len(first_round) and first_round[hero_idx] not in ("", "F"):
             aggressor_code = None
-            for code in first_round[hero_idx + 1:]:
+            omitted_prefix = _preflop_omitted_response_prefix(
+                pf_parts, num_players, hero_idx,
+            )
+            if omitted_prefix:
+                omitted_parts = omitted_prefix.split("-")
+            else:
+                omitted_parts = []
+            for code in omitted_parts[hero_idx + 1:]:
                 if code.startswith("R") or code.startswith("AI"):
                     aggressor_code = code
-                    break
-            if aggressor_code:
+            if aggressor_code and omitted_prefix:
                 n_raises = sum(
-                    1 for p in first_round
+                    1 for p in omitted_parts
                     if p.startswith("R") or p.startswith("AI")
                 )
                 if aggressor_code == "RAI" or aggressor_code.startswith("AI"):
@@ -2230,7 +2274,7 @@ def _run_analysis(hand: dict) -> dict:
                     "header": f"【Preflop — {reraise_label}】",
                     "params": dict(
                         gametype=gametype, depth=depth, stacks=icm_stacks,
-                        preflop_actions="-".join(first_round),
+                        preflop_actions=omitted_prefix,
                     ),
                     "solver_hero_pos": solver_hero_pos,
                     "action_desc": None,
