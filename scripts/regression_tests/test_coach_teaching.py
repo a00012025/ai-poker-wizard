@@ -1200,7 +1200,8 @@ def test_h3855_coaching_explains_action_jobs_and_check_tradeoff():
     assert_eq(fallback.count("先看整體 range"), 0)
     assert_in("merged／線性", fallback)
     assert_in("明顯偏極化", prompt)
-    assert_true(ct.audit_draft(fallback, digest).ok, fallback)
+    fallback_audit = ct.audit_draft(fallback, digest)
+    assert_true(fallback_audit.ok, fallback_audit.violations)
 
 
 def test_coach_teaching_ignores_numerical_noise_in_better_hand_folds():
@@ -2264,6 +2265,8 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
             assert_in("結論 → 關鍵 solver 證據 → 具體原因", kwargs["instructions"])
             assert_in("range 結構只有在真的有助於理解時才引用", kwargs["instructions"])
             assert_in("使用者問特定決策或範圍時，先回答該問題", kwargs["instructions"])
+            assert_in("特殊情況：使用者問後續 0% reach 節點時", kwargs["instructions"])
+            assert_in("不要寫 call/fold 或 equity 免責句", kwargs["instructions"])
             assert_not_in("可帶到下一手", kwargs["instructions"])
             details = py_types.SimpleNamespace(reasoning_tokens=7)
             usage = py_types.SimpleNamespace(
@@ -2307,6 +2310,8 @@ def test_initial_coach_contract_is_conclusion_first_and_range_optional():
 
     assert_in("結論 → 關鍵 solver 證據 → 具體原因", INITIAL_COACH_SYSTEM)
     assert_in("range 結構只有在真的有助於理解時才引用", INITIAL_COACH_SYSTEM)
+    assert_in("特殊情況：使用者問後續 0% reach 節點時", INITIAL_COACH_SYSTEM)
+    assert_in("接著列 Hero 整體 call range 和對手 all-in range", INITIAL_COACH_SYSTEM)
     assert_in("exact combo", INITIAL_COACH_SYSTEM)
     assert_not_in("可帶到下一手", INITIAL_COACH_SYSTEM)
 
@@ -3929,17 +3934,79 @@ def test_coach_teaching_keeps_preflop_range_fact_when_exact_hand_is_zero_reach()
     decision = digest["all_decisions"][0]
     assert_true(decision.get("preflop_range_only"))
     prompt = ct.render_prompt_block(digest)
-    assert_in("AJs 在此 node 沒有 exact-combo 策略", prompt)
-    assert_in("LJ 整體 Call", prompt)
+    assert_in("AJs 在這個 HJ all-in 節點的 solver 到達率是 0%", prompt)
+    assert_in("LJ 整體範圍：", prompt)
+    assert_in("Call（64 combos）", prompt)
     assert_in("77+~", prompt)
-    assert_in("HJ Preflop all-in range", prompt)
+    assert_not_in("99(4%)", prompt)
+    assert_not_in("Fold（21 combos）", prompt)
+    assert_in("Villain conditioned all-in range（HJ）", prompt)
     assert_in("AKo", prompt)
     assert_in("AQs", prompt)
     assert_not_in("AJs call", prompt)
+
+
+def test_range_only_explains_zero_reach_from_previous_solver_call_without_repeating_disclaimer():
+    """H3944: explain the 100% prior call and keep useful current ranges."""
+    import copy
+    import coach_teaching as ct
+    from hh_deviation_check import HAND_TO_169
+
+    context = _h3944_zero_preflop_range_context()
+    previous_solution = copy.deepcopy(context["solutions"][0])
+    previous_solution["game"]["players"] = [
+        {"position": position}
+        for position in ["UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    ]
+    idx = HAND_TO_169["AJs"]
+    lj = next(
+        row for row in previous_solution["players_info"]
+        if row["player"]["position"] == "LJ"
+    )
+    lj["range"][idx] = 1.0
+    for action in previous_solution["action_solutions"]:
+        action["strategy"] = list(action["strategy"])
+        action["evs"] = list(action["evs"])
+        action["strategy"][idx] = float(action["action"]["code"] == "C")
+        action["evs"][idx] = 0.46 if action["action"]["code"] == "C" else 0.34
+    raise_strategy = [0.0] * 169
+    raise_evs = [0.0] * 169
+    previous_solution["action_solutions"].append({
+        "action": {"code": "R6.1", "type": "RAISE", "display_name": "RAISE",
+                   "betsize": "6.1", "betsize_by_pot": 0.6},
+        "strategy": raise_strategy,
+        "evs": raise_evs,
+        "total_frequency": 0.035,
+    })
+    context["hero_spots"].insert(0, {
+        "street": "preflop", "solver_hero_pos": "LJ", "taken_code": "R6.1",
+        "params": {"preflop_actions": "R2.1-F"},
+    })
+    context["solutions"].insert(0, previous_solution)
+
+    digest = ct.build_teaching_digest(context)
+    prompt = ct.render_prompt_block(digest)
+    fallback = ct.render_fallback(digest)
+
+    assert_in("Call 100%", prompt)
+    assert_in("前一個 LJ 面對 UTG open", prompt)
+    assert_in("AJs", prompt)
+    assert_in("HJ all-in", prompt)
+    assert_in("只用兩點回答：前一節點 100% call 為何沒有此手牌的後續策略", prompt)
+    assert_in("列完就停，不要加免責句", prompt)
+    assert_in("評價前面的 3bet", prompt)
+    assert_in("LJ 整體範圍", prompt)
+    assert_in("Villain conditioned all-in range（HJ）", prompt)
+    assert_not_in("不得判定 Hero call/fold 或 EV", prompt)
+    assert_not_in("不能判定 call/fold", prompt)
+    assert_not_in("不能判定 call/fold", fallback)
+    assert_in("solver 對 AJs 是 Call 100%", fallback)
+    assert_true(ct.audit_draft(fallback, digest).ok, fallback)
     assert_not_in("AJs fold", prompt)
 
-    answer = "AJs 這手沒有 exact-combo 策略，不能判定 call 或 fold；可用的事實是 LJ 整體會用 77+~、AKs、AKo 去跟，HJ Preflop all-in range 主要是 AKo、AA、JJ、KK、QQ、AKs、AQs。"
-    assert_true(ct.audit_draft(answer, digest).ok)
+    answer = "前一個 LJ 面對 UTG open 時，solver 對 AJs 是 100% call；因此這條策略不會走到 HJ all-in 節點。LJ 整體 call 範圍是 77+~、AKs、AKo；HJ all-in range 是 AKo、AA、JJ、KK、QQ、AKs、AQs。"
+    answer_audit = ct.audit_draft(answer, digest)
+    assert_true(answer_audit.ok, answer_audit.violations)
 
 
 def test_coach_teaching_audit_rejects_positive_pot_control_after_negation():
@@ -3975,14 +4042,15 @@ def test_coach_teaching_range_only_rejects_exact_response_but_allows_earlier_nod
     assert_eq(good, [])
 
 
-def test_coach_teaching_range_only_fallback_is_self_audited_with_verified_mixed_99():
-    """The deterministic fallback may mention verified 99(4%) but must still audit cleanly."""
+def test_coach_teaching_range_only_fallback_is_self_audited_with_call_range():
+    """The deterministic fallback keeps the relevant call range concise."""
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
     fallback = ct.render_fallback(digest)
 
-    assert_in("99(4%)", fallback)
+    assert_in("77+~", fallback)
+    assert_not_in("Fold（21 combos）", fallback)
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
 
 
@@ -4036,6 +4104,9 @@ def test_coach_teaching_fallback_summary_uses_coverage_ev_loss_before_range_only
         "ev_loss_bb": 0.32,
         "ev_loss_pot": 0.01,
         "actual_action": {"code": "R6.1", "frequency": 0.0},
+        "preferred_action": {"code": "C", "frequency": 1.0, "label": "call"},
+        "best_action_by_ev": {"code": "C", "frequency": 1.0, "label": "call"},
+        "action_contract": {"frequencies": {"R6.1": 0.0, "C": 1.0}},
         "range_plan": {"facing_bet": False},
     })
 

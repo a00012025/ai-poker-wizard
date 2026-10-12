@@ -478,6 +478,17 @@ def _preflop_range_only_decision(
         re.sub(r"^Limp", "Call", line)
         for line in range_lines
     ]
+    call_start = next(
+        (i for i, line in enumerate(range_lines) if re.match(r"Call\b|Call（", line, re.I)),
+        None,
+    )
+    if call_start is not None:
+        call_end = next(
+            (i for i in range(call_start + 1, len(range_lines))
+             if re.match(r"(?:Fold|Raise|All-in)\b", range_lines[i], re.I)),
+            len(range_lines),
+        )
+        range_lines = range_lines[call_start:call_end]
     villain_rows = []
     for position, pi in players.items():
         if position == hero:
@@ -541,6 +552,22 @@ def _preflop_range_only_decision(
         "confidence": "range_only",
         "scope": "exact combo 0% 到達；不得判定 Hero 實戰 response 或 EV",
     }
+
+
+def _range_only_reach_sentence(fact: dict) -> str:
+    previous = fact.get("previous_action") or {}
+    if previous.get("code") == "C" and previous.get("frequency", 0.0) >= 0.999:
+        opener = previous.get("opener")
+        open_context = f"面對 {opener} open " if opener else ""
+        return (
+            f"前一個 {fact['hero']} {open_context}節點，solver 對 {fact['hero_hand']} "
+            f"是 Call {previous['frequency']:.0%}；沿這條策略不會進入後面的 "
+            f"{fact.get('villain') or '對手'} all-in 節點。"
+        )
+    return (
+        f"{fact['hero_hand']} 在這個 {fact.get('villain') or '對手'} all-in 節點"
+        "的 solver 到達率是 0%，所以沒有後續策略。"
+    )
 
 
 def _off_tree_decision(context: dict, spot: dict, solution: dict,
@@ -631,10 +658,7 @@ def _decision_verdict(decision: dict) -> str:
 
     actual = decision.get("actual_action")
     if decision.get("preflop_range_only"):
-        return (
-            f"{decision['hero_hand']} 在此 node 沒有 exact-combo 策略；"
-            "不能判定實戰 response 或 EV"
-        )
+        return _range_only_reach_sentence(decision.get("preflop_range_fact") or {})
     if decision.get("off_tree"):
         label = (actual or {}).get("label") or "實戰動作"
         return (
@@ -664,12 +688,7 @@ def _decision_verdict(decision: dict) -> str:
 def _decision_brief_reason(decision: dict) -> str:
     """One grounded reason for the sequential street-by-street review."""
     if decision.get("preflop_range_only"):
-        fact = decision.get("preflop_range_fact") or {}
-        villain = fact.get("villain") or "對手"
-        return (
-            f"可用事實限於 {decision['hero']} 整體 range 與 "
-            f"{villain} 的 action-conditioned range"
-        )
+        return "另有 Hero 整體應對範圍及對手 all-in 範圍可參考"
     if decision.get("off_tree"):
         return "這個 exact combo 在 solver 中 0% 到達，缺少可比較的 action EV"
     if decision.get("street") == "preflop":
@@ -2541,6 +2560,28 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         if item is None and spot.get("street") != "preflop":
             item = _off_tree_decision(context, spot, solution, hero_hand)
         if item:
+            if item.get("preflop_range_only"):
+                previous = next((
+                    row for row in reversed(all_decisions)
+                    if row.get("street") == "preflop"
+                    and row.get("hero") == item["hero"]
+                    and row.get("hero_hand") == hero_hand
+                    and row.get("preferred_action")
+                ), None)
+                if previous:
+                    action = previous["preferred_action"]
+                    item["preflop_range_fact"]["previous_action"] = {
+                        "code": action["code"],
+                        "frequency": action["frequency"],
+                        "opener": next((
+                            position for position, role in
+                            (previous.get("preflop_roles") or {}).items()
+                            if role == "opener"
+                        ), None),
+                    }
+                    item["preflop_range_fact"]["interpretation"] = (
+                        _range_only_reach_sentence(item["preflop_range_fact"])
+                    )
             all_decisions.append(item)
             if item["street"] != "preflop" and not item.get("off_tree"):
                 postflop_decisions.append(item)
@@ -2597,6 +2638,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
     allowed_bb = set()
     for row in all_decisions:
         role = row.get("hero_role") or {}
+        if row.get("preflop_range_only"):
+            allowed_percentages.add(0.0)
         if role.get("made_hand"):
             allowed_categories.add(role["made_hand"])
         all_live_draws = set(role.get("live_draws") or [])
@@ -2973,26 +3016,17 @@ def render_prompt_block(digest: dict | None) -> str:
         "【全手背景事實｜供選焦點，不要逐點重述】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
+        if decision.get("preflop_range_only"):
+            continue
         lines.append(
             f"• {decision['coverage_label']}："
             f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
-        fact = decision.get("preflop_range_fact") or {}
-        if fact:
-            lines.append(f"  - Range-only fact：{fact['interpretation']}。")
-            for item in fact.get("range_lines") or []:
-                lines.append(f"    {fact['hero']} 整體 {item}")
-            if fact.get("villain_classes"):
-                lines.append(
-                    f"    {fact.get('villain') or '對手'} Preflop all-in range："
-                    + "、".join(fact["villain_classes"])
-                    + "。"
-                )
     lines.extend([
         "• 這些是第一則 solver 卡片已呈現的背景；第二則訊息不必逐一提到，也不要改寫成另一張 action table。",
         "• 可以用其中一點交代整手總評，再把篇幅留給下方 1–2 個教學焦點。",
         "• 若選到 off-tree 節點，只能說缺少 exact-combo solver 對照、無法判定對錯；不得自行補策略理由。",
-        "• 若選到 range-only preflop 節點，只能說 exact combo 缺資料，並引用列出的整體 range；不得判定 Hero response 或 EV。",
+        "• 若有 preflop range-only 事實，先交代前一節點的 solver 動作如何使這手牌沒有後續策略，再列相關整體範圍；不要補後續 action 或 EV。",
         "",
         "【教練候選焦點｜從中挑最有價值的 1–2 個自然展開】",
     ])
@@ -3001,12 +3035,12 @@ def render_prompt_block(digest: dict | None) -> str:
             fact = decision.get("preflop_range_fact") or {}
             lines.extend([
                 f"焦點 {index}｜Preflop range-only response",
-                f"• 核心判定：{fact.get('hero_hand', decision['hero_hand'])} 在此 facing node 沒有 exact-combo 策略；不得判定 call/fold 或 EV。",
-                "• 使用者若問 facing decision 或對手 range：先簡短說明 exact hand 缺個別策略，然後直接提供下列已驗證 range；不可只說沒資料，也不可轉回只講前面偏差。",
+                f"• 到達原因：{_range_only_reach_sentence(fact)}",
+                "• 只用兩點回答：前一節點 100% call 為何沒有此手牌的後續策略、Hero 整體 call range 與對手 all-in range；列完就停，不要加免責句、評價前面的 3bet 或補通用解釋。",
             ])
             if fact.get("range_lines"):
                 lines.append(
-                    f"• Hero current call/fold range（{fact.get('hero') or decision['hero']}）："
+                    f"• {fact.get('hero') or decision['hero']} 整體範圍："
                     + "；".join(fact["range_lines"])
                     + "。"
                 )
@@ -3412,8 +3446,8 @@ def render_fallback(digest: dict) -> str:
         )
         reasons.append(
             "*Preflop*\n"
-            f"{fact['hero_hand']} 在此 node 沒有 exact-combo 策略，不能判定 call/fold 或 EV。"
-            f"可引用的 range 事實是 {fact['hero']} 整體 {range_text}；{villain_text}。"
+            f"{_range_only_reach_sentence(fact)}"
+            f"可參考的範圍是 {fact['hero']} 整體 {range_text}；{villain_text}。"
         )
 
     # The common two-street teaching shape (bad bluff candidate on one street,
@@ -3494,7 +3528,7 @@ def render_fallback(digest: dict) -> str:
         fact = decision.get("preflop_range_fact") or {}
         if fact:
             safe_reasons.append(
-                f"*Preflop*\n{fact['hero_hand']} 在此 node 沒有 exact-combo 策略；"
+                f"*Preflop*\n{_range_only_reach_sentence(fact)}"
                 f"可用的 range 事實是 {fact['hero']} 整體 "
                 + "；".join(fact.get("range_lines") or [])
                 + "。"
@@ -3507,7 +3541,14 @@ def render_fallback(digest: dict) -> str:
     safe_answer = summary + "\n\n" + "\n\n".join(safe_reasons)
     if audit_draft(safe_answer, digest).ok:
         return safe_answer
-    neutral = "目前只能確認此節點缺少 exact-combo solver 對照；不能判定實戰 response 或 EV。"
+    neutral = (
+        _range_only_reach_sentence(next(
+            (row["preflop_range_fact"] for row in coverage
+             if row.get("preflop_range_only")), {}
+        ))
+        if any(row.get("preflop_range_only") for row in coverage)
+        else "目前只能確認此節點缺少 exact-combo solver 對照。"
+    )
     if audit_draft(neutral, digest).ok:
         return neutral
     return "目前缺少可用的 exact-combo solver 對照。"
