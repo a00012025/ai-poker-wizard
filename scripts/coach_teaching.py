@@ -676,8 +676,8 @@ def _decision_verdict(decision: dict) -> str:
         return scoped(f"{actual['label']} 正確，solver {purity}這個動作")
     if actual.get("frequency", 0.0) >= 0.01:
         return scoped(
-            f"{actual['label']} 是 solver 保留的 mix，"
-            f"但主要動作是 {preferred['label']}"
+            f"solver 會混合使用 {actual['label']}，"
+            f"但更常選 {preferred['label']}"
         )
     return scoped(
         f"{actual['label']} 的 EV 影響很小，但不在可採信的 solver mix，"
@@ -3076,7 +3076,7 @@ def render_prompt_block(digest: dict | None) -> str:
             elif actual.get("frequency", 0.0) >= 0.01:
                 verdict = (
                     f"Hero 的 {actual['label']} 沒有實質 EV 損失，"
-                    "而且是 solver 保留的 mix 分支"
+                    "solver 會混合使用這個動作"
                 )
             else:
                 verdict = (
@@ -3244,13 +3244,14 @@ def render_prompt_block(digest: dict | None) -> str:
         "先用一句話總評整手，再逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 與同街行動先後排列。一般節點一兩句，教學焦點可多講；每個節點照『結論 → 關鍵 solver 證據 → 具體原因』講，但不顯示模板標籤。",
         "有 postflop 決策時，用 *Flop*、*Turn*、*River* 短標題分段；每街直接說洞見，不得重複『先看整體 range／再看 exact combo』。",
         "文字要像真人教練在講牌：口語、短句、少角色填充；不要寫成資料報告，也不要硬塞『成牌強端負責價值施壓』這類模板句。",
+        "混合頻率用口語說明：『solver 會混合使用這個動作，但更常選另一個』，必要時才給實際頻率；不要把『保留的 mix』或『mix 分支』寫進正文。只有實戰動作的 solver 頻率達可採信門檻時才能這樣說；EV 代價小但不在 mix 的動作不能算混合頻率。",
         "Actor/action lock 是內部安全檢查，不是 lesson；不要把『不可套用某位置／資料沒有某 actor』這類 guard 句寫進正文，除非必須用一句話說明限制。",
         "不要逐點重述第一則 solver 卡片；每個決策都要有一句有用的說明，也不要逐街稱讚。",
         "有實質 EV 錯誤時多解釋最昂貴或最早的根本偏差；沒有錯誤時，可多解釋有意思的 mix、牌力角色、尺寸或跨街策略節奏，但保留其他節點的簡短交代。",
         "非教學焦點只用上方逐節點 verdict 與簡短理由；range、牌型、blocker 與進一步因果只能從下方教學焦點的已驗證材料展開。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
         "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
-        "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
+        "核心判定是硬契約：『沒有實質 EV 損失』且 solver 會混合使用的動作不得稱為錯誤；頻率較低只代表較少採用。",
         "若教練候選焦點標示『這個 combo 只少量到達此節點』，正文必須保留這句 caveat；即使只用它當背景也一樣。",
         "低到達率 caveat 到『這個 combo 只少量到達此節點』為止；正文不得再加 generic node 邊界收尾。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
@@ -3936,7 +3937,9 @@ def _audit_range_only_exact_response(body: str, digest: dict) -> list[str]:
         r"EV[^。；\n]{0,12}(?:比|更|最高|較高|better|best|\d|正|負|很高|很低)|比較賺|更賺",
         re.I,
     )
-    for sentence in re.split(r"[。！？；\n]", body):
+    # Split a question-first verdict from the earlier-node explanation after
+    # a colon, so "UTG open" cannot excuse a preceding facing-jam claim.
+    for sentence in re.split(r"[。！？；：:\n]", body):
         if not sentence.strip():
             continue
         if earlier_ok.search(sentence) and not re.search(
@@ -4309,7 +4312,7 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
             if not re.search(action_pattern, sentence, re.I):
                 continue
             claims_supported = (
-                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持)|mix\s*分支)", sentence, re.I)
+                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持|混合使用)|mix\s*分支)", sentence, re.I)
                 or re.search(rf"(?:低頻|少量)[^。；\n]{{0,12}}{action_pattern}", sentence, re.I)
                 or re.search(rf"{action_pattern}[^。；\n]{{0,10}}(?:可用|可採用)", sentence, re.I)
             )

@@ -1390,6 +1390,10 @@ def test_coach_teaching_h3835_covers_decisions_in_action_order():
         ["Preflop", "Flop ①", "Flop ②", "Turn", "River"],
     )
     assert_eq(len(digest["decisions"]), 2, "correct hands may offer two teaching candidates")
+    assert_true(
+        any("solver 會混合使用" in row["coverage_verdict"] for row in digest["all_decisions"]),
+        "a genuine lower-frequency action should be explained as a mix",
+    )
 
     prompt = ct.render_prompt_block(digest)
     for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
@@ -1397,6 +1401,9 @@ def test_coach_teaching_h3835_covers_decisions_in_action_order():
     assert_in("逐個說明 Hero 的每個決策", prompt)
     assert_in("同一街有多次決策時，按實際行動先後", prompt)
     assert_not_in("不必逐一提到", prompt)
+    assert_in("solver 會混合使用", prompt)
+    verdict_lines = [line for line in prompt.splitlines() if line.startswith("• Flop") or line.startswith("• Turn") or line.startswith("• River") or line.startswith("• 核心判定")]
+    assert_true(all("保留的 mix" not in line for line in verdict_lines))
 
     fallback = ct.render_fallback(digest)
     assert_in(digest["decisions"][0]["coverage_label"], fallback)
@@ -2840,6 +2847,8 @@ def test_coach_teaching_offmix_audit_scopes_same_action_to_street():
     flop_check["actual_action"]["frequency"] = 0.0
     answer = "*Flop*\n先 check，solver 不採用這個動作。\n*Turn*\ncheck 是 solver 保留的 mix 分支。"
     assert_not_in("off-mix action called supported flop", ct.audit_draft(answer, digest).violations)
+    unsupported = "*Flop*\nsolver 會混合使用 check，但更常下注。"
+    assert_in("off-mix action called supported flop", ct.audit_draft(unsupported, digest).violations)
 
 
 def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
@@ -4067,6 +4076,12 @@ def test_coach_teaching_range_only_rejects_exact_response_but_allows_earlier_nod
 
     bad = ct.audit_draft("AJs 這裡可以跟注 HJ all-in。", digest)
     assert_in("range-only exact response claim", bad.violations)
+
+    misleading = ct.audit_draft(
+        "這手 AJs 應該棄牌：更根本的是，LJ 對 UTG open 本來就該 100% 跟注。",
+        digest,
+    )
+    assert_in("range-only exact response claim", misleading.violations)
 
     good = ct._audit_range_only_exact_response(
         "AJs 面對 UTG open 原本 solver call 100%；但面對 HJ all-in 這個 node 沒有 exact-combo 策略。",
