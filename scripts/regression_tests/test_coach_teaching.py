@@ -1378,8 +1378,8 @@ def test_raise_facing_bet_names_protection_and_indifferent_targets():
     assert_in("protection／equity denial", prompt)
 
 
-def test_coach_teaching_h3835_allows_selective_freeform_coaching():
-    """H3835: narrator may focus on the useful idea instead of replaying every street."""
+def test_coach_teaching_h3835_covers_decisions_in_action_order():
+    """Every Hero decision is explained in order; deeper teaching stays selective."""
     import coach_teaching as ct
 
     digest = ct.build_teaching_digest(_h3835_multi_decision_context())
@@ -1394,15 +1394,18 @@ def test_coach_teaching_h3835_allows_selective_freeform_coaching():
     prompt = ct.render_prompt_block(digest)
     for label in ("Preflop", "Flop ①", "Flop ②", "Turn", "River"):
         assert_in(label, prompt)
-    assert_in("背景事實", prompt)
-    assert_in("不必逐一提到", prompt)
+    assert_in("逐個說明 Hero 的每個決策", prompt)
+    assert_in("同一街有多次決策時，按實際行動先後", prompt)
+    assert_not_in("不必逐一提到", prompt)
 
     fallback = ct.render_fallback(digest)
     assert_in(digest["decisions"][0]["coverage_label"], fallback)
     assert_true(
-        sum(row["coverage_label"] in fallback for row in digest["all_decisions"]) <= 2,
-        "safety fallback should select a focus, not replay every solver-card row",
+        all(row["coverage_label"] in fallback for row in digest["all_decisions"]),
+        "safety fallback should still cover every Hero decision",
     )
+    positions = [fallback.index(f"{row['coverage_label']}：") for row in digest["all_decisions"]]
+    assert_eq(positions, sorted(positions), "fallback should follow the action line")
     assert_not_in("*核心判斷*", fallback)
     fallback_audit = ct.audit_draft(fallback, digest)
     assert_true(fallback_audit.ok, str(fallback_audit.violations))
@@ -1492,7 +1495,7 @@ def test_coach_teaching_h3841_focuses_on_mistake_and_explains_equity_source():
     assert_in("卡順聽牌", fallback)
     assert_in("未成牌", fallback)
     assert_in("all-in", fallback)
-    assert_not_in("Flop", fallback)
+    assert_in("Flop：check 正確", fallback)
     fallback_audit = ct.audit_draft(fallback, digest)
     assert_true(fallback_audit.ok, str(fallback_audit.violations))
 
@@ -2264,7 +2267,7 @@ def test_session_grounded_initial_narrator_uses_openai_without_gemini_context():
             assert_in("Deterministic 教學骨架", kwargs["instructions"])
             assert_in("結論 → 關鍵 solver 證據 → 具體原因", kwargs["instructions"])
             assert_in("range 結構只有在真的有助於理解時才引用", kwargs["instructions"])
-            assert_in("使用者問特定決策或範圍時，先回答該問題", kwargs["instructions"])
+            assert_in("使用者問特定決策或範圍時，開頭先用一句話直接回答", kwargs["instructions"])
             assert_in("特殊情況：使用者問後續 0% reach 節點時", kwargs["instructions"])
             assert_in("不要寫 call/fold 或 equity 免責句", kwargs["instructions"])
             assert_not_in("可帶到下一手", kwargs["instructions"])
@@ -2314,6 +2317,14 @@ def test_initial_coach_contract_is_conclusion_first_and_range_optional():
     assert_in("接著列 Hero 整體 call range 和對手 all-in range", INITIAL_COACH_SYSTEM)
     assert_in("exact combo", INITIAL_COACH_SYSTEM)
     assert_not_in("可帶到下一手", INITIAL_COACH_SYSTEM)
+
+
+def test_initial_coach_contract_covers_each_decision_chronologically():
+    from gemini_session import INITIAL_COACH_SYSTEM
+
+    assert_in("逐個說明 Hero 的每個決策", INITIAL_COACH_SYSTEM)
+    assert_in("Preflop → Flop → Turn → River", INITIAL_COACH_SYSTEM)
+    assert_not_in("不必逐一提到所有決策", INITIAL_COACH_SYSTEM)
 
 
 def test_coach_hand_uses_shared_followup_extractor():
@@ -2818,6 +2829,17 @@ def test_coach_teaching_low_ev_offmix_action_stays_offmix():
         "verdict mismatch flop:in-mix-called-error",
         ct.audit_draft(unrelated_fold, digest).violations,
     )
+
+
+def test_coach_teaching_offmix_audit_scopes_same_action_to_street():
+    """Turn mix wording must not falsely endorse an off-mix Flop check."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3835_multi_decision_context())
+    flop_check = next(row for row in digest["all_decisions"] if row["street"] == "flop" and row["actual_action"]["code"] == "X")
+    flop_check["actual_action"]["frequency"] = 0.0
+    answer = "*Flop*\n先 check，solver 不採用這個動作。\n*Turn*\ncheck 是 solver 保留的 mix 分支。"
+    assert_not_in("off-mix action called supported flop", ct.audit_draft(answer, digest).violations)
 
 
 def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
@@ -3992,9 +4014,9 @@ def test_range_only_explains_zero_reach_from_previous_solver_call_without_repeat
     assert_in("前一個 LJ 面對 UTG open", prompt)
     assert_in("AJs", prompt)
     assert_in("HJ all-in", prompt)
-    assert_in("只用兩點回答：前一節點 100% call 為何沒有此手牌的後續策略", prompt)
-    assert_in("列完就停，不要加免責句", prompt)
-    assert_in("評價前面的 3bet", prompt)
+    assert_in("先說前一個實際決策的 solver verdict", prompt)
+    assert_in("不要加免責句", prompt)
+    assert_in("Preflop ①：raise 60% pot 有實質 EV 損失", prompt)
     assert_in("LJ 整體範圍", prompt)
     assert_in("Villain conditioned all-in range（HJ）", prompt)
     assert_not_in("不得判定 Hero call/fold 或 EV", prompt)
@@ -4016,6 +4038,17 @@ def test_coach_teaching_audit_rejects_positive_pot_control_after_negation():
     bad = "Preflop 這個 all-in node 沒有 exact-combo 策略；這不是控制底池，但其實還是控制底池。這個說法把 solver 節點重新包裝成底池控制理由，會誤導使用者。"
     audit = ct.audit_draft(bad, digest)
     assert_in("unsupported induced-action explanation", audit.violations)
+
+
+def test_coach_teaching_range_only_avoids_repeated_call_fold_disclaimer():
+    """A reach explanation is enough; do not lead with a call/fold disclaimer."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    noisy = "這個節點沒有 AJs 的跟注／棄牌判定；前面應該 call。"
+    assert_in("redundant range-only disclaimer", ct.audit_draft(noisy, digest).violations)
+    concise = "AJs 前面 100% call，因此沿 solver 路線不會進入後續 all-in 節點。"
+    assert_not_in("redundant range-only disclaimer", ct.audit_draft(concise, digest).violations)
 
 
 def test_coach_teaching_audit_rejects_unsupported_difficult_decision_phrase():

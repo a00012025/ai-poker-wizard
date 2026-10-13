@@ -3013,22 +3013,27 @@ def render_prompt_block(digest: dict | None) -> str:
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
         "",
-        "【全手背景事實｜供選焦點，不要逐點重述】",
+        "【依實際行動順序的 Hero 決策｜每一步都要簡短解釋】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
         if decision.get("preflop_range_only"):
+            lines.append(
+                f"• {decision['coverage_label']}："
+                f"{decision['coverage_verdict']}；簡短理由："
+                f"{decision['coverage_reason']}。"
+            )
             continue
         lines.append(
             f"• {decision['coverage_label']}："
             f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
     lines.extend([
-        "• 這些是第一則 solver 卡片已呈現的背景；第二則訊息不必逐一提到，也不要改寫成另一張 action table。",
-        "• 可以用其中一點交代整手總評，再把篇幅留給下方 1–2 個教學焦點。",
-        "• 若選到 off-tree 節點，只能說缺少 exact-combo solver 對照、無法判定對錯；不得自行補策略理由。",
-        "• 若有 preflop range-only 事實，先交代前一節點的 solver 動作如何使這手牌沒有後續策略，再列相關整體範圍；不要補後續 action 或 EV。",
+        "• 逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 排列；同一街有多次決策時，按實際行動先後說明。",
+        "• 每一步用上面的 verdict 與理由講實戰意義；不要逐行複製第一則 solver 卡片。下方教學焦點可多展開，但不可跳過非焦點節點。",
+        "• off-tree 節點只能說已知到達原因及缺少此手牌的後續策略；不得自行補後續 action 或 EV。",
+        "• 若有 preflop range-only 事實，先說前一個實際決策，再說其 solver 動作如何使這手牌沒有後續策略，最後列相關整體範圍。",
         "",
-        "【教練候選焦點｜從中挑最有價值的 1–2 個自然展開】",
+        "【值得多解釋的節點｜其他決策仍須簡短交代】",
     ])
     for index, decision in enumerate(digest["decisions"], 1):
         if decision.get("preflop_range_only"):
@@ -3036,7 +3041,7 @@ def render_prompt_block(digest: dict | None) -> str:
             lines.extend([
                 f"焦點 {index}｜Preflop range-only response",
                 f"• 到達原因：{_range_only_reach_sentence(fact)}",
-                "• 只用兩點回答：前一節點 100% call 為何沒有此手牌的後續策略、Hero 整體 call range 與對手 all-in range；列完就停，不要加免責句、評價前面的 3bet 或補通用解釋。",
+                "• 先說前一個實際決策的 solver verdict，再用一句話解釋該手牌沿 solver 路線不會到達後續節點；接著列 Hero 整體 call range 與對手 all-in range。不要換句話重述『沒有跟注或棄牌策略』，也不要加免責句或補通用解釋。",
             ])
             if fact.get("range_lines"):
                 lines.append(
@@ -3236,13 +3241,13 @@ def render_prompt_block(digest: dict | None) -> str:
         "",
         "【輸出契約】",
         "第二則訊息一定要有內容，即使全手打對也要提供一個具體、牌局相關的策略觀察。",
-        "先用一句話總評整手，再挑 1–2 個最有教學價值的焦點；每個焦點照『結論 → 關鍵 solver 證據 → 具體原因』講。格式與段落由你決定，不必使用固定標題。",
-        "若同時講兩條 postflop 街，必須用 *Flop*、*Turn*、*River* 短標題分段；每街直接說洞見，不得重複『先看整體 range／再看 exact combo』。",
+        "先用一句話總評整手，再逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 與同街行動先後排列。一般節點一兩句，教學焦點可多講；每個節點照『結論 → 關鍵 solver 證據 → 具體原因』講，但不顯示模板標籤。",
+        "有 postflop 決策時，用 *Flop*、*Turn*、*River* 短標題分段；每街直接說洞見，不得重複『先看整體 range／再看 exact combo』。",
         "文字要像真人教練在講牌：口語、短句、少角色填充；不要寫成資料報告，也不要硬塞『成牌強端負責價值施壓』這類模板句。",
         "Actor/action lock 是內部安全檢查，不是 lesson；不要把『不可套用某位置／資料沒有某 actor』這類 guard 句寫進正文，除非必須用一句話說明限制。",
-        "不要逐點重述第一則 solver 卡片，不必逐一提到背景事實中的每個決策，也不要逐街稱讚。",
-        "有實質 EV 錯誤時優先解釋最昂貴或最早的根本偏差；沒有錯誤時，解釋最有意思的 mix、牌力角色、尺寸或跨街策略節奏。",
-        "只能從教練候選焦點提供的 range、牌型、blocker 與因果材料展開；背景事實只用來維持整手總評正確。",
+        "不要逐點重述第一則 solver 卡片；每個決策都要有一句有用的說明，也不要逐街稱讚。",
+        "有實質 EV 錯誤時多解釋最昂貴或最早的根本偏差；沒有錯誤時，可多解釋有意思的 mix、牌力角色、尺寸或跨街策略節奏，但保留其他節點的簡短交代。",
+        "非教學焦點只用上方逐節點 verdict 與簡短理由；range、牌型、blocker 與進一步因果只能從下方教學焦點的已驗證材料展開。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
         "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
         "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
@@ -3277,14 +3282,14 @@ def render_prompt_block(digest: dict | None) -> str:
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "只有 Opponent solved response 提供的 hand classes／牌型與 action bucket 可以拿來說對手會 call/fold/raise；不得擴寫未列出的牌或誘導故事。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
-        "正文以 2–5 個短段落為原則；不要硬塞通用 heuristic，也不要固定用 exact-node 邊界收尾。",
+        "正文按有 Hero 決策的街分成短段落；同街可用多句按先後說，不要硬塞通用 heuristic 或固定的節點邊界收尾。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
 
 
 def render_fallback(digest: dict) -> str:
-    """Selective natural-language safety net used when both LLM drafts fail."""
+    """Chronological, solver-grounded safety net when both LLM drafts fail."""
     coverage = digest.get("all_decisions") or digest["decisions"]
     focus = digest["decisions"]
     primary = max(
@@ -3435,54 +3440,12 @@ def render_fallback(digest: dict) -> str:
         reasons.append(
             f"*{decision['street'].capitalize()}*\n" + "。".join(pieces) + "。"
         )
-    for decision in coverage:
-        fact = decision.get("preflop_range_fact") or {}
-        if not fact:
-            continue
-        range_text = "；".join(fact.get("range_lines") or [])
-        villain_text = (
-            f"{fact.get('villain') or '對手'} Preflop all-in range："
-            + "、".join(fact.get("villain_classes") or [])
+    focus_details = {
+        id(decision): reason.split("\n", 1)[-1]
+        for decision, reason in zip(
+            (row for row in focus if not row.get("preflop_range_only")), reasons
         )
-        reasons.append(
-            "*Preflop*\n"
-            f"{_range_only_reach_sentence(fact)}"
-            f"可參考的範圍是 {fact['hero']} 整體 {range_text}；{villain_text}。"
-        )
-
-    # The common two-street teaching shape (bad bluff candidate on one street,
-    # range-created bluff capacity on the next) reads better as one causal
-    # contrast than as two repeated blocker sentences.
-    if len(focus) == 2:
-        first, second = focus
-        second_categories = _category_sentence(second)
-        first_blocker = first.get("blocker")
-        second_blocker = second.get("blocker")
-        if first_blocker and second_categories and second.get("decision_type") == "bluff":
-            first_role = first["hero_role"]
-            contrast = (
-                f"{first['street'].capitalize()} 時它是 {first_role['range_band']}的"
-                f"{first_role['made_hand_label']}，{first_role['draw_label']}，而且 blocker 不利，"
-                f"不是好的 bluff 候選。{second['street'].capitalize()} 時 {second_categories}，"
-                "強牌結構讓 range 能容納 bluff；這手牌的 blocker 仍不利，所以正確下注並不是靠 blocker。"
-            )
-            if not second_blocker or second_blocker.get("direction") == "neutral":
-                contrast = contrast.replace(
-                    "；這手牌的 blocker 仍不利，所以正確下注並不是靠 blocker。", "。"
-                )
-            reasons = [contrast]
-    if not reasons:
-        if any(row.get("off_tree") for row in coverage):
-            reasons = [
-                "沒有可深講的已評分 postflop 節點；off-tree 只表示缺少 "
-                "exact-combo solver 對照，不能補一般牌理。"
-            ]
-        else:
-            reasons = [
-                "這手只有 preflop 決策；exact hand class 的 solver action 分配"
-                "已足以判定，不需要另外補一般牌理。"
-            ]
-
+    }
     off_tree = [row for row in coverage if row.get("off_tree")]
     if primary.get("off_tree"):
         summary = (
@@ -3519,11 +3482,34 @@ def render_fallback(digest: dict) -> str:
                 f" {first['coverage_label']} 的實戰動作屬 off-tree，"
                 "沒有 exact-combo solver 對照，無法判定對錯。"
             )
-    answer = summary + "\n\n" + "\n\n".join(reasons)
+    ordered_reasons = []
+    for decision in coverage:
+        label = decision["coverage_label"]
+        detail = focus_details.get(id(decision))
+        sentence = (
+            f"*{decision['street'].capitalize()}*\n{label}："
+            f"{decision['coverage_verdict']}；{decision['coverage_reason']}。"
+        )
+        if detail:
+            sentence += " " + detail
+        fact = decision.get("preflop_range_fact") or {}
+        if fact:
+            sentence += (
+                f" {fact.get('hero') or decision['hero']} 整體 call range："
+                + "；".join(fact.get("range_lines") or [])
+                + f"。{fact.get('villain') or '對手'} Preflop all-in range："
+                + "、".join(fact.get("villain_classes") or [])
+                + "。"
+            )
+        ordered_reasons.append(sentence)
+    answer = summary + "\n\n" + "\n".join(ordered_reasons)
     audit = audit_draft(answer, digest)
     if audit.ok:
         return answer
-    safe_reasons = []
+    safe_reasons = [
+        f"{row['coverage_label']}：{row['coverage_verdict']}；{row['coverage_reason']}。"
+        for row in coverage
+    ]
     for decision in coverage:
         fact = decision.get("preflop_range_fact") or {}
         if fact:
@@ -4296,6 +4282,15 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
 def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
     """An off-mix action may be cheap in EV without becoming a solver branch."""
     violations = []
+    scoped_sentences = []
+    current_street = None
+    for line in (body or "").splitlines():
+        header = re.match(r"^\s*\*?(Preflop|Flop|Turn|River)\*?\s*(?::|：|$)", line, re.I)
+        if header:
+            current_street = header.group(1).lower()
+        for sentence in re.split(r"[。！？；]", line):
+            if sentence.strip():
+                scoped_sentences.append((current_street, sentence))
     for decision in _covered_decisions(digest):
         if decision.get("off_tree"):
             continue
@@ -4308,7 +4303,9 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
         action_pattern = _ACTION_TEXT_PATTERNS.get(family)
         if not action_pattern:
             continue
-        for sentence in re.split(r"[。！？；\n]", body or ""):
+        for sentence_street, sentence in scoped_sentences:
+            if sentence_street and sentence_street != decision["street"]:
+                continue
             if not re.search(action_pattern, sentence, re.I):
                 continue
             claims_supported = (
@@ -4433,12 +4430,19 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_action_frequency_claims(body, digest))
     violations.extend(_audit_range_only_exact_response(body, digest))
     violations.extend(_audit_range_only_verified_ranges(body, digest))
+    if any(row.get("preflop_range_only") for row in _covered_decisions(digest)) and re.search(
+        r"(?:沒有|缺少|無法|不能)[^。；\n]{0,40}"
+        r"(?:跟注.{0,3}棄牌|call\s*(?:/|或|or)\s*fold)"
+        r"[^。；\n]{0,20}(?:判定|策略|資料|結論|可用)",
+        body,
+        re.I,
+    ):
+        violations.append("redundant range-only disclaimer")
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
-    # The deterministic card already covers every decision.  The narrator is a
-    # selective teaching layer, so omission is intentional; facts it chooses to
-    # mention are still audited below.
+    # The deterministic card covers every decision; factual claims in the
+    # narrator's chronological explanation are still checked below.
     violations.extend(_audit_off_tree_verdicts(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
