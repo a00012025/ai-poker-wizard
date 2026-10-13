@@ -516,6 +516,42 @@ def test_live_parse_block_uses_structured_icm_metadata_without_llm():
     assert_eq(hand["preflop_actions"], "F-F-F-R2-F-AI14-F-F-C")
 
 
+def test_live_icm_eff_header_keeps_effective_depth_and_actual_seat_stacks(monkeypatch):
+    import icm_modes
+    import hh_deviation_check
+    from live_flow import _resolve_live_icm_params, grade_hand, parse_block
+
+    raw = ("Icm 20% Eff 30bb Hero lj has 43bb r2 KhQs "
+           "co has 30bb r6 hero call\n8s6h5d x b7 fold")
+    hand = parse_block(raw)
+    assert_eq(hand["effective_bb"], 30.0)
+    assert_eq(hand["hero_hand"], "KhQs")
+    assert_eq(hand["preflop_actions"], "F-F-R2-F-R6-F-F-F-C")
+    assert_eq(hand["player_stacks"], [None, None, 43.0, None, 30.0, None, None, None])
+    assert_eq(hand["players_remaining_percent"], 20.0)
+    assert_eq(hand["streets"][0]["board"], "8s6h5d")
+
+    captured = {}
+
+    def fake_find(**kwargs):
+        captured.update(kwargs)
+        return {"gametype": "MTTGeneral_ICM8m1000PTBUBBLE180PT"}
+
+    monkeypatch.setattr(icm_modes, "find_icm_params", fake_find)
+    params = _resolve_live_icm_params(hand)
+    assert_eq(captured["player_stacks"], hand["player_stacks"])
+    assert_eq(captured["players_remaining_percent"], 20.0)
+    assert_eq(params["gametype"], "MTTGeneral_ICM8m1000PTBUBBLE180PT")
+
+    checks = []
+    monkeypatch.setattr(hh_deviation_check, "check_hand",
+                        lambda candidate, **kwargs: checks.append(kwargs) or [])
+    grade_hand(hand)
+    assert_true(checks)
+    assert_true(all(c["icm_params"]["gametype"] == params["gametype"]
+                    for c in checks))
+
+
 def test_live_standard_shorthand_parses_when_tokenizer_provider_is_down():
     """0819 batch must not turn ordinary shorthand into parse_failed."""
     from google.genai import errors as genai_errors
