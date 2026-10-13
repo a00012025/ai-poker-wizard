@@ -251,13 +251,17 @@ def _effective_bb_from_preflop_tokens(
         return None
     clean = [_clean_word(tok) for tok in toks]
 
-    glued = re.match(r"^(?:eff|effective|有效)(\d+(?:\.\d+)?)bb$", clean[0])
-    if glued:
-        return glued.group(1)
-    if clean[0] in {"eff", "eff.", "effective", "有效"} and len(toks) > 1:
-        explicit = _bb_number_with_unit(toks[1])
-        if explicit is not None:
-            return explicit
+    # Tournament-stage prefixes can precede Eff ("ICM 20% Eff 30bb").
+    # Only inspect the header before Hero, so later action text cannot
+    # override the explicit effective depth.
+    for i in range(hero_idx if hero_idx is not None else len(toks)):
+        glued = re.match(r"^(?:eff|effective|有效)(\d+(?:\.\d+)?)bb$", clean[i])
+        if glued:
+            return glued.group(1)
+        if clean[i] in {"eff", "eff.", "effective", "有效"} and i + 1 < len(toks):
+            explicit = _bb_number_with_unit(toks[i + 1])
+            if explicit is not None:
+                return explicit
 
     if hero_idx is not None:
         for i in range(hero_idx + 1, len(toks) - 1):
