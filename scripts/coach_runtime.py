@@ -110,7 +110,8 @@ class ChatWorkflow:
             f"手牌摘要：\n{hand_description}\n\n"
             f"用戶要求：\n{user_text}\n\n"
             f"已驗證 solver 事實：\n{solver_data}\n\n"
-            "逐街 summary 已由系統顯示；請總評整手，並從教學骨架挑 1–2 個"
+            "逐街 summary 已由系統顯示；先回答用戶問的決策或範圍；"
+            "沒有特定問題時才總評整手，再從教學骨架挑 1–2 個"
             "最有價值的 range／action 邏輯自然解釋，不要重新解析或改寫動作。\n\n"
             f"{teaching_block}\n\n{FOLLOWUP_REQUEST}"
         )

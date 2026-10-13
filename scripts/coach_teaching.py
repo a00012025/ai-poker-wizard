@@ -159,6 +159,22 @@ def _raw_hero_hand(context: dict) -> str | None:
     return None
 
 
+def _hero_hand_or_preflop_class(context: dict) -> str | None:
+    raw = _raw_hero_hand(context)
+    if raw:
+        return raw
+    hand = gf.normalize_hand_name(
+        (context.get("hand") or {}).get("hero_hand") or context.get("hero_hand") or ""
+    )
+    if not hand:
+        return None
+    try:
+        from hh_deviation_check import HAND_TO_169
+    except Exception:
+        return None
+    return hand if hand in HAND_TO_169 else None
+
+
 def _players(solution: dict) -> dict[str, dict]:
     return {
         (row.get("player") or {}).get("position"): row
@@ -415,6 +431,7 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
         "board": "",
         "hero": hero,
         "villain": None,
+        "preflop_roles": _preflop_roles(solution, spot),
         "hero_hand": hero_hand,
         "actual_action": actual,
         "preferred_action": preferred,
@@ -427,6 +444,130 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
         "confidence": "high",
         "scope": "同一深度與 preflop node 的已驗證事實",
     }
+
+
+def _preflop_range_only_decision(
+    context: dict, spot: dict, solution: dict, hero_hand: str,
+) -> dict | None:
+    """Coverage fact for a preflop node where the exact hand has 0% reach."""
+    if spot.get("street") != "preflop":
+        return None
+    hero = spot.get("solver_hero_pos") or context.get("hero_position")
+    if (solution.get("game") or {}).get("active_position") != hero:
+        return None
+    players = _players(solution)
+    hero_pi = players.get(hero)
+    if not hero_pi:
+        return None
+    player_range = hero_pi.get("range") or []
+    if len(player_range) != 169:
+        return None
+    from hh_deviation_check import HAND_TO_169
+
+    combo_idx = HAND_TO_169.get(gf.normalize_hand_name(hero_hand))
+    if combo_idx is None or _float(player_range[combo_idx]) > 0:
+        return None
+
+    range_by_action = gf.format_range_by_action(solution, hero)
+    range_lines = [
+        line.strip()
+        for line in range_by_action.splitlines()
+        if line.strip() and not line.startswith("【") and not line.startswith("(~")
+    ]
+    range_lines = [
+        re.sub(r"^Limp", "Call", line)
+        for line in range_lines
+    ]
+    call_start = next(
+        (i for i, line in enumerate(range_lines) if re.match(r"Call\b|Call（", line, re.I)),
+        None,
+    )
+    if call_start is not None:
+        call_end = next(
+            (i for i in range(call_start + 1, len(range_lines))
+             if re.match(r"(?:Fold|Raise|All-in)\b", range_lines[i], re.I)),
+            len(range_lines),
+        )
+        range_lines = range_lines[call_start:call_end]
+    villain_rows = []
+    for position, pi in players.items():
+        if position == hero:
+            continue
+        total = sum(
+            _float(row.get("total_combos"))
+            for row in (pi.get("simple_hand_counters") or {}).values()
+        )
+        if total > 0:
+            villain_rows.append((total, position, pi))
+    villain_rows.sort(reverse=True, key=lambda row: row[0])
+    villain = villain_rows[0][1] if villain_rows else None
+    villain_classes = []
+    if villain_rows:
+        shc = villain_rows[0][2].get("simple_hand_counters") or {}
+        for name, data in sorted(
+            shc.items(), key=lambda item: -_float(item[1].get("total_combos")),
+        ):
+            if _float(data.get("total_combos")) >= 0.01:
+                villain_classes.append(name)
+    return {
+        "street": "preflop",
+        "board": "",
+        "hero": hero,
+        "villain": villain,
+        "hero_hand": hero_hand,
+        "actual_action": None,
+        "preferred_action": None,
+        "best_action_by_ev": None,
+        "available_actions": [],
+        "ev_loss_bb": None,
+        "ev_loss_pot": None,
+        "range_plan": _range_plan(solution),
+        "action_contract": {
+            "mode": "range_only",
+            "frequencies": {},
+            "continue_frequency": None,
+            "summary": "exact combo 0% 到達，僅能提供整體 range 事實",
+        },
+        "hero_role": {
+            "range_band": "不可判定",
+            "made_hand": None,
+            "made_hand_label": "exact combo 0% 到達",
+            "draw": None,
+            "draw_label": "preflop 無 exact-combo 策略",
+        },
+        "preflop_range_only": True,
+        "preflop_roles": _preflop_roles(solution, spot),
+        "preflop_range_fact": {
+            "hero": hero,
+            "hero_hand": hero_hand,
+            "range_lines": range_lines[:8],
+            "villain": villain,
+            "villain_classes": villain_classes[:10],
+            "interpretation": (
+                f"{hero_hand} 在此 node 沒有 exact-combo 策略；"
+                f"只能引用 {hero} 整體 range 與"
+                f"{villain + ' all-in range' if villain else '對手 range'}"
+            ),
+        },
+        "confidence": "range_only",
+        "scope": "exact combo 0% 到達；不得判定 Hero 實戰 response 或 EV",
+    }
+
+
+def _range_only_reach_sentence(fact: dict) -> str:
+    previous = fact.get("previous_action") or {}
+    if previous.get("code") == "C" and previous.get("frequency", 0.0) >= 0.999:
+        opener = previous.get("opener")
+        open_context = f"面對 {opener} open " if opener else ""
+        return (
+            f"前一個 {fact['hero']} {open_context}節點，solver 對 {fact['hero_hand']} "
+            f"是 Call {previous['frequency']:.0%}；沿這條策略不會進入後面的 "
+            f"{fact.get('villain') or '對手'} all-in 節點。"
+        )
+    return (
+        f"{fact['hero_hand']} 在這個 {fact.get('villain') or '對手'} all-in 節點"
+        "的 solver 到達率是 0%，所以沒有後續策略。"
+    )
 
 
 def _off_tree_decision(context: dict, spot: dict, solution: dict,
@@ -516,6 +657,8 @@ def _decision_verdict(decision: dict) -> str:
         return verdict
 
     actual = decision.get("actual_action")
+    if decision.get("preflop_range_only"):
+        return _range_only_reach_sentence(decision.get("preflop_range_fact") or {})
     if decision.get("off_tree"):
         label = (actual or {}).get("label") or "實戰動作"
         return (
@@ -533,8 +676,8 @@ def _decision_verdict(decision: dict) -> str:
         return scoped(f"{actual['label']} 正確，solver {purity}這個動作")
     if actual.get("frequency", 0.0) >= 0.01:
         return scoped(
-            f"{actual['label']} 是 solver 保留的 mix，"
-            f"但主要動作是 {preferred['label']}"
+            f"solver 會混合使用 {actual['label']}，"
+            f"但更常選 {preferred['label']}"
         )
     return scoped(
         f"{actual['label']} 的 EV 影響很小，但不在可採信的 solver mix，"
@@ -544,6 +687,8 @@ def _decision_verdict(decision: dict) -> str:
 
 def _decision_brief_reason(decision: dict) -> str:
     """One grounded reason for the sequential street-by-street review."""
+    if decision.get("preflop_range_only"):
+        return "另有 Hero 整體應對範圍及對手 all-in 範圍可參考"
     if decision.get("off_tree"):
         return "這個 exact combo 在 solver 中 0% 到達，缺少可比較的 action EV"
     if decision.get("street") == "preflop":
@@ -1714,7 +1859,7 @@ def _aggression_job_story(decision: dict) -> dict | None:
         pieces.append(
             f"同時把{_target_phrase(indifferent)}推進"
             f"{'／'.join(families)}混合的 indifferent 邊界，"
-            "讓這部分 range 面臨最接近無差異的困難決策"
+            "說明這部分 range 接近無差異"
         )
     return {
         "combo_job": combo_job,
@@ -2397,7 +2542,7 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
     """Cover every solved Hero decision and select at most two to teach deeply."""
     if context.get("no_hero_hand"):
         return None
-    hero_hand = _raw_hero_hand(context)
+    hero_hand = _hero_hand_or_preflop_class(context)
     if not hero_hand:
         return None
     all_decisions = []
@@ -2410,9 +2555,33 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
             if spot.get("street") == "preflop"
             else _decision(context, spot, solution, hero_hand)
         )
+        if item is None and spot.get("street") == "preflop":
+            item = _preflop_range_only_decision(context, spot, solution, hero_hand)
         if item is None and spot.get("street") != "preflop":
             item = _off_tree_decision(context, spot, solution, hero_hand)
         if item:
+            if item.get("preflop_range_only"):
+                previous = next((
+                    row for row in reversed(all_decisions)
+                    if row.get("street") == "preflop"
+                    and row.get("hero") == item["hero"]
+                    and row.get("hero_hand") == hero_hand
+                    and row.get("preferred_action")
+                ), None)
+                if previous:
+                    action = previous["preferred_action"]
+                    item["preflop_range_fact"]["previous_action"] = {
+                        "code": action["code"],
+                        "frequency": action["frequency"],
+                        "opener": next((
+                            position for position, role in
+                            (previous.get("preflop_roles") or {}).items()
+                            if role == "opener"
+                        ), None),
+                    }
+                    item["preflop_range_fact"]["interpretation"] = (
+                        _range_only_reach_sentence(item["preflop_range_fact"])
+                    )
             all_decisions.append(item)
             if item["street"] != "preflop" and not item.get("off_tree"):
                 postflop_decisions.append(item)
@@ -2451,6 +2620,11 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         )[:2]
         selected = [row for _, row in selected]
     selected.sort(key=lambda row: ("flop", "turn", "river").index(row["street"]))
+    if not selected:
+        selected = [
+            row for row in all_decisions
+            if row.get("preflop_range_only")
+        ][:1]
 
     # Successor nodes are fetched only for the 1–2 selected teaching focuses.
     # Existing unit callers remain pure unless they inject cached nodes or a
@@ -2464,6 +2638,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
     allowed_bb = set()
     for row in all_decisions:
         role = row.get("hero_role") or {}
+        if row.get("preflop_range_only"):
+            allowed_percentages.add(0.0)
         if role.get("made_hand"):
             allowed_categories.add(role["made_hand"])
         all_live_draws = set(role.get("live_draws") or [])
@@ -2493,6 +2669,11 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         if row.get("ev_loss_pot") is not None:
             allowed_percentages.add(round(100 * row["ev_loss_pot"], 1))
     for row in selected:
+        if row.get("preflop_range_only"):
+            for line in (row.get("preflop_range_fact") or {}).get("range_lines") or []:
+                for value in re.findall(r"(\d+(?:\.\d+)?)\s*(?:%|％)", line):
+                    allowed_percentages.add(float(value))
+            continue
         role = row["hero_role"]
         if role.get("made_hand"):
             allowed_categories.add(role["made_hand"])
@@ -2592,6 +2773,9 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
                 round(100 * row["suit_split"]["with_suit_aggression"], 1),
                 round(100 * row["suit_split"]["without_suit_aggression"], 1),
             }
+        for line in (row.get("preflop_range_fact") or {}).get("range_lines") or []:
+            for value in re.findall(r"(\d+(?:\.\d+)?)\s*(?:%|％)", line):
+                allowed_percentages.add(float(value))
 
     caveats = []
     validation_warning = (context.get("validation") or {}).get("user_warning")
@@ -2628,8 +2812,8 @@ def _category_sentence(decision: dict) -> str | None:
     return "；".join(parts)
 
 
-def _range_first_overview(decision: dict) -> dict | None:
-    """Put whole-range construction before the exact combo's assignment."""
+def _range_context_overview(decision: dict) -> dict | None:
+    """Optional range context for a selected teaching focus."""
     profile = decision.get("action_range_profile") or {}
     if not profile:
         return None
@@ -2670,10 +2854,10 @@ def _range_first_overview(decision: dict) -> dict | None:
     value_categories = profile.get("value_categories") or []
     weak_categories = profile.get("weak_categories") or []
     action_range_label = profile["action_label"]
-    overview_prefix = "先看整體 range："
+    overview_prefix = "Range context："
     if profile["action_label"] == "all-in":
         action_range_label = f"{hero} 在 {street} 的 all-in range"
-        overview_prefix = f"先看整體 range（{hero} 在 {street}）："
+        overview_prefix = f"Range context（{hero} 在 {street}）："
     if profile.get("shape") == "polar":
         construction = (
             f"{action_range_label} 是{profile['shape_label']}："
@@ -2695,8 +2879,8 @@ def _range_first_overview(decision: dict) -> dict | None:
         "weak_categories": weak_categories,
         "interpretation": overview_prefix + "；".join(parts),
         "scope": (
-            "先描述雙方 range 的強端厚度與此 action bucket 的價值／弱端組成，"
-            "再描述 exact combo；不得把頂端 equity proxy 稱為 literal nut advantage"
+            "這是可選 range 背景；只在有助於解釋結論時使用，不得把頂端 "
+            "equity proxy 稱為 literal nut advantage"
         ),
     }
 
@@ -2829,21 +3013,49 @@ def render_prompt_block(digest: dict | None) -> str:
         "【Deterministic 教學骨架｜唯一可用的因果材料】",
         f"資料信心：{digest['confidence']}；保真度：同一個已評分 solver node。",
         "",
-        "【全手背景事實｜供選焦點，不要逐點重述】",
+        "【依實際行動順序的 Hero 決策｜每一步都要簡短解釋】",
     ]
     for decision in digest.get("all_decisions") or digest["decisions"]:
+        if decision.get("preflop_range_only"):
+            lines.append(
+                f"• {decision['coverage_label']}："
+                f"{decision['coverage_verdict']}；簡短理由："
+                f"{decision['coverage_reason']}。"
+            )
+            continue
         lines.append(
             f"• {decision['coverage_label']}："
             f"{decision['coverage_verdict']}；簡短理由：{decision['coverage_reason']}。"
         )
     lines.extend([
-        "• 這些是第一則 solver 卡片已呈現的背景；第二則訊息不必逐一提到，也不要改寫成另一張 action table。",
-        "• 可以用其中一點交代整手總評，再把篇幅留給下方 1–2 個教學焦點。",
-        "• 若選到 off-tree 節點，只能說缺少 exact-combo solver 對照、無法判定對錯；不得自行補策略理由。",
+        "• 逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 排列；同一街有多次決策時，按實際行動先後說明。",
+        "• 每一步用上面的 verdict 與理由講實戰意義；不要逐行複製第一則 solver 卡片。下方教學焦點可多展開，但不可跳過非焦點節點。",
+        "• off-tree 節點只能說已知到達原因及缺少此手牌的後續策略；不得自行補後續 action 或 EV。",
+        "• 若有 preflop range-only 事實，先說前一個實際決策，再說其 solver 動作如何使這手牌沒有後續策略，最後列相關整體範圍。",
         "",
-        "【教練候選焦點｜從中挑最有價值的 1–2 個自然展開】",
+        "【值得多解釋的節點｜其他決策仍須簡短交代】",
     ])
     for index, decision in enumerate(digest["decisions"], 1):
+        if decision.get("preflop_range_only"):
+            fact = decision.get("preflop_range_fact") or {}
+            lines.extend([
+                f"焦點 {index}｜Preflop range-only response",
+                f"• 到達原因：{_range_only_reach_sentence(fact)}",
+                "• 先說前一個實際決策的 solver verdict，再用一句話解釋該手牌沿 solver 路線不會到達後續節點；接著列 Hero 整體 call range 與對手 all-in range。不要換句話重述『沒有跟注或棄牌策略』，也不要加免責句或補通用解釋。",
+            ])
+            if fact.get("range_lines"):
+                lines.append(
+                    f"• {fact.get('hero') or decision['hero']} 整體範圍："
+                    + "；".join(fact["range_lines"])
+                    + "。"
+                )
+            if fact.get("villain_classes"):
+                lines.append(
+                    f"• Villain conditioned all-in range（{fact.get('villain') or '對手'}）："
+                    + "、".join(fact["villain_classes"])
+                    + "。"
+                )
+            continue
         role = decision["hero_role"]
         actual = decision.get("actual_action")
         preferred = decision["preferred_action"]
@@ -2864,7 +3076,7 @@ def render_prompt_block(digest: dict | None) -> str:
             elif actual.get("frequency", 0.0) >= 0.01:
                 verdict = (
                     f"Hero 的 {actual['label']} 沒有實質 EV 損失，"
-                    "而且是 solver 保留的 mix 分支"
+                    "solver 會混合使用這個動作"
                 )
             else:
                 verdict = (
@@ -2888,11 +3100,11 @@ def render_prompt_block(digest: dict | None) -> str:
             lines.append(
                 f"• All-in calling math：{decision['allin_calling_math']['interpretation']}。"
             )
-        range_first = _range_first_overview(decision)
-        if range_first:
+        range_context = _range_context_overview(decision)
+        if range_context:
             lines.append(
-                f"• Range-first overview：{range_first['interpretation']}；"
-                f"{range_first['scope']}。"
+                f"• Range context：{range_context['interpretation']}；"
+                f"{range_context['scope']}。"
             )
         lines.extend([
             f"• Hero 角色：{role['range_band']}的{role['made_hand_label']}，{role.get('draw_summary', role['draw_label'])}。",
@@ -2960,7 +3172,7 @@ def render_prompt_block(digest: dict | None) -> str:
         range_structure = decision.get("range_structure") or {}
         nut_region = range_structure.get("nut_region") or {}
         strong_region = range_structure.get("strong_region") or {}
-        if not range_first and (nut_region.get("owner") or strong_region.get("owner")):
+        if not range_context and (nut_region.get("owner") or strong_region.get("owner")):
             ownership = []
             if nut_region.get("owner"):
                 ownership.append(
@@ -3029,31 +3241,34 @@ def render_prompt_block(digest: dict | None) -> str:
         "",
         "【輸出契約】",
         "第二則訊息一定要有內容，即使全手打對也要提供一個具體、牌局相關的策略觀察。",
-        "先用一句話總評整手，再挑 1–2 個最有教學價值的焦點；格式與段落由你決定，不必使用固定標題。",
-        "若同時講兩條 postflop 街，必須用 *Flop*、*Turn*、*River* 短標題分段；每街直接說洞見，不得重複『先看整體 range／再看 exact combo』。",
-        "不要逐點重述第一則 solver 卡片，不必逐一提到背景事實中的每個決策，也不要逐街稱讚。",
-        "有實質 EV 錯誤時優先解釋最昂貴或最早的根本偏差；沒有錯誤時，解釋最有意思的 mix、牌力角色、尺寸或跨街策略節奏。",
-        "只能從教練候選焦點提供的 range、牌型、blocker 與因果材料展開；背景事實只用來維持整手總評正確。",
+        "先用一句話總評整手，再逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 與同街行動先後排列。一般節點一兩句，教學焦點可多講；每個節點照『結論 → 關鍵 solver 證據 → 具體原因』講，但不顯示模板標籤。",
+        "有 postflop 決策時，用 *Flop*、*Turn*、*River* 短標題分段；每街直接說洞見，不得重複『先看整體 range／再看 exact combo』。",
+        "文字要像真人教練在講牌：口語、短句、少角色填充；不要寫成資料報告，也不要硬塞『成牌強端負責價值施壓』這類模板句。",
+        "混合頻率用口語說明：『solver 會混合使用這個動作，但更常選另一個』，必要時才給實際頻率；不要把『保留的 mix』或『mix 分支』寫進正文。只有實戰動作的 solver 頻率達可採信門檻時才能這樣說；EV 代價小但不在 mix 的動作不能算混合頻率。",
+        "Actor/action lock 是內部安全檢查，不是 lesson；不要把『不可套用某位置／資料沒有某 actor』這類 guard 句寫進正文，除非必須用一句話說明限制。",
+        "不要逐點重述第一則 solver 卡片；每個決策都要有一句有用的說明，也不要逐街稱讚。",
+        "有實質 EV 錯誤時多解釋最昂貴或最早的根本偏差；沒有錯誤時，可多解釋有意思的 mix、牌力角色、尺寸或跨街策略節奏，但保留其他節點的簡短交代。",
+        "非教學焦點只用上方逐節點 verdict 與簡短理由；range、牌型、blocker 與進一步因果只能從下方教學焦點的已驗證材料展開。",
         "off-tree 的 D# 只能說明沒有 exact-combo solver 對照、無法判定對錯；不得猜測該動作的 EV 或策略理由。",
         "若只有 preflop 或沒有可深講的 postflop 機制，仍要自然說明該 hand class 的策略定位；不要輸出系統如何判定正誤。",
-        "核心判定是硬契約：『沒有實質 EV 損失』的 solver mix 分支不得稱為錯誤；頻率較低只代表較少採用。",
-        "若你選擇討論『這個 combo 只少量到達此節點』的焦點，必須保留低到達率 caveat。",
+        "核心判定是硬契約：『沒有實質 EV 損失』且 solver 會混合使用的動作不得稱為錯誤；頻率較低只代表較少採用。",
+        "若教練候選焦點標示『這個 combo 只少量到達此節點』，正文必須保留這句 caveat；即使只用它當背景也一樣。",
         "低到達率 caveat 到『這個 combo 只少量到達此節點』為止；正文不得再加 generic node 邊界收尾。",
         "若核心判定寫『EV 代價低於實質門檻，但不在可採信的 solver mix』，只能說 EV 影響很小；不可稱為 solver 保留、可用或低頻 mix。",
-        "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；全文最多引用 3 個真正有教學價值的數字。",
-        "數字配額：每個焦點最多 1 個，優先保留 EV loss 或 preferred frequency；只有 All-in calling math 可把所需 equity 與 exact combo equity 成對列出。不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
+        "不要逐項重述骨架，不要展示 percentile、removal score 或完整頻率表；每個焦點最多引用 1–2 個真正有教學價值的數字。",
+        "數字配額：優先保留 EV loss、preferred frequency 或實戰/solver size；All-in calling math 可把所需 equity 與 exact combo equity 成對列出。不要同時寫 bb 與 % pot，也不要自行估算 SPR。",
         "每個焦點只選主要機制與最多一個次要機制，使用『同花／set／順子／兩對／頂對／未成牌』等人能理解的 range 詞彙。",
-        "每個 postflop 焦點在總評後都先講雙方整體 range：誰的 equity 頂端／強端較厚、整體 check／進攻計畫，以及所選 action bucket 的價值端與弱端組成；之後才講 exact combo 在其中負責什麼。",
+        "Range context 是可選材料：只有它真的能解釋結論時才講，且要直接寫明 actor、street 與 action；不要固定先講整體 range。",
         "若 exact combo 對某個 bet／raise 是近乎純進攻（至少 97%），而實戰 check 低於 1%，只能解釋 solver 建議的進攻及 check 犧牲的收益；不得替 0% 過牌補理由（包括 pot control、免費看牌或 equity realization）。",
-        "每個進攻焦點先講 action range 是 merged、polar 或 mixed，再講 exact combo 在其中負責什麼；不可只說它是低頻／高頻 mix。",
+        "進攻焦點要講清楚 exact combo 為何採取該 action；action range 的 merged／polar／mixed 形狀只在能幫助解釋時使用。",
         "下注或加注的理由必須依 Opponent solved response 分開：較差牌繼續=value、較好牌棄掉=bluff、目前較差但有改善 equity 的牌棄掉=protection／equity denial；同時命中多項時稱 hybrid。",
-        "不能只交代 action range 形狀：Exact combo action job 中 value／bluff／protection 哪些欄位非空，就至少各點名一個骨架提供的主要 target；check 的替代進攻分支也遵守此規則。",
-        "若 Exact combo action job 列出 indifferent 邊界，可說該 size 把哪些牌推入 fold／call／raise 的混合困難決策；沒有 combo-level 顯著混合時不得自行使用 indifferent。",
-        "若 Action range morphology 寫明偏極化，必須沿用骨架列出的實際 value_categories 與 weak_categories 說明價值端／詐唬候選組成；不得固定套『兩對以上』，也不得縮寫成 literal nuts-or-air。",
+        "下注或加注的 value／bluff／protection target 只在有助於目前原因時點名；不要為了填滿欄位而列清單。",
+        "若 Exact combo action job 列出 indifferent 邊界，可說哪些牌接近 fold／call／raise 臨界；沒有 combo-level 顯著混合時不得自行使用 indifferent。",
+        "若 Action range morphology 寫明偏極化或 merged，可沿用骨架列出的實際組成輔助說明；不得固定套『兩對以上』，也不得縮寫成 literal nuts-or-air。",
         "只有骨架存在 Check job 時，過牌焦點才可交代 Hero 在自身 range 的位置、目前領先／落後的主要範圍，以及保留 equity realization 或避開反擊的作用；再用替代進攻分支說明沒有選 bet/raise 犧牲了什麼。",
         "Actor lock 是硬契約：不得把 Hero/Villain、opener/caller/3-bettor 或 IP/OOP 對調。",
         "提到任何 action range 都要同時寫明 actor、street 與 action；不得只寫無主詞的『all-in range』或『整體 range』。",
-        "骨架有 Villain action range 與 All-in calling math 時，必須先白話列出對手實際 all-in range 的主要牌型／代表 hand classes，再說 Hero 跟注所需 equity、exact combo equity 與 call/fold 結論。",
+        "骨架有 Villain action range 與 All-in calling math 時，先說 Hero call/fold 結論與所需 equity／exact combo equity；range 只挑對結論有用的主要牌型或代表 hand classes。",
         "『100% 繼續』不等於『100% call』；只能沿用 Exact combo action 的 action bucket。",
         "Range equity 只有 gate 為 supports_plan 或 prevents_bad_inference 時才能提；gate=omit 時完全省略。",
         "只有骨架明示 Equity denial 或 Exact combo action job 的 protection target 時，才能談拒絕對手 equity；低 SPR／脆弱成牌仍只限 Equity denial 欄位。",
@@ -3068,39 +3283,39 @@ def render_prompt_block(digest: dict | None) -> str:
         "不可列舉骨架沒有提供的具體手牌；不可把相關性寫成唯一因果。",
         "只有 Opponent solved response 提供的 hand classes／牌型與 action bucket 可以拿來說對手會 call/fold/raise；不得擴寫未列出的牌或誘導故事。",
         "骨架只證明目前這一個 action；不得把 check 擴寫成 check-fold、check-call 或 check-raise。",
-        "正文以 2–5 個短段落為原則；不要硬塞通用 heuristic，也不要固定用 exact-node 邊界收尾。",
+        "正文按有 Hero 決策的街分成短段落；同街可用多句按先後說，不要硬塞通用 heuristic 或固定的節點邊界收尾。",
         "若上層要求 FOLLOWUP，每題必須另起一行並以 `FOLLOWUP:` 開頭；不得用普通 bullet 或編號代替。",
     ])
     return "\n".join(lines)
 
 
 def render_fallback(digest: dict) -> str:
-    """Selective natural-language safety net used when both LLM drafts fail."""
+    """Chronological, solver-grounded safety net when both LLM drafts fail."""
     coverage = digest.get("all_decisions") or digest["decisions"]
     focus = digest["decisions"]
-    primary = focus[0] if focus else coverage[0]
+    primary = max(
+        coverage,
+        key=lambda row: (
+            row.get("ev_loss_pot") or 0.0,
+            row.get("ev_loss_bb") or 0.0,
+        ),
+    ) if coverage else (focus[0] if focus else {})
     reasons = []
     for decision in focus:
+        if decision.get("preflop_range_only"):
+            continue
         role = decision["hero_role"]
         pieces = []
         if decision.get("facing_action_range"):
             pieces.append(decision["facing_action_range"]["interpretation"])
         if decision.get("allin_calling_math"):
             pieces.append(decision["allin_calling_math"]["interpretation"])
-        range_first = _range_first_overview(decision)
-        if range_first:
+        range_context = _range_context_overview(decision)
+        if range_context:
             profile = decision.get("action_range_profile") or {}
-            if profile.get("shape") == "polar":
-                value = "、".join((profile.get("value_categories") or [])[:2])
-                weak = "、".join((profile.get("weak_categories") or [])[:2])
-                construction = f"，價值端含 {value}，弱端詐唬含 {weak}"
-            else:
-                middle = "、".join((profile.get("middle_categories") or [])[:3])
-                construction = f"，中段含 {middle}" if middle else ""
             pieces.append(
                 f"{decision['hero']} 的 {decision['street'].capitalize()} "
                 f"{profile.get('action_label')} range 是{profile.get('shape_label')}"
-                f"{construction}"
             )
         if decision.get("suit_split"):
             pieces.append(decision["suit_split"]["interpretation"].rstrip("。"))
@@ -3226,40 +3441,12 @@ def render_fallback(digest: dict) -> str:
         reasons.append(
             f"*{decision['street'].capitalize()}*\n" + "。".join(pieces) + "。"
         )
-
-    # The common two-street teaching shape (bad bluff candidate on one street,
-    # range-created bluff capacity on the next) reads better as one causal
-    # contrast than as two repeated blocker sentences.
-    if len(focus) == 2:
-        first, second = focus
-        second_categories = _category_sentence(second)
-        first_blocker = first.get("blocker")
-        second_blocker = second.get("blocker")
-        if first_blocker and second_categories and second.get("decision_type") == "bluff":
-            first_role = first["hero_role"]
-            contrast = (
-                f"{first['street'].capitalize()} 時它是 {first_role['range_band']}的"
-                f"{first_role['made_hand_label']}，{first_role['draw_label']}，而且 blocker 不利，"
-                f"不是好的 bluff 候選。{second['street'].capitalize()} 時 {second_categories}，"
-                "強牌結構讓 range 能容納 bluff；這手牌的 blocker 仍不利，所以正確下注並不是靠 blocker。"
-            )
-            if not second_blocker or second_blocker.get("direction") == "neutral":
-                contrast = contrast.replace(
-                    "；這手牌的 blocker 仍不利，所以正確下注並不是靠 blocker。", "。"
-                )
-            reasons = [contrast]
-    if not reasons:
-        if any(row.get("off_tree") for row in coverage):
-            reasons = [
-                "沒有可深講的已評分 postflop 節點；off-tree 只表示缺少 "
-                "exact-combo solver 對照，不能補一般牌理。"
-            ]
-        else:
-            reasons = [
-                "這手只有 preflop 決策；exact hand class 的 solver action 分配"
-                "已足以判定，不需要另外補一般牌理。"
-            ]
-
+    focus_details = {
+        id(decision): reason.split("\n", 1)[-1]
+        for decision, reason in zip(
+            (row for row in focus if not row.get("preflop_range_only")), reasons
+        )
+    }
     off_tree = [row for row in coverage if row.get("off_tree")]
     if primary.get("off_tree"):
         summary = (
@@ -3282,6 +3469,8 @@ def render_fallback(digest: dict) -> str:
             f"整手最需要修正的是 {primary['coverage_label']}："
             f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
         )
+        if primary.get("ev_loss_bb") is not None:
+            summary += f" EV 損失 {primary['ev_loss_bb']:.2f}bb。"
     else:
         focus_verdicts = "；".join(
             f"{row['coverage_label']} {row['coverage_verdict']}"
@@ -3294,7 +3483,62 @@ def render_fallback(digest: dict) -> str:
                 f" {first['coverage_label']} 的實戰動作屬 off-tree，"
                 "沒有 exact-combo solver 對照，無法判定對錯。"
             )
-    return summary + "\n\n" + "\n\n".join(reasons)
+    ordered_reasons = []
+    for decision in coverage:
+        label = decision["coverage_label"]
+        detail = focus_details.get(id(decision))
+        sentence = (
+            f"*{decision['street'].capitalize()}*\n{label}："
+            f"{decision['coverage_verdict']}；{decision['coverage_reason']}。"
+        )
+        if detail:
+            sentence += " " + detail
+        fact = decision.get("preflop_range_fact") or {}
+        if fact:
+            sentence += (
+                f" {fact.get('hero') or decision['hero']} 整體 call range："
+                + "；".join(fact.get("range_lines") or [])
+                + f"。{fact.get('villain') or '對手'} Preflop all-in range："
+                + "、".join(fact.get("villain_classes") or [])
+                + "。"
+            )
+        ordered_reasons.append(sentence)
+    answer = summary + "\n\n" + "\n".join(ordered_reasons)
+    audit = audit_draft(answer, digest)
+    if audit.ok:
+        return answer
+    safe_reasons = [
+        f"{row['coverage_label']}：{row['coverage_verdict']}；{row['coverage_reason']}。"
+        for row in coverage
+    ]
+    for decision in coverage:
+        fact = decision.get("preflop_range_fact") or {}
+        if fact:
+            safe_reasons.append(
+                f"*Preflop*\n{_range_only_reach_sentence(fact)}"
+                f"可用的 range 事實是 {fact['hero']} 整體 "
+                + "；".join(fact.get("range_lines") or [])
+                + "。"
+            )
+    if not safe_reasons:
+        safe_reasons = [
+            "本手的精確 solver verdict 如上；這裡只保留已驗證的 action 與 EV 結論，"
+            "不補未被骨架支持的 range 牌型。"
+        ]
+    safe_answer = summary + "\n\n" + "\n\n".join(safe_reasons)
+    if audit_draft(safe_answer, digest).ok:
+        return safe_answer
+    neutral = (
+        _range_only_reach_sentence(next(
+            (row["preflop_range_fact"] for row in coverage
+             if row.get("preflop_range_only")), {}
+        ))
+        if any(row.get("preflop_range_only") for row in coverage)
+        else "目前只能確認此節點缺少 exact-combo solver 對照。"
+    )
+    if audit_draft(neutral, digest).ok:
+        return neutral
+    return "目前缺少可用的 exact-combo solver 對照。"
 
 
 @dataclass
@@ -3413,6 +3657,8 @@ def _role_matches(claimed: str, expected: str | None) -> bool:
 def _audit_actor_contract(body: str, digest: dict) -> list[str]:
     violations = []
     for decision in digest["decisions"]:
+        if decision.get("preflop_range_only"):
+            continue
         hero, villain = decision["hero"], decision["villain"]
         node = decision["node_context"]
         # Explicit aliases such as "CO（我們）" are high-signal and easy to lock.
@@ -3590,7 +3836,7 @@ def _nearest_action_family(sentence: str, start: int, end: int) -> str | None:
 
 def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
     violations = []
-    for sentence in re.split(r"[。！？\n]", body):
+    for sentence in re.split(r"[。！？；\n]", body):
         for number in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|％)", sentence):
             tail = sentence[number.end():number.end() + 8]
             if re.search(r"(?:pot|底池)", tail, re.I):
@@ -3660,6 +3906,137 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
     return violations
 
 
+def _audit_range_only_exact_response(body: str, digest: dict) -> list[str]:
+    """A range-only facing node cannot grade the absent exact hand response."""
+    violations = []
+    range_only = [
+        row for row in _covered_decisions(digest)
+        if row.get("preflop_range_only")
+    ]
+    if not range_only:
+        return violations
+    earlier_ok = re.compile(r"原本|前面|先前|面對\s*UTG|UTG\s*open|open", re.I)
+    response_claim = re.compile(
+        r"(?:可以|應該|要|建議|solver\s*(?:指定|建議|認為)|GTO)"
+        r"[^。；\n]{0,24}(?:call|fold|跟注|棄牌|繼續|防守|continue|defend)|"
+        r"(?:call|fold|跟注|棄牌|繼續|防守|continue|defend)[^。；\n]{0,18}"
+        r"(?:可以|應該|要|建議|正確|合理)",
+        re.I,
+    )
+    unavailable = re.compile(
+        r"(?:不能|無法|沒有|缺少)[^。；\n]{0,18}"
+        r"(?:判定|策略|資料|對照|確認|reliable|exact)",
+        re.I,
+    )
+    positive = re.compile(
+        r"(?:可以|應該|要|建議)[^。；\n]{0,24}"
+        r"(?:call|fold|跟注|棄牌|繼續|防守|continue|defend)",
+        re.I,
+    )
+    ev_comparison = re.compile(
+        r"EV[^。；\n]{0,12}(?:比|更|最高|較高|better|best|\d|正|負|很高|很低)|比較賺|更賺",
+        re.I,
+    )
+    # Split a question-first verdict from the earlier-node explanation after
+    # a colon, so "UTG open" cannot excuse a preceding facing-jam claim.
+    for sentence in re.split(r"[。！？；：:\n]", body):
+        if not sentence.strip():
+            continue
+        if earlier_ok.search(sentence) and not re.search(
+            r"all[- ]?in|全下|shove|facing|4[- ]?bet", sentence, re.I,
+        ):
+            continue
+        compares_ev = bool(ev_comparison.search(sentence))
+        if unavailable.search(sentence) and not positive.search(sentence) and not compares_ev:
+            continue
+        for row in range_only:
+            hand = re.escape(str(row.get("hero_hand") or ""))
+            targets_hand = bool(
+                (hand and re.search(hand, sentence, re.I))
+                or re.search(r"Hero|你|這手|這裡|此時", sentence, re.I)
+            )
+            if targets_hand and (response_claim.search(sentence) or compares_ev):
+                violations.append("range-only exact response claim")
+    return violations
+
+
+def _hand_tokens(text: str) -> set[str]:
+    return set(re.findall(
+        r"(?<![A-Za-z0-9])(?:[AKQJT2-9]{2}[so]?)(?![A-Za-z0-9])"
+        r"(?!\s*combos?\b)",
+        text,
+        re.I,
+    ))
+
+
+def _audit_range_only_verified_ranges(body: str, digest: dict) -> list[str]:
+    violations = []
+    for row in _covered_decisions(digest):
+        fact = row.get("preflop_range_fact") or {}
+        if not fact:
+            continue
+        hero = fact.get("hero") or row.get("hero")
+        villain = fact.get("villain")
+        lines = fact.get("range_lines") or []
+        call_text = " ".join(
+            lines[i + 1] for i, line in enumerate(lines[:-1])
+            if re.match(r"Call\b|Call（|跟注", line, re.I)
+        )
+        hero_call = _hand_tokens(call_text)
+        villain_allin = set(fact.get("villain_classes") or [])
+        for sentence in re.split(r"[。！？；\n]", body):
+            if not sentence.strip():
+                continue
+            if re.search(r"原本|前面|先前|最早|根本偏差|3bet|面對\s*UTG|UTG\s*open|open", sentence, re.I):
+                continue
+            if re.search(
+                r"(?:不能|無法|沒有|缺少)[^。；\n]{0,18}"
+                r"(?:判定|策略|資料|對照|確認|reliable|exact)",
+                sentence,
+                re.I,
+            ):
+                continue
+            for clause in re.split(r"[，,]", sentence):
+                tokens = _hand_tokens(clause)
+                if hero and re.search(rf"(?<![A-Za-z0-9+]){re.escape(hero)}(?![A-Za-z0-9+])", clause):
+                    if re.search(r"call|跟注|繼續|防守|continue|defend", clause, re.I):
+                        if tokens and not tokens.issubset(hero_call):
+                            violations.append("range-only unverified response range")
+                if villain and re.search(rf"(?<![A-Za-z0-9+]){re.escape(villain)}(?![A-Za-z0-9+])", clause):
+                    if re.search(r"call|跟注|繼續|防守|continue|defend", clause, re.I):
+                        violations.append("range-only unverified response range")
+                    elif re.search(r"all[- ]?in|全下", clause, re.I):
+                        if tokens and not tokens.issubset(villain_allin):
+                            violations.append("range-only unverified response range")
+    return violations
+
+
+def _strip_range_only_verified_sentences(body: str, digest: dict) -> str:
+    kept = []
+    for sentence in re.split(r"([。！？\n])", body):
+        if sentence in "。！？\n" or not sentence.strip():
+            kept.append(sentence)
+            continue
+        probe = sentence + "。"
+        if _audit_range_only_verified_ranges(probe, digest):
+            kept.append(sentence)
+            continue
+        allowed = False
+        for row in _covered_decisions(digest):
+            fact = row.get("preflop_range_fact") or {}
+            if not fact:
+                continue
+            hero = fact.get("hero") or row.get("hero")
+            villain = fact.get("villain")
+            if hero and hero in sentence and re.search(r"call|跟注", sentence, re.I):
+                allowed = True
+            if villain and villain in sentence and re.search(r"all[- ]?in|全下", sentence, re.I):
+                allowed = True
+        if not allowed:
+            kept.append(sentence)
+    return "".join(kept)
+
+
 def _audit_category_ownership(body: str, digest: dict) -> list[str]:
     violations = []
     for decision in digest["decisions"]:
@@ -3698,7 +4075,7 @@ def _audit_exact_hand_categories(body: str, digest: dict) -> list[str]:
         "turn": "turn", "轉牌": "turn",
         "river": "river", "河牌": "river",
     }
-    for sentence in re.split(r"[。！？\n]", body):
+    for sentence in re.split(r"[。！？；\n]", body):
         if not sentence.strip():
             continue
         street_match = re.search(
@@ -3734,6 +4111,13 @@ def _audit_exact_hand_categories(body: str, digest: dict) -> list[str]:
             if re.search(r"(?:更多|較多|比例)", suffix, re.I):
                 continue
             token = match.group("category")
+            if token in {"同花", "flush"} and re.search(
+                r"(?:[AKQJT2-9]{1,2}\s*同花|同花\s*[AKQJT2-9]{1,2}|"
+                r"[AKQJT2-9]{2}s|suited)",
+                sentence,
+                re.I,
+            ):
+                continue
             claimed = "trips" if token == "三條" else term_to_category[token.lower()]
             expected = {
                 (row.get("hero_role") or {}).get("made_hand") for row in candidates
@@ -3901,6 +4285,15 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
 def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
     """An off-mix action may be cheap in EV without becoming a solver branch."""
     violations = []
+    scoped_sentences = []
+    current_street = None
+    for line in (body or "").splitlines():
+        header = re.match(r"^\s*\*?(Preflop|Flop|Turn|River)\*?\s*(?::|：|$)", line, re.I)
+        if header:
+            current_street = header.group(1).lower()
+        for sentence in re.split(r"[。！？；]", line):
+            if sentence.strip():
+                scoped_sentences.append((current_street, sentence))
     for decision in _covered_decisions(digest):
         if decision.get("off_tree"):
             continue
@@ -3913,11 +4306,13 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
         action_pattern = _ACTION_TEXT_PATTERNS.get(family)
         if not action_pattern:
             continue
-        for sentence in re.split(r"[。！？；\n]", body or ""):
+        for sentence_street, sentence in scoped_sentences:
+            if sentence_street and sentence_street != decision["street"]:
+                continue
             if not re.search(action_pattern, sentence, re.I):
                 continue
             claims_supported = (
-                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持)|mix\s*分支)", sentence, re.I)
+                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持|混合使用)|mix\s*分支)", sentence, re.I)
                 or re.search(rf"(?:低頻|少量)[^。；\n]{{0,12}}{action_pattern}", sentence, re.I)
                 or re.search(rf"{action_pattern}[^。；\n]{{0,10}}(?:可用|可採用)", sentence, re.I)
             )
@@ -3978,6 +4373,13 @@ def _audit_unsupported_categories(body: str, allowed: set[str]) -> list[str]:
                 searchable,
                 flags=re.I,
             )
+            searchable = re.sub(
+                r"(?:[AKQJT2-9]{1,2}\s*同花|同花\s*[AKQJT2-9]{1,2}|"
+                r"[AKQJT2-9]{2}s|[AKQJT2-9]{2}o|不同花|suited|offsuit)",
+                "",
+                searchable,
+                flags=re.I,
+            )
         elif category == "straight":
             searchable = re.sub(
                 r"(?:順子聽牌|卡順|兩頭順)|straight\s+draw|gutshot|oesd",
@@ -4029,12 +4431,21 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     violations.extend(_audit_actor_contract(body, digest))
     violations.extend(_audit_action_range_scope(body))
     violations.extend(_audit_action_frequency_claims(body, digest))
+    violations.extend(_audit_range_only_exact_response(body, digest))
+    violations.extend(_audit_range_only_verified_ranges(body, digest))
+    if any(row.get("preflop_range_only") for row in _covered_decisions(digest)) and re.search(
+        r"(?:沒有|缺少|無法|不能)[^。；\n]{0,40}"
+        r"(?:跟注.{0,3}棄牌|call\s*(?:/|或|or)\s*fold)"
+        r"[^。；\n]{0,20}(?:判定|策略|資料|結論|可用)",
+        body,
+        re.I,
+    ):
+        violations.append("redundant range-only disclaimer")
     violations.extend(_audit_category_ownership(body, digest))
     violations.extend(_audit_exact_hand_categories(body, digest))
     violations.extend(_audit_selected_streets(body, digest))
-    # The deterministic card already covers every decision.  The narrator is a
-    # selective teaching layer, so omission is intentional; facts it chooses to
-    # mention are still audited below.
+    # The deterministic card covers every decision; factual claims in the
+    # narrator's chronological explanation are still checked below.
     violations.extend(_audit_off_tree_verdicts(body, digest))
     violations.extend(_audit_action_verdicts(body, digest))
     violations.extend(_audit_actual_mix_status(body, digest))
@@ -4147,24 +4558,16 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     ):
         violations.append("unsupported check rationale for pure aggression")
-    for decision in pure_aggressive_corrections:
-        profile = decision.get("action_range_profile") or {}
-        if profile.get("shape") != "polar":
-            continue
-        value_terms = profile.get("value_categories") or []
-        weak_terms = profile.get("weak_categories") or []
-        has_value_side = bool(
-            re.search(r"價值(?:端|範圍|下注)", body)
-            and any(term in body for term in value_terms)
-        )
-        has_bluff_side = bool(
-            re.search(r"詐唬|bluff", body, re.I)
-            and any(term in body for term in weak_terms)
-        )
-        if not (has_value_side and has_bluff_side):
-            violations.append("missing range-first value/bluff construction")
+    pot_control_claim_body = re.sub(
+        r"(?:不是|並非|不靠|不能(?:只)?靠|不要(?:只)?用|不是用來)"
+        r"(?:(?!控制底池|pot control)[^。；\n]){0,20}"
+        r"(?:控制底池|pot control)",
+        "",
+        body,
+        flags=re.I,
+    )
     unsupported_pot_control = bool(
-        re.search(r"(?:控制底池|pot control)", body, re.I)
+        re.search(r"(?:控制底池|pot control)", pot_control_claim_body, re.I)
         and not supports_check_story
     )
     if induced_claim or unsupported_pot_control:
@@ -4172,9 +4575,17 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     supports_response = any(
         row.get("opponent_response_profile") for row in digest["decisions"]
     )
+    response_claim_body = _strip_range_only_verified_sentences(body, digest)
+    response_claim_body = re.sub(
+        r"(?:不能|無法|沒有|缺少)[^。；\n]{0,40}"
+        r"(?:跟注|棄牌|call|fold|繼續|防守)[^。；\n]{0,30}",
+        "",
+        response_claim_body,
+        flags=re.I,
+    )
     if not supports_response and re.search(
         r"(?:check|過牌)\s*[-/]?\s*(?:fold|call|raise|棄牌|跟注|加注)",
-        body,
+        response_claim_body,
         re.I,
     ):
         violations.append("unsupported future action plan")
@@ -4187,7 +4598,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         r"(?:跟注|棄牌|call|fold)|"
         r"(?:跟注|棄牌|call|fold)[^。；\n]{0,12}(?:的)?(?:對手|Villain)|"
         r"(?:詐唬|bluff)[^。；\n]{0,12}(?:成功率|成功機會)[^。；\n]{0,8}(?:高|低)",
-        body,
+        response_claim_body,
         re.I,
     ):
         violations.append("unsupported opponent-response claim")
@@ -4265,7 +4676,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
             and row.get("drivers", {}).get("secondary") == "不同 bet size 的 range construction"
         ) or (row.get("action_range_profile") or {}).get("shape") == "polar"
     }
-    for sentence in re.split(r"[。！？\n]", body):
+    for sentence in re.split(r"[。！？；\n]", body):
         if not re.search(r"極化|polarized|polarization", sentence, re.I):
             continue
         if re.search(
@@ -4291,7 +4702,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     ):
         violations.append("contradictory value-bluff label")
-    for sentence in re.split(r"[。！？\n]", body):
+    for sentence in re.split(r"[。！？；\n]", body):
         sentence_lower = sentence.lower()
         transition_sentence = re.sub(
             r"(?:改善|補成)[^。；\n]{0,8}(?:equity|勝率|牌|來源)|"
@@ -4326,6 +4737,11 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         for position in (row.get("hero"), row.get("villain"))
         if position
     }
+    allowed_positions.update(
+        position
+        for row in _covered_decisions(digest)
+        for position in row.get("preflop_roles") or {}
+    )
     mentioned_positions = set(re.findall(
         r"(?<![A-Za-z0-9+])(?:UTG\+?[12]?|LJ|HJ|CO|BTN|SB|BB)(?![A-Za-z0-9+])",
         body,
@@ -4380,7 +4796,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         re.I,
     )
     bb_claims = re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*bb", body, re.I)
-    if len(frequency_claims) + len(bb_claims) > 3:
+    if len(frequency_claims) + len(bb_claims) > 4:
         violations.append("too many numeric claims")
     allowed_percentages = list(digest.get("allowed_percentages") or [])
     allowed_bb = list(digest.get("allowed_bb") or [])

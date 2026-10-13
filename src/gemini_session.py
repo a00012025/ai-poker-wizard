@@ -1290,9 +1290,9 @@ class GeminiSessionManager:
                     )
                 else:
                     coaching_instruction = (
-                        "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
-                        "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
-                        "策略重點自然解釋。若用戶另問假設情境，"
+                        "逐街 GTO summary 已由系統另外顯示。教練段不要重抄數據；"
+                        "先用一句話回答用戶問題，再依實際行動順序簡短說明每個 Hero 決策，"
+                        "對最有教學價值的節點多解釋。若用戶另問假設情境，"
                         "再用工具取得該情境資料。"
                     )
                 # Verified generation (retries transient 503/500 internally;
@@ -1557,9 +1557,9 @@ class GeminiSessionManager:
                 )
             else:
                 img_coaching_instruction = (
-                    "逐街 GTO summary 已由系統另外顯示。教練段不要逐點重述；"
-                    "先總評整手，再從 deterministic 教學骨架挑 1–2 個最有價值的"
-                    "策略重點自然解釋。"
+                    "逐街 GTO summary 已由系統另外顯示。教練段不要重抄數據；"
+                    "先用一句話回答用戶問題，再依實際行動順序簡短說明每個 Hero 決策，"
+                    "對最有教學價值的節點多解釋。"
                 )
             # Verified generation (retries transient 503/500 internally;
             # routes the verdict through the coach_facts claim verifier)
@@ -3339,10 +3339,12 @@ class GeminiSessionManager:
                 repair_prompt = (
                     "上一版教練回覆引用了 deterministic 骨架未支持的事實："
                     f"{', '.join(audit.violations)}。請完全重寫，不要辯解或提及審核。\n\n"
-                    "保留原本最有教學價值的焦點與自然語氣，只移除或改寫沒有證據的主張。"
-                    "不要改成逐街清單或固定三段模板；也不要重述第一則 solver 卡片。"
+                    "保留原本的行動順序、每個 Hero 決策與自然語氣；重要焦點多解釋，"
+                    "只移除或改寫沒有證據的主張。不要改成 action table 或固定三段模板，"
+                    "也不要重述第一則 solver 卡片。"
                     "只可使用下列骨架中的因果材料，不得從一般牌理補出未列出的聽牌、"
                     "blocker target、牌型、combo 或數字。\n\n"
+                    f"使用者原問題：{user_text}\n\n"
                     f"{render_teaching_prompt_block(digest)}"
                 )
                 # The rejected prose must not become context for its own

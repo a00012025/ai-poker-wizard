@@ -2241,6 +2241,8 @@ def test_coach_system_terminology_rule():
     assert_in("不要用「彩池」", cs, "彩池→底池 canonical rule missing")
     assert_in("詐唬（不要用「唬牌」）", cs, "唬牌→詐唬 canonical rule missing")
     assert_in("all-in", cs, "English-abbreviation whitelist missing")
+    assert_in("使用者問特定決策或範圍時，先回答該問題", cs)
+    assert_in("若已驗證前一節點 solver 100% call", cs)
     assert_in("c=☘️、d=🔷、h=♥️、s=♠️", cs,
               "four-colour card display mapping missing")
     assert_in("QdJc → Q🔷J☘️", cs,
