@@ -2777,7 +2777,43 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
             for value in re.findall(r"(\d+(?:\.\d+)?)\s*(?:%|％)", line):
                 allowed_percentages.add(float(value))
 
+    # Observed action sizes are facts even when they differ from the nearest
+    # solver size, and live-detail requests carry no shorthand in user_text.
+    hand = context.get("hand") or {}
+    observed_actions = list(hand.get("preflop_events") or [])
+    for street in hand.get("streets") or []:
+        actions = street.get("actions") or []
+        if isinstance(actions, list):
+            observed_actions.extend(a for a in actions if isinstance(a, dict))
+    observed_positions = set()
+    for action in observed_actions:
+        position = action.get("position") or action.get("actor")
+        if position:
+            observed_positions.add(position)
+        if action.get("size") is not None:
+            allowed_bb.add(_float(action["size"]))
+        match = re.fullmatch(r"(?:R|AI)(\d+(?:\.\d+)?)", action.get("action") or "")
+        if match:
+            allowed_bb.add(float(match.group(1)))
+    # Solver action codes also carry legitimate absolute bet sizes.
+    for solution in context.get("solutions") or []:
+        for action in (solution or {}).get("action_solutions") or []:
+            match = re.fullmatch(r"(?:R|AI)(\d+(?:\.\d+)?)", (action.get("action") or {}).get("code") or "")
+            if match:
+                allowed_bb.add(float(match.group(1)))
+    observed_streets = [
+        name for name, street in zip(("flop", "turn", "river"), hand.get("streets") or [])
+        if street
+    ]
+    missing_streets = [
+        name for name in observed_streets
+        if not any(row["street"] == name for row in all_decisions)
+    ]
     caveats = []
+    if context.get("multiway_note"):
+        caveats.append(context["multiway_note"])
+    if missing_streets:
+        caveats.append("、".join(name.capitalize() for name in missing_streets) + " 未評分：缺少可用的精確手牌 solver 對照")
     validation_warning = (context.get("validation") or {}).get("user_warning")
     if validation_warning:
         caveats.append("手牌解析有 validation warning，教學結論需降級看待")
@@ -2796,6 +2832,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
         "allowed_percentages": sorted(allowed_percentages),
         "allowed_bb": sorted(allowed_bb),
         "caveats": caveats,
+        "observed_positions": sorted(observed_positions),
+        "ungraded_streets": missing_streets,
     }
 
 
@@ -3455,7 +3493,7 @@ def render_fallback(digest: dict) -> str:
         )
     elif len(coverage) == 1 and coverage[0]["street"] == "preflop":
         summary = (
-            f"這手只有 preflop 決策：{primary['coverage_verdict']}；"
+            f"目前可評分的 preflop 決策：{primary['coverage_verdict']}；"
             f"{primary['coverage_reason']}。"
         )
     elif (
@@ -3503,6 +3541,9 @@ def render_fallback(digest: dict) -> str:
                 + "。"
             )
         ordered_reasons.append(sentence)
+    caveat_text = "；".join(digest.get("caveats") or [])
+    if caveat_text:
+        summary = caveat_text + "。\n\n" + summary
     answer = summary + "\n\n" + "\n".join(ordered_reasons)
     audit = audit_draft(answer, digest)
     if audit.ok:
@@ -3834,18 +3875,42 @@ def _nearest_action_family(sentence: str, start: int, end: int) -> str | None:
     return min(candidates)[2] if candidates else None
 
 
+def _is_pot_size_percentage(text: str, number: re.Match) -> bool:
+    """Recognize local pot-size wording without swallowing nearby frequencies."""
+    prefix = text[:number.start()]
+    suffix = text[number.end():]
+    if re.match(r"\s*(?:的\s*)?(?:頻率|frequency)", suffix, re.I):
+        return False
+    return bool(
+        re.search(r"(?:(?<![a-z])pot|底池)\s*(?:的\s*)?$", prefix, re.I)
+        or re.match(r"\s*(?:[（(]\s*)?(?:pot(?![a-z])|底池)", suffix, re.I)
+    )
+
+
 def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
     violations = []
     for sentence in re.split(r"[。！？；\n]", body):
         for number in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|％)", sentence):
-            tail = sentence[number.end():number.end() + 8]
-            if re.search(r"(?:pot|底池)", tail, re.I):
+            if _is_pot_size_percentage(sentence, number):
                 continue
             equity_window = sentence[max(0, number.start() - 16):number.end() + 12]
             if re.search(r"(?:equity|勝率)", equity_window, re.I):
                 continue
             window = sentence[max(0, number.start() - 28):number.end() + 28]
             family = _nearest_action_family(sentence, number.start(), number.end())
+            prior_sizes = [
+                match for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|％)", sentence)
+                if match.end() <= number.start()
+                and number.start() - match.end() <= 40
+                and _is_pot_size_percentage(sentence, match)
+            ]
+            # A comma can separate a concrete size from its stated frequency:
+            # "下注底池的 55%，頻率為 21%" still describes that bet size.
+            if not family and prior_sizes and re.search(
+                r"(?:頻率|frequency)[^，,]{0,8}$", sentence[:number.start()], re.I,
+            ):
+                previous = prior_sizes[-1]
+                family = _nearest_action_family(sentence, previous.start(), previous.end())
             if not family:
                 continue
             level_prefix = re.split(
@@ -3877,13 +3942,8 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
                 }.get(street_match.group(1).lower(), street_match.group(1).lower())
                 candidates = [row for row in candidates if row["street"] == street]
             size_matches = [
-                match for match in re.finditer(
-                    r"(\d+(?:\.\d+)?)\s*(?:%|％)\s*(?:pot|底池)",
-                    sentence[:number.start()],
-                    re.I,
-                )
-                if number.start() - match.end() <= 40
-                and _nearest_action_family(
+                match for match in prior_sizes
+                if _nearest_action_family(
                     sentence, match.start(), match.end(),
                 ) == family
             ]
@@ -4108,7 +4168,7 @@ def _audit_exact_hand_categories(body: str, digest: dict) -> list[str]:
                 continue
             if re.search(r"(?:對手|Villain)[^。；，,\n]*$", fragment, re.I):
                 continue
-            if re.search(r"(?:更多|較多|比例)", suffix, re.I):
+            if re.search(r"(?:更多|較多|比例|比[^，,。；\n]{1,12}(?:多|少))", suffix, re.I):
                 continue
             token = match.group("category")
             if token in {"同花", "flush"} and re.search(
@@ -4214,12 +4274,6 @@ def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
 def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
     """Prevent frequency preferences from being rewritten as EV mistakes."""
     violations = []
-    street_terms = {
-        "preflop": r"(?:preflop|翻牌前)",
-        "flop": r"(?:flop|翻牌)",
-        "turn": r"(?:turn|轉牌)",
-        "river": r"(?:river|河牌)",
-    }
     negative = re.compile(
         r"(?:錯誤|失誤|漏洞|打錯|不正確|不應該|不該|偏離|"
         r"(?:有|造成|產生|損失)[^。；\n]{0,8}EV\s*(?:loss|損失))",
@@ -4227,7 +4281,9 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
     )
     negation = re.compile(
         r"(?:不是|並非|不算|不等於|沒有|無)[^。；\n]{0,10}"
-        r"(?:錯誤|失誤|漏洞|EV\s*(?:loss|損失))",
+        r"(?:錯誤|失誤|漏洞|EV\s*(?:loss|損失))|"
+        r"(?:沒有必要|不必|無須|不用)[^。；，,\n]{0,14}偏離|"
+        r"(?:沒有|並未|未|無)\s*偏離",
         re.I,
     )
     positive = re.compile(
@@ -4256,7 +4312,7 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
             if decision.get("off_tree"):
                 continue
             street = decision.get("street")
-            if not street or not re.search(street_terms[street], sentence, re.I):
+            if not street or street not in _mentioned_streets(sentence):
                 continue
             if not names_actual(sentence, decision):
                 continue
@@ -4311,8 +4367,37 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
                 continue
             if not re.search(action_pattern, sentence, re.I):
                 continue
+            solver_supports_actual = False
+            action_mentions = [
+                (match, candidate_family)
+                for candidate_family, pattern in _ACTION_TEXT_PATTERNS.items()
+                for match in re.finditer(pattern, sentence, re.I)
+            ]
+            for support in re.finditer(
+                r"(?:solver[^。；，,\n]{0,12}(?:保留|支持|混合使用)|mix\s*分支)",
+                sentence, re.I,
+            ):
+                nearest, nearest_family = min(
+                    action_mentions,
+                    key=lambda item: max(
+                        support.start() - item[0].end(),
+                        item[0].start() - support.end(), 0,
+                    ),
+                )
+                if nearest_family == family:
+                    solver_supports_actual = True
+                else:
+                    # Shared support also applies to a coordinated action list,
+                    # such as "solver 支持 check 和 all-in".
+                    for mention, mention_family in action_mentions:
+                        if mention_family != family:
+                            continue
+                        left, right = sorted((nearest, mention), key=lambda item: item.start())
+                        bridge = sentence[left.end():right.start()]
+                        if re.fullmatch(r"\s*(?:和|與|及|或|、|/|and|or)\s*", bridge, re.I):
+                            solver_supports_actual = True
             claims_supported = (
-                re.search(r"(?:solver[^。；\n]{0,12}(?:保留|支持|混合使用)|mix\s*分支)", sentence, re.I)
+                solver_supports_actual
                 or re.search(rf"(?:低頻|少量)[^。；\n]{{0,12}}{action_pattern}", sentence, re.I)
                 or re.search(rf"{action_pattern}[^。；\n]{{0,10}}(?:可用|可採用)", sentence, re.I)
             )
@@ -4406,6 +4491,11 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     still has room to explain the verified mechanisms in its own words.
     """
     body = _body_without_followups(text)
+    # These literals come from deterministic analysis, including derived stack
+    # adjustments and missing-coverage notices. Audit the narrator's claims;
+    # do not reject our own provenance as unsupported strategy or numbers.
+    for caveat in digest.get("caveats") or []:
+        body = body.replace(caveat, "")
     lowered = body.lower()
     violations = []
 
@@ -4742,6 +4832,7 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         for row in _covered_decisions(digest)
         for position in row.get("preflop_roles") or {}
     )
+    allowed_positions.update(digest.get("observed_positions") or [])
     mentioned_positions = set(re.findall(
         r"(?<![A-Za-z0-9+])(?:UTG\+?[12]?|LJ|HJ|CO|BTN|SB|BB)(?![A-Za-z0-9+])",
         body,
@@ -4790,14 +4881,6 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
     numeric_claims = re.findall(
         r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(%|％|bb)", body, re.I,
     )
-    frequency_claims = re.findall(
-        r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(?:%|％)(?!\s*(?:pot|底池))",
-        body,
-        re.I,
-    )
-    bb_claims = re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*bb", body, re.I)
-    if len(frequency_claims) + len(bb_claims) > 4:
-        violations.append("too many numeric claims")
     allowed_percentages = list(digest.get("allowed_percentages") or [])
     allowed_bb = list(digest.get("allowed_bb") or [])
     for source in source_texts or []:

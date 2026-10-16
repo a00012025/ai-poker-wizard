@@ -182,6 +182,36 @@ def test_h3874_text_repairs_explicit_suited_class_suffix():
     assert_eq(hand["hero_hand"], "KTs")
 
 
+@pytest.mark.parametrize("literal", ["Ac8c", "Ac 8c"])
+def test_h3945_text_preserves_explicit_hero_combo(literal):
+    from gemini_session import GeminiSessionManager
+
+    hand = {"hero_position": "BB", "hero_hand": "A8s"}
+    text = (
+        f"Eff 23bb utg r2 hj call btn call hero bb call {literal}\n"
+        "6c7d5s x x b6 fold call fold\nJs x x\n7c all in call"
+    )
+    assert GeminiSessionManager._repair_text_hero_hand_literal(hand, text) == "Ac8c"
+    assert hand["hero_hand"] == "Ac8c"
+
+
+@pytest.mark.parametrize("text,extra", [
+    ("hero BB A8s\nAc 8c 4d x x", {}),
+    ("hero BB A8s villain Ac8c", {}),
+    ("hero BB A8s BTN Ac8c", {}),
+    ("hero BB Ac8c or Ah8h", {}),
+    ("hero BB Kc8c", {}),
+    ("hero BB Ac8c", {"no_hero_hand": True}),
+    ("hero BB AcAc", {}),
+])
+def test_text_combo_repair_does_not_guess_hero_cards(text, extra):
+    from gemini_session import GeminiSessionManager
+
+    hand = {"hero_position": "BB", "hero_hand": "A8s", **extra}
+    assert GeminiSessionManager._repair_text_hero_hand_literal(hand, text) is None
+    assert hand["hero_hand"] == "A8s"
+
+
 def test_h3874_full_range_query_keeps_hand_detail_and_queues_chart():
     """A range follow-up may include ``hand`` without losing range text/image."""
     from gemini_session import GeminiSessionManager
