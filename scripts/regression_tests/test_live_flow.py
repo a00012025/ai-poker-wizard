@@ -2626,7 +2626,7 @@ def test_enqueue_live_candidates_marks_watchlist_without_inserting():
     assert_eq(report_buttons(result), [])
 
 
-def test_enqueue_live_candidates_promotes_severe_post_clear_error():
+def test_enqueue_live_candidates_promotes_severe_post_clear_error(monkeypatch):
     """One fresh >=1bb error may reopen a cleared drill immediately, and the
     evidence query must exclude all decisions played before that clear."""
     import asyncio
@@ -2634,6 +2634,14 @@ def test_enqueue_live_candidates_promotes_severe_post_clear_error():
     from queue_feed import enqueue_live_candidates
 
     cleared_at = datetime(2026, 8, 15, 12, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 16, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    # Keep the fixture's clear inside the lookback window as real time passes.
+    monkeypatch.setattr("queue_feed.datetime", FixedDateTime)
 
     class FakeConn:
         def __init__(self):

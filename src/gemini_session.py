@@ -2667,14 +2667,66 @@ class GeminiSessionManager:
 
     @staticmethod
     def _repair_text_hero_hand_literal(hand: dict, user_text: str) -> str | None:
-        """Restore an explicit 169-class suffix when Flash flips ``s``/``o``.
+        """Restore explicit Hero cards or a class suffix lost by the parser.
 
         A standalone token such as ``kts`` is stronger evidence than the model's
         derived ``KTo``.  Keep the repair deliberately narrow: exactly one
         explicit suited/offsuit class must be present, and the model must agree
         on both ranks.  Multi-hand discussion and rank disagreements stay with
         the parser instead of being guessed here.
+        Exact cards are read only from the opening line, before any board;
+        opponent labels and multiple candidates prevent an automatic repair.
         """
+        if hand.get("no_hero_hand"):
+            return None
+        parsed = str(hand.get("hero_hand") or "").strip()
+        parsed_match = re.fullmatch(
+            r"([2-9TJQKA])([2-9TJQKA])([so])?", parsed, re.I,
+        )
+        parsed_exact = re.fullmatch(
+            r"([2-9TJQKA])[cdhs]([2-9TJQKA])[cdhs]", parsed, re.I,
+        )
+        rank_match = parsed_match or parsed_exact
+        if not rank_match:
+            return None
+        parsed_ranks = rank_match.group(1).upper() + rank_match.group(2).upper()
+        opening = (user_text or "").strip().split("\n", 1)[0]
+        opening = re.split(
+            r"\b(?:flop|turn|river|board)\b|翻牌|轉牌|河牌",
+            opening, maxsplit=1, flags=re.I,
+        )[0]
+        exact_candidates = []
+        for match in re.finditer(
+            r"(?<![A-Za-z0-9])(?:[2-9TJQKA][cdhs]\s*){2,}(?![A-Za-z0-9])",
+            opening, re.I,
+        ):
+            cards = re.findall(r"([2-9TJQKA])([cdhs])", match.group(), re.I)
+            if len(cards) != 2:
+                # Three or more consecutive cards mark the start of the board.
+                break
+            actors = re.findall(
+                r"\b(hero|villain|opponent|UTG(?:\+[12])?|LJ|HJ|CO|BTN|SB|BB)\b|對手",
+                opening[:match.start()], re.I,
+            )
+            actor = actors[-1].upper() if actors else None
+            if actor is not None and actor not in {
+                "HERO", str(hand.get("hero_position") or "").upper(),
+            }:
+                continue
+            literal = "".join(rank.upper() + suit.lower() for rank, suit in cards)
+            if literal[:2] == literal[2:]:
+                continue
+            exact_candidates.append(literal)
+        if len(exact_candidates) == 1:
+            literal = exact_candidates[0]
+            if sorted(parsed_ranks) != sorted((literal[0], literal[2])):
+                return None
+            if parsed != literal:
+                hand["hero_hand"] = literal
+                return literal
+            return None
+        if exact_candidates:
+            return None
         candidates = {
             match.group(1).upper() + match.group(2).upper() + match.group(3).lower()
             for match in re.finditer(
@@ -2686,7 +2738,6 @@ class GeminiSessionManager:
         if len(candidates) != 1:
             return None
         literal = next(iter(candidates))
-        parsed = str(hand.get("hero_hand") or "").strip()
         parsed_match = re.fullmatch(
             r"([2-9TJQKA])([2-9TJQKA])([so])",
             parsed,
@@ -2777,7 +2828,7 @@ class GeminiSessionManager:
                 repaired_hand = self._repair_text_hero_hand_literal(hand, user_text)
                 if repaired_hand:
                     self._logger.warning(
-                        f"[chat={chat_id}] Restored explicit Hero hand class "
+                        f"[chat={chat_id}] Restored explicit Hero hand "
                         f"from source text: {repaired_hand}"
                     )
                 # Text Flash extracts ordered action tokens; actor ownership is
@@ -3293,6 +3344,26 @@ class GeminiSessionManager:
                 if not hasattr(self, "histories"):
                     self.histories = {}
                 history_before_draft = list(self.histories.get(chat_id, []))
+
+                def accept(answer: str) -> str:
+                    missing_caveats = [
+                        caveat for caveat in (digest or {}).get("caveats", [])
+                        if caveat and caveat not in answer
+                    ]
+                    if missing_caveats:
+                        visible = "\n".join(
+                            caveat if caveat.lstrip().startswith("⚠") else f"⚠ {caveat}"
+                            for caveat in missing_caveats
+                        ) + "\n\n" + answer
+                        answer = (
+                            _DeterministicCoachFallback(visible)
+                            if isinstance(answer, _DeterministicCoachFallback)
+                            else visible
+                        )
+                    self.histories[chat_id] = history_before_draft
+                    self._append_accepted_history(chat_id, user_text, answer)
+                    return answer
+
                 draft = await self._generate_initial_narrator(
                     chat_id,
                     coaching_prompt,
@@ -3305,13 +3376,9 @@ class GeminiSessionManager:
                     system_override=narrator_system,
                 )
                 if isinstance(draft, _DeterministicCoachFallback):
-                    self.histories[chat_id] = history_before_draft
-                    self._append_accepted_history(chat_id, user_text, draft)
-                    return draft
+                    return accept(draft)
                 if not digest:
-                    self.histories[chat_id] = history_before_draft
-                    self._append_accepted_history(chat_id, user_text, draft)
-                    return draft
+                    return accept(draft)
                 audit = audit_teaching_draft(
                     draft,
                     digest,
@@ -3324,9 +3391,7 @@ class GeminiSessionManager:
                     source_texts=[user_text],
                 )
                 if audit.ok:
-                    self.histories[chat_id] = history_before_draft
-                    self._append_accepted_history(chat_id, user_text, draft)
-                    return draft
+                    return accept(draft)
                 self._logger.warning(
                     f"[chat={chat_id}] Initial coaching fact audit failed: "
                     f"{', '.join(audit.violations)}"
@@ -3376,9 +3441,7 @@ class GeminiSessionManager:
                     ]
                     if original_followups and not repaired_followups:
                         repaired += "\n\n" + "\n".join(original_followups)
-                    self.histories[chat_id] = history_before_draft
-                    self._append_accepted_history(chat_id, user_text, repaired)
-                    return repaired
+                    return accept(repaired)
                 self._logger.warning(
                     f"[chat={chat_id}] Repaired coaching fact audit failed: "
                     f"{', '.join(repaired_audit.violations)}"
@@ -3391,9 +3454,7 @@ class GeminiSessionManager:
                 ][:3] or original_followups
                 if followups:
                     fallback += "\n\n" + "\n".join(followups)
-                self.histories[chat_id] = history_before_draft
-                self._append_accepted_history(chat_id, user_text, fallback)
-                return fallback
+                return accept(fallback)
             except genai_errors.ServerError as e:
                 if attempt == 2:
                     raise

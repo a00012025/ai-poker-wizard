@@ -3670,6 +3670,7 @@ def _run_analysis(hand: dict) -> dict:
         "stacks": icm_stacks,
         "is_icm": is_icm,
         "icm_solver_average_bb": icm_solver_average_bb,
+        "multiway_note": multiway_note,
         "hero_position": display_hero_pos,
         "hero_hand": hero_hand,
         "no_hero_hand": no_hero_hand,
