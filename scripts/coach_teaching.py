@@ -570,6 +570,15 @@ def _range_only_reach_sentence(fact: dict) -> str:
     )
 
 
+def _prior_call_range_label(fact: dict) -> str:
+    """Name the earlier call node, never the unreachable facing-jam node."""
+    hero = fact.get("hero") or "Hero"
+    opener = (fact.get("previous_action") or {}).get("opener")
+    if opener:
+        return f"{hero} 面對 {opener} open 的整體 call range"
+    return f"{hero} 前一節點的整體 call range"
+
+
 def _off_tree_decision(context: dict, spot: dict, solution: dict,
                        hero_hand: str) -> dict | None:
     """Keep a real Hero action visible when the exact combo has 0% reach.
@@ -3079,11 +3088,11 @@ def render_prompt_block(digest: dict | None) -> str:
             lines.extend([
                 f"焦點 {index}｜Preflop range-only response",
                 f"• 到達原因：{_range_only_reach_sentence(fact)}",
-                "• 先說前一個實際決策的 solver verdict，再用一句話解釋該手牌沿 solver 路線不會到達後續節點；接著列 Hero 整體 call range 與對手 all-in range。不要換句話重述『沒有跟注或棄牌策略』，也不要加免責句或補通用解釋。",
+                "• 先說前一個實際決策的 solver verdict，再用一句話解釋該手牌沿 solver 路線不會到達後續節點；接著列前一節點的 Hero call range 與對手 all-in range。不得把前一節點的 call range 說成 Hero 面對這次 all-in 的跟注範圍；不要換句話重述『沒有跟注或棄牌策略』，也不要加免責句。",
             ])
             if fact.get("range_lines"):
                 lines.append(
-                    f"• {fact.get('hero') or decision['hero']} 整體範圍："
+                    f"• {_prior_call_range_label(fact)}："
                     + "；".join(fact["range_lines"])
                     + "。"
                 )
@@ -3480,7 +3489,7 @@ def render_fallback(digest: dict) -> str:
             f"*{decision['street'].capitalize()}*\n" + "。".join(pieces) + "。"
         )
     focus_details = {
-        id(decision): reason.split("\n", 1)[-1]
+        decision["coverage_label"]: reason.split("\n", 1)[-1]
         for decision, reason in zip(
             (row for row in focus if not row.get("preflop_range_only")), reasons
         )
@@ -3505,7 +3514,7 @@ def render_fallback(digest: dict) -> str:
     ):
         summary = (
             f"整手最需要修正的是 {primary['coverage_label']}："
-            f"{primary['coverage_verdict']}；{primary['coverage_reason']}。"
+            f"{primary['coverage_verdict']}。"
         )
         if primary.get("ev_loss_bb") is not None:
             summary += f" EV 損失 {primary['ev_loss_bb']:.2f}bb。"
@@ -3522,19 +3531,33 @@ def render_fallback(digest: dict) -> str:
                 "沒有 exact-combo solver 對照，無法判定對錯。"
             )
     ordered_reasons = []
+    previous_street = None
     for decision in coverage:
         label = decision["coverage_label"]
-        detail = focus_details.get(id(decision))
+        detail = focus_details.get(label)
+        reason = decision["coverage_reason"]
+        if (
+            (decision.get("ev_loss_pot") or 0.0) >= 0.003
+            and (decision.get("aggression_job") or {}).get("is_alternative")
+        ):
+            # An alternative raise's bluff targets do not explain why the
+            # actual call lost EV; use the exact-combo action instead.
+            reason = (decision.get("action_contract") or {}).get("summary") or reason
+            detail = None
+        heading = (
+            f"*{decision['street'].capitalize()}*\n"
+            if decision["street"] != previous_street else ""
+        )
+        previous_street = decision["street"]
         sentence = (
-            f"*{decision['street'].capitalize()}*\n{label}："
-            f"{decision['coverage_verdict']}；{decision['coverage_reason']}。"
+            f"{heading}{label}：{decision['coverage_verdict']}；{reason}。"
         )
         if detail:
             sentence += " " + detail
         fact = decision.get("preflop_range_fact") or {}
         if fact:
             sentence += (
-                f" {fact.get('hero') or decision['hero']} 整體 call range："
+                f" {_prior_call_range_label(fact)}："
                 + "；".join(fact.get("range_lines") or [])
                 + f"。{fact.get('villain') or '對手'} Preflop all-in range："
                 + "、".join(fact.get("villain_classes") or [])
@@ -3557,7 +3580,7 @@ def render_fallback(digest: dict) -> str:
         if fact:
             safe_reasons.append(
                 f"*Preflop*\n{_range_only_reach_sentence(fact)}"
-                f"可用的 range 事實是 {fact['hero']} 整體 "
+                f"可用的 range 事實是 {_prior_call_range_label(fact)}："
                 + "；".join(fact.get("range_lines") or [])
                 + "。"
             )
@@ -3891,10 +3914,33 @@ def _audit_action_frequency_claims(body: str, digest: dict) -> list[str]:
     violations = []
     for sentence in re.split(r"[。！？；\n]", body):
         for number in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|％)", sentence):
+            if (
+                float(number.group(1)) == 0.0
+                and re.match(r"\s*(?:到達|reach)", sentence[number.end():], re.I)
+            ):
+                continue
             if _is_pot_size_percentage(sentence, number):
                 continue
             equity_window = sentence[max(0, number.start() - 16):number.end() + 12]
             if re.search(r"(?:equity|勝率)", equity_window, re.I):
+                continue
+            # "這手對 BB 的 all-in range 約有 80%" is shorthand for Hero's
+            # equity, not BB using all-in 80% of the time.  An explicit
+            # frequency label still goes through the action-frequency audit.
+            prefix = re.split(r"[，,]", sentence[:number.start()])[-1]
+            if (
+                re.search(
+                    r"對[^。；，,]{0,70}(?:range|範圍)"
+                    r"[^。；，,]{0,12}(?:約有|有|達|為)\s*$",
+                    prefix, re.I,
+                )
+                and not re.search(r"(?:頻率|frequency)[^。；，,]{0,8}$", prefix, re.I)
+                and not re.match(
+                    r"\s*(?:的\s*)?(?:(?:跟注|call|棄牌|fold|下注|bet|all[- ]?in)\s*)?"
+                    r"(?:頻率|frequency)",
+                    sentence[number.end():], re.I,
+                )
+            ):
                 continue
             window = sentence[max(0, number.start() - 28):number.end() + 28]
             family = _nearest_action_family(sentence, number.start(), number.end())
@@ -4015,7 +4061,19 @@ def _audit_range_only_exact_response(body: str, digest: dict) -> list[str]:
                 (hand and re.search(hand, sentence, re.I))
                 or re.search(r"Hero|你|這手|這裡|此時", sentence, re.I)
             )
-            if targets_hand and (response_claim.search(sentence) or compares_ev):
+            claim_sentence = sentence
+            for actor in (
+                "UTG+2", "UTG+1", "UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB",
+            ):
+                if actor == (row.get("hero") or ""):
+                    continue
+                # "UTG 棄牌" is a reported action, not advice to Hero at the
+                # unreachable facing-jam node.
+                claim_sentence = re.sub(
+                    rf"(?<![A-Za-z0-9+]){re.escape(actor)}\s*(?:棄牌|fold)(?![A-Za-z0-9])",
+                    "", claim_sentence, flags=re.I,
+                )
+            if targets_hand and (response_claim.search(claim_sentence) or compares_ev):
                 violations.append("range-only exact response claim")
     return violations
 
@@ -4064,7 +4122,12 @@ def _audit_range_only_verified_ranges(body: str, digest: dict) -> list[str]:
                             violations.append("range-only unverified response range")
                 if villain and re.search(rf"(?<![A-Za-z0-9+]){re.escape(villain)}(?![A-Za-z0-9+])", clause):
                     if re.search(r"call|跟注|繼續|防守|continue|defend", clause, re.I):
-                        violations.append("range-only unverified response range")
+                        if not re.search(
+                            r"(?:不是|並非|不等於|不屬於|不能當成)"
+                            r"[^。；\n]{0,48}(?:call|跟注)[^。；\n]{0,6}(?:range|範圍|表|清單)",
+                            clause, re.I,
+                        ):
+                            violations.append("range-only unverified response range")
                     elif re.search(r"all[- ]?in|全下", clause, re.I):
                         if tokens and not tokens.issubset(villain_allin):
                             violations.append("range-only unverified response range")
@@ -4241,6 +4304,7 @@ def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
     ungraded_terms = re.compile(
         r"off[- ]?tree|0\s*%[^。；\n]{0,12}到達|"
         r"(?:沒有|無)[^。；\n]{0,12}solver[^。；\n]{0,12}對照|"
+        r"(?:沒有|無)[^。；\n]{0,12}(?:策略|動作)[^。；\n]{0,12}對照|"
         r"無法[^。；\n]{0,12}判定|不能[^。；\n]{0,12}判定",
         re.I,
     )
@@ -4256,7 +4320,7 @@ def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
             row.get("street") == decision.get("street")
             for row in _covered_decisions(digest)
         )
-        for sentence in re.split(r"[。！？\n]", body or ""):
+        for sentence in re.split(r"[。！？；\n]", body or ""):
             if not re.search(street_terms[decision["street"]], sentence, re.I):
                 continue
             if (
@@ -4265,7 +4329,17 @@ def _audit_off_tree_verdicts(body: str, digest: dict) -> list[str]:
                 and not re.search(action_pattern, sentence, re.I)
             ):
                 continue
-            if verdict_terms.search(sentence) and not ungraded_terms.search(sentence):
+            contradictory = bool(
+                ungraded_terms.search(sentence)
+                and re.search(
+                    r"(?:正確|錯誤|失誤|可接受|合理|有實質\s*EV\s*損失)"
+                    r"[^。；\n]{0,24}(?:但|可是|不過|然而)",
+                    sentence, re.I,
+                )
+            )
+            if verdict_terms.search(sentence) and (
+                not ungraded_terms.search(sentence) or contradictory
+            ):
                 violations.append(f"off-tree decision graded {decision.get('street')}")
                 break
     return violations
@@ -4293,19 +4367,34 @@ def _audit_action_verdicts(body: str, digest: dict) -> list[str]:
     )
 
     def names_actual(sentence: str, decision: dict) -> bool:
+        numbered = re.search(
+            r"(?:Preflop|Flop|Turn|River)\s*([①②③④])",
+            sentence, re.I,
+        )
+        if numbered and numbered.group(1) not in (decision.get("coverage_label") or ""):
+            return False
         actual = decision.get("actual_action") or {}
         family = _action_family(
             actual.get("code") or "", decision["range_plan"]["facing_bet"],
         )
         pattern = _ACTION_TEXT_PATTERNS.get(family)
+        generic_reference = bool(re.search(
+            r"(?:這個|這次|實戰)(?:動作|選擇|打法)|Hero 的行動",
+            sentence, re.I,
+        ))
+        if sum(
+            row.get("street") == decision.get("street")
+            for row in _covered_decisions(digest)
+        ) > 1 and not numbered:
+            generic_reference = False
         return bool(
             (pattern and re.search(pattern, sentence, re.I))
-            or re.search(r"(?:這個|這次|實戰)(?:動作|選擇|打法)|Hero 的行動", sentence, re.I)
+            or generic_reference
         )
 
     core = re.split(r"\*為什麼\*", body or "", maxsplit=1)[0]
-    core_sentences = [row for row in re.split(r"[。！？\n]", core) if row.strip()]
-    for sentence in re.split(r"[。！？\n]", body or ""):
+    core_sentences = [row for row in re.split(r"[。！？；\n]", core) if row.strip()]
+    for sentence in re.split(r"[。！？；\n]", body or ""):
         if not sentence.strip():
             continue
         for decision in _covered_decisions(digest):
@@ -4350,7 +4439,8 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
         for sentence in re.split(r"[。！？；]", line):
             if sentence.strip():
                 scoped_sentences.append((current_street, sentence))
-    for decision in _covered_decisions(digest):
+    covered = _covered_decisions(digest)
+    for index, decision in enumerate(covered):
         if decision.get("off_tree"):
             continue
         actual = decision.get("actual_action") or {}
@@ -4364,6 +4454,23 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
             continue
         for sentence_street, sentence in scoped_sentences:
             if sentence_street and sentence_street != decision["street"]:
+                continue
+            # "前面的 call 與 check" refers to already-discussed decisions,
+            # not an unsupported later call on this street.  Only apply this
+            # exemption when an earlier solved decision actually used that
+            # action, and the sentence does not explicitly name this street.
+            if (
+                re.match(r"\s*(?:前面|先前|之前)", sentence)
+                and decision["street"] not in _mentioned_streets(sentence)
+                and any(
+                    _action_family(
+                        (prior.get("actual_action") or {}).get("code") or "",
+                        prior["range_plan"]["facing_bet"],
+                    ) == family
+                    and (prior.get("actual_action") or {}).get("frequency", 0.0) >= 0.01
+                    for prior in covered[:index]
+                )
+            ):
                 continue
             if not re.search(action_pattern, sentence, re.I):
                 continue
@@ -4396,9 +4503,24 @@ def _audit_actual_mix_status(body: str, digest: dict) -> list[str]:
                         bridge = sentence[left.end():right.start()]
                         if re.fullmatch(r"\s*(?:和|與|及|或|、|/|and|or)\s*", bridge, re.I):
                             solver_supports_actual = True
+            low_frequency_supports_actual = any(
+                nearest_family == family
+                for marker in re.finditer(r"低頻|少量", sentence, re.I)
+                for nearest, nearest_family in sorted(
+                    (
+                        (mention, mention_family)
+                        for mention, mention_family in action_mentions
+                        if 0 <= mention.start() - marker.end() <= 12
+                        and not re.search(
+                            r"[，,；;]", sentence[marker.end():mention.start()],
+                        )
+                    ),
+                    key=lambda item: item[0].start(),
+                )[:1]
+            )
             claims_supported = (
                 solver_supports_actual
-                or re.search(rf"(?:低頻|少量)[^。；\n]{{0,12}}{action_pattern}", sentence, re.I)
+                or low_frequency_supports_actual
                 or re.search(rf"{action_pattern}[^。；\n]{{0,10}}(?:可用|可採用)", sentence, re.I)
             )
             explicitly_off_mix = re.search(
@@ -4670,6 +4792,17 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         r"(?:不能|無法|沒有|缺少)[^。；\n]{0,40}"
         r"(?:跟注|棄牌|call|fold|繼續|防守)[^。；\n]{0,30}",
         "",
+        response_claim_body,
+        flags=re.I,
+    )
+    # Hero's equity against an action range supporting a call says nothing
+    # about whether Villain will call.  Remove only that equity-to-Hero-call
+    # phrase before looking for unsupported opponent responses.
+    response_claim_body = re.sub(
+        r"(對[^。；\n]{0,70}(?:range|範圍)[^。；\n]{0,20}"
+        r"(?:約有|有|達|為)\s*\d+(?:\.\d+)?\s*(?:%|％)[^。；\n]{0,12})"
+        r"足以支持\s*(?:Hero\s*)?(?:跟注|call)",
+        r"\1支持繼續",
         response_claim_body,
         flags=re.I,
     )

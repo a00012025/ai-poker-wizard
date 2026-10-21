@@ -93,11 +93,11 @@ class GeminiSessionManager:
         openai_key = os.getenv("OPENAI_API_KEY")
         self.coach_narrator_model = os.getenv(
             "OPENAI_COACH_MODEL",
-            "gpt-5.6-terra",
+            "gpt-6-astra",
         )
         self.coach_narrator_reasoning = os.getenv(
             "OPENAI_COACH_REASONING_EFFORT",
-            "medium",
+            "low",
         )
         self.coach_narrator_max_output_tokens = int(
             os.getenv(
@@ -3225,7 +3225,7 @@ class GeminiSessionManager:
                     accept_history=self._append_accepted_history,
                     record_tool_call=self._record_coach_tool_call,
                     tool_status=self._tool_status,
-                    model=getattr(self, "coach_narrator_model", "gpt-5.6-terra"),
+                    model=getattr(self, "coach_narrator_model", "gpt-6-astra"),
                     max_tool_calls=getattr(self, "coach_max_tool_calls", 4),
                     max_evidence_rounds=getattr(self, "coach_max_evidence_rounds", 2),
                     reasoning=getattr(self, "coach_narrator_reasoning", "medium"),
