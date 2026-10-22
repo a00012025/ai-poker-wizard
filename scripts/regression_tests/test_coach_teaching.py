@@ -2321,7 +2321,8 @@ def test_initial_coach_contract_is_conclusion_first_and_range_optional():
     assert_in("結論 → 關鍵 solver 證據 → 具體原因", INITIAL_COACH_SYSTEM)
     assert_in("range 結構只有在真的有助於理解時才引用", INITIAL_COACH_SYSTEM)
     assert_in("特殊情況：使用者問後續 0% reach 節點時", INITIAL_COACH_SYSTEM)
-    assert_in("接著列 Hero 整體 call range 和對手 all-in range", INITIAL_COACH_SYSTEM)
+    assert_in("接著列 Hero 在前一節點的 call range 和對手在後續節點的 all-in range", INITIAL_COACH_SYSTEM)
+    assert_in("第一句直接講前一節點的 solver 行動與頻率", INITIAL_COACH_SYSTEM)
     assert_in("exact combo", INITIAL_COACH_SYSTEM)
     assert_not_in("可帶到下一手", INITIAL_COACH_SYSTEM)
 
@@ -2849,6 +2850,115 @@ def test_coach_teaching_offmix_audit_scopes_same_action_to_street():
     assert_not_in("off-mix action called supported flop", ct.audit_draft(answer, digest).violations)
     unsupported = "*Flop*\nsolver 會混合使用 check，但更常下注。"
     assert_in("off-mix action called supported flop", ct.audit_draft(unsupported, digest).violations)
+
+
+def test_coach_audit_separates_prior_actions_from_later_turn_and_river_verdicts():
+    """A chronological summary must not transfer earlier solver support to a bad call."""
+    import copy
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3835_multi_decision_context())
+    decisions = digest["all_decisions"]
+    turn_call = next(row for row in decisions if row["street"] == "turn")
+    turn_check = copy.deepcopy(turn_call)
+    turn_check["actual_action"].update(code="X", label="check", frequency=0.5)
+    turn_check["ev_loss_pot"] = 0.0
+    turn_check["coverage_label"] = "Turn ①"
+    turn_call["actual_action"].update(code="C", label="call", frequency=0.0)
+    turn_call["ev_loss_pot"] = 0.04
+    turn_call["ev_loss_bb"] = 0.32
+    turn_call["coverage_label"] = "Turn ②"
+    decisions.insert(decisions.index(turn_call), turn_check)
+    river = next(row for row in decisions if row["street"] == "river")
+    river["off_tree"] = True
+
+    good = (
+        "這手要修正的是 Turn 面對下注後的跟注；"
+        "前面的 call 與 check 都受 solver 支持，River 則沒有這手牌的策略對照。"
+    )
+    violations = ct.audit_draft(good, digest).violations
+    assert_not_in("verdict mismatch turn:loss-called-correct", violations)
+    assert_not_in("off-mix action called supported turn", violations)
+    assert_not_in("off-tree decision graded river", violations)
+
+    numbered = ct.audit_draft(
+        "Turn ①：check 正確，solver 最常用這個動作。"
+        "Turn ②：call 有實質 EV 損失，應偏向 fold。"
+        "River：check 屬 off-tree，這個 combo 0% 到達此節點，無法判定對錯。",
+        digest,
+    ).violations
+    assert_not_in("verdict mismatch turn:loss-called-correct", numbered)
+    assert_not_in("action-frequency mismatch check 0%", numbered)
+
+    bad = ct.audit_draft("Turn 面對下注的 call 受到 solver 支持。River check 正確。", digest).violations
+    assert_in("off-mix action called supported turn", bad)
+    assert_in("off-tree decision graded river", bad)
+    contradictory_river = ct.audit_draft(
+        "River check 正確，但沒有這手牌的策略對照。", digest,
+    ).violations
+    assert_in("off-tree decision graded river", contradictory_river)
+    numbered_bad = ct.audit_draft("Turn ②：call 正確。", digest).violations
+    assert_in("verdict mismatch turn:loss-called-correct", numbered_bad)
+
+
+def test_coach_audit_does_not_read_hero_equity_as_villain_action_frequency():
+    """Hero's equity versus an all-in range is not that range's action frequency."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3835_multi_decision_context())
+    equity = "這手對 SB 的 River all-in range 約有 80%，足以支持 Hero 跟注。"
+    violations = ct.audit_draft(equity, digest).violations
+    assert_not_in("action-frequency mismatch allin 80%", violations)
+    assert_not_in("unsupported opponent-response claim", violations)
+
+    explicit_frequency = "這手對 SB 的 River all-in range 約有 80% 的跟注頻率。"
+    assert_in(
+        "action-frequency mismatch call 80%",
+        ct.audit_draft(explicit_frequency, digest).violations,
+    )
+
+    invented = "SB 的 River all-in 頻率為 80%。SB 會用弱牌跟注。"
+    bad = ct.audit_draft(invented, digest).violations
+    assert_in("action-frequency mismatch allin 80%", bad)
+    assert_in("unsupported opponent-response claim", bad)
+    assert_in(
+        "unsupported opponent-response claim",
+        ct.audit_draft("SB 足以跟注。", digest).violations,
+    )
+
+
+def test_h3931_fallback_keeps_scored_decisions_readable_when_model_fails():
+    """A failed narrator must not collapse a scored hand to a data-warning line."""
+    import coach_teaching as ct
+
+    digest = json.loads(
+        (SCRIPTS_DIR / "test_fixtures" / "coach_h3931_digest.json").read_text()
+    )
+    answer = ct.render_fallback(digest)
+    assert_not_in("目前缺少可用的 exact-combo solver 對照", answer)
+    assert_eq(answer.count("*Turn*"), 1)
+    assert_in("0.32bb", answer)
+    assert_not_in("fourth_pair", answer)
+    assert_true(ct.audit_draft(answer, digest).ok, answer)
+
+
+def test_h3931_audit_keeps_low_frequency_raise_separate_from_bad_call():
+    """Mentioning a rare raise must not reclassify the later call as supported."""
+    import coach_teaching as ct
+
+    digest = json.loads(
+        (SCRIPTS_DIR / "test_fixtures" / "coach_h3931_digest.json").read_text()
+    )
+    good = "*Turn*\n少量加注的收益，不能拿來替跟注辯護。"
+    assert_not_in(
+        "off-mix action called supported turn",
+        ct.audit_draft(good, digest).violations,
+    )
+    bad = "*Turn*\n這手會少量跟注，這是 solver 的混合打法。"
+    assert_in(
+        "off-mix action called supported turn",
+        ct.audit_draft(bad, digest).violations,
+    )
 
 
 def test_coach_teaching_single_focus_core_verdict_binds_without_street_word():
@@ -3966,7 +4076,7 @@ def test_coach_teaching_keeps_preflop_range_fact_when_exact_hand_is_zero_reach()
     assert_true(decision.get("preflop_range_only"))
     prompt = ct.render_prompt_block(digest)
     assert_in("AJs 在這個 HJ all-in 節點的 solver 到達率是 0%", prompt)
-    assert_in("LJ 整體範圍：", prompt)
+    assert_in("LJ 前一節點的整體 call range：", prompt)
     assert_in("Call（64 combos）", prompt)
     assert_in("77+~", prompt)
     assert_not_in("99(4%)", prompt)
@@ -4021,17 +4131,19 @@ def test_range_only_explains_zero_reach_from_previous_solver_call_without_repeat
 
     assert_in("Call 100%", prompt)
     assert_in("前一個 LJ 面對 UTG open", prompt)
+    assert_in("LJ 面對 UTG open 的整體 call range", prompt)
     assert_in("AJs", prompt)
     assert_in("HJ all-in", prompt)
     assert_in("先說前一個實際決策的 solver verdict", prompt)
     assert_in("不要加免責句", prompt)
     assert_in("Preflop ①：raise 60% pot 有實質 EV 損失", prompt)
-    assert_in("LJ 整體範圍", prompt)
+    assert_in("LJ 面對 UTG open 的整體 call range", prompt)
     assert_in("Villain conditioned all-in range（HJ）", prompt)
     assert_not_in("不得判定 Hero call/fold 或 EV", prompt)
     assert_not_in("不能判定 call/fold", prompt)
     assert_not_in("不能判定 call/fold", fallback)
     assert_in("solver 對 AJs 是 Call 100%", fallback)
+    assert_in("LJ 面對 UTG open 的整體 call range", fallback)
     assert_true(ct.audit_draft(fallback, digest).ok, fallback)
     assert_not_in("AJs fold", prompt)
 
@@ -4060,6 +4172,36 @@ def test_coach_teaching_range_only_avoids_repeated_call_fold_disclaimer():
     assert_not_in("redundant range-only disclaimer", ct.audit_draft(concise, digest).violations)
 
 
+def test_range_only_audit_allows_explicit_prior_node_scope_correction():
+    """Clarifying that the old call range is not a jam-call range is safe."""
+    import coach_teaching as ct
+
+    digest = ct.build_teaching_digest(_h3944_zero_preflop_range_context())
+    good = (
+        "LJ 面對 UTG open 的 call range 是 77+、AKs、AKo。"
+        "這是面對最初開池的範圍，不是面對 HJ all-in 的跟注範圍。"
+    )
+    assert_not_in(
+        "range-only unverified response range",
+        ct.audit_draft(good, digest).violations,
+    )
+    prior_table = "這是前一步的跟注範圍，不是面對 HJ all-in 的跟注表。"
+    assert_not_in(
+        "range-only unverified response range",
+        ct.audit_draft(prior_table, digest).violations,
+    )
+    bad = "LJ 面對 HJ all-in 的跟注範圍是 77+、AKs、AKo。"
+    assert_in(
+        "range-only unverified response range",
+        ct.audit_draft(bad, digest).violations,
+    )
+    contradictory = "這不是 HJ 的跟注範圍，但 HJ 會用 JJ 跟注。"
+    assert_in(
+        "range-only unverified response range",
+        ct.audit_draft(contradictory, digest).violations,
+    )
+
+
 def test_coach_teaching_audit_rejects_unsupported_difficult_decision_phrase():
     import coach_teaching as ct
 
@@ -4076,6 +4218,12 @@ def test_coach_teaching_range_only_rejects_exact_response_but_allows_earlier_nod
 
     bad = ct.audit_draft("AJs 這裡可以跟注 HJ all-in。", digest)
     assert_in("range-only exact response claim", bad.violations)
+
+    observed_fold = ct.audit_draft(
+        "接著你面對 HJ all-in、UTG 棄牌，可以參考兩個不同決策點的範圍。",
+        digest,
+    )
+    assert_not_in("range-only exact response claim", observed_fold.violations)
 
     misleading = ct.audit_draft(
         "這手 AJs 應該棄牌：更根本的是，LJ 對 UTG open 本來就該 100% 跟注。",
