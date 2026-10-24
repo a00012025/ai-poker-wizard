@@ -509,10 +509,10 @@ def test_pot_type_from_preflop_squeezed():
     assert_eq(compute_pot_type_from_preflop("F-F-R2-F-C-R8-F-F", 8), "squeezed")
 
 
-def test_pot_type_from_preflop_limp():
+def test_pot_type_from_preflop_iso():
     from spot_categorizer import compute_pot_type_from_preflop
     # UTG limps, CO iso-raises
-    assert_eq(compute_pot_type_from_preflop("C-F-F-R3-F-F-F-F", 8), "limp")
+    assert_eq(compute_pot_type_from_preflop("C-F-F-R3-F-F-F-F", 8), "iso")
 
 
 def test_pot_type_from_preflop_unopened():
@@ -552,9 +552,9 @@ def test_pot_type_squeezed():
     from spot_categorizer import compute_pot_type
     assert_eq(compute_pot_type("LJ-R-CO-C-BTN-RR"), "squeezed")
 
-def test_pot_type_limp():
+def test_pot_type_iso():
     from spot_categorizer import compute_pot_type
-    assert_eq(compute_pot_type("UTG-C-UTG+1-C-BTN-R"), "limp")
+    assert_eq(compute_pot_type("UTG-C-UTG+1-C-BTN-R"), "iso")
 
 def test_pot_type_limp_pure():
     from spot_categorizer import compute_pot_type

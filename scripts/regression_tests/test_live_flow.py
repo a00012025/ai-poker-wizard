@@ -1941,6 +1941,39 @@ def test_live_multiway_limp_pot_is_not_recast_as_srp(monkeypatch):
     assert_not_in("翻後簡化", html)
 
 
+def test_live_hand_9_bb_q9o_is_iso_pot():
+    """SB completes, BB raises to 4bb, SB calls: Hand 9 is an ISO pot."""
+    from datetime import datetime, timezone
+    from live_flow import build_hand_rows, render_session_page
+    from spot_taxonomy import walk_spots_from_parsed
+
+    raw = "Eff 100bb Sb call hero bb Qh9c r4 sb call\n7d3s4h b5 fold"
+    hand = {
+        "players_at_table": 8, "effective_bb": 100,
+        "hero_position": "BB", "hero_hand": "Qh9c",
+        "preflop_actions": "F-F-F-F-F-F-C-R4-C",
+        "streets": [{"board": "7d3s4h", "actions": [
+            {"position": "SB", "action": "R5", "size": 5},
+            {"position": "BB", "action": "F"}]}],
+    }
+    spots = list(walk_spots_from_parsed(hand))
+    flop = next(spot for spot in spots if spot["street"] == "flop")
+    assert_eq(flop["pot_type"], "iso")
+    assert_eq(flop["leaf"], "flop:iso:BBvSB:IP:vs_bet")
+    assert_true(flop["limp_origin"])
+
+    hand_row, decisions = build_hand_rows(
+        hand, "live:2026-10-23:0f4cb64d66",
+        datetime(2026, 10, 23, tzinfo=timezone.utc), raw, {})
+    assert_eq(hand_row["pot_type"], "iso")
+    assert_eq(next(d for d in decisions if d["street"] == "flop")["pot_type"], "iso")
+    result = {"totals": {"hands": 1, "decisions": len(decisions)},
+              "queue": [], "hands": [{"idx": 9, "ok": True,
+                                      "hand_row": hand_row, "decisions": []}]}
+    html, _prev, _next = render_session_page(result, 0)
+    assert_in("Hand 9</b> · BB Q9o · 100bb · ISO pot", html)
+
+
 def test_live_repair_hu_pot_and_ghost():
     """Deterministic parse repairs: phantom checks on folded seats stripped,
     ghost caller folded + missing continuation call appended, HU street
