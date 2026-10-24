@@ -294,7 +294,7 @@ def compute_pot_type_from_preflop(preflop_actions: str,
     hero-exclusion semantics (when hero is the opener, their R is excluded
     from line_key, which can make an SRP look like a limp pot).
 
-    Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
+    Returns one of: SRP, 3bet, 4bet, squeezed, iso, limp, unopened.
     """
     if not preflop_actions:
         return "unopened"
@@ -322,7 +322,7 @@ def compute_pot_type_from_preflop(preflop_actions: str,
     if max_level == 2:
         return "squeezed" if squeeze else "3bet"
     if max_level == 1:
-        return "limp" if any_call_before_raise else "SRP"
+        return "iso" if any_call_before_raise else "SRP"
     return "limp" if any_call_before_raise else "unopened"
 
 
@@ -335,7 +335,7 @@ def compute_pot_type(preflop_line_key: str) -> str:
     the hero's raise is excluded from the line_key, which can cause
     false "limp" / "unopened" classifications.
 
-    Returns one of: SRP, 3bet, 4bet, squeezed, limp, unopened.
+    Returns one of: SRP, 3bet, 4bet, squeezed, iso, limp, unopened.
     """
     if not preflop_line_key:
         return "unopened"
@@ -357,11 +357,11 @@ def compute_pot_type(preflop_line_key: str) -> str:
         return "3bet"
 
     if has_r:
-        # Limp vs SRP: if a C appears before the R, it's a limp pot (iso).
+        # A completion or limp before the first raise creates an iso pot.
         first_r = actions.index("R")
         earlier = actions[:first_r]
         if "C" in earlier:
-            return "limp"
+            return "iso"
         return "SRP"
 
     # No raise at all.

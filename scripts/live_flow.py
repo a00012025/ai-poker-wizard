@@ -2252,7 +2252,7 @@ def project_multiway_postflop(
     if len(_reaches_flop(preflop)) <= 2:
         return None, None, None
     if compute_pot_type_from_preflop(
-            preflop, int(hand.get("players_at_table") or 8)) == "limp":
+            preflop, int(hand.get("players_at_table") or 8)) in ("limp", "iso"):
         return None, None, "multiway_unresolved"
 
     hero = hand.get("hero_position")
@@ -3323,6 +3323,7 @@ PER_PAGE = 10
 
 _POT_TYPE_ZH = {
     "single_raised": "SRP", "srp": "SRP", "limped": "limp",
+    "iso": "ISO pot",
     "3bet": "3B Pot", "4bet": "4B Pot", "5bet": "5B Pot",
     "squeezed": "Squeeze Pot", "cold4bet": "4B Pot",
     "unopened": "",
