@@ -16,6 +16,13 @@ _CAVEAT = ("⚠ 此節點以 {node}bb 樹查詢（你前一個決策是在 {prev
            "數據供參考。")
 
 
+def depth_transition_caveat(previous_bucket: int, node_bucket: int) -> str | None:
+    """Describe a transition between the solver trees actually queried."""
+    if node_bucket == previous_bucket:
+        return None
+    return _CAVEAT.format(node=node_bucket, prev=previous_bucket)
+
+
 def _replay(parts, order):
     """Yield (actor_index, code, prefix_parts) in action order, replaying the
     project's encoding: first len(order) parts position-ordered, continuation
