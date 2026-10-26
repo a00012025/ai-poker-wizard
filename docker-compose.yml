@@ -2,11 +2,6 @@ services:
   bot:
     build: .
     env_file: .env
-    environment:
-      # EasyOCR otherwise tries CUDA whenever it is visible, even when another
-      # host process leaves too little VRAM for a single screenshot. CPU OCR
-      # recognizes the N8 replay images without dropping to Gemini vision.
-      CUDA_VISIBLE_DEVICES: "-1"
     volumes:
       - ./logs:/app/logs
       # The personal solver library is local-only. Keep it outside the image so
