@@ -112,9 +112,13 @@ async def post_init(application):
     # Preload EasyOCR model + CardClassifier to avoid cold start on first image
     if os.getenv("OCR_ENABLED", "false").lower() in ("true", "1", "yes"):
         try:
-            from ocr.ocr_utils import _get_reader
-            _get_reader()
-            logger.info("OCR model preloaded")
+            from src.ocr_runtime import current_ocr_mode
+            if current_ocr_mode() == "gpu":
+                from ocr.ocr_utils import _get_reader
+                _get_reader()
+                logger.info("GPU OCR model preloaded")
+            else:
+                logger.info("GPU headroom low; CPU OCR will load on demand")
         except Exception as e:
             logger.warning(f"OCR model preload failed: {e}")
         try:

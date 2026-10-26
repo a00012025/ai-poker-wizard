@@ -1674,9 +1674,9 @@ class GeminiSessionManager:
         ocr_enabled = os.getenv("OCR_ENABLED", "false").lower() in ("true", "1", "yes")
         if ocr_enabled:
             try:
-                from ocr.n8_parser import parse_n8_screenshot
+                from src.ocr_runtime import parse_n8_adaptive
 
-                ocr_result = parse_n8_screenshot(image_bytes)
+                ocr_result = parse_n8_adaptive(image_bytes)
                 ocr_conf = ocr_result.get("confidence", 0.0)
                 card_conf = ocr_result.get("card_confidence", 0.0)
                 self._logger.info(
