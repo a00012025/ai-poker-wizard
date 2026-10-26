@@ -1180,6 +1180,7 @@ class GeminiSessionManager:
                 )
                 gto_data = context["text"]
                 if hand_id:
+                    context["hand_id"] = hand_id
                     self.last_hand_ids[chat_id] = hand_id
                 # Save snapshot (fire-and-forget)
                 import asyncio as _aio
@@ -1474,6 +1475,7 @@ class GeminiSessionManager:
             )
             gto_data = context["text"]
             if hand_id:
+                context["hand_id"] = hand_id
                 self.last_hand_ids[chat_id] = hand_id
             # Save snapshot with image bytes (fire-and-forget)
             import asyncio as _aio

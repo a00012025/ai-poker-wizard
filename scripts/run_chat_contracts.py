@@ -24,6 +24,7 @@ TESTS = [
     "scripts/regression_tests/test_session_review.py::test_online_session_coach_uses_enriched_verified_teaching_path",
     "scripts/regression_tests/test_session_review.py::test_hh_hand_analysis_uses_public_parsed_hand_boundaries",
     "scripts/regression_tests/test_session_review.py::test_image_message_uses_public_parsed_hand_boundaries",
+    "scripts/regression_tests/test_review_hand_drill.py",
     "scripts/regression_tests/test_live_flow.py::test_live_detail_uses_persisted_parsed_json_not_raw_reparse",
 ]
 
