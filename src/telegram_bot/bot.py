@@ -1082,6 +1082,7 @@ class PokerWizardBot:
             context = await self.session_manager.analyze_parsed_hand(
                 chat_id, analysis_input, user_id=user_id, refresh_token=refresh_token
             )
+            context["hand_id"] = hand_id
 
             # Extract deviations for leak detection (fire-and-forget)
             if self.session_manager.db and self.session_manager.db.pool:
@@ -1125,7 +1126,7 @@ class PokerWizardBot:
             self.log.info(f"[{label}] HH follow-up done ({elapsed:.1f}s)")
 
             formatted = _format_for_telegram(response)
-            markup = self._build_followup_markup(chat_id)
+            markup = self._build_followup_markup(chat_id, include_drill=True)
             sent_markup = False
             for chunk in _split_message(formatted):
                 if not chunk.strip():
@@ -1243,13 +1244,16 @@ class PokerWizardBot:
         return clean, markup
 
     def _build_followup_markup(
-        self, chat_id: int, include_gto_link: bool = False
+        self, chat_id: int, include_gto_link: bool = False,
+        include_drill: bool = False,
     ) -> InlineKeyboardMarkup | None:
         """Build follow-up question buttons from hand analysis context.
 
         When include_gto_link is True (image/text analysis flow only — not HH
         batch follow-ups), append a URL button deep-linking to hero's last
         decision node in GTO Wizard's /solutions strategy view.
+        HH hand reviews use include_drill to expose the same Drill picker on
+        their coaching reply, which has no separate compact summary card.
         """
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
@@ -1325,6 +1329,10 @@ class PokerWizardBot:
                     keyboard.append(
                         [InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]
                     )
+            if include_gto_link or include_drill:
+                drill_button = self._review_drill_button(ctx)
+                if drill_button:
+                    keyboard.append([drill_button])
 
             if not keyboard:
                 return None
@@ -1335,8 +1343,17 @@ class PokerWizardBot:
         except Exception:
             return None
 
+    def _review_drill_button(self, ctx: dict):
+        """Return a persistent hand-ID callback for the reviewed hand."""
+        hand_id = ctx.get("hand_id")
+        if (not ctx.get("hand") or not isinstance(hand_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_]+", hand_id)
+                or len(f"hdm:{hand_id}".encode("utf-8")) > 64):
+            return None
+        return InlineKeyboardButton("🎯 建立 Drill", callback_data=f"hdm:{hand_id}")
+
     def _build_gto_link_markup(self, chat_id: int) -> InlineKeyboardMarkup | None:
-        """Build a markup with ONLY the "Open in GTO Wizard" deep-link button.
+        """Build the summary-card Study link and per-hand Drill picker.
 
         Attached to the compact GTO summary (📋) message in the image flow so
         the link sits on the analysis card, not the coaching reply.
@@ -1346,11 +1363,13 @@ class PokerWizardBot:
             if not ctx:
                 return None
             gto_url = self._build_gto_solution_url(ctx)
-            if not gto_url:
-                return None
-            return InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)]]
-            )
+            rows = []
+            if gto_url:
+                rows.append([InlineKeyboardButton("🧙 在 GTO Wizard 開啟", url=gto_url)])
+            drill_button = self._review_drill_button(ctx)
+            if drill_button:
+                rows.append([drill_button])
+            return InlineKeyboardMarkup(rows) if rows else None
         except Exception:
             return None
 
@@ -1376,6 +1395,107 @@ class PokerWizardBot:
         except Exception:
             self.log.debug("GTOW solution URL build failed", exc_info=True)
             return None
+
+    async def handle_review_drill_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Pick one decision from a reviewed hand and ensure its GTOW Drill."""
+        query = update.callback_query
+        if not self._is_owner(update):
+            await self._answer_callback_safely(query, "僅限 owner。", show_alert=True)
+            return
+        if not (self.db and self.db.pool):
+            await self._answer_callback_safely(query, "資料庫未連線。", show_alert=True)
+            return
+
+        data = query.data or ""
+        hand_id = data[4:] if data.startswith("hdm:") else data.split(":", 2)[1]
+        if not re.fullmatch(r"[A-Za-z0-9_]+", hand_id):
+            await self._answer_callback_safely(query, "無效的手牌代碼。", show_alert=True)
+            return
+        chat_id = update.effective_chat.id
+        await self._answer_callback_safely(
+            query, "正在載入決策點…" if data.startswith("hdm:") else "正在建立 Drill…"
+        )
+
+        hand = await self.db.find_hand(chat_id, hand_id)
+        if not hand or hand.get("hand_id") != hand_id:
+            await context.bot.send_message(chat_id, "找不到這手牌，請重新分析。")
+            return
+
+        from review_hand_drill import review_drill_spots
+
+        options = review_drill_spots(hand, hand_id)
+        if data.startswith("hdm:"):
+            if not options:
+                await context.bot.send_message(chat_id, "這手沒有可建立精確 Drill 的決策點。")
+                return
+            await context.bot.send_message(
+                chat_id,
+                f"🎯 {hand_id}｜選擇要練的 spot",
+                reply_markup=self._rows_to_markup([
+                    [{"text": option["label"], "callback_data": option["callback_data"]}]
+                    for option in options
+                ]),
+            )
+            return
+
+        option = next((item for item in options if item["callback_data"] == data), None)
+        if option is None:
+            await context.bot.send_message(chat_id, "找不到這個決策點，請重新開啟 Drill 清單。")
+            return
+        user_id = update.effective_user.id
+        refresh_token = await self._get_user_refresh_token(user_id)
+        if not refresh_token:
+            await context.bot.send_message(chat_id, "請先使用 /settoken 綁定 GTO Wizard 帳號。")
+            return
+
+        try:
+            from review_hand_drill import build_review_drill_url
+            from gtow_drill_service import (
+                GTOWDrillClient, settings_from_trainer_url, settings_hash,
+            )
+            from gtow_trainer_url import apply_trainer_defaults
+
+            def build_url():
+                self._setup_user_token(user_id, refresh_token)
+                try:
+                    return build_review_drill_url(hand, option)
+                finally:
+                    self._clear_user_token()
+
+            url = await asyncio.to_thread(build_url)
+            if not url:
+                await context.bot.send_message(
+                    chat_id,
+                    "這條 action line 目前無法建立精確的 GTOW Drill，請選其他 spot。",
+                )
+                return
+            url = apply_trainer_defaults(url)
+            fingerprint = settings_hash(settings_from_trainer_url(url))
+            client = GTOWDrillClient(user_id, refresh_token)
+            async with self.db.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        fingerprint,
+                    )
+                    binding = await asyncio.to_thread(
+                        client.ensure_drill, url, option["drill_name"]
+                    )
+            await context.bot.send_message(
+                chat_id,
+                f"🎯 GTOW Drill 已備妥\n{option['label']}\n{binding.name}",
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("▶ 開始練習", url=url)]
+                ]),
+            )
+        except Exception:
+            self.log.exception("Review hand Drill creation failed for %s %s", hand_id, data)
+            await context.bot.send_message(
+                chat_id, "建立 GTOW Drill 失敗，請稍後重試。"
+            )
 
     async def handle_followup_button(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -3732,6 +3852,9 @@ class PokerWizardBot:
                 self.handle_live_button,
                 pattern=r"^(lvd|lvs|ors|lvpg|lvadd|lvr|qcl|qpg|qex|qad|qad2|qsrc|qraw|qdet|qdst|srd|srv|srd2|srv2|src2):",
             )
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(self.handle_review_drill_button, pattern=r"^(hdm|hds):")
         )
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button, pattern=r"^fullingest:")

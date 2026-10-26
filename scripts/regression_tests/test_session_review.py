@@ -842,7 +842,11 @@ def test_hh_hand_analysis_uses_public_parsed_hand_boundaries():
     bot.log = logging.getLogger("test")
     bot._user_label = lambda _update: "test-user"
     bot._get_user_refresh_token = lambda _user_id: asyncio.sleep(0, result="refresh")
-    bot._build_followup_markup = lambda _chat_id: None
+    def capture_markup(_chat_id, **kwargs):
+        calls["markup_kwargs"] = kwargs
+        return None
+
+    bot._build_followup_markup = capture_markup
 
     async def no_pending_images(*_args):
         calls["flushed"] = True
@@ -869,6 +873,7 @@ def test_hh_hand_analysis_uses_public_parsed_hand_boundaries():
     assert_in("已解析的穩定手牌資料", coach_kwargs["source_instruction"])
     assert_eq(coach_kwargs["user_id"], 20)
     assert_eq(coach_kwargs["refresh_token"], "refresh")
+    assert_eq(calls["markup_kwargs"], {"include_drill": True})
     assert_true(any("coach reply" in text for text, _kwargs in msg.replies))
     assert_true(calls["flushed"])
 
