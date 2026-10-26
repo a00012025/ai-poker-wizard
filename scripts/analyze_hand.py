@@ -2877,6 +2877,7 @@ def _run_analysis(hand: dict) -> dict:
                 chipev_params["stacks"] = ""
                 solutions[i] = _fetch_with_token(chipev_params)
                 if solutions[i]:
+                    hero_spots[i]["solution_params"] = chipev_params
                     icm_fallback_note = "⚠ ICM 模式不可用（可能需要更高等級的 GTO Wizard 訂閱），已自動改用 Chip EV"
 
     # Retry postflop spots with GTO-recommended action substitution.
@@ -3448,6 +3449,27 @@ def _run_analysis(hand: dict) -> dict:
     compact_hero = (f"♠ {display_hero_pos} | {eff_str} {mode_str}" if no_hero_hand
                     else f"♠ {display_hero_pos} {hero_hand_display} | {eff_str} {mode_str}")
     compact = [compact_hero]
+    if is_icm:
+        if icm_fallback_note:
+            compact.append(icm_fallback_note)
+        icm_params_used = None
+        for spot, sol in zip(hero_spots, solutions):
+            if spot["street"] != "preflop" or sol is None:
+                continue
+            params_used = spot.get("solution_params") or spot["params"]
+            if params_used.get("gametype", "").startswith("MTTGeneral_ICM"):
+                icm_params_used = params_used
+                break
+        if icm_params_used:
+            from icm_compact import format_icm_compact_context
+            compact.extend(format_icm_compact_context(
+                gametype=icm_params_used["gametype"],
+                stacks=icm_params_used.get("stacks") or "",
+                positions=pos_order,
+                user_stacks=hand.get("player_stacks"),
+            ))
+        elif gametype == "MTTGeneral" and not icm_fallback_note:
+            compact.append("⚠ 未找到匹配的 ICM 模式，已改用 Chip EV")
     if multiway_note:
         # multiway_note already starts with ⚠ — don't double it
         compact.append(multiway_note if multiway_note.startswith("⚠") else f"⚠ {multiway_note}")
