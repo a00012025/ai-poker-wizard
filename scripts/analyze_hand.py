@@ -2120,17 +2120,6 @@ def _run_analysis(hand: dict) -> dict:
                     pass  # fall back to original preflop_before
                 preflop_depth = hero_depth
 
-    # D1a: range-mismatch caveats for facing nodes whose solver depth bucket
-    # differs from the preceding node's. Consumed in order as facing spots are
-    # built below. Empty when the resolver opted out (ICM / no stacks / no jam).
-    _facing_caveats = []
-    if node_depths and not multiway_note:
-        _facing_caveats = [
-            e.get("caveat") for e in node_depths["nodes"]
-            if e["node"].startswith("facing")
-        ]
-    _facing_caveat_i = 0
-
     # Multiway (real-structure branch only): query the REAL pre-flop node
     # (cold-callers preserved) for hero's range, not the HU-collapsed line.
     # Post-flop is approximated heads-up, but pre-flop the solver models multiway
@@ -2225,15 +2214,12 @@ def _run_analysis(hand: dict) -> dict:
                     "solver_hero_pos": solver_hero_pos,
                     "action_desc": f"  → 實際行動: {display_hero_pos} {code}（solver code: {code}）",
                     "taken_code": code,
-                    "depth_caveat": (_facing_caveats[_facing_caveat_i]
-                                     if _facing_caveat_i < len(_facing_caveats)
-                                     else None),
+                    "depth_caveat": None,
                     "hu_fallback_params": dict(
                         gametype=gametype, depth=depth, stacks=icm_stacks,
                         preflop_actions=hu_fallback_n,
                     ) if hu_fallback_n else None,
                 })
-                _facing_caveat_i += 1
 
             prefix_parts.append(code)
             if code == "F":
@@ -2278,11 +2264,8 @@ def _run_analysis(hand: dict) -> dict:
                     ),
                     "solver_hero_pos": solver_hero_pos,
                     "action_desc": None,
-                    "depth_caveat": (_facing_caveats[_facing_caveat_i]
-                                     if _facing_caveat_i < len(_facing_caveats)
-                                     else None),
+                    "depth_caveat": None,
                 })
-                _facing_caveat_i += 1
 
     board = ""
     flop_acts = ""
@@ -3430,6 +3413,25 @@ def _run_analysis(hand: dict) -> dict:
             results.append("")
 
     results.append(f"⏱ Discovery: {t_phase1 - t0:.1f}s | Analysis: {t_phase2 - t_phase1:.1f}s | Total: {t_phase2 - t0:.1f}s")
+
+    # Solver retries can change a spot's depth after it was constructed.
+    # Generate the warning only now, from the final queried depths, so the
+    # compact text cannot claim a 25bb tree when the request used 80bb.
+    if not is_icm:
+        from node_depth import depth_transition_caveat
+        previous_preflop_bucket = None
+        for spot in hero_spots:
+            if spot["street"] != "preflop" or not spot.get("header"):
+                continue
+            try:
+                bucket = int(float(spot["params"]["depth"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            spot["depth_caveat"] = (
+                depth_transition_caveat(previous_preflop_bucket, bucket)
+                if previous_preflop_bucket is not None else None
+            )
+            previous_preflop_bucket = bucket
 
     # ── Phase 3b: Build compact output for user-facing GTO summary ──
     from gto_formatter import format_spot_compact, _action_label, _action_label_short
