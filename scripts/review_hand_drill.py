@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Callable
+from urllib.parse import urlsplit
 
 
 _STREET_LABELS = {
@@ -11,9 +13,29 @@ _STREET_LABELS = {
 }
 
 
+def parse_shared_hand_id(value: str) -> str | None:
+    """Accept one GTOW shared-hand URL or its canonical UUID."""
+    value = (value or "").strip()
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        if (parts.scheme != "https" or parts.netloc != "app.gtowizard.com"
+                or parts.fragment):
+            return None
+        match = re.fullmatch(r"/shared-hand/([0-9a-fA-F-]{36})/?", parts.path)
+        if not match:
+            return None
+        value = match.group(1)
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return None
+    return str(parsed) if str(parsed) == value.lower() else None
+
+
 def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
     """One stable callback choice per hero decision in a saved hand."""
-    if not re.fullmatch(r"[A-Za-z0-9_]+", hand_id or ""):
+    if not (re.fullmatch(r"[A-Za-z0-9_]+", hand_id or "")
+            or parse_shared_hand_id(hand_id) == hand_id):
         return []
 
     from scorecard import spot_desc_zh

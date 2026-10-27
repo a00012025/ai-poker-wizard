@@ -605,6 +605,7 @@ class PokerWizardBot:
 /settoken - 手動 token 備援
 /logout - 解除 token 並撤銷同步裝置
 /clear - 清除對話紀錄
+/drill GTOW連結 - 選擇決策點並建立練習 Drill
 
 **手牌分析：**
 直接描述手牌情況，自動 GTO 分析。支援多輪追問。
@@ -905,6 +906,11 @@ class PokerWizardBot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages through the injected chat workflow."""
+        from review_hand_drill import parse_shared_hand_id
+
+        if parse_shared_hand_id(update.message.text or ""):
+            await self.drill_command(update, context)
+            return
         await self._touch_user(update)
         user_id = update.effective_user.id
         if not await self._has_gto_token(user_id):
@@ -1410,7 +1416,10 @@ class PokerWizardBot:
 
         data = query.data or ""
         hand_id = data[4:] if data.startswith("hdm:") else data.split(":", 2)[1]
-        if not re.fullmatch(r"[A-Za-z0-9_]+", hand_id):
+        from review_hand_drill import parse_shared_hand_id
+
+        if not (re.fullmatch(r"[A-Za-z0-9_]+", hand_id)
+                or parse_shared_hand_id(hand_id) == hand_id):
             await self._answer_callback_safely(query, "無效的手牌代碼。", show_alert=True)
             return
         chat_id = update.effective_chat.id
@@ -1418,25 +1427,28 @@ class PokerWizardBot:
             query, "正在載入決策點…" if data.startswith("hdm:") else "正在建立 Drill…"
         )
 
-        hand = await self.db.find_hand(chat_id, hand_id)
+        try:
+            if parse_shared_hand_id(hand_id) == hand_id:
+                hand = await self._load_review_drill_hand(
+                    hand_id, update.effective_user.id
+                )
+            else:
+                hand = await self.db.find_hand(chat_id, hand_id)
+        except Exception:
+            self.log.exception("Review Drill hand load failed for %s", hand_id)
+            await context.bot.send_message(chat_id, "載入這手的 Analyzer 資料失敗，請稍後重試。")
+            return
         if not hand or hand.get("hand_id") != hand_id:
-            await context.bot.send_message(chat_id, "找不到這手牌，請重新分析。")
+            await context.bot.send_message(chat_id, "找不到這手牌的 Analyzer 資料，請先同步 GTOW 手牌。")
             return
 
         from review_hand_drill import review_drill_spots
 
         options = review_drill_spots(hand, hand_id)
         if data.startswith("hdm:"):
-            if not options:
-                await context.bot.send_message(chat_id, "這手沒有可建立精確 Drill 的決策點。")
-                return
-            await context.bot.send_message(
-                chat_id,
-                f"🎯 {hand_id}｜選擇要練的 spot",
-                reply_markup=self._rows_to_markup([
-                    [{"text": option["label"], "callback_data": option["callback_data"]}]
-                    for option in options
-                ]),
+            await self._send_review_drill_menu(
+                lambda text, **kw: context.bot.send_message(chat_id, text, **kw),
+                hand_id, options,
             )
             return
 
@@ -1496,6 +1508,80 @@ class PokerWizardBot:
             await context.bot.send_message(
                 chat_id, "建立 GTOW Drill 失敗，請稍後重試。"
             )
+
+    async def _load_review_drill_hand(self, hand_id: str, user_id: int) -> dict | None:
+        """Rebuild one owned online Analyze hand for the existing Drill picker."""
+        row = await self.db.pool.fetchrow(
+            "SELECT gtow_hand_id, position, hero_hand, total_players, "
+            "preflop_depth_bb, raw_path FROM ledger_hands "
+            "WHERE gtow_hand_id=$1 AND source='online'",
+            hand_id,
+        )
+        if not row:
+            return None
+        from session_review import _load_detail
+
+        detail = await asyncio.to_thread(_load_detail, row["raw_path"])
+        if detail is None:
+            refresh_token = await self._get_user_refresh_token(user_id)
+            if not refresh_token:
+                return None
+            from queue_feed import _user_detail_loader
+
+            detail = await asyncio.to_thread(
+                _user_detail_loader(user_id, refresh_token), hand_id
+            )
+        if not detail:
+            return None
+        from analysis_fidelity_check import reconstruct_analyze_hand
+
+        return reconstruct_analyze_hand(dict(row), detail)
+
+    async def _send_review_drill_menu(self, send, hand_id: str, options: list[dict]):
+        if not options:
+            await send("這手沒有可建立精確 Drill 的決策點。")
+            return
+        await send(
+            f"🎯 {hand_id}｜選擇要練的 spot",
+            reply_markup=self._rows_to_markup([
+                [{"text": option["label"], "callback_data": option["callback_data"]}]
+                for option in options
+            ]),
+        )
+
+    async def drill_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/drill <GTOW shared-hand URL or UUID> — choose a decision to train."""
+        if not self._is_owner(update):
+            return
+        if not (self.db and self.db.pool):
+            await update.message.reply_text("資料庫未連線。")
+            return
+        from review_hand_drill import parse_shared_hand_id, review_drill_spots
+
+        raw = (update.message.text or "").strip()
+        value = raw.split(maxsplit=1)[1].strip() if raw.startswith("/drill ") else raw
+        hand_id = parse_shared_hand_id(value)
+        if not hand_id:
+            await update.message.reply_text(
+                "請傳 /drill 加 GTOW shared-hand 連結或 hand ID。"
+            )
+            return
+        try:
+            hand = await self._load_review_drill_hand(
+                hand_id, update.effective_user.id
+            )
+        except Exception:
+            self.log.exception("GTOW shared hand load failed for %s", hand_id)
+            await update.message.reply_text("載入這手的 Analyzer 資料失敗，請稍後重試。")
+            return
+        if not hand:
+            await update.message.reply_text(
+                "找不到這手的 Analyzer 資料，請先用 ♠ 同步手牌或 /ingest。"
+            )
+            return
+        await self._send_review_drill_menu(
+            update.message.reply_text, hand_id, review_drill_spots(hand, hand_id)
+        )
 
     async def handle_followup_button(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -3839,6 +3925,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("queue", self.queue_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("review", self.review_command))
+        self.application.add_handler(CommandHandler("drill", self.drill_command))
         self.application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )

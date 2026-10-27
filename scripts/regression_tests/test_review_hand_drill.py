@@ -7,6 +7,192 @@ from types import SimpleNamespace
 import pytest
 
 
+GTOW_ID = "f253acc2-5b44-464e-b4f5-1542d6fde9b6"
+GTOW_URL = (f"https://app.gtowizard.com/shared-hand/{GTOW_ID}"
+            "?from_player=acc_bb8cyo9dlw&played_at=2026-10-26")
+
+
+def test_shared_hand_id_accepts_exact_url_or_uuid_only():
+    from review_hand_drill import parse_shared_hand_id
+
+    assert parse_shared_hand_id(GTOW_URL) == GTOW_ID
+    assert parse_shared_hand_id(GTOW_ID) == GTOW_ID
+    for value in ("https://evil.example/shared-hand/" + GTOW_ID,
+                  "https://app.gtowizard.com/shared-hand/not-a-uuid",
+                  "H3959"):
+        assert parse_shared_hand_id(value) is None
+
+
+def test_shared_hand_uuid_has_callback_choices():
+    from review_hand_drill import review_drill_spots
+
+    options = review_drill_spots(H3959, GTOW_ID)
+    assert [o["callback_data"] for o in options] == [
+        f"hds:{GTOW_ID}:preflop:0", f"hds:{GTOW_ID}:flop:0",
+        f"hds:{GTOW_ID}:flop:1",
+    ]
+    assert all(len(o["callback_data"].encode()) <= 64 for o in options)
+
+
+@pytest.mark.telegram
+def test_drill_command_shows_shared_hand_decisions(monkeypatch):
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.admin_chat_id = 7
+    bot.db = SimpleNamespace(pool=object())
+    bot.log = logging.getLogger("test.shared.drill")
+    seen = []
+
+    async def load(hand_id, user_id):
+        seen.append((hand_id, user_id))
+        return {**H3959, "hand_id": hand_id}
+
+    bot._load_review_drill_hand = load
+    message = SimpleNamespace(
+        text="/drill " + GTOW_URL,
+        replies=[],
+    )
+
+    async def reply(text, **kw):
+        message.replies.append((text, kw))
+
+    message.reply_text = reply
+    update = SimpleNamespace(
+        message=message, effective_user=SimpleNamespace(id=7),
+        effective_chat=SimpleNamespace(id=7),
+    )
+    asyncio.run(bot.drill_command(update, SimpleNamespace()))
+
+    assert seen == [(GTOW_ID, 7)]
+    buttons = message.replies[0][1]["reply_markup"].inline_keyboard
+    assert [b[0].callback_data for b in buttons] == [
+        f"hds:{GTOW_ID}:preflop:0", f"hds:{GTOW_ID}:flop:0",
+        f"hds:{GTOW_ID}:flop:1",
+    ]
+
+
+@pytest.mark.telegram
+def test_shared_hand_loader_uses_online_ledger_and_archived_detail(monkeypatch):
+    from telegram_bot.bot import PokerWizardBot
+    import session_review
+    import analysis_fidelity_check
+
+    seen = []
+
+    class Pool:
+        async def fetchrow(self, sql, hand_id):
+            seen.append((sql, hand_id))
+            return {
+                "gtow_hand_id": hand_id, "position": "BB", "hero_hand": "Tc9d",
+                "total_players": 7, "preflop_depth_bb": 35.125,
+                "raw_path": "archived.json.gz",
+            }
+
+    def load_detail(path):
+        seen.append(path)
+        return {"game_analysis": {"game_points": []}}
+
+    def reconstruct(row, detail):
+        seen.append((row["hero_hand"], detail))
+        return {**H3959, "hand_id": row["gtow_hand_id"]}
+
+    monkeypatch.setattr(session_review, "_load_detail", load_detail)
+    monkeypatch.setattr(analysis_fidelity_check, "reconstruct_analyze_hand", reconstruct)
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=Pool())
+
+    hand = asyncio.run(bot._load_review_drill_hand(GTOW_ID, 7))
+
+    assert hand["hand_id"] == GTOW_ID
+    assert "source='online'" in seen[0][0]
+    assert seen[1] == "archived.json.gz"
+    assert seen[2][0] == "Tc9d"
+
+
+@pytest.mark.telegram
+def test_shared_hand_decision_callback_reloads_analyzer_hand():
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.admin_chat_id = 7
+    bot.db = SimpleNamespace(pool=object())
+    bot.log = logging.getLogger("test.shared.callback")
+    seen = []
+
+    async def load(hand_id, user_id):
+        seen.append((hand_id, user_id))
+        return {**H3959, "hand_id": hand_id}
+
+    bot._load_review_drill_hand = load
+    update = _update(f"hdm:{GTOW_ID}")
+    tg = _Telegram()
+
+    asyncio.run(bot.handle_review_drill_button(update, SimpleNamespace(bot=tg)))
+
+    assert seen == [(GTOW_ID, 7)]
+    assert tg.messages[0][2]["reply_markup"].inline_keyboard[0][0].callback_data == (
+        f"hds:{GTOW_ID}:preflop:0"
+    )
+
+
+@pytest.mark.telegram
+def test_shared_hand_loader_fetches_analyzer_detail_when_archive_missing(monkeypatch):
+    from telegram_bot.bot import PokerWizardBot
+    import session_review
+    import queue_feed
+    import analysis_fidelity_check
+
+    class Pool:
+        async def fetchrow(self, _sql, hand_id):
+            return {
+                "gtow_hand_id": hand_id, "position": "BB", "hero_hand": "Tc9d",
+                "total_players": 7, "preflop_depth_bb": 35.125,
+                "raw_path": "missing.json.gz",
+            }
+
+    seen = []
+    monkeypatch.setattr(session_review, "_load_detail", lambda _path: None)
+
+    def detail_loader(user_id, refresh_token):
+        seen.append((user_id, refresh_token))
+        return lambda hand_id: {"hand_id": hand_id}
+
+    monkeypatch.setattr(queue_feed, "_user_detail_loader", detail_loader)
+    monkeypatch.setattr(
+        analysis_fidelity_check, "reconstruct_analyze_hand",
+        lambda row, detail: {**H3959, "hand_id": detail["hand_id"]},
+    )
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=Pool())
+
+    async def token(_user_id):
+        return "refresh"
+
+    bot._get_user_refresh_token = token
+    hand = asyncio.run(bot._load_review_drill_hand(GTOW_ID, 7))
+
+    assert hand["hand_id"] == GTOW_ID
+    assert seen == [(7, "refresh")]
+
+
+@pytest.mark.telegram
+def test_pasting_shared_hand_link_opens_drill_picker_directly():
+    from telegram_bot.bot import PokerWizardBot
+
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    seen = []
+
+    async def drill(update, _context):
+        seen.append(update.message.text)
+
+    bot.drill_command = drill
+    update = SimpleNamespace(message=SimpleNamespace(text=GTOW_URL))
+    asyncio.run(bot.handle_message(update, SimpleNamespace()))
+
+    assert seen == [GTOW_URL]
+
+
 H3959 = {
     "gametype": "MTTGeneral",
     "hero_hand": "9h8h",
