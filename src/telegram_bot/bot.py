@@ -346,6 +346,21 @@ def _queue_source_payload(
     return html, buttons
 
 
+def _gtow_drill_lifetime_html(binding, lifetime) -> str:
+    """Shared GTOW Drill identity and lifetime record for queue and hand review."""
+    from html import escape
+
+    link_state = "剛建立" if binding.created else "已連結既有"
+    score = f"{lifetime.gto_score * 100:.1f}%" if lifetime.total_hands else "—"
+    return (
+        f"• {link_state}：{escape(binding.name)}\n"
+        f"• 歷史累計：{lifetime.total_hands} hands / "
+        f"{lifetime.played_moves} decisions\n"
+        f"• 歷史 Score：{score}\n"
+        f"• 歷史 EV loss：{lifetime.total_ev_loss_bb:.2f}bb\n"
+    )
+
+
 def _queue_drill_detail_payload(
     item: dict, binding, lifetime, attempt, *, page: int = 0,
     refreshed_at: str | None = None,
@@ -360,8 +375,6 @@ def _queue_drill_detail_payload(
     target_hands = int(item.get("gtow_target_hands") or 30)
     target_score = float(item.get("gtow_target_score") or 0.90)
     passed = attempt.total_hands >= target_hands and attempt.gto_score >= target_score
-    link_state = "剛建立" if binding.created else "已連結既有"
-    lifetime_score = f"{lifetime.gto_score * 100:.1f}%" if lifetime.total_hands else "—"
     attempt_score = f"{attempt.gto_score * 100:.1f}%" if attempt.total_hands else "—"
     status = "✅ 本次 Drill 已達標" if passed else "⏳ 尚未達標"
     refresh_line = f"• 🔄 成績已更新：{_esc(refreshed_at)}\n" if refreshed_at else ""
@@ -372,11 +385,7 @@ def _queue_drill_detail_payload(
         f"• 累計 EV loss：{float(item.get('total_ev_loss_bb') or 0):.1f}bb\n\n"
         f"{bias_line}"
         f"<b>GTOW Drill</b>\n"
-        f"• {link_state}：{_esc(binding.name)}\n"
-        f"• 歷史累計：{lifetime.total_hands} hands / "
-        f"{lifetime.played_moves} decisions\n"
-        f"• 歷史 Score：{lifetime_score}\n"
-        f"• 歷史 EV loss：{lifetime.total_ev_loss_bb:.2f}bb\n\n"
+        f"{_gtow_drill_lifetime_html(binding, lifetime)}\n"
         f"<b>本次處方</b>\n"
         f"• {attempt.sessions} sessions · {attempt.total_hands}/{target_hands} hands"
         f" · {attempt.played_moves} decisions\n"
@@ -1495,12 +1504,36 @@ class PokerWizardBot:
                     binding = await asyncio.to_thread(
                         client.ensure_drill, url, option["drill_name"]
                     )
+            try:
+                lifetime = await asyncio.to_thread(
+                    client.drill_totals, binding.drill_id
+                )
+                lifetime_html = _gtow_drill_lifetime_html(binding, lifetime)
+            except Exception:
+                self.log.warning(
+                    "Review Drill lifetime stats unavailable for %s",
+                    binding.drill_id, exc_info=True,
+                )
+                from html import escape
+
+                link_state = "剛建立" if binding.created else "已連結既有"
+                lifetime_html = (
+                    f"• {link_state}：{escape(binding.name)}\n"
+                    "• 歷史成績暫時無法讀取\n"
+                )
+            from html import escape
+
             await context.bot.send_message(
                 chat_id,
-                f"🎯 GTOW Drill 已備妥\n{option['label']}\n{binding.name}",
+                f"🎯 <b>{escape(option['label'])}</b>\n\n"
+                f"<b>GTOW Drill</b>\n{lifetime_html}",
+                parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("▶ 開始練習", url=url)]
+                    [InlineKeyboardButton("▶ 開始練習", url=url)],
+                    [InlineKeyboardButton(
+                        "🔄 更新成績", callback_data=option["callback_data"]
+                    )],
                 ]),
             )
         except Exception:
@@ -1512,9 +1545,14 @@ class PokerWizardBot:
     async def _load_review_drill_hand(self, hand_id: str, user_id: int) -> dict | None:
         """Rebuild an Analyze hand, including hands not yet in the ledger."""
         row = await self.db.pool.fetchrow(
-            "SELECT gtow_hand_id, position, hero_hand, total_players, "
-            "preflop_depth_bb, raw_path FROM ledger_hands "
-            "WHERE gtow_hand_id=$1 AND source='online'",
+            "SELECT h.gtow_hand_id, h.position, h.hero_hand, h.total_players, "
+            "h.preflop_depth_bb, h.raw_path, "
+            "(SELECT d.gametype FROM ledger_decisions d "
+            " WHERE d.gtow_hand_id=h.gtow_hand_id AND d.source='online' "
+            " AND d.street='preflop' AND d.gametype LIKE 'MTTGeneral_ICM%' "
+            " ORDER BY d.decision_idx LIMIT 1) AS icm_gametype "
+            "FROM ledger_hands h "
+            "WHERE h.gtow_hand_id=$1 AND h.source='online'",
             hand_id,
         )
         from session_review import _load_detail
@@ -1540,7 +1578,11 @@ class PokerWizardBot:
                 return None
         from analysis_fidelity_check import reconstruct_analyze_hand
 
-        return reconstruct_analyze_hand(dict(row), detail)
+        row_data = dict(row)
+        hand = reconstruct_analyze_hand(row_data, detail)
+        if row_data.get("icm_gametype"):
+            hand["gametype"] = row_data["icm_gametype"]
+        return hand
 
     async def _send_review_drill_menu(self, send, hand_id: str, options: list[dict]):
         if not options:

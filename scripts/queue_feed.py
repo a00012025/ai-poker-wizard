@@ -673,6 +673,32 @@ def _user_detail_loader(user_id: int, refresh_token: str | None):
     return load
 
 
+def exact_preflop_nodes(
+    hand: dict, decision_idx: int, depths: list[int] | None,
+    *, resolver, solution_loader,
+) -> tuple[list[tuple[dict, str]], list[int] | None]:
+    """Keep only solver-supported depths for one exact preflop action line."""
+    resolved = resolver(hand, "preflop", decision_idx)
+    multi_depth = resolved.get("gametype") == "MTTGeneral" and bool(depths)
+    candidates = list(depths) if multi_depth else [resolved["depth"]]
+    nodes = []
+    valid_depths = []
+    for candidate in candidates:
+        value = float(candidate)
+        solver_depth = value + 0.125 if value.is_integer() else candidate
+        solution = solution_loader(
+            gametype=resolved.get("gametype") or "MTTGeneral",
+            depth=solver_depth,
+            stacks=resolved.get("stacks") or "",
+            preflop_actions=resolved.get("preflop_actions") or "",
+        )
+        if solution:
+            nodes.append((solution, resolved["hero_pos"]))
+            if multi_depth:
+                valid_depths.append(int(value))
+    return nodes, valid_depths if multi_depth else None
+
+
 def queue_drill_url_for_decisions(
     decisions: list[dict],
     depths: list[int] | None = None,
@@ -720,28 +746,6 @@ def queue_drill_url_for_decisions(
             hands[key] = hand_loader(dec, detail_loader=detail_loader)
         return hands[key]
 
-    def exact_preflop_nodes(dec: dict, hand: dict):
-        resolved = resolver(
-            hand, "preflop", int(dec.get("decision_idx") or 0))
-        multi_depth = resolved.get("gametype") == "MTTGeneral" and bool(depths)
-        candidates = list(depths) if multi_depth else [resolved["depth"]]
-        nodes = []
-        valid_depths = []
-        for candidate in candidates:
-            value = float(candidate)
-            solver_depth = value + 0.125 if value.is_integer() else candidate
-            solution = solution_loader(
-                gametype=resolved.get("gametype") or "MTTGeneral",
-                depth=solver_depth,
-                stacks=resolved.get("stacks") or "",
-                preflop_actions=resolved.get("preflop_actions") or "",
-            )
-            if solution:
-                nodes.append((solution, resolved["hero_pos"]))
-                if multi_depth:
-                    valid_depths.append(int(value))
-        return nodes, valid_depths if multi_depth else None
-
     try:
         base_url = None
         base_decision = None
@@ -755,7 +759,10 @@ def queue_drill_url_for_decisions(
                     hand = load_hand(dec)
                     valid_depths = None
                     if dec.get("street") == "preflop":
-                        base_nodes, valid_depths = exact_preflop_nodes(dec, hand)
+                        base_nodes, valid_depths = exact_preflop_nodes(
+                            hand, int(dec.get("decision_idx") or 0), depths,
+                            resolver=resolver, solution_loader=solution_loader,
+                        )
                         if not base_nodes:
                             continue
                     base_url = build_custom_spot_url(

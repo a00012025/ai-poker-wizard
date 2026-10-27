@@ -44,14 +44,9 @@ def _depth_band_from_url(url: str) -> tuple[bool, str | None]:
 
     if depths == tuple(MTT_DEPTHS):
         return True, None
-    for band in ("short", "medium"):
+    for band in ("short", "medium", "large"):
         if depths == tuple(DEPTH_BAND_DEPTHS[band]):
             return True, band
-    if depths == tuple(DEPTH_BAND_DEPTHS["large"]):
-        # The preflop band builder represents >50bb with GTOW's deepest MTT
-        # shortcut (40bb).  A custom postflop spot at exactly 40bb is medium.
-        start = (query.get("fh_start_spot") or [""])[0]
-        return True, "large" if start == "preflop" else "medium"
 
     # Exact custom spots use one solver depth rather than a band list.
     if len(depths) == 1:

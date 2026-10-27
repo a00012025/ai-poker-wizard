@@ -2721,16 +2721,35 @@ def drill_url_for(dec: dict) -> str | None:
 
     hand = dec.get("_hand")
     category = dec.get("spot_category")
-    is_icm = bool(hand and hand.get("tournament_type") == "icm")
-    needs_exact = decision_requires_exact_scope(dec) or is_icm
+    gametype = str((hand or {}).get("gametype") or dec.get("gametype") or "")
+    is_icm = bool(hand and hand.get("tournament_type") == "icm") or gametype.startswith("MTTGeneral_ICM")
+    is_cash = bool(hand and hand.get("game_format") == "cash") or gametype.startswith("Cash")
+    if is_cash and not gametype.startswith("Cash"):
+        return None
+    needs_exact = decision_requires_exact_scope(dec) or is_icm or is_cash
     if hand and needs_exact:
         try:
             from gtow_custom_url import build_custom_spot_url
+            kwargs = ({"opponent_role": "opener"}
+                      if category == "vsRaiseCall" else {})
+            if dec.get("street") == "preflop" and gametype == "MTTGeneral":
+                from gto_api import get_spot_solution
+                from gtow_action_resolver import resolve_actions_for_deviation
+                from queue_feed import exact_preflop_nodes
+
+                depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "")
+                nodes, valid_depths = exact_preflop_nodes(
+                    hand, int(dec.get("decision_idx") or 0), depths,
+                    resolver=resolve_actions_for_deviation,
+                    solution_loader=get_spot_solution,
+                )
+                if not nodes:
+                    return None
+                kwargs["depths"] = valid_depths
             return build_custom_spot_url(
                 hand, dec["street"], int(dec.get("decision_idx") or 0),
                 _exact_pot_type(dec),
-                **({"opponent_role": "opener"}
-                   if category == "vsRaiseCall" else {}),
+                **kwargs,
             )
         except Exception:
             # A broad pot-family link is not this action line.  Omit the button
