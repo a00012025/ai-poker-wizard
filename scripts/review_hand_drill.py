@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -64,7 +65,6 @@ def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
             or parse_shared_hand_id(hand_id) == hand_id):
         return []
 
-    from scorecard import spot_desc_zh
     from spot_naming import compact_spot_name
     from spot_taxonomy import walk_spots_from_parsed
 
@@ -90,14 +90,20 @@ def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
             "eff_stack": spot["tags"]["eff_stack"],
             "gtow_hand_id": hand_id,
         }
-        desc = spot_desc_zh({**decision, "hero_pos": spot["hero_pos"]})
-        label = f"{_STREET_LABELS.get(street, street)} {index + 1} · {desc}"
+        name = compact_spot_name(decision)
         options.append({
             **decision,
-            "label": label[:60],
-            "drill_name": compact_spot_name(decision),
+            "label": name,
+            "drill_name": name,
             "callback_data": callback_data,
         })
+    counts = Counter(option["label"] for option in options)
+    for option in options:
+        if counts[option["label"]] > 1:
+            street = option["street"]
+            option["label"] += (
+                f" · {_STREET_LABELS.get(street, street)} {option['decision_idx'] + 1}"
+            )
     return options
 
 
