@@ -34,6 +34,26 @@ def test_shared_hand_uuid_has_callback_choices():
     assert all(len(o["callback_data"].encode()) <= 64 for o in options)
 
 
+def test_uningested_analyzer_detail_supplies_hand_metadata():
+    from review_hand_drill import hand_row_from_analyze_detail
+
+    detail = {
+        "id": GTOW_ID, "players_dealt": 7,
+        "players": [
+            {"position": "LJ", "hand": None, "stack": "44.48", "is_hero": False},
+            {"position": "BB", "hand": "Tc9d", "stack": "34.46", "is_hero": True},
+        ],
+    }
+    row = hand_row_from_analyze_detail(GTOW_ID, detail)
+
+    assert row == {
+        "gtow_hand_id": GTOW_ID, "position": "BB", "hero_hand": "Tc9d",
+        "total_players": 7, "preflop_depth_bb": 34.46,
+    }
+    assert hand_row_from_analyze_detail(GTOW_ID, {**detail, "id": "other"}) is None
+    assert hand_row_from_analyze_detail(GTOW_ID, {**detail, "players": []}) is None
+
+
 @pytest.mark.telegram
 def test_drill_command_shows_shared_hand_decisions(monkeypatch):
     from telegram_bot.bot import PokerWizardBot
@@ -174,6 +194,50 @@ def test_shared_hand_loader_fetches_analyzer_detail_when_archive_missing(monkeyp
 
     assert hand["hand_id"] == GTOW_ID
     assert seen == [(7, "refresh")]
+
+
+@pytest.mark.telegram
+def test_uningested_shared_hand_fetches_owners_history_by_id(monkeypatch):
+    from telegram_bot.bot import PokerWizardBot
+    import queue_feed
+    import analysis_fidelity_check
+
+    class Pool:
+        async def fetchrow(self, sql, hand_id):
+            assert "source='online'" in sql
+            assert hand_id == GTOW_ID
+            return None
+
+    detail = {
+        "id": GTOW_ID, "players_dealt": 7,
+        "players": [{"position": "BB", "hand": "Tc9d", "stack": "34.46",
+                     "is_hero": True}],
+    }
+    seen = []
+
+    def loader(user_id, refresh_token):
+        seen.append((user_id, refresh_token))
+        return lambda hand_id: detail if hand_id == GTOW_ID else None
+
+    def reconstruct(row, raw):
+        seen.append((row, raw))
+        return {**H3959, "hand_id": row["gtow_hand_id"]}
+
+    monkeypatch.setattr(queue_feed, "_user_detail_loader", loader)
+    monkeypatch.setattr(analysis_fidelity_check, "reconstruct_analyze_hand", reconstruct)
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=Pool())
+
+    async def token(_user_id):
+        return "refresh"
+
+    bot._get_user_refresh_token = token
+    hand = asyncio.run(bot._load_review_drill_hand(GTOW_ID, 7))
+
+    assert hand["hand_id"] == GTOW_ID
+    assert seen[0] == (7, "refresh")
+    assert seen[1][0]["hero_hand"] == "Tc9d"
+    assert seen[1][0]["position"] == "BB"
 
 
 @pytest.mark.telegram

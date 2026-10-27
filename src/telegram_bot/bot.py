@@ -1439,7 +1439,7 @@ class PokerWizardBot:
             await context.bot.send_message(chat_id, "載入這手的 Analyzer 資料失敗，請稍後重試。")
             return
         if not hand or hand.get("hand_id") != hand_id:
-            await context.bot.send_message(chat_id, "找不到這手牌的 Analyzer 資料，請先同步 GTOW 手牌。")
+            await context.bot.send_message(chat_id, "你的 GTOW Analyze 手牌紀錄中找不到這手牌的明細。")
             return
 
         from review_hand_drill import review_drill_spots
@@ -1510,18 +1510,17 @@ class PokerWizardBot:
             )
 
     async def _load_review_drill_hand(self, hand_id: str, user_id: int) -> dict | None:
-        """Rebuild one owned online Analyze hand for the existing Drill picker."""
+        """Rebuild an Analyze hand, including hands not yet in the ledger."""
         row = await self.db.pool.fetchrow(
             "SELECT gtow_hand_id, position, hero_hand, total_players, "
             "preflop_depth_bb, raw_path FROM ledger_hands "
             "WHERE gtow_hand_id=$1 AND source='online'",
             hand_id,
         )
-        if not row:
-            return None
         from session_review import _load_detail
 
-        detail = await asyncio.to_thread(_load_detail, row["raw_path"])
+        detail = (await asyncio.to_thread(_load_detail, row["raw_path"])
+                  if row else None)
         if detail is None:
             refresh_token = await self._get_user_refresh_token(user_id)
             if not refresh_token:
@@ -1533,6 +1532,12 @@ class PokerWizardBot:
             )
         if not detail:
             return None
+        if not row:
+            from review_hand_drill import hand_row_from_analyze_detail
+
+            row = hand_row_from_analyze_detail(hand_id, detail)
+            if not row:
+                return None
         from analysis_fidelity_check import reconstruct_analyze_hand
 
         return reconstruct_analyze_hand(dict(row), detail)
@@ -1576,7 +1581,7 @@ class PokerWizardBot:
             return
         if not hand:
             await update.message.reply_text(
-                "找不到這手的 Analyzer 資料，請先用 ♠ 同步手牌或 /ingest。"
+                "你的 GTOW Analyze 手牌紀錄中找不到這手牌的明細。"
             )
             return
         await self._send_review_drill_menu(

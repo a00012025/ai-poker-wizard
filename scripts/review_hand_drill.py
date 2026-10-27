@@ -32,6 +32,32 @@ def parse_shared_hand_id(value: str) -> str | None:
     return str(parsed) if str(parsed) == value.lower() else None
 
 
+def hand_row_from_analyze_detail(hand_id: str, detail: dict) -> dict | None:
+    """Recover the hand metadata needed to reconstruct an uningested hand."""
+    if not isinstance(detail, dict) or str(detail.get("id")) != hand_id:
+        return None
+    players = detail.get("players") or []
+    heroes = [player for player in players if player.get("is_hero") is True]
+    if len(heroes) != 1:
+        return None
+    hero = heroes[0]
+    try:
+        stack = float(hero.get("stack"))
+        players_dealt = int(detail.get("players_dealt") or len(players))
+    except (TypeError, ValueError):
+        return None
+    if not (hero.get("position") and hero.get("hand") and stack > 0
+            and players_dealt >= 2):
+        return None
+    return {
+        "gtow_hand_id": hand_id,
+        "position": hero["position"],
+        "hero_hand": hero["hand"],
+        "total_players": players_dealt,
+        "preflop_depth_bb": stack,
+    }
+
+
 def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
     """One stable callback choice per hero decision in a saved hand."""
     if not (re.fullmatch(r"[A-Za-z0-9_]+", hand_id or "")
