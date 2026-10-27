@@ -1062,61 +1062,17 @@ def format_ev_comparison(spot_solution: dict, taken_code: str, hero_hand: str,
 
     Returns e.g.: "⚠ EV 損失 3.71bb（All-in 7.04bb vs Raise 10.75bb）" or None if no loss or data unavailable.
     """
-    if not spot_solution or "action_solutions" not in spot_solution:
-        return None
-
-    if is_preflop:
-        from hh_deviation_check import _get_action_evs_preflop
-        action_evs = _get_action_evs_preflop(spot_solution, hero_hand, hero_pos)
-    else:
-        from hh_deviation_check import _get_action_evs_postflop
-        if combo_idx is not None and not _combo_idx_in_player_range(
-            spot_solution, hero_pos, combo_idx
-        ):
-            return None
-        action_evs = _get_action_evs_postflop(
-            spot_solution, hero_hand, hero_pos, combo_idx=combo_idx)
-
-    if not action_evs:
-        return None
-
-    strategy_freqs = _get_action_strategy_frequencies(
-        spot_solution, hero_hand, hero_pos, is_preflop, combo_idx
+    detail = ev_loss_detail(
+        spot_solution, taken_code, hero_hand, hero_pos, is_preflop, combo_idx
     )
-    taken_freq = strategy_freqs.get(taken_code) if strategy_freqs else None
-    max_freq = max(strategy_freqs.values()) if strategy_freqs else None
-    from hh_deviation_check import IN_MIX_FREQ_FLOOR
-    if taken_freq is not None and taken_freq >= IN_MIX_FREQ_FLOOR:
-        return None
-    if (
-        taken_code == "F"
-        and taken_freq is not None
-        and max_freq is not None
-        and taken_freq >= 0.05
-        and taken_freq >= max_freq - 0.005
-    ):
-        return None
-
-    hero_ev = action_evs.get(taken_code)
-    if hero_ev is None:
-        return None
-
-    if strategy_freqs:
-        from hh_deviation_check import _best_in_mix
-        best_code, best_ev = _best_in_mix(strategy_freqs, action_evs)
-    else:
-        best_code = max(action_evs, key=action_evs.get)
-        best_ev = action_evs[best_code]
-    if best_code is None or best_ev is None:
-        return None
-    ev_loss = best_ev - hero_ev
-
-    if ev_loss < 0.005:
+    if not detail or detail["ev_loss"] < 0.005:
         return None  # No significant loss
 
     hero_label = _action_label(taken_code, spot_solution)
-    best_label = _action_label(best_code, spot_solution)
-    return f"⚠ EV 損失 {ev_loss:.2f}bb（{hero_label} {hero_ev:.2f}bb vs {best_label} {best_ev:.2f}bb）"
+    best_label = _action_label(detail["best_code"], spot_solution)
+    return (f"⚠ EV 損失 {detail['ev_loss']:.2f}bb"
+            f"（{hero_label} {detail['hero_ev']:.2f}bb vs "
+            f"{best_label} {detail['best_ev']:.2f}bb）")
 
 
 # --- EV-impact severity (preflop absolute bb, postflop pot-relative) --------
@@ -1202,6 +1158,29 @@ def ev_loss_detail(spot_solution: dict, taken_code: str, hero_hand: str,
 
     if taken_freq is not None and taken_freq >= IN_MIX_FREQ_FLOOR:
         best_code, best_ev = taken_code, hero_ev
+        if not is_preflop and strategy_freqs:
+            # Rare mixed sizes can still have a real EV cost. Use the lower EV
+            # of the two most frequent actions as a conservative floor, only
+            # when those two agree closely enough to be comparable. This also
+            # keeps 0%-frequency all-ins with incompatible terminal EVs out of
+            # the reference (H3964: 16.22bb all-in vs 3.32bb check).
+            common = sorted(
+                (code for code, freq in strategy_freqs.items()
+                 if freq >= IN_MIX_FREQ_FLOOR and code in action_evs),
+                key=lambda code: strategy_freqs[code], reverse=True,
+            )[:2]
+            if len(common) == 2 and taken_code not in common:
+                raw_pot = (spot_solution.get("game") or {}).get("pot")
+                try:
+                    reference_pot = float(raw_pot)
+                except (TypeError, ValueError):
+                    reference_pot = 0.0
+                first_ev, second_ev = (action_evs[code] for code in common)
+                if (reference_pot > 0 and
+                        abs(first_ev - second_ev) <= 0.05 * reference_pot):
+                    floor_code = min(common, key=lambda code: action_evs[code])
+                    if action_evs[floor_code] > hero_ev:
+                        best_code, best_ev = floor_code, action_evs[floor_code]
     elif strategy_freqs:
         from hh_deviation_check import _best_in_mix
         best_code, best_ev = _best_in_mix(strategy_freqs, action_evs)

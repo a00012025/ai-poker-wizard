@@ -2409,6 +2409,47 @@ def test_formatter_ev_loss_excludes_zero_frequency_noise():
     assert_eq(comparison, None)
 
 
+def test_mixed_postflop_action_uses_two_common_sizes_as_ev_floor(monkeypatch):
+    """H3964: a 1.3% 55%-pot bet beats both common actions in raw EV.
+
+    An implausible 0%-frequency all-in EV must not make it a 12bb mistake,
+    while a different mixed size below both common actions should be graded.
+    """
+    import gto_formatter as gf
+    import hh_deviation_check as hd
+
+    solution = {"action_solutions": [{"action": {"code": "X"}}],
+                "game": {"pot": "5.9"}}
+    freqs = {"X": 0.798, "R1.2": 0.156, "R1.95": 0.029,
+             "R3.25": 0.013, "RAI": 0.0}
+    evs = {"X": 3.324491955, "R1.2": 3.44778328,
+           "R1.95": 3.49769926, "R3.25": 3.693223765,
+           "RAI": 16.22490995}
+    monkeypatch.setattr(hd, "_get_action_evs_postflop",
+                        lambda *args, **kwargs: evs)
+    monkeypatch.setattr(gf, "_get_action_strategy_frequencies",
+                        lambda *args, **kwargs: freqs)
+
+    h3964 = gf.ev_loss_detail(solution, "R3.25", "T9o", "BB", False)
+    assert_eq(h3964["ev_loss"], 0.0)
+    assert_true(h3964["negligible"])
+
+    evs["R3.25"] = 2.0
+    costly_mix = gf.ev_loss_detail(solution, "R3.25", "T9o", "BB", False)
+    assert_eq(round(costly_mix["ev_loss"], 3), 1.324)
+    assert_eq(costly_mix["best_code"], "X")
+    assert_true(not costly_mix["negligible"])
+    assert_true(costly_mix["taken_in_mix"])
+    assert_in("EV 損失 1.32bb", gf.format_ev_comparison(
+        solution, "R3.25", "T9o", "BB", False))
+
+    # A large disagreement between the common actions is a sign their raw
+    # EV accounting is not comparable; it cannot support a confident grade.
+    evs["R1.2"] = 0.0
+    unreliable = gf.ev_loss_detail(solution, "R3.25", "T9o", "BB", False)
+    assert_eq(unreliable["ev_loss"], 0.0)
+
+
 def test_grade_action_choice_never_charges_an_in_mix_action():
     """Mixed actions are equilibrium-approved even when raw action EVs disagree."""
     from hh_deviation_check import _grade_action_choice
