@@ -291,6 +291,38 @@ def test_h3959_review_menu_has_each_hero_decision():
     assert len({o["label"] for o in options}) == 3
 
 
+def test_review_drill_choices_use_live_flow_compact_names():
+    from review_hand_drill import review_drill_spots
+    from live_flow import spot_label_zh
+
+    options = review_drill_spots(H3959, "H3959")
+
+    assert [option["label"] for option in options] == [
+        spot_label_zh({**option, "position": option["position"]})
+        for option in options
+    ]
+    assert [option["label"] for option in options] == [
+        "HJ RFI (20-50bb)",
+        "SRP｜MP IP｜翻牌 vs X (20-50bb)",
+        "SRP｜MP IP｜翻牌 vs XR (20-50bb)",
+    ]
+
+
+def test_review_drill_choices_disambiguate_identical_short_names(monkeypatch):
+    from review_hand_drill import review_drill_spots
+    import spot_naming
+
+    monkeypatch.setattr(spot_naming, "compact_spot_name", lambda _row: "同名 spot")
+    options = review_drill_spots(H3959, "H3959")
+
+    assert [option["label"] for option in options] == [
+        "同名 spot · 翻前 1",
+        "同名 spot · 翻牌 1",
+        "同名 spot · 翻牌 2",
+    ]
+    assert len({option["callback_data"] for option in options}) == 3
+
+
 def test_review_spot_uses_existing_url_policy_with_exact_index():
     from review_hand_drill import build_review_drill_url, review_drill_spots
 
