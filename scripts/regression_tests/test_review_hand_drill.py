@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -128,6 +129,34 @@ def test_shared_hand_loader_uses_online_ledger_and_archived_detail(monkeypatch):
     assert "source='online'" in seen[0][0]
     assert seen[1] == "archived.json.gz"
     assert seen[2][0] == "Tc9d"
+
+
+@pytest.mark.telegram
+def test_regraded_online_icm_hand_keeps_ledger_gametype(monkeypatch):
+    from telegram_bot.bot import PokerWizardBot
+    import session_review
+    import analysis_fidelity_check
+
+    class Pool:
+        async def fetchrow(self, _sql, hand_id):
+            return {
+                "gtow_hand_id": hand_id, "position": "BTN", "hero_hand": "Ts4c",
+                "total_players": 3, "preflop_depth_bb": 25.375,
+                "raw_path": "icm_archive.json.gz",
+                "icm_gametype": "MTTGeneral_ICM3m1000PTFT",
+            }
+
+    monkeypatch.setattr(session_review, "_load_detail", lambda _path: {"id": GTOW_ID})
+    monkeypatch.setattr(
+        analysis_fidelity_check, "reconstruct_analyze_hand",
+        lambda row, _detail: {"hand_id": row["gtow_hand_id"], "gametype": "MTTGeneral"},
+    )
+    bot = PokerWizardBot.__new__(PokerWizardBot)
+    bot.db = SimpleNamespace(pool=Pool())
+
+    hand = asyncio.run(bot._load_review_drill_hand(GTOW_ID, 7))
+
+    assert hand["gametype"] == "MTTGeneral_ICM3m1000PTFT"
 
 
 @pytest.mark.telegram
@@ -343,6 +372,86 @@ def test_review_spot_uses_existing_url_policy_with_exact_index():
     assert seen[0]["_hand"] is H3959
 
 
+def test_599255dd_large_preflop_drill_uses_real_deep_trees_and_position_scope():
+    from review_hand_drill import build_review_drill_url, review_drill_spots
+
+    hand = {
+        "gametype": "MTTGeneral", "hero_position": "BB", "hero_hand": "AdQd",
+        "effective_bb": 70.179, "players_at_table": 8,
+        "preflop_actions": "F-R2-F-F-F-F-F-R7-C", "streets": [],
+    }
+    option = review_drill_spots(hand, "599255dd-d7c4-4117-ab4c-43cfe7ee0bc1")[0]
+    url = build_review_drill_url(hand, option)
+    params = parse_qs(urlparse(url).query)
+
+    assert option["label"] == "BB vs EP Open (>50bb)"
+    assert params["fh_start_spot"] == ["preflop"]
+    assert params["fh_hero"] == ["BB"]
+    assert params["fh_opponent"] == ["UTG,UTG+1"]
+    assert params["depth_list"] == ["60.125,80.125,100.125"]
+    assert params["depth"] == ["80.125"]
+
+
+def test_legacy_40bb_preflop_drill_is_not_named_over_50bb():
+    from gtow_trainer_url import build_drill_url
+    from spot_naming import compact_spot_name
+
+    url = build_drill_url("vsOpen", "preflop", 40, ["BB"],
+                          opponent_positions=["UTG", "UTG+1"], depths=[40])
+    label = compact_spot_name({
+        "spot_category": "vsOpen", "spot_leaf": "BB_vsOpen_EP",
+        "drill_url": url,
+    })
+    assert label == "BB vs EP Open (20-50bb)"
+
+
+def test_analyze_icm_preflop_review_uses_exact_custom_spot(monkeypatch):
+    from review_hand_drill import build_review_drill_url, review_drill_spots
+    import gtow_custom_url
+
+    hand = {**H3959, "gametype": "MTTGeneral_ICM8m1000PTPCT25"}
+    calls = []
+
+    def custom(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "https://app.gtowizard.com/practice/trainer?fh_start_spot=custom_spot"
+
+    monkeypatch.setattr(gtow_custom_url, "build_custom_spot_url", custom)
+    option = review_drill_spots(hand, "H3959")[0]
+    url = build_review_drill_url(hand, option)
+
+    assert option["gametype"] == "MTTGeneral_ICM8m1000PTPCT25"
+    assert "fh_start_spot=custom_spot" in url
+    assert calls[0][0][1:3] == ("preflop", 0)
+
+
+def test_cash_review_without_cash_solver_mode_does_not_offer_mtt_drill():
+    from review_hand_drill import build_review_drill_url, review_drill_spots
+
+    hand = {**H3959, "game_format": "cash", "gametype": "MTTGeneral"}
+    option = review_drill_spots(hand, "H3959")[0]
+
+    assert build_review_drill_url(hand, option) is None
+
+
+def test_standard_preflop_drill_can_span_positions_and_stack_band():
+    from live_flow import drill_url_for
+
+    url = drill_url_for({
+        "street": "preflop", "decision_idx": 0,
+        "spot_category": "vs3bet", "spot_leaf": "MP_vs3bet_EP",
+        "position": "HJ", "hero_cat": "MP", "villain_cat": "EP",
+        "ip_oop": "IP", "eff_stack": "medium",
+        "_hand": {"gametype": "MTTGeneral"},
+    })
+    params = parse_qs(urlparse(url).query)
+
+    assert params["fh_start_spot"] == ["preflop"]
+    assert params["fh_hero"] == ["LJ,HJ"]
+    assert params["fh_opponent"] == ["UTG,UTG+1"]
+    assert params["depth_list"] == ["25.125,30.125,35.125,40.125,50.125"]
+
+
 def test_gto_summary_adds_drill_picker_without_losing_study_link():
     from telegram_bot.bot import PokerWizardBot
 
@@ -477,7 +586,8 @@ def test_other_user_cannot_open_saved_hand_drill_menu():
 
 
 @pytest.mark.telegram
-def test_select_review_spot_creates_gtow_drill_and_returns_trainer_link(monkeypatch):
+@pytest.mark.parametrize("created", [True, False])
+def test_select_review_spot_creates_gtow_drill_and_returns_trainer_link(monkeypatch, created):
     from telegram_bot.bot import PokerWizardBot
     import gtow_drill_service
     import review_hand_drill
@@ -511,7 +621,14 @@ def test_select_review_spot_creates_gtow_drill_and_returns_trainer_link(monkeypa
 
         def ensure_drill(self, trainer_url, name):
             made.append((trainer_url, name))
-            return SimpleNamespace(drill_id="drill-1", name=name, created=True)
+            return SimpleNamespace(drill_id="drill-1", name=name, created=created)
+
+        def drill_totals(self, drill_id):
+            assert drill_id == "drill-1"
+            return SimpleNamespace(
+                total_hands=12, played_moves=17, gto_score=0.865,
+                total_ev_loss_bb=1.25,
+            )
 
     selected = []
 
@@ -541,7 +658,13 @@ def test_select_review_spot_creates_gtow_drill_and_returns_trainer_link(monkeypa
     assert len(made) == 1
     assert made[0][0].startswith(url)
     assert locks and "pg_advisory_xact_lock" in locks[0][0]
-    assert tg.messages[0][2]["reply_markup"].inline_keyboard[0][0].url == made[0][0]
+    text = tg.messages[0][1]
+    assert ("剛建立" if created else "已連結既有") in text
+    assert "12 hands / 17 decisions" in text
+    assert "86.5%" in text
+    markup = tg.messages[0][2]["reply_markup"].inline_keyboard
+    assert markup[0][0].url == made[0][0]
+    assert markup[1][0].callback_data == "hds:H3959:flop:1"
 
 
 @pytest.mark.telegram

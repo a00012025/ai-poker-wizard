@@ -173,14 +173,14 @@ CAT_POSITIONS: dict[str, list[str]] = {
     "SB": ["SB"], "BB": ["BB"],
 }
 
-# MTT ChipEV trainer depth ladder (verified from a live drill URL 2026-07-09).
-MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40)
-# Stack bands (user's deep/mid/short) mapped onto the ladder. "deep" (>50bb) is
-# rare in MTT ChipEV and snaps to the deepest available.
+# MTTGeneral with_limps depths from GTOW game modes. Keep the practice filter
+# aligned with the solver's available trees, including deep-stack 60/80/100bb.
+MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40, 50, 60, 80, 100)
+# Stack bands map only to trees inside their stated interval.
 DEPTH_BAND_DEPTHS: dict[str, list[int]] = {
     "short": [10, 12, 14, 17, 20],   # <=20bb
-    "medium": [25, 30, 35, 40],      # 20-50bb
-    "large": [40],                    # >50bb -> deepest available
+    "medium": [25, 30, 35, 40, 50],  # 20-50bb
+    "large": [60, 80, 100],           # >50bb
 }
 
 

@@ -3003,6 +3003,43 @@ def test_live_drill_url_omits_failed_exact_postflop_link():
     assert_eq(url, None)
 
 
+def test_live_exact_preflop_drill_uses_only_solved_depths_in_its_band(monkeypatch):
+    """Cold action lines can span a band, but not trees missing that node."""
+    import gtow_action_resolver
+    import gto_api
+    import gtow_custom_url
+    from live_flow import drill_url_for
+
+    seen = []
+    monkeypatch.setattr(
+        gtow_action_resolver, "resolve_actions_for_deviation",
+        lambda *_args: {
+            "gametype": "MTTGeneral", "depth": 80.125, "hero_pos": "BB",
+            "preflop_actions": "F-R2-F-F-F-F-F-R7",
+        },
+    )
+
+    def solution_loader(**params):
+        seen.append(params["depth"])
+        return {"available_actions": []} if params["depth"] in (60.125, 80.125) else None
+
+    monkeypatch.setattr(gto_api, "get_spot_solution", solution_loader)
+    monkeypatch.setattr(
+        gtow_custom_url, "build_custom_spot_url",
+        lambda *_args, **kwargs: kwargs.get("depths"),
+    )
+    result = drill_url_for({
+        "street": "preflop", "decision_idx": 0,
+        "spot_category": "vsCold3bet", "spot_leaf": "BB_vsCold3bet_EP",
+        "position": "BB", "hero_cat": "BB", "villain_cat": "EP",
+        "pot_type": "3bet", "eff_stack": "large",
+        "_hand": {"gametype": "MTTGeneral", "hero_position": "BB"},
+    })
+
+    assert_eq(seen, [60.125, 80.125, 100.125])
+    assert_eq(result, [60, 80])
+
+
 def test_live_icm_drill_url_never_falls_back_to_generic_bucket():
     """Any live ICM drill must use its source hand's exact custom builder."""
     import gtow_custom_url

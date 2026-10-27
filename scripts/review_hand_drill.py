@@ -88,6 +88,7 @@ def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
             "ip_oop": spot["ip_oop"],
             "pot_type": spot["pot_type"],
             "eff_stack": spot["tags"]["eff_stack"],
+            "gametype": hand.get("gametype"),
             "gtow_hand_id": hand_id,
         }
         name = compact_spot_name(decision)
