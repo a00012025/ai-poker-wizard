@@ -19,6 +19,30 @@ import pytest
 
 pytestmark = pytest.mark.ocr
 
+
+def test_h3967_hero_card_under_win_sticker_is_seven_diamonds():
+    import cv2
+    from ocr.classifier.infer import CardClassifier
+    from ocr.table_parser import _classify_hero_crops
+
+    crop = cv2.imread(str(SCRIPTS_DIR / 'test_fixtures' / 'h3967_hero_7d.png'))
+    cards, confidence, _, _ = _classify_hero_crops([crop], CardClassifier())
+    assert cards == ['7d']
+    assert confidence >= 0.70
+
+
+def test_h3967_effective_stack_uses_reconstructed_hero_binding():
+    from ocr.n8_parser import _compute_effective_bb
+
+    with open(SCRIPTS_DIR / 'test_fixtures' / 'h3967_effbb_input.json') as f:
+        hand = json.load(f)
+    effective, hero_start, _ = _compute_effective_bb(
+        hand['columns'], hand['hero_stack'], hand['hero_position'],
+        hand['stacks'], hand['named_stacks'],
+    )
+    assert hero_start == 39.7
+    assert effective == 39.7
+
 def test_board_unknown_suits_are_canonicalized_before_api():
     """Text parses must not leak unknown board suits like 5x to GTOW.
 

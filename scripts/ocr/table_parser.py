@@ -882,6 +882,17 @@ def _classify_hero_crops(
     masked_crops = [_mask_win_overlay(c) for c in crops]
     raw_details = clf.classify_batch_detailed_tta(crops)
     masked_details = clf.classify_batch_detailed_tta(masked_crops)
+    # On a WIN card the lower-half sticker can dominate the full-card rank
+    # head while leaving the printed rank at the top unobstructed (H3967).
+    # Read that top region independently only when a sticker was actually
+    # masked and the full-card rank is uncertain.
+    top_rank_details = []
+    for crop, masked, raw in zip(crops, masked_crops, raw_details):
+        if np.any(masked != crop) and raw["rank_conf"] < 0.90:
+            top = crop[:int(crop.shape[0] * 0.55), :int(crop.shape[1] * 0.82)]
+            top_rank_details.append(clf.classify_batch_detailed_tta([top])[0])
+        else:
+            top_rank_details.append(None)
     details: list[dict] = []
     for i, (raw, masked) in enumerate(zip(raw_details, masked_details)):
         rank_conf = raw["rank_conf"]
@@ -891,6 +902,12 @@ def _classify_hero_crops(
             raw.get("rank_top2", []),
         )
         rank_source = "classifier"
+        top_rank = top_rank_details[i]
+        if (top_rank is not None and top_rank["rank"] != rank
+                and top_rank["rank_conf"] >= 0.995):
+            rank = top_rank["rank"]
+            rank_conf = top_rank["rank_conf"]
+            rank_source = "sticker_free_top"
         corner_rank, corner_conf = _rank_from_corner_ocr(crops[i])
         if _corner_rank_can_override(
             cnn_rank=rank,
