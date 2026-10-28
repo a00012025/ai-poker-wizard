@@ -2515,21 +2515,23 @@ def _engine_relevant_bucket(
         # street's matched chips enter the pot after its header, so include
         # them before capping the engine's cumulative contribution (H3967:
         # river bet/call 15bb each on a 13.1bb header).
-        for col in reversed(columns):
-            entries = col.get("entries") or []
-            sized = [e for e in entries if e.get("size")]
-            if sized:
-                # A simple bet/call pair has an unambiguous matched amount.
-                # Raises, all-ins, and partial calls need street-level
-                # commitment reconstruction; leave their conservative cap.
-                if (len(sized) == 2
-                        and sized[0].get("type") == "hero"
-                        and (sized[0].get("action") or "").lower() == "bet"
-                        and sized[1].get("type") != "hero"
-                        and (sized[1].get("action") or "").lower() == "call"
-                        and abs(float(sized[0]["size"]) - float(sized[1]["size"])) <= 0.1):
-                    pot_bound += 2 * float(sized[1]["size"])
-                break
+        last_header = next(
+            (col for col in reversed(columns)
+             if isinstance(col.get("pot"), (int, float)) and col["pot"] > 0),
+            None,
+        )
+        sized = [e for e in (last_header.get("entries") or []) if e.get("size")] \
+            if last_header else []
+        # A simple bet/call pair in the last header's OWN street has an
+        # unambiguous matched amount.  Earlier streets are already included
+        # in that header; raises and partial calls need a richer reconstruction.
+        if (len(sized) == 2
+                and sized[0].get("type") == "hero"
+                and (sized[0].get("action") or "").lower() == "bet"
+                and sized[1].get("type") != "hero"
+                and (sized[1].get("action") or "").lower() == "call"
+                and abs(float(sized[0]["size"]) - float(sized[1]["size"])) <= 0.1):
+            pot_bound += 2 * float(sized[1]["size"])
     vals = [hero_start]
     found_seat = False
     for pos in er.relevant_opponents:
