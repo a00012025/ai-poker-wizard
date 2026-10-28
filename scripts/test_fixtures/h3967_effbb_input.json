@@ -1,0 +1,201 @@
+{
+  "columns": [
+    {
+      "name": "Blinds",
+      "pot": null,
+      "entries": [],
+      "entries_pre_collapse_count": 5
+    },
+    {
+      "name": "Pre-Flop",
+      "pot": 2.6,
+      "entries": [
+        {
+          "type": "opponent",
+          "position": "UTG",
+          "action": "Fold",
+          "size": null,
+          "player_name": "barikella87"
+        },
+        {
+          "type": "opponent",
+          "position": "UTG+1",
+          "action": "Fold",
+          "size": null,
+          "player_name": "Wadzy"
+        },
+        {
+          "type": "opponent",
+          "position": "LJ",
+          "action": "Fold",
+          "size": null,
+          "player_name": "Caspian98"
+        },
+        {
+          "type": "opponent",
+          "position": "LJ",
+          "action": "Fold",
+          "size": null,
+          "player_name": "xiangcunxue."
+        },
+        {
+          "type": "hero",
+          "position": "BB",
+          "action": "Raise",
+          "size": 2.0
+        },
+        {
+          "type": "opponent",
+          "position": "BTN",
+          "action": "Call",
+          "size": 2.0,
+          "player_name": "dddggg_lil"
+        },
+        {
+          "type": "opponent",
+          "position": "SB",
+          "action": "Fold",
+          "size": null,
+          "player_name": "SharpAce_518"
+        },
+        {
+          "type": "opponent",
+          "position": "BB",
+          "action": "Fold",
+          "size": null,
+          "player_name": "KrasOk"
+        }
+      ],
+      "entries_pre_collapse_count": 15
+    },
+    {
+      "name": "Flop",
+      "pot": 6.6,
+      "entries": [
+        {
+          "type": "hero",
+          "position": null,
+          "action": "Check",
+          "size": null
+        },
+        {
+          "type": "opponent",
+          "position": "BTN",
+          "action": "Check",
+          "size": null,
+          "player_name": "ddd999_lil"
+        }
+      ],
+      "entries_pre_collapse_count": 3
+    },
+    {
+      "name": "Turn",
+      "pot": 6.6,
+      "entries": [
+        {
+          "type": "hero",
+          "position": "BB",
+          "action": "Bet",
+          "size": 3.3
+        },
+        {
+          "type": "opponent",
+          "position": "BTN",
+          "action": "Call",
+          "size": 3.3,
+          "player_name": "dddggg_lil"
+        }
+      ],
+      "entries_pre_collapse_count": 3
+    },
+    {
+      "name": "River",
+      "pot": 13.1,
+      "entries": [
+        {
+          "type": "hero",
+          "position": "BB",
+          "action": "Bet",
+          "size": 15.0
+        },
+        {
+          "type": "opponent",
+          "position": "BTN",
+          "action": "Call",
+          "size": 15.0,
+          "player_name": "ddd999_lil"
+        }
+      ],
+      "entries_pre_collapse_count": 9
+    }
+  ],
+  "hero_stack": 19.4,
+  "hero_position": "CO",
+  "stacks": [
+    36.8,
+    43.4,
+    14.7,
+    8.2,
+    82.6,
+    43.1,
+    20.8,
+    93.6,
+    79.4
+  ],
+  "named_stacks": [
+    {
+      "stack": 36.8,
+      "y": 130.0,
+      "x": 406.0,
+      "name": "barikella87"
+    },
+    {
+      "stack": 43.4,
+      "y": 152.0,
+      "x": 194.0,
+      "name": "KrasOK"
+    },
+    {
+      "stack": 14.7,
+      "y": 152.0,
+      "x": 619.0,
+      "name": "Wadzy"
+    },
+    {
+      "stack": 8.2,
+      "y": 339.0,
+      "x": 73.0,
+      "name": "SharpAce_518"
+    },
+    {
+      "stack": 82.6,
+      "y": 338.0,
+      "x": 741.0,
+      "name": "Caspian98"
+    },
+    {
+      "stack": 43.1,
+      "y": 408.0,
+      "x": 405.0,
+      "name": "S2.50"
+    },
+    {
+      "stack": 20.8,
+      "y": 526.0,
+      "x": 194.0,
+      "name": "dddgg9_lil"
+    },
+    {
+      "stack": 93.6,
+      "y": 526.0,
+      "x": 619.0,
+      "name": "Xiangcunxue:."
+    },
+    {
+      "stack": 79.4,
+      "y": 558.0,
+      "x": 406.0,
+      "name": "cbd191320"
+    }
+  ]
+}
