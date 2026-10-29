@@ -722,6 +722,23 @@ class GeminiSessionManager:
         return merged
 
     @staticmethod
+    def _restore_matching_ocr_depth(gemini_hand: dict, ocr_hand: dict) -> dict:
+        """Keep an OCR stack read when Gemini omits it on the same action line."""
+        if any(
+            gemini_hand.get(key) != ocr_hand.get(key)
+            for key in ("hero_position", "players_at_table", "preflop_actions", "streets")
+        ):
+            return gemini_hand
+        depth = ocr_hand.get("effective_bb")
+        if gemini_hand.get("effective_bb") is None and isinstance(depth, (int, float)) and depth > 0:
+            gemini_hand = dict(gemini_hand)
+            gemini_hand["effective_bb"] = depth
+            start = ocr_hand.get("hero_starting_stack")
+            if gemini_hand.get("hero_starting_stack") is None and isinstance(start, (int, float)) and start > 0:
+                gemini_hand["hero_starting_stack"] = start
+        return gemini_hand
+
+    @staticmethod
     def _cards_only_merge_safe(
         ocr_result: dict,
         gemini_hero_hand: str | None,
@@ -1989,6 +2006,7 @@ class GeminiSessionManager:
                 )
                 if ocr_result and ocr_result.get("hand"):
                     ocr_hand = ocr_result["hand"]
+                    hand = self._restore_matching_ocr_depth(hand, ocr_hand)
                     diffs = []
                     for key in [
                         "hero_hand",

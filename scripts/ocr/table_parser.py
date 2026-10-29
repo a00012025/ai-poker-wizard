@@ -1249,47 +1249,46 @@ def _find_hero_stack(table_region: np.ndarray) -> float | None:
     from .ocr_utils import ocr_full_image
 
     h, w = table_region.shape[:2]
-    # Hero stack text: bottom center, below the cards
-    y1, y2 = int(h * 0.82), min(h, int(h * 0.98))
+    # Hero stack text: bottom center, below the cards.
+    y1 = int(h * 0.82)
     x1, x2 = int(w * 0.25), int(w * 0.65)
-    stack_area = table_region[y1:y2, x1:x2]
-
-    if stack_area.size == 0:
-        return None
-
-    results = ocr_full_image(stack_area)
     import re
 
-    # Two-pass scan: prefer any "XX.X BB" match (much more reliable signal)
-    # over a plain number. Regression: H2798 — hero crop area picked up
-    # noise like '24' (a fragment from an adjacent UI element, no BB
-    # suffix) BEFORE '11.5 BB' in the result list. Per-result fallback to
-    # plain-number regex returned the first noisy number it saw and never
-    # reached the real "11.5 BB" entry that came later.
-    for r in results:
-        text = r["text"].strip().upper()
-        m = re.search(r"(\d+\.?\d*)\s*BB", text)
-        if m:
+    # Preserve the original crop when it produces a stack. H3974 puts the
+    # 9.7 BB label in the last 2% of the table, so retry through the divider
+    # only when the original crop found no usable stack.
+    for y2 in (int(h * 0.98), h):
+        stack_area = table_region[y1:y2, x1:x2]
+        if stack_area.size == 0:
+            continue
+        results = ocr_full_image(stack_area)
+
+        # Prefer a BB-suffixed value over a plain numeric fragment (H2798).
+        for r in results:
+            text = r["text"].strip().upper()
+            m = re.search(r"(\d+\.?\d*)\s*BB", text)
+            if not m:
+                continue
             try:
                 return float(m.group(1))
             except ValueError:
                 continue
 
-    # Fallback only when no "BB"-suffixed value was found anywhere in the
-    # crop. Pick the highest-confidence plain number in the plausible
-    # range so we don't latch onto noise like 'gorj' fragments.
-    best = None
-    for r in results:
-        text = r["text"].strip().upper()
-        m = re.search(r"(\d+\.?\d+)", text)
-        if not m or r["conf"] <= 0.5:
-            continue
-        try:
-            val = float(m.group(1))
-        except ValueError:
-            continue
-        if not (0.5 < val < 500):
-            continue
-        if best is None or r["conf"] > best[1]:
-            best = (val, r["conf"])
-    return best[0] if best else None
+        # With no BB suffix, use the highest-confidence plausible number.
+        best = None
+        for r in results:
+            text = r["text"].strip().upper()
+            m = re.search(r"(\d+\.?\d+)", text)
+            if not m or r["conf"] <= 0.5:
+                continue
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                continue
+            if not (0.5 < val < 500):
+                continue
+            if best is None or r["conf"] > best[1]:
+                best = (val, r["conf"])
+        if best:
+            return best[0]
+    return None

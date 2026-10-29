@@ -1375,6 +1375,14 @@ def _effective_bb_for_layout(
     if preflop_col:
         entries = preflop_col.get("entries", [])
         current_bet = 1.0  # BB level
+        hero_rows = [e for e in entries if e.get("type") == "hero"]
+        trusted_sb_limp = (
+            hero_position == "SB"
+            and len(hero_rows) == 1
+            and hero_rows[0].get("position") == "SB"
+            and (hero_rows[0].get("action") or "").lower() == "call"
+            and hero_rows[0].get("_position_missing_before_order") is False
+        )
 
         for entry in entries:
             action = (entry.get("action") or "").lower()
@@ -1397,7 +1405,17 @@ def _effective_bb_for_layout(
                     if hero_preflop_total < current_bet:
                         hero_preflop_total = current_bet
             else:
-                if action in ("call", "raise", "bet", "all-in"):
+                # A BB check after Hero limps exercises the free option and
+                # still contests the pot. Leaving BB out makes the later
+                # streets look like a walkover and can bind Hero's uninvested
+                # displayed stack instead of either player's starting stack.
+                bb_checked_hero_limp = (
+                    trusted_sb_limp and not opp_entered
+                    and action == "check" and entry.get("position") == "BB"
+                    and entry.get("_position_missing_before_order") is False
+                    and hero_preflop_total >= 1.0 and current_bet <= 1.05
+                )
+                if action in ("call", "raise", "bet", "all-in") or bb_checked_hero_limp:
                     opp_entered = True
                     n_opp_preflop += 1
                     opp_name = entry.get("player_name")

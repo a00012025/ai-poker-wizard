@@ -43,6 +43,20 @@ def test_h3967_effective_stack_uses_reconstructed_hero_binding():
     assert hero_start == 39.7
     assert effective == 39.7
 
+
+def test_h3974_bb_check_contests_sb_limp_depth():
+    """BB's preflop check keeps SB's limp contested on later streets."""
+    from ocr.n8_parser import _compute_effective_bb
+
+    with open(SCRIPTS_DIR / 'test_fixtures' / 'h3974_effbb_input.json') as f:
+        hand = json.load(f)
+    effective, hero_start, _ = _compute_effective_bb(
+        hand['columns'], hand['hero_stack'], hand['hero_position'],
+        hand['stacks'], hand['named_stacks'],
+    )
+    assert hero_start == 12.1
+    assert effective == 12.1
+
 def test_board_unknown_suits_are_canonicalized_before_api():
     """Text parses must not leak unknown board suits like 5x to GTOW.
 
