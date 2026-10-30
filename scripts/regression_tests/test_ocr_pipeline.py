@@ -795,6 +795,101 @@ def test_find_hero_stack_prefers_bb_suffix():
               "should prefer '11.5 BB' over the plain '24' fragment")
 
 
+def test_find_hero_stack_near_table_divider_h3974():
+    """H3974: the 9.7 BB label sits in the last 2% of the table region."""
+    import numpy as np
+    import ocr.table_parser as _tp
+    import ocr.ocr_utils as _ou
+
+    table = np.zeros((704, 988, 3), dtype=np.uint8)
+    table[690, 493] = (17, 33, 71)
+    original = _ou.ocr_full_image
+
+    def read_stack(crop):
+        return ([{"text": "9.7 BB", "conf": 0.86}]
+                if (crop == (17, 33, 71)).all(axis=2).any() else [])
+
+    _ou.ocr_full_image = read_stack
+    try:
+        assert_eq(_tp._find_hero_stack(table), 9.7)
+    finally:
+        _ou.ocr_full_image = original
+
+
+def test_gemini_fallback_keeps_matching_ocr_depth_h3974():
+    """H3974: Gemini may omit depth after re-reading low-confidence cards."""
+    from gemini_session import GeminiSessionManager
+
+    ocr = {
+        "hero_hand": "Ah9h", "hero_position": "SB", "players_at_table": 5,
+        "preflop_actions": "F-F-F-C-X", "effective_bb": 12.1,
+        "hero_starting_stack": 12.1,
+        "streets": [{"board": "6hJsQh", "actions": [
+            {"position": "SB", "action": "X"},
+            {"position": "BB", "action": "X"},
+        ]}],
+    }
+    gemini = {key: value for key, value in ocr.items()
+              if key not in ("effective_bb", "hero_starting_stack")}
+    restored = GeminiSessionManager._restore_matching_ocr_depth(gemini, ocr)
+    assert_eq(restored["effective_bb"], 12.1)
+    assert_eq(restored["hero_starting_stack"], 12.1)
+    changed = dict(gemini, preflop_actions="F-F-F-R2-C")
+    assert_true("effective_bb" not in GeminiSessionManager._restore_matching_ocr_depth(changed, ocr))
+    explicit = dict(gemini, effective_bb=20)
+    assert_eq(GeminiSessionManager._restore_matching_ocr_depth(explicit, ocr)["effective_bb"], 20)
+
+
+def test_h3974_image_parse_restores_depth_after_full_gemini(monkeypatch):
+    """The user-facing image parser keeps OCR depth after Gemini omits it."""
+    import asyncio
+    import copy
+    import types as stdtypes
+    from gemini_session import GeminiSessionManager
+    import src.ocr_runtime as ocr_runtime
+
+    ocr_hand = {
+        "gametype": "MTTGeneral", "hero_hand": "Ah9h", "hero_position": "SB",
+        "players_at_table": 5, "preflop_actions": "F-F-F-C-X",
+        "effective_bb": 12.1, "hero_starting_stack": 12.1,
+        "streets": [{"board": "6hJsQh", "actions": [
+            {"position": "SB", "action": "X"},
+            {"position": "BB", "action": "X"},
+        ]}],
+    }
+    ocr_result = {
+        "hand": ocr_hand, "hints": None, "confidence": 0.69,
+        "card_confidence": 0.47,
+        "confidence_parts": {"pot_consistency": 0.5, "player_tracking": 1.0,
+                             "ocr_confidence": 1.0},
+        "diagnostics": {"street_entries_pre_collapse_count": {"river": 7},
+                        "street_entries_count": {"river": 2}},
+    }
+    gemini_hand = copy.deepcopy(ocr_hand)
+    gemini_hand.pop("effective_bb")
+    gemini_hand.pop("hero_starting_stack")
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            return stdtypes.SimpleNamespace(text=json.dumps({"hand": gemini_hand}))
+
+    session = GeminiSessionManager.__new__(GeminiSessionManager)
+    session._logger = logging.getLogger("test_h3974_full_gemini")
+    session.client = stdtypes.SimpleNamespace(
+        aio=stdtypes.SimpleNamespace(models=Models()))
+    session.image_parse_model = "fake-model"
+    monkeypatch.setenv("OCR_ENABLED", "true")
+    monkeypatch.setattr(ocr_runtime, "parse_n8_adaptive", lambda image: ocr_result)
+
+    async def no_cards(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(GeminiSessionManager, "_gemini_hero_hand_only", no_cards)
+    hand = asyncio.run(session._parse_hand_from_image(1, b"image"))
+    assert_eq(hand["effective_bb"], 12.1)
+    assert_eq(hand["hero_starting_stack"], 12.1)
+
+
 def test_find_hero_stack_falls_back_to_plain_number():
     """When NO 'XX.X BB' string is present, fall back to the highest-conf
     plain number in the plausible range — not the FIRST plain number, which

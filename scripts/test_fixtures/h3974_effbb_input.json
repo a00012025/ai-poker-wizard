@@ -1,0 +1,164 @@
+{
+  "columns": [
+    {
+      "name": "Blinds",
+      "pot": null,
+      "entries": [],
+      "entries_pre_collapse_count": 5
+    },
+    {
+      "name": "Pre-Flop",
+      "pot": null,
+      "entries": [
+        {
+          "type": "opponent",
+          "position": "HJ",
+          "action": "Fold",
+          "size": null,
+          "player_name": "AFT26",
+          "_position_missing_before_order": false
+        },
+        {
+          "type": "opponent",
+          "position": "CO",
+          "action": "Fold",
+          "size": null,
+          "player_name": "Ralf Mikk",
+          "_position_missing_before_order": false
+        },
+        {
+          "type": "opponent",
+          "position": "BTN",
+          "action": "Fold",
+          "size": null,
+          "player_name": "Ieyiiuu",
+          "_position_missing_before_order": false
+        },
+        {
+          "type": "hero",
+          "position": "SB",
+          "action": "Call",
+          "size": 0.5,
+          "_position_missing_before_order": false
+        },
+        {
+          "type": "opponent",
+          "position": "BB",
+          "action": "Check",
+          "size": null,
+          "player_name": "HuTa0666666",
+          "_position_missing_before_order": false
+        }
+      ],
+      "entries_pre_collapse_count": 10
+    },
+    {
+      "name": "Flop",
+      "pot": null,
+      "entries": [
+        {
+          "type": "hero",
+          "position": null,
+          "action": "Check",
+          "size": null
+        },
+        {
+          "type": "opponent",
+          "position": "BB",
+          "action": "Check",
+          "size": null,
+          "player_name": "HuTa0666666"
+        }
+      ],
+      "entries_pre_collapse_count": 4
+    },
+    {
+      "name": "Turn",
+      "pot": null,
+      "entries": [
+        {
+          "type": "hero",
+          "position": "BB",
+          "action": "Bet",
+          "size": 1.4
+        },
+        {
+          "type": "opponent",
+          "position": "BB",
+          "action": "Call",
+          "size": 1.4,
+          "player_name": "HuTao666666"
+        }
+      ],
+      "entries_pre_collapse_count": 4
+    },
+    {
+      "name": "River",
+      "pot": null,
+      "entries": [
+        {
+          "type": "hero",
+          "position": "BB",
+          "action": "Bet",
+          "size": 1.0
+        },
+        {
+          "type": "opponent",
+          "position": "BB",
+          "action": "Fold",
+          "size": null,
+          "player_name": "HuTao666666"
+        }
+      ],
+      "entries_pre_collapse_count": 7
+    }
+  ],
+  "hero_stack": 9.7,
+  "hero_position": "SB",
+  "stacks": [
+    40.8,
+    60.5,
+    5.5,
+    25.1,
+    55.7,
+    9.7
+  ],
+  "named_stacks": [
+    {
+      "stack": 40.8,
+      "y": 173.0,
+      "x": 495.0,
+      "name": "Ralf Mikk"
+    },
+    {
+      "stack": 60.5,
+      "y": 274.0,
+      "x": 93.0,
+      "name": "AFT26"
+    },
+    {
+      "stack": 5.5,
+      "y": 500.0,
+      "x": 493.0,
+      "name": "S7.50"
+    },
+    {
+      "stack": 25.1,
+      "y": 558.0,
+      "x": 93.0,
+      "name": "HuTa0666666"
+    },
+    {
+      "stack": 55.7,
+      "y": 557.0,
+      "x": 895.0,
+      "name": "Ieyiiuu"
+    },
+    {
+      "stack": 9.7,
+      "y": 691.0,
+      "x": 494.0,
+      "name": "cbd191320"
+    }
+  ]
+}
