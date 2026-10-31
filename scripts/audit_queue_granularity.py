@@ -33,21 +33,27 @@ from queue_feed import (
     live_promotion_decision,
     normalize_source_entries,
     queue_drill_url_from_sources,
+    training_scope_for_decision,
 )
 from spot_naming import compact_spot_name, drill_depth_scope
 
 
 def partition_queue_sources(row: dict, resolved: list[tuple[dict, dict]]):
-    """Partition by canonical leaf while enforcing the row's depth scope."""
+    """Preserve legacy evidence while partitioning into current training bands."""
     declared_scope = row.get("depth_scope") or "all"
     groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
     rejected: list[dict] = []
     for entry, decision in resolved:
-        decision_scope = decision.get("eff_stack")
-        if declared_scope != "all" and decision_scope != declared_scope:
+        decision_scope = training_scope_for_decision(decision)
+        # Persisted rows can use either the former diagnostic bands or the
+        # current training bands. Accept evidence valid under either contract,
+        # then rebuild every restricted group using its actual numeric depth.
+        accepted_scopes = {decision_scope, decision.get("eff_stack")}
+        if declared_scope != "all" and declared_scope not in accepted_scopes:
             rejected.append(entry)
             continue
-        scope = (decision_scope if decision_requires_exact_scope(decision)
+        scope = (decision_scope if (declared_scope != "all"
+                                    or decision_requires_exact_scope(decision))
                  else declared_scope)
         key = (decision.get("spot_leaf"), scope)
         groups.setdefault(key, []).append((entry, decision))
