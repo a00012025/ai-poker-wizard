@@ -35,7 +35,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 # Available practice depths observed in GTOW trainer (verified empirically
 # where possible). If a user's effective_bb doesn't match exactly, snap_depth
 # rounds to the nearest.
-AVAILABLE_DEPTHS_BB: tuple[int, ...] = (10, 15, 20, 25, 30, 40, 50, 75, 100)
+AVAILABLE_DEPTHS_BB: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40, 50, 60, 80, 100)
 
 # Spot category → GTOW shortcut type (preflop)
 # Matches the /available-shortcuts?gametypes=MTTGeneral API taxonomy.
@@ -78,7 +78,7 @@ _TRAINER_UI_DEFAULTS: dict[str, str] = {
     # used for Drill creation is byte-for-byte matchable by the Trainer UI.
     "fh_groups":                    ALL_TRAINER_GROUPS,
     "fh_trainer_tables":            "1",
-    "fh_trainer_mode":              "stop_end_of_hand",
+    "fh_trainer_mode":              "stop_end_of_street",
     "fh_trainer_game_mode":         "trainer_actions",
     "fh_trainer_grouping":          "swv_grouping_none",
     "fh_trainer_game_speed":        "turbo",
@@ -101,18 +101,19 @@ _TRAINER_UI_DEFAULTS: dict[str, str] = {
 
 _BASE_URL = "https://app.gtowizard.com/practice/trainer"
 
-# GTOW's official v4 game-mode metadata marks MTTGeneral as
-# ``info.variant=with_limps`` (the no-limp family is ``no_limps``).  The
-# Trainer persists that selection in ``gmff_variant``.  Pin it on every MTT
-# link so a user's previous Game Formats filter cannot silently switch the
-# exercise to a no-limp solution.
+# Browser-verified MTT ChipEV families: MTTGeneral=with_limps;
+# MTTMRonlyGeneral=no_limps (8–25bb). A template spanning both depth
+# families must pass through split_trainer_url before opening/provisioning.
 MTT_HAS_LIMP_VARIANT = "with_limps"
+MTT_NO_LIMP_GAMETYPE = "MTTMRonlyGeneral"
 
 _VALID_STREETS = ("preflop", "flop", "turn", "river")
 
 
 def trainer_solution_defaults(gametype: str | None) -> dict[str, str]:
     """Solution-family filters that must be part of Trainer/Drill identity."""
+    if gametype == MTT_NO_LIMP_GAMETYPE:
+        return {"gmff_variant": "no_limps"}
     if (gametype or "").upper().startswith("MTT"):
         return {"gmff_variant": MTT_HAS_LIMP_VARIANT}
     return {}
@@ -126,6 +127,13 @@ def apply_trainer_defaults(url: str | None) -> str | None:
     if parts.path.rstrip("/") != "/practice/trainer":
         return url
     params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    raw_depths = params.get("depth_list") or params.get("depth")
+    if raw_depths and params.get("fh_start_spot") != "custom_spot":
+        depths = [int(float(d)) for d in raw_depths.split(",")]
+        if max(depths) <= 25 or min(depths) > 25:
+            params["gametype"] = trainer_gametype_for_spot(
+                params.get("gametype", ""), depths,
+                sb_open=params.get("fh_actions") == "RFI" and params.get("fh_hero") == "SB")
     selected_groups = params.get("fh_groups")
     params.update(_TRAINER_UI_DEFAULTS)
     if selected_groups:
@@ -178,9 +186,9 @@ CAT_POSITIONS: dict[str, list[str]] = {
 MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40, 50, 60, 80, 100)
 # Stack bands map only to trees inside their stated interval.
 DEPTH_BAND_DEPTHS: dict[str, list[int]] = {
-    "short": [10, 12, 14, 17, 20],   # <=20bb
-    "medium": [25, 30, 35, 40, 50],  # 20-50bb
-    "large": [60, 80, 100],           # >50bb
+    "short": [10, 12, 14, 17, 20, 25],  # <=25bb
+    "medium": [30, 35, 40, 50, 60],     # 30-60bb
+    "large": [80, 100],                  # >60bb
 }
 
 
@@ -228,6 +236,13 @@ def build_drill_url(
         raise SpotNotSupportedError(
             "postflop action-line drills require an exact custom_spot source hand")
 
+    selected_depths = depths or [snap_depth(depth_bb)]
+    # Mixed-family URLs remain internal templates; presentation/provisioning
+    # expands them with split_trainer_url, preserving every requested depth.
+    if max(selected_depths) <= 25 or min(selected_depths) > 25:
+        gametype = trainer_gametype_for_spot(
+            gametype, selected_depths,
+            sb_open=category == "RFI" and hero_positions == ["SB"])
     depth_str, depth_list_str = _depth_params(depth_bb, depths)
     params: list[tuple[str, str]] = [
         ("solution_type", _TRAINER_UI_DEFAULTS["solution_type"]),
@@ -261,7 +276,7 @@ def snap_depth(effective_bb: float) -> int:
     Examples:
         snap_depth(22.4) -> 20
         snap_depth(22.6) -> 25
-        snap_depth(17.5) -> 15  (tie rounds down)
+        snap_depth(15.5) -> 14  (tie rounds down)
         snap_depth(5)    -> 10  (clamped)
         snap_depth(150)  -> 100 (clamped)
         snap_depth(30.125) -> 30
@@ -336,6 +351,7 @@ def build_trainer_url(
             "postflop action-line drills require an exact custom_spot source hand")
 
     depth_bb = snap_depth(effective_bb)
+    gametype = trainer_gametype_for_spot(gametype, [depth_bb])
     depth_str = _format_depth(depth_bb)
 
     # Stable parameter order: solution_type, gametype, depth, depth_list,
@@ -388,3 +404,74 @@ def drill_url_for_spot(category: str, *, hero_pos: str | None = None,
     except (SpotNotSupportedError, ValueError):
         return None
     return None
+
+
+def trainer_gametype_for_spot(gametype: str, depths: list[int], *,
+                              sb_open: bool = False) -> str:
+    """Choose the verified ChipEV tree; never alter cash/ICM families."""
+    if gametype not in ("MTTGeneral", MTT_NO_LIMP_GAMETYPE):
+        return gametype
+    if not depths:
+        raise ValueError("Trainer depths cannot be empty")
+    if sb_open:
+        return "MTTGeneral"
+    if min(depths) <= 25 < max(depths):
+        raise ValueError("Split depths at 25bb before choosing a solution")
+    return MTT_NO_LIMP_GAMETYPE if max(depths) <= 25 else "MTTGeneral"
+
+
+def split_trainer_url(url: str) -> list[str]:
+    """Expand shortcut templates into compatible solution/depth families.
+
+    Custom spots have already resolved their action codes in a specific tree;
+    changing their tree here would invalidate their history.
+    """
+    parts = urlsplit(url)
+    if parts.path.rstrip("/") != "/practice/trainer":
+        return [url]
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    game = params.get("gametype", "")
+    if game not in ("MTTGeneral", MTT_NO_LIMP_GAMETYPE):
+        return [apply_trainer_defaults(url)]
+    if params.get("fh_start_spot") == "custom_spot":
+        return [apply_trainer_defaults(url)]
+    raw_depths = params.get("depth_list") or params.get("depth")
+    if not raw_depths:
+        return [apply_trainer_defaults(url)]
+    depths = [float(d) for d in raw_depths.split(",")]
+    sb_open = params.get("fh_actions") == "RFI" and params.get("fh_hero") == "SB"
+    groups = [depths] if sb_open else [
+        [d for d in depths if d < 26], [d for d in depths if d >= 26]]
+    urls = []
+    for group in groups:
+        if not group:
+            continue
+        selected = dict(params)
+        selected["gametype"] = trainer_gametype_for_spot(
+            game, [int(d) for d in group], sb_open=sb_open)
+        selected["depth_list"] = ",".join(f"{d:g}" for d in group)
+        if float(selected.get("depth") or 0) not in group:
+            selected["depth"] = f"{group[len(group) // 2]:g}"
+        selected.update(trainer_solution_defaults(selected["gametype"]))
+        out = urlunsplit((parts.scheme, parts.netloc, parts.path,
+                         urlencode(selected), parts.fragment))
+        urls.append(apply_trainer_defaults(out))
+    return urls
+
+
+def drill_urls_for_spot(category: str, **kwargs) -> list[str]:
+    """All solution-compatible drills for a spot, including mixed bands."""
+    url = drill_url_for_spot(category, **kwargs)
+    return split_trainer_url(url) if url else []
+
+
+def training_depth_scope(effective_bb: float | None) -> str:
+    """Training preference bands, independent of historical diagnostic tags."""
+    import math
+    try:
+        depth = float(effective_bb)
+    except (TypeError, ValueError):
+        return "all"
+    if not math.isfinite(depth) or depth <= 0:
+        return "all"
+    return "short" if depth <= 25 else "medium" if depth <= 60 else "large"

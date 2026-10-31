@@ -234,6 +234,7 @@ def compute_training_plan(window_label, weekly_series, spots, top_hands,
             "shrunk_per100": r.get("shrunk_avg_ev", r["avg_ev"]) * 100,
             "hero_cat": r.get("hero_cat"), "villain_cat": r.get("villain_cat"),
             "ip_oop": r.get("ip_oop"), "drill_url": it["url"],
+            "drill_urls": it.get("urls") or ([it["url"]] if it["url"] else []),
             "restrict": it.get("restrict"),
             "fragile": bool(it.get("fragile")),
             "source": it.get("source", "online"),
@@ -339,8 +340,10 @@ def render_html(d: dict) -> str:
         f"<td>{r['n']}</td></tr>" for r in d["leaderboard"][:8])
     focus_html = ""
     for f in d["focus"]:
-        drill = (f'<a class="btn" href="{escape(f["drill_url"])}">🎯 進 GTOW Trainer 練這個情境</a>'
-                 if f["drill_url"] else '<span class="note">（目前無法建立準確的 Trainer 連結，請從下方 Analyze 樣本複習）</span>')
+        urls = f.get("drill_urls") or ([f["drill_url"]] if f.get("drill_url") else [])
+        drill = (" ".join(f'<a class="btn" href="{escape(url)}">🎯 GTOW Trainer {i}</a>'
+                          for i, url in enumerate(urls, 1))
+                 if urls else '<span class="note">（目前無法建立準確的 Trainer 連結，請從下方 Analyze 樣本複習）</span>')
         band = (f'<div class="note">⛏ {_BAND_WEAK_ZH.get(f["restrict"], f["restrict"] + " 特別弱")}</div>'
                 if f.get("restrict") else '<div class="note">練習涵蓋各種籌碼深度</div>')
         samples = "".join(_sample_html(s, s.get("hand_source", f["source"]))
@@ -653,8 +656,8 @@ def preview_summary_md(d: dict) -> str:
         if f.get("action_bias"):
             b = f["action_bias"]
             L.append(f"- 明顯傾向：{b['label']}（{b['n']} 手，EV 損失合計 {b['ev_loss_bb']:.2f} bb）")
-        if f["drill_url"]:
-            L.append(f"- 🎯 drill：{f['drill_url']}")
+        for url in f.get("drill_urls") or ([f["drill_url"]] if f.get("drill_url") else []):
+            L.append(f"- 🎯 drill：{url}")
         L.append("")
     L.append("## EV 損失較高的情境")
     L.append("")
@@ -904,17 +907,22 @@ def weekly_focus_candidates(online: list[dict], live: list[dict],
 
 async def build(conn, window_label, prev_focus, min_n=50, top=8,
                 since=None, prev_at=None, provision_focus=False,
-                focus_exclude=None):
+                focus_exclude=None, solution_loader=None,
+                next_actions_loader=None, exact_loader=None):
+    range_loaders = {key: value for key, value in {
+        "solution_loader": solution_loader,
+        "next_actions_loader": next_actions_loader,
+        "exact_loader": exact_loader}.items() if value is not None}
     weekly = [dict(r) for r in await conn.fetch(WEEKLY_SQL)]
     online_spots = await lb.hierarchical_leaderboard(
         conn, min_n=max(25, min_n // 2), top=top, since=since,
-        source="online")
+        source="online", **range_loaders)
     # Live capture is sparse and some older imported decisions predate the
     # parent-family backfill. Rank exact action lines so every graded hand from
     # this week remains eligible; the material-loss floor below keeps tiny
     # solver noise from taking the reserved live focus seat.
     live_spots = await lb.leaderboard(
-        conn, min_n=1, top=top, since=since, source="live")
+        conn, min_n=1, top=top, since=since, source="live", **range_loaders)
     blocked = set(focus_exclude or ())
     eligible_online = [it for it in online_spots
                        if (it["row"].get("diagnosis_key")
@@ -1034,8 +1042,10 @@ async def _run(mode: str, min_n: int):
                         "source": f.get("source", "online"),
                         "desc": f.get("desc"),
                         "per100": f["per100"], "n": f["n"],
-                        "drill_url": f["drill_url"]} for f in data["focus"]]
-        presc = [{"label": f["desc"], "url": f["drill_url"]} for f in data["focus"] if f["drill_url"]]
+                        "drill_url": f["drill_url"],
+                        "drill_urls": f.get("drill_urls", [])} for f in data["focus"]]
+        presc = [{"label": f["desc"], "url": url} for f in data["focus"]
+                 for url in f.get("drill_urls") or ([f["drill_url"]] if f.get("drill_url") else [])]
         await conn.execute(
             "INSERT INTO scorecards (week, html, data_json) VALUES ($1,$2,$3) "
             "ON CONFLICT (week) DO UPDATE SET html=EXCLUDED.html, data_json=EXCLUDED.data_json",

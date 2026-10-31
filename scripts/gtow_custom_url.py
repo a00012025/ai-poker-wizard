@@ -140,7 +140,8 @@ def classify_board(board: str) -> dict[str, str]:
 from urllib.parse import quote, urlencode
 
 from gtow_trainer_url import (_TRAINER_UI_DEFAULTS, _BASE_URL,
-                              _format_depth, trainer_solution_defaults)
+                              _format_depth, trainer_solution_defaults,
+                              trainer_gametype_for_spot)
 
 _CUSTOM_DIALOGS = "trainer-advanced-filter-dialog_namespace-tra/alpha_tmpNamespace-tmp/primary"
 
@@ -180,6 +181,23 @@ def _validate_action_sequence(name: str, sequence: str) -> None:
                 f"{name} contains unsupported Trainer action token {token!r}")
 
 
+def trainer_source_hand(hand_data: dict) -> dict:
+    """Select the practice tree before action replay, retaining SB-open lines."""
+    from gto_api import nearest_depth
+    from position_constants import CASH_POSITION_ORDERS
+
+    game = hand_data.get("gametype") or "MTTGeneral"
+    if game not in ("MTTGeneral", "MTTMRonlyGeneral") or hand_data.get("tournament_type") == "icm":
+        return hand_data
+    positions = CASH_POSITION_ORDERS.get(int(hand_data.get("players_at_table") or 8), [])
+    tokens = str(hand_data.get("preflop_actions") or "").split("-")
+    first = next((i for i, token in enumerate(tokens) if token and token != "F"), None)
+    sb_open = first is not None and first < len(positions) and positions[first] == "SB"
+    depth = int(float(nearest_depth(float(hand_data.get("effective_bb") or 30))))
+    game = trainer_gametype_for_spot(game, [depth], sb_open=sb_open)
+    return {**hand_data, "gametype": game}
+
+
 def build_custom_spot_url(
     hand_data: dict,
     street: str,
@@ -215,7 +233,7 @@ def build_custom_spot_url(
         raise CustomSpotBuildError(f"pot_type {pot_type!r} has no fh_actions mapping")
 
     try:
-        resolved = resolve_actions_for_deviation(hand_data, street, action_index)
+        resolved = resolve_actions_for_deviation(trainer_source_hand(hand_data), street, action_index)
     except Exception as e:
         raise CustomSpotBuildError(f"resolver failed: {e}") from e
 
@@ -243,10 +261,14 @@ def build_custom_spot_url(
         raise CustomSpotBuildError(
             "ICM Trainer URL requires the solver stack distribution")
     depth_str = f"{float(resolved['depth']):g}"
-    if resolved["gametype"] == "MTTGeneral" and not depth_str.endswith(".125"):
+    if resolved["gametype"] in ("MTTGeneral", "MTTMRonlyGeneral") and not depth_str.endswith(".125"):
         depth_str = f"{int(resolved['depth'])}.125"
     depth_list = depth_str
-    if street == "preflop" and resolved["gametype"] == "MTTGeneral" and depths:
+    if (depths and resolved["gametype"] == "MTTMRonlyGeneral"
+            and any(depth > 25 for depth in depths)):
+        raise CustomSpotBuildError(
+            "custom spot crosses solution depth families; use build_custom_spot_urls")
+    if street == "preflop" and resolved["gametype"] in ("MTTGeneral", "MTTMRonlyGeneral") and depths:
         valid = [_format_depth(depth) for depth in depths]
         depth_list = ",".join(valid)
         if depth_str not in valid:
@@ -262,8 +284,8 @@ def build_custom_spot_url(
     params.extend(trainer_solution_defaults(resolved["gametype"]).items())
     # Trainer UI flags — skip solution_type (already emitted) and dialogs
     # (we set a custom value below).  All practice links intentionally use
-    # GTOW Full hand mode (fh_trainer_mode=stop_end_of_hand), including custom
-    # spots, so one exercise continues through the rest of the hand.
+    # GTOW Street mode (fh_trainer_mode=stop_end_of_street), including custom
+    # spots, so one exercise stops at the end of its starting street.
     for k, v in _TRAINER_UI_DEFAULTS.items():
         if k in ("solution_type", "dialogs"):
             continue
@@ -294,3 +316,20 @@ def build_custom_spot_url(
         params.append(("river_actions", resolved["river_actions"]))
 
     return f"{_BASE_URL}?{urlencode(params, quote_via=quote)}"
+
+
+def build_custom_spot_urls(hand_data: dict, street: str, action_index: int,
+                           pot_type: str, *, depths: list[int] | None = None,
+                           **kwargs) -> list[str]:
+    """Replay each depth family before constructing its custom practice URL."""
+    if (street != "preflop" or not depths
+            or (hand_data.get("gametype") or "MTTGeneral") not in
+            ("MTTGeneral", "MTTMRonlyGeneral")
+            or hand_data.get("tournament_type") == "icm"):
+        return [build_custom_spot_url(hand_data, street, action_index, pot_type,
+                                      depths=depths, **kwargs)]
+    groups = [[d for d in depths if d <= 25], [d for d in depths if d > 25]]
+    return [build_custom_spot_url(
+        {**hand_data, "effective_bb": group[len(group) // 2]},
+        street, action_index, pot_type, depths=group, **kwargs)
+        for group in groups if group]

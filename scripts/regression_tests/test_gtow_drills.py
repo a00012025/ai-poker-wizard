@@ -59,7 +59,7 @@ def test_repo_trainer_urls_pin_the_gtow_injected_169_group_default():
                           opponent_positions=["SB"], depths=[20, 25])
     settings = settings_from_trainer_url(url)
     assert_eq(len(settings["fh_groups"].split(",")), 169)
-    assert_eq(settings["gmff_variant"], "with_limps")
+    assert_eq(settings["gmff_variant"], "no_limps")
 
 
 def test_mtt_limp_variant_is_part_of_drill_identity():
@@ -427,7 +427,8 @@ def test_open_queue_drill_uses_persisted_url_without_rebuilding():
     item = {
         "id": 139, "kind": "drill", "spot_leaf": "BB_vsOpen_MP",
         "spot_category": "vsOpen", "label": "BB vs MP Open (≤20bb)",
-        "drill_url": _trainer_url(gmff_variant="with_limps"),
+        "drill_url": _trainer_url(gmff_variant="with_limps",
+                                  depth_list="10.125,12.125,14.125,17.125,20.125,25.125"),
         "source_hands": [], "n_sources": 10, "total_ev_loss_bb": 3.2,
         "bias_direction": None, "bias_n": None, "bias_ev_loss_bb": None,
         "bias_share": None, "depth_scope": "short",

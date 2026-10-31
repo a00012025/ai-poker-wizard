@@ -300,7 +300,7 @@ async def annotate_rows(conn, rows: list[dict]) -> list[dict]:
 
 _BOUND_DRILLS_SQL = """
 SELECT id, gtow_drill_id, gtow_training_started_at, gtow_target_hands,
-       gtow_target_score, label
+       gtow_target_score, label, drill_url, gtow_settings_hash
 FROM drill_queue
 WHERE status IN ('pending', 'prescribed') AND kind = 'drill'
   AND gtow_drill_id IS NOT NULL AND gtow_training_started_at IS NOT NULL
@@ -319,6 +319,37 @@ async def autoclose_passed_drills(conn, client) -> dict:
     tally = {"checked": 0, "closed": 0, "skipped": 0}
     rows = [dict(r) for r in await conn.fetch(_BOUND_DRILLS_SQL)]
     tally["checked"] = len(rows)
+    from gtow_trainer_url import split_trainer_url
+    from urllib.parse import parse_qs, urlsplit
+    from gtow_drill_service import settings_from_trainer_url, settings_hash
+    eligible = []
+    for row in rows:
+        url = row.get("drill_url")
+        try:
+            params = parse_qs(urlsplit(url or "").query)
+            depths = [float(d) for d in params.get("depth_list", [""])[0].split(",") if d]
+            mixed_custom = (
+                params.get("fh_start_spot") == ["custom_spot"]
+                and params.get("gametype", [""])[0] in ("MTTGeneral", "MTTMRonlyGeneral")
+                and depths and min(depths) < 26 <= max(depths))
+            children = split_trainer_url(url) if url else []
+            stale = (len(children) != 1 or row.get("gtow_settings_hash") !=
+                     settings_hash(settings_from_trainer_url(children[0])))
+        except (ValueError, IndexError, TypeError):
+            tally["skipped"] += 1
+            continue
+        preflop = params.get("preflop_actions", [""])[0].split("-")
+        first_action = next((i for i, action in enumerate(preflop)
+                             if action and action != "F"), None)
+        needs_source_replay = (
+            params.get("fh_start_spot") == ["custom_spot"]
+            and params.get("gametype") == ["MTTGeneral"]
+            and depths and min(depths) < 26 and first_action != 6)
+        if stale or mixed_custom or needs_source_replay:
+            tally["skipped"] += 1
+        else:
+            eligible.append(row)
+    rows = eligible
     if not rows:
         return tally
     started_ats = {str(r["gtow_drill_id"]): r["gtow_training_started_at"]
@@ -327,7 +358,7 @@ async def autoclose_passed_drills(conn, client) -> dict:
         attempts = await asyncio.to_thread(client.attempts_by_drill, started_ats)
     except Exception as exc:  # noqa: BLE001 - fail soft, see docstring
         log.warning("GTOW auto-close skipped (practice API unavailable): %s", exc)
-        tally["skipped"] = len(rows)
+        tally["skipped"] += len(rows)
         return tally
     for row in rows:
         if not drill_attempt_passed(row, attempts.get(str(row["gtow_drill_id"]))):

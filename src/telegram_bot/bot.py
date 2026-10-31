@@ -615,6 +615,7 @@ class PokerWizardBot:
 /logout - 解除 token 並撤銷同步裝置
 /clear - 清除對話紀錄
 /drill GTOW連結 - 選擇決策點並建立練習 Drill
+/drills - 批次建立訓練 drills
 
 **手牌分析：**
 直接描述手牌情況，自動 GTO 分析。支援多輪追問。
@@ -1411,6 +1412,17 @@ class PokerWizardBot:
             self.log.debug("GTOW solution URL build failed", exc_info=True)
             return None
 
+    def _build_review_training_url(self, hand: dict, option: dict):
+        """Review preflop drills use the same solver-backed ranges as Queue."""
+        if option.get("street") == "preflop":
+            from queue_feed import queue_drill_url_for_decisions, depths_for_scope
+            decision = {**option, "_hand": hand, "hero_hand": hand.get("hero_hand")}
+            return queue_drill_url_for_decisions(
+                [decision], depths_for_scope(option.get("depth_scope") or "all"),
+                hand_loader=lambda _decision, **_kwargs: hand)
+        from review_hand_drill import build_review_drill_url
+        return build_review_drill_url(hand, option)
+
     async def handle_review_drill_button(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
@@ -1472,7 +1484,6 @@ class PokerWizardBot:
             return
 
         try:
-            from review_hand_drill import build_review_drill_url
             from gtow_drill_service import (
                 GTOWDrillClient, settings_from_trainer_url, settings_hash,
             )
@@ -1481,7 +1492,7 @@ class PokerWizardBot:
             def build_url():
                 self._setup_user_token(user_id, refresh_token)
                 try:
-                    return build_review_drill_url(hand, option)
+                    return self._build_review_training_url(hand, option)
                 finally:
                     self._clear_user_token()
 
@@ -1595,6 +1606,83 @@ class PokerWizardBot:
                 for option in options
             ]),
         )
+
+    async def drills_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Choose a batch of saved GTOW drills."""
+        if not self._is_owner(update):
+            return
+        await update.message.reply_text(
+            "🎯 批次建立 drills\nRFI：EP／MP／LP／SB × 短／中／長碼。"
+            "每個 drill 涵蓋該組所有位置 × 深度的 solver 範圍聯集，保留開池範圍與邊界手牌。",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("建立 RFI drills", callback_data="drills:rfi")],
+            ]),
+        )
+
+    async def handle_drills_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Provision a retryable, owner-scoped batch with serialized writes."""
+        query = update.callback_query
+        if not self._is_owner(update):
+            await self._answer_callback_safely(query, "僅限 owner。", show_alert=True)
+            return
+        if query.data != "drills:rfi":
+            await self._answer_callback_safely(query, "不支援的 drill 類型。", show_alert=True)
+            return
+        if not (self.db and self.db.pool):
+            await self._answer_callback_safely(query, "資料庫未連線。", show_alert=True)
+            return
+        await self._answer_callback_safely(query, "正在建立 RFI drills…")
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        try:
+            refresh_token = await self._get_user_refresh_token(user_id)
+            if not refresh_token:
+                await context.bot.send_message(chat_id, "請先使用 /settoken 綁定 GTO Wizard 帳號。")
+                return
+            from rfi_drills import provision_rfi_drills
+            from gtow_drill_service import GTOWDrillClient
+            from gto_api import get_spot_solution
+            client = GTOWDrillClient(user_id, refresh_token)
+
+            def provision():
+                self._setup_user_token(user_id, refresh_token)
+                try:
+                    return provision_rfi_drills(
+                        solution_loader=get_spot_solution,
+                        ensure_drill=client.ensure_drill,
+                    )
+                finally:
+                    self._clear_user_token()
+
+            async with self.db.pool.acquire() as conn:
+                async with conn.transaction():
+                    acquired = await conn.fetchval(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+                        f"rfi-drills:{user_id}",
+                    )
+                    if not acquired:
+                        await context.bot.send_message(chat_id, "RFI drills 正在建立中，完成後會通知你。")
+                        return
+                    await context.bot.send_message(chat_id, "正在取得各位置與深度的 solver 範圍並建立 drills，可能需要幾分鐘。")
+                    result = await asyncio.to_thread(provision)
+            text = (f"🎯 RFI drills：新建 {result.created}，沿用 {result.reused}，"
+                    f"失敗 {result.failed}。")
+            if result.failed:
+                failed_names = [item.name for item in result.items if item.error]
+                text += "\n未完成：" + "、".join(failed_names)
+                text += "\n可再次建立；已完成的 drills 會沿用。"
+            await context.bot.send_message(
+                chat_id, text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("開啟 GTOW Drills", url="https://app.gtowizard.com/practice/drills")],
+                    [InlineKeyboardButton("重新建立／補齊", callback_data="drills:rfi")],
+                ]),
+            )
+        except Exception:
+            self.log.exception("RFI drill batch failed for user %s", user_id)
+            await context.bot.send_message(
+                chat_id, "建立 RFI drills 失敗。請使用 /drills 重試，已建立的 drills 會沿用。"
+            )
 
     async def drill_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/drill <GTOW shared-hand URL or UUID> — choose a decision to train."""
@@ -2707,6 +2795,101 @@ class PokerWizardBot:
             reply_markup=self._rows_to_markup(buttons),
         )
 
+    async def _queue_child_drill_urls(self, conn, item, user_id, refresh_token):
+        """Replay exact source actions when a persisted solution becomes stale."""
+        from urllib.parse import parse_qs, urlsplit
+        from gtow_trainer_url import split_trainer_url, DEPTH_BAND_DEPTHS, MTT_DEPTHS
+        url = item["drill_url"]
+        params = parse_qs(urlsplit(url).query)
+        depths = [int(float(d)) for d in
+                  params.get("depth_list", params.get("depth", [""]))[0].split(",") if d]
+        exact = params.get("fh_start_spot") == ["custom_spot"]
+        sb_open = params.get("fh_hero") == ["SB"] and params.get("fh_actions") == ["RFI"]
+        postflop = (item.get("spot_category") in {"flop", "turn", "river"}
+                    or any(params.get(f"{street}_actions") for street in ("flop", "turn", "river")))
+        standard_mtt = params.get("gametype", [""])[0] in {"MTTGeneral", "MTTMRonlyGeneral"}
+        stale = (exact and not sb_open and params.get("gametype") == ["MTTGeneral"]
+                 and any(d <= 25 for d in depths))
+        scope = item.get("depth_scope")
+        original_scope = scope
+        entries = item.get("source_hands") or []
+        if isinstance(entries, str):
+            entries = json.loads(entries)
+        if scope in DEPTH_BAND_DEPTHS and entries:
+            from queue_feed import queue_training_scope_from_sources
+            scope = await queue_training_scope_from_sources(conn, entries) or scope
+            # This is a copied runtime row. Persisted queue identity/evidence
+            # stay unchanged until the collision-aware queue refresh runs.
+            item["depth_scope"] = scope
+        scope_changed = scope != original_scope
+        requested_depths = list(MTT_DEPTHS) if scope == "all" else DEPTH_BAND_DEPTHS.get(scope)
+        stale_band = bool(not postflop and requested_depths and (
+            set(depths) != set(requested_depths) if not exact
+            else any(d not in requested_depths for d in depths)))
+        # A saved exact preflop URL may be only one valid child of a broader
+        # prescription. Re-resolve the full requested scope, not that subset.
+        full_exact_scope = bool(exact and not postflop and standard_mtt
+                                and requested_depths and scope in {"medium", "all"})
+        mixed_exact = bool(exact and not postflop and standard_mtt
+                           and any(d <= 25 for d in depths) and any(d > 25 for d in depths))
+        if stale or stale_band or full_exact_scope or mixed_exact or scope_changed:
+            from queue_feed import queue_drill_urls_from_sources
+            urls = await queue_drill_urls_from_sources(
+                conn, entries, depths=requested_depths if (stale_band or full_exact_scope or scope_changed) else depths,
+                solver_user_id=user_id, solver_refresh_token=refresh_token)
+            if not urls:
+                raise ValueError("Exact queue drill cannot be rebuilt in the selected solution")
+            return urls
+        return split_trainer_url(url)
+
+    async def _split_queue_drill_detail(self, conn, item, client, urls, *, page=0):
+        """Keep one queue prescription while exposing separate solution drills."""
+        from html import escape
+        from urllib.parse import parse_qs, urlsplit
+        from gtow_drill_service import settings_from_trainer_url, settings_hash
+        from spot_naming import compact_spot_name
+
+        qid = int(item["id"])
+        # A single legacy binding must never auto-close a two-solution task.
+        # Preserve the parent's source evidence and complete depth scope.
+        await conn.execute(
+            "UPDATE drill_queue SET gtow_drill_id=NULL, gtow_drill_name=NULL, "
+            "gtow_settings_hash=NULL, gtow_drill_synced_at=NULL, "
+            "gtow_training_started_at=NULL, gtow_baseline_totals=NULL WHERE id=$1",
+            qid,
+        )
+        title = compact_spot_name(dict(item))
+        lines = [f"🎯 <b>{escape(title)}</b>",
+                 "此處方依 solution 分成以下 drills。各自顯示歷史成績；"
+                 "不合併判定本次達標，練完請手動完成 Queue 項目。"]
+        buttons = []
+        for url in urls:
+            params = parse_qs(urlsplit(url).query)
+            depths = [float(d) - .125 for d in
+                      params.get("depth_list", params.get("depth", [""]))[0].split(",") if d]
+            depth_label = (f"{min(depths):g}–{max(depths):g}bb" if len(depths) > 1
+                           else f"{depths[0]:g}bb" if depths else "")
+            name = f"{title}｜{depth_label}"
+            fingerprint = settings_hash(settings_from_trainer_url(url))
+            await conn.fetchval(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", fingerprint)
+            try:
+                binding = await asyncio.to_thread(client.ensure_drill, url, name)
+                lifetime = await asyncio.to_thread(client.drill_totals, binding.drill_id)
+                lines.append(f"\n<b>{escape(depth_label)}</b>\n"
+                             + _gtow_drill_lifetime_html(binding, lifetime))
+                buttons.append([{"text": f"🎯 練習 {depth_label}", "url": url}])
+            except Exception:
+                self.log.warning("Split queue drill unavailable: %s", name, exc_info=True)
+                lines.append(f"\n{escape(depth_label)}：建立或讀取成績失敗，請重試。")
+        buttons.extend([
+            [{"text": "🔄 重試／更新成績", "callback_data": f"qdst:{qid}:{page}"},
+             {"text": "📚 來源牌局", "callback_data": f"qsrc:{qid}:0:{page}"}],
+            [{"text": "✔ 手動完成", "callback_data": f"qcl:{qid}:{page}:completed"},
+             {"text": "⬅ 返回 Queue", "callback_data": f"qpg:{page}"}],
+        ])
+        return "\n".join(lines), buttons
+
     async def _queue_drill_detail(
         self,
         update: Update,
@@ -2770,15 +2953,23 @@ class PokerWizardBot:
                             new_message=new_message,
                         )
                         return
-                    # Upgrade persisted pre-filter URLs before matching the
-                    # GTOW Drill.  In particular, all MTT URLs now pin
-                    # gmff_variant=with_limps.  Reset the old binding and
-                    # attempt window so no-limp results cannot count toward
-                    # the new prescription.
+                    item = dict(item)
+                    child_urls = await self._queue_child_drill_urls(
+                        conn, item, update.effective_user.id, refresh_token)
+                    if len(child_urls) > 1:
+                        html, buttons = await self._split_queue_drill_detail(
+                            conn, item, client, child_urls, page=page)
+                        await _present_queue_detail(
+                            query, context, chat_id, html,
+                            self._rows_to_markup(buttons), new_message=new_message)
+                        return
+                    # Upgrade the chosen solution and street-mode settings
+                    # before matching; reset stale attempt identity when the
+                    # prescribed exercise changes.
                     from gtow_trainer_url import apply_trainer_defaults
 
                     attempt_reset = False
-                    upgraded_url = apply_trainer_defaults(item["drill_url"])
+                    upgraded_url = apply_trainer_defaults(child_urls[0])
                     if upgraded_url != item["drill_url"]:
                         attempt_reset = _trainer_upgrade_resets_attempt(
                             item["drill_url"], upgraded_url)
@@ -3973,6 +4164,7 @@ class PokerWizardBot:
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("review", self.review_command))
         self.application.add_handler(CommandHandler("drill", self.drill_command))
+        self.application.add_handler(CommandHandler("drills", self.drills_command))
         self.application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
@@ -3992,6 +4184,9 @@ class PokerWizardBot:
         )
         self.application.add_handler(
             CallbackQueryHandler(self.handle_fullingest_button, pattern=r"^fullingest:")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(self.handle_drills_button, pattern=r"^drills:")
         )
         self.application.add_handler(CallbackQueryHandler(self.handle_followup_button))
 

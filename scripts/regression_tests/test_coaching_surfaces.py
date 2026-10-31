@@ -503,9 +503,9 @@ def test_build_custom_spot_url_h2665():
     assert_in("depth_list=30.125", url)
     assert_in("gametype=MTTGeneral", url)
     assert_in("gmff_variant=with_limps", url)
-    assert_in("fh_trainer_mode=stop_end_of_hand", url)
+    assert_in("fh_trainer_mode=stop_end_of_street", url)
     assert_true("fh_trainer_mode=stop_after_action" not in url,
-                "every queue Trainer link must use GTOW Full hand mode")
+                "every queue Trainer link must use GTOW Street mode")
     assert_in("dialogs=trainer-advanced-filter-dialog", url)
     # Bucket is texture-agnostic → NO board flags by default, so the Trainer
     # deals all boards consistent with this action line.
@@ -589,7 +589,7 @@ def test_custom_turn_first_act_drill_uses_full_hand_mode():
     assert_eq(query["flop_actions"], ["X-R4.75-R9.75-C"])
     assert_true("turn_actions" not in query,
                 "turn first act must stop before hero check and villain bet")
-    assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
+    assert_eq(query["fh_trainer_mode"], ["stop_end_of_street"])
 
 
 def test_custom_spot_resolves_legacy_sized_bet_token():
@@ -625,7 +625,7 @@ def test_custom_spot_resolves_legacy_sized_bet_token():
     assert_true("B" not in query["flop_actions"][0])
     assert_eq(query["turn_actions"], ["X-X"])
     assert_eq(query["river_actions"], ["X"])
-    assert_eq(query["fh_trainer_mode"], ["stop_end_of_hand"])
+    assert_eq(query["fh_trainer_mode"], ["stop_end_of_street"])
 
 
 def test_live_17bb_x_b15_r5_line_keeps_small_flop_sizing():

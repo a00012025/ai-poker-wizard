@@ -2796,9 +2796,9 @@ def test_compact_drill_names_append_only_restricted_stack_band():
 
     base = {"spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP"}
     cases = [
-        (DEPTH_BAND_DEPTHS["short"], "LJ vs EP Open (≤20bb)"),
-        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (20-50bb)"),
-        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (>50bb)"),
+        (DEPTH_BAND_DEPTHS["short"], "LJ vs EP Open (≤25bb)"),
+        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (30–60bb)"),
+        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (>60bb)"),
         (list(MTT_DEPTHS), "LJ vs EP Open"),
     ]
     for depths, expected in cases:
@@ -2814,7 +2814,7 @@ def test_compact_drill_name_can_use_live_depth_band_before_url_persistence():
     assert_eq(compact_spot_name({
         "spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP",
         "eff_stack": "short",
-    }), "LJ vs EP Open (≤20bb)")
+    }), "LJ vs EP Open (≤25bb)")
 
 
 def test_enqueue_persists_depth_aware_drill_label():
@@ -2845,7 +2845,7 @@ def test_enqueue_persists_depth_aware_drill_label():
     }))
 
     assert_eq(result, "inserted")
-    assert_eq(conn.args[2], "LJ vs EP Open (≤20bb)")
+    assert_eq(conn.args[2], "LJ vs EP Open (≤25bb)")
     assert_eq(conn.args[18], "short")
 
 
@@ -3036,8 +3036,8 @@ def test_live_exact_preflop_drill_uses_only_solved_depths_in_its_band(monkeypatc
         "_hand": {"gametype": "MTTGeneral", "hero_position": "BB"},
     })
 
-    assert_eq(seen, [60.125, 80.125, 100.125])
-    assert_eq(result, [60, 80])
+    assert_eq(seen, [80.125, 100.125])
+    assert_eq(result, [80])
 
 
 def test_live_icm_drill_url_never_falls_back_to_generic_bucket():
@@ -3499,7 +3499,7 @@ def test_trainer_refresh_merges_pending_scope_collision():
     async def fake_rebuild(_conn, _entries, depths=None):
         assert_eq(depths, list(qf.depths_for_scope("all")))
         return ("https://trainer?depth_list="
-                "10.125%2C12.125%2C14.125%2C17.125%2C20.125")
+                "10.125%2C12.125%2C14.125%2C17.125%2C20.125%2C25.125")
 
     old_normalize = qf.normalize_source_entries
     old_rebuild = qf.queue_drill_url_from_sources

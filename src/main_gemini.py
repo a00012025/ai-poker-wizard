@@ -174,6 +174,7 @@ async def post_init(application):
                     BotCommand("plan", "本週訓練計畫"),
                     BotCommand("review", "這場復盤（最近一個 session）"),
                     BotCommand("drill", "從 GTOW 手牌連結建立 Drill"),
+                    BotCommand("drills", "批次建立訓練 drills"),
                     BotCommand("ingest", "手動攝取 GTOW Analyze"),
                     BotCommand("report", "使用量報告"),
                 ],
