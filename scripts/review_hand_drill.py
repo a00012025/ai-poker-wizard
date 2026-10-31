@@ -66,6 +66,7 @@ def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
         return []
 
     from spot_naming import compact_spot_name
+    from gtow_trainer_url import training_depth_scope
     from spot_taxonomy import walk_spots_from_parsed
 
     options = []
@@ -88,6 +89,8 @@ def review_drill_spots(hand: dict, hand_id: str) -> list[dict]:
             "ip_oop": spot["ip_oop"],
             "pot_type": spot["pot_type"],
             "eff_stack": spot["tags"]["eff_stack"],
+            "effective_bb": hand.get("effective_bb"),
+            "depth_scope": training_depth_scope(hand.get("effective_bb")),
             "gametype": hand.get("gametype"),
             "gtow_hand_id": hand_id,
         }

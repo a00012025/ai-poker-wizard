@@ -2717,9 +2717,11 @@ def build_hand_rows(hand: dict, hand_id: str, played_at: datetime,
 # ── drill queue ──────────────────────────────────────────────────────────────
 def drill_url_for(dec: dict) -> str | None:
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
-    from queue_feed import _exact_pot_type, decision_requires_exact_scope
+    from queue_feed import (_exact_pot_type, decision_requires_exact_scope,
+                            training_scope_for_decision)
 
     hand = dec.get("_hand")
+    training_scope = training_scope_for_decision(dec)
     category = dec.get("spot_category")
     gametype = str((hand or {}).get("gametype") or dec.get("gametype") or "")
     is_icm = bool(hand and hand.get("tournament_type") == "icm") or gametype.startswith("MTTGeneral_ICM")
@@ -2737,7 +2739,7 @@ def drill_url_for(dec: dict) -> str | None:
                 from gtow_action_resolver import resolve_actions_for_deviation
                 from queue_feed import exact_preflop_nodes
 
-                depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "")
+                depths = DEPTH_BAND_DEPTHS.get(training_scope)
                 nodes, valid_depths = exact_preflop_nodes(
                     hand, int(dec.get("decision_idx") or 0), depths,
                     resolver=resolve_actions_for_deviation,
@@ -2746,6 +2748,10 @@ def drill_url_for(dec: dict) -> str | None:
                 if not nodes:
                     return None
                 kwargs["depths"] = valid_depths
+                if valid_depths and min(valid_depths) <= 25 < max(valid_depths):
+                    # Internal persisted template only; queue detail replays
+                    # each solution family before presenting practice links.
+                    hand = {**hand, "effective_bb": max(valid_depths)}
             return build_custom_spot_url(
                 hand, dec["street"], int(dec.get("decision_idx") or 0),
                 _exact_pot_type(dec),
@@ -2759,7 +2765,7 @@ def drill_url_for(dec: dict) -> str | None:
     if needs_exact:
         return None
 
-    depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
+    depths = DEPTH_BAND_DEPTHS.get(training_scope, list(MTT_DEPTHS))
     return drill_url_for_spot(
         dec["spot_category"], hero_pos=dec.get("position"),
         hero_cat=dec.get("hero_cat"), villain_cat=dec.get("villain_cat"),
@@ -2786,7 +2792,7 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
         if it is None:
             it = by_leaf[key] = {
                 "spot_leaf": d["spot_leaf"], "spot_category": d["spot_category"],
-                "drill_url": url, "label": spot_label_zh(d),
+                "drill_url": url, "label": spot_label_zh({**d, "drill_url": url}),
                 "depth_scope": depth_scope,
                 "source_hands": [], "total_ev_loss_bb": 0.0,
                 "kind": "drill", "added_by": "auto", "source": "live"}
@@ -2807,7 +2813,9 @@ def select_queue_items(all_dec_rows: list[dict]) -> list[dict]:
 
 def spot_label_zh(dec: dict) -> str:
     from spot_naming import compact_spot_name
-    return compact_spot_name({**dec, "hero_pos": dec.get("position")})
+    from queue_feed import training_scope_for_decision
+    return compact_spot_name({**dec, "hero_pos": dec.get("position"),
+                              "depth_scope": training_scope_for_decision(dec)})
 
 
 # Queue mutation lives in ONE place — queue_feed — so live promotion, the
@@ -3663,7 +3671,12 @@ def report_buttons(result: dict) -> list[list[dict]]:
             if it.get("queue_id") is not None:
                 button["callback_data"] = f"qdet:{it['queue_id']}:0"
             else:  # dry-run/unit payloads have no persisted queue identity
-                button["url"] = it["drill_url"]
+                from gtow_trainer_url import split_trainer_url
+                urls = split_trainer_url(it["drill_url"])
+                for i, url in enumerate(urls, 1):
+                    suffix = f" ({i}/{len(urls)})" if len(urls) > 1 else ""
+                    rows.append([{**button, "text": button["text"] + suffix, "url": url}])
+                continue
             rows.append([button])
     return rows
 

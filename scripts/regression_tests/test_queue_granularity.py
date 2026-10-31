@@ -324,7 +324,8 @@ def test_queue_scan_sources_carry_depth_for_scope_filtering():
 
     sql = qf._drill_scan_sql()
     assert "'eff_stack', eff_stack" in sql
-    assert "array_agg(eff_stack ORDER BY played_at) source_scopes" in sql
+    assert "array_agg(" + qf._TRAINING_SCOPE_SQL + " ORDER BY played_at) source_scopes" in sql
+    assert "'solver_depth_bb', solver_depth_bb" in sql
     assert "prescription_scope" in sql
     assert qf._PRESCRIPTION_SCOPE_SQL in sql
     assert qf._PRESCRIPTION_SCOPE_SQL in sr._TOP_SPOTS_SQL

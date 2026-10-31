@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from regression_tests.harness import assert_eq, assert_true
 
 
-def _solution(continues: dict[str, float], *, reachable=None):
+def _solution(continues: dict[str, float], *, reachable=None, hero_position="BB"):
     from hh_deviation_check import HANDS_169
 
     reachable = set(reachable or HANDS_169)
@@ -23,7 +23,7 @@ def _solution(continues: dict[str, float], *, reachable=None):
         call_evs.append(-0.02 if hand in {"JJ", "TT", "AQs", "AKo"} else -5.0)
     return {
         "players_info": [{
-            "player": {"position": "BB"},
+            "player": {"position": hero_position},
             "range": [1.0 if hand in reachable else 0.0 for hand in HANDS_169],
         }],
         "action_solutions": [
@@ -152,7 +152,7 @@ def test_queue_merge_rebuilds_range_from_all_merged_source_hands():
 
     assert_eq(result, "merged")
     assert_eq(rebuilds[0][0], [existing, incoming])
-    assert_eq(rebuilds[0][1], [10, 12, 14, 17, 20])
+    assert_eq(rebuilds[0][1], [10, 12, 14, 17, 20, 25])
     assert_true("fh_groups=AA%2CKK%2CQQ%2CAKs%2CJJ" in conn.execs[0][1][4])
 
 
@@ -215,8 +215,8 @@ def test_queue_url_applies_solver_selected_groups_and_source_mistake():
 
     decision = {
         "gtow_hand_id": "h1", "street": "preflop", "decision_idx": 0,
-        "spot_category": "RFI", "spot_leaf": "BB_RFI",
-        "position": "BB", "hero_cat": "BB", "villain_cat": "EP",
+        "spot_category": "RFI", "spot_leaf": "BTN_RFI",
+        "position": "BTN", "hero_cat": "BTN", "villain_cat": "EP",
         "ip_oop": "OOP", "hero_hand": "72o",
     }
     url = queue_drill_url_for_decisions(
@@ -224,11 +224,11 @@ def test_queue_url_applies_solver_selected_groups_and_source_mistake():
         hand_loader=lambda _dec, **_kwargs: {"hero_hand": "72o"},
         resolver=lambda *_args: {
             "gametype": "MTTGeneral", "depth": 20.125, "stacks": "",
-            "preflop_actions": "F-F-R2-F-C-F-F", "hero_pos": "BB",
+            "preflop_actions": "F-F-R2-F-C-F-F", "hero_pos": "BTN",
         },
         solution_loader=lambda **_params: _solution({
             "AA": 1.0, "KK": 1.0, "QQ": 1.0, "AKs": 1.0,
-        }),
+        }, hero_position="BTN"),
     )
     groups = parse_qs(urlparse(url).query)["fh_groups"][0].split(",")
 

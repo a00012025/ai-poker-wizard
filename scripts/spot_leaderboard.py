@@ -244,6 +244,23 @@ def drill_url_for_item(row: dict, depths: list[int], samples,
         return None
 
 
+def drill_urls_for_item(row: dict, depths: list[int], samples,
+                        exact_builder=None) -> list[str]:
+    """Keep each solution segment of one prescription visible."""
+    from gtow_trainer_url import drill_urls_for_spot
+    if "flat_vsSqueeze" not in str(row.get("spot_leaf") or ""):
+        parts = row["spot_leaf"].split(":")
+        urls = drill_urls_for_spot(
+            row["spot_category"], hero_pos=row.get("hero_pos"),
+            hero_cat=row.get("hero_cat"), villain_cat=row.get("villain_cat"),
+            ip_oop=row.get("ip_oop"),
+            pot_type=parts[1] if len(parts) > 1 else None, depths=depths)
+        if urls:
+            return urls
+    url = drill_url_for_item(row, depths, samples, exact_builder=exact_builder)
+    return [url] if url else []
+
+
 def is_fragile(row: dict, rel_threshold: float = 0.30, min_clean_n: int = 10) -> bool:
     """§5.2 sensitivity flag: the spot's avg EV loss moves >30% once the
     off-tree-approximated samples (sizing_snap/depth_snap_gap) are removed —
@@ -255,7 +272,69 @@ def is_fragile(row: dict, rel_threshold: float = 0.30, min_clean_n: int = 10) ->
     return abs(float(avg_clean) - float(avg_all)) / float(avg_all) > rel_threshold
 
 
-async def leaderboard(conn, min_n=50, top=5, since=None, source="online"):
+async def enrich_drill_ranges(items: list[dict], *, conn=None,
+                              solution_loader=None, next_actions_loader=None,
+                              exact_loader=None) -> list[dict]:
+    """Provider boundary: every emitted preflop prescription has a grounded range."""
+    import asyncio
+    import logging
+    from urllib.parse import parse_qs, urlsplit
+    from drill_shortcut_ranges import apply_shortcut_hand_groups, SUPPORTED_SHORTCUTS
+    if solution_loader is None:
+        from gto_api import get_spot_solution
+        solution_loader = get_spot_solution
+    if next_actions_loader is None:
+        from gto_api import get_next_actions
+        next_actions_loader = get_next_actions
+    for item in items:
+        row = item["row"]
+        category = row.get("spot_category") or row.get("street")
+        if category in {"flop", "turn", "river"}:
+            continue
+        urls = item.get("urls") or ([item["url"]] if item.get("url") else [])
+        samples = [dict(sample) for sample in item.get("samples", [])]
+        try:
+            shortcut = bool(urls) and all(
+                parse_qs(urlsplit(url).query).get("fh_start_spot") == ["preflop"]
+                and set(parse_qs(urlsplit(url).query).get("fh_actions", [""])[0].split(",")) <= SUPPORTED_SHORTCUTS
+                for url in urls)
+            if shortcut:
+                required = [sample.get("hero_hand") for sample in samples if sample.get("hero_hand")]
+                enriched = []
+                for url in urls:
+                    enriched.append(await asyncio.to_thread(
+                        apply_shortcut_hand_groups, url,
+                        solution_loader=solution_loader,
+                        next_actions_loader=next_actions_loader,
+                        required_hands=required))
+            else:
+                if exact_loader is None:
+                    from queue_feed import queue_drill_urls_from_sources
+                    loader = queue_drill_urls_from_sources
+                else:
+                    loader = exact_loader
+                entries = [{"hand_id": sample["gtow_hand_id"],
+                            "street": sample["street"],
+                            "decision_idx": sample.get("decision_idx"),
+                            "ev_loss_bb": sample.get("ev_loss_bb")}
+                           for sample in samples]
+                if not entries:
+                    raise ValueError("No source decisions for exact preflop range")
+                enriched = await loader(conn, entries, item.get("training_depths"))
+                if not enriched:
+                    raise ValueError("Exact preflop range unavailable")
+            item["urls"] = enriched
+            item["url"] = enriched[0] if len(enriched) == 1 else None
+            item.pop("drill_error", None)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Leaderboard drill range unavailable: %s", exc)
+            item["urls"], item["url"] = [], None
+            item["drill_error"] = "無法取得完整翻前訓練範圍，請從 Analyze 樣本複習。"
+    return items
+
+
+async def leaderboard(conn, min_n=50, top=5, since=None, source="online", *,
+                      solution_loader=None, next_actions_loader=None, exact_loader=None):
     """since=None → all-history (CLI/preview); a datetime restricts every
     aggregate (ranking, bands, samples) to that window."""
     extra = [since] if since else []
@@ -270,13 +349,18 @@ async def leaderboard(conn, min_n=50, top=5, since=None, source="online"):
         bias_rows = await conn.fetch(
             action_bias_sql("leaf", since, source), row["spot_leaf"], *extra)
         row["action_bias"] = dominant_action_bias(bias_rows)
-        out.append({"row": row, "url": drill_url_for_item(row, depths, samples), "samples": samples,
+        urls = drill_urls_for_item(row, depths, samples)
+        out.append({"row": row, "url": urls[0] if len(urls) == 1 else None,
+                    "urls": urls, "samples": samples, "training_depths": depths,
                     "bands": bands, "restrict": restrict, "fragile": is_fragile(row)})
-    return out
+    return await enrich_drill_ranges(
+        out, conn=conn, solution_loader=solution_loader,
+        next_actions_loader=next_actions_loader, exact_loader=exact_loader)
 
 
 async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None,
-                                   source="online", prior_n=FAMILY_PRIOR_N):
+                                   source="online", prior_n=FAMILY_PRIOR_N, *,
+                                   solution_loader=None, next_actions_loader=None, exact_loader=None):
     """Parent-family focus ranking + exact representative evidence."""
     extra = [since] if since else []
     rows = await conn.fetch(family_sql(since, source), min_n, *extra)
@@ -301,10 +385,14 @@ async def hierarchical_leaderboard(conn, min_n=25, top=5, since=None,
             sample_sql(since, source), row["representative_leaf"], *extra)
         row["spot_leaf"] = row["representative_leaf"]
         row["diagnosis_level"] = "parent"
-        out.append({"row": row, "url": drill_url_for_item(row, depths, samples), "samples": samples,
+        urls = drill_urls_for_item(row, depths, samples)
+        out.append({"row": row, "url": urls[0] if len(urls) == 1 else None,
+                    "urls": urls, "samples": samples, "training_depths": depths,
                     "bands": family_bands, "prescription_bands": prescription_bands,
                     "restrict": restrict, "fragile": is_fragile(row)})
-    return out
+    return await enrich_drill_ranges(
+        out, conn=conn, solution_loader=solution_loader,
+        next_actions_loader=next_actions_loader, exact_loader=exact_loader)
 
 
 def _render(items, min_n) -> str:
@@ -333,8 +421,10 @@ def _render(items, min_n) -> str:
                      f"練習只選這個籌碼帶")
         else:
             L.append("- 練習**不鎖籌碼深度**，讓你遇到不同 stack 都能作答")
-        if it["url"]:
-            L.append(f"- 🎯 **GTOW Trainer 練習**：{it['url']}")
+        urls = it.get("urls") or ([it["url"]] if it.get("url") else [])
+        if urls:
+            for url in urls:
+                L.append(f"- 🎯 **GTOW Trainer 練習**：{url}")
         else:
             L.append("- ⚠️ 目前無法建立準確的 GTOW Trainer 連結，請從樣本手複習")
         if it["samples"]:

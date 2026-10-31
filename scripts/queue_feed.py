@@ -90,11 +90,32 @@ class QueueGranularityError(ValueError):
     """A drill row contains evidence outside its declared prescription."""
 
 
+def training_scope_for_decision(row: dict) -> str:
+    """Map actual source depth to practice bands, retaining diagnostic fields."""
+    from gtow_trainer_url import training_depth_scope
+    for key in ("solver_depth_bb", "played_depth_bb", "preflop_depth_bb", "effective_bb"):
+        try:
+            depth = float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+        if key == "solver_depth_bb" and abs(depth % 1 - 0.125) < 1e-6:
+            depth -= 0.125
+        scope = training_depth_scope(depth)
+        if scope != "all":
+            return scope
+    hand = row.get("_hand") or {}
+    if hand.get("effective_bb") is not None:
+        scope = training_depth_scope(hand["effective_bb"])
+        if scope != "all":
+            return scope
+    return row.get("eff_stack") if row.get("eff_stack") in {"short", "medium", "large"} else "all"
+
+
 def source_entries_for_depth_scope(entries: list[dict], scope: str) -> list[dict]:
     """Return only evidence represented by a restricted stack prescription."""
     if scope == "all":
         return list(entries)
-    return [entry for entry in entries if entry.get("eff_stack") == scope]
+    return [entry for entry in entries if training_scope_for_decision(entry) == scope]
 
 
 def depths_for_scope(scope: str) -> list[int]:
@@ -140,8 +161,8 @@ def validate_queue_sources(item: dict, decisions: list[dict]) -> None:
 
     scope = drill_depth_scope(item)
     if scope != "all":
-        wrong_depth = sorted({str(dec.get("eff_stack")) for dec in decisions
-                              if dec.get("eff_stack") != scope})
+        wrong_depth = sorted({training_scope_for_decision(dec) for dec in decisions
+                              if training_scope_for_decision(dec) != scope})
         if wrong_depth:
             raise QueueGranularityError(
                 f"queue depth_scope {scope!r} has source scopes {wrong_depth!r}")
@@ -486,7 +507,7 @@ def manual_drill_item(dec: dict, drill_url=_URL_UNSET) -> dict:
     Reuses the ONE drill-URL + label policy (§5.3); ev may be 0 (owner wants to
     drill a spot they played right but felt unsure about)."""
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
-    depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
+    depths = DEPTH_BAND_DEPTHS.get(training_scope_for_decision(dec), list(MTT_DEPTHS))
     url = (drill_url_for_spot(
         dec.get("spot_category"), hero_pos=dec.get("position"),
         hero_cat=dec.get("hero_cat"), villain_cat=dec.get("villain_cat"),
@@ -529,13 +550,21 @@ _QUEUE_DECISIONS_BY_STREET_SQL = _QUEUE_DECISION_SQL.replace(
 _EXACT_SOURCE_CATEGORIES = {
     "flop", "turn", "river", "vsCold3bet", "vsCold4bet",
 }
-_PRESCRIPTION_SCOPE_SQL = """CASE
+_TRAINING_DEPTH_SQL = """COALESCE(
+  CASE WHEN solver_depth_bb > 0 THEN solver_depth_bb -
+       CASE WHEN abs(solver_depth_bb - floor(solver_depth_bb) - 0.125) < 0.000001
+            THEN 0.125 ELSE 0 END END,
+  NULLIF(played_depth_bb, 0))"""
+_TRAINING_SCOPE_SQL = f"""CASE WHEN {_TRAINING_DEPTH_SQL} <= 25 THEN 'short'
+  WHEN {_TRAINING_DEPTH_SQL} <= 60 THEN 'medium'
+  WHEN {_TRAINING_DEPTH_SQL} > 60 THEN 'large' ELSE eff_stack END"""
+_PRESCRIPTION_SCOPE_SQL = f"""CASE
   WHEN spot_category IN ('flop','turn','river','vsOpen','vsRaiseCall',
                          'vsSqueeze','vs3bet','vs4bet',
                          'vsCold3bet','vsCold4bet')
     OR spot_leaf LIKE '%flat_vsSqueeze%'
     OR gametype LIKE 'MTTGeneral_ICM%'
-  THEN eff_stack ELSE 'all' END"""
+  THEN {_TRAINING_SCOPE_SQL} ELSE 'all' END"""
 
 
 def _load_source_hand(dec: dict, detail_loader=None) -> dict:
@@ -641,7 +670,7 @@ def queue_drill_url_for_decision(dec: dict, depths: list[int] | None = None) -> 
 
     from gtow_trainer_url import MTT_DEPTHS, DEPTH_BAND_DEPTHS, drill_url_for_spot
     if depths is None:
-        depths = DEPTH_BAND_DEPTHS.get(dec.get("eff_stack") or "", list(MTT_DEPTHS))
+        depths = DEPTH_BAND_DEPTHS.get(training_scope_for_decision(dec), list(MTT_DEPTHS))
     return drill_url_for_spot(
         category, hero_pos=dec.get("position"), hero_cat=dec.get("hero_cat"),
         villain_cat=dec.get("villain_cat"), ip_oop=dec.get("ip_oop"),
@@ -678,8 +707,10 @@ def exact_preflop_nodes(
     *, resolver, solution_loader,
 ) -> tuple[list[tuple[dict, str]], list[int] | None]:
     """Keep only solver-supported depths for one exact preflop action line."""
+    from gtow_custom_url import trainer_source_hand
+    hand = trainer_source_hand(hand)
     resolved = resolver(hand, "preflop", decision_idx)
-    multi_depth = resolved.get("gametype") == "MTTGeneral" and bool(depths)
+    multi_depth = resolved.get("gametype") in ("MTTGeneral", "MTTMRonlyGeneral") and bool(depths)
     candidates = list(depths) if multi_depth else [resolved["depth"]]
     nodes = []
     valid_depths = []
@@ -699,6 +730,25 @@ def exact_preflop_nodes(
     return nodes, valid_depths if multi_depth else None
 
 
+def resolve_training_node(hand: dict, decision_idx: int, trainer_url: str, resolver):
+    """Resolve source actions again when the training solution differs."""
+    from urllib.parse import parse_qs, urlsplit
+    from gtow_trainer_url import split_trainer_url
+    resolved = resolver(hand, "preflop", decision_idx)
+    source_depth = float(resolved["depth"])
+    children = split_trainer_url(trainer_url)
+    selected = None
+    for child in children:
+        params = parse_qs(urlsplit(child).query)
+        depths = [float(d) for d in params.get("depth_list", params.get("depth", []))[0].split(",")]
+        if len(children) == 1 or any((d < 26) == (source_depth < 26) for d in depths):
+            selected = params.get("gametype", [resolved.get("gametype")])[0]
+            break
+    if selected and selected != resolved.get("gametype"):
+        return resolver({**hand, "gametype": selected}, "preflop", decision_idx)
+    return resolved
+
+
 def queue_drill_url_for_decisions(
     decisions: list[dict],
     depths: list[int] | None = None,
@@ -706,6 +756,7 @@ def queue_drill_url_for_decisions(
     hand_loader=None,
     resolver=None,
     solution_loader=None,
+    next_actions_loader=None,
     solver_user_id: int | None = None,
     solver_refresh_token: str | None = None,
 ) -> str | None:
@@ -757,6 +808,13 @@ def queue_drill_url_for_decisions(
                 try:
                     from gtow_custom_url import build_custom_spot_url
                     hand = load_hand(dec)
+                    # A mixed-family persisted URL is an internal parent
+                    # template. Runtime provisioning replays each child tree.
+                    # Resolve the template in the deep tree so no no-limp
+                    # URL ever claims unsupported >25bb depths.
+                    if (dec.get("street") == "preflop" and depths
+                            and min(depths) <= 25 < max(depths)):
+                        hand = {**hand, "effective_bb": max(depths)}
                     valid_depths = None
                     if dec.get("street") == "preflop":
                         base_nodes, valid_depths = exact_preflop_nodes(
@@ -797,6 +855,22 @@ def queue_drill_url_for_decisions(
         if not preflop:
             return base_url
 
+        from urllib.parse import parse_qs, urlsplit
+        from drill_shortcut_ranges import apply_shortcut_hand_groups, SUPPORTED_SHORTCUTS
+        from gtow_trainer_url import split_trainer_url, with_trainer_hand_groups
+        params = parse_qs(urlsplit(base_url).query)
+        if (params.get("fh_start_spot") == ["preflop"]
+                and params.get("fh_actions", [""])[0] in SUPPORTED_SHORTCUTS):
+            required = [dec.get("hero_hand") or load_hand(dec).get("hero_hand") or ""
+                        for dec in preflop]
+            groups = set()
+            for child in split_trainer_url(base_url):
+                restricted = apply_shortcut_hand_groups(
+                    child, solution_loader=solution_loader,
+                    next_actions_loader=next_actions_loader, required_hands=required)
+                groups.update(parse_qs(urlsplit(restricted).query)["fh_groups"][0].split(","))
+            return with_trainer_hand_groups(base_url, sorted(groups))
+
         nodes = list(base_nodes or [])
         required_hands = [
             base_decision.get("hero_hand")
@@ -805,8 +879,8 @@ def queue_drill_url_for_decisions(
         seen_params = set()
         for dec in ([] if base_nodes else preflop):
             hand = load_hand(dec)
-            resolved = resolver(
-                hand, "preflop", int(dec.get("decision_idx") or 0))
+            resolved = resolve_training_node(
+                hand, int(dec.get("decision_idx") or 0), base_url, resolver)
             params = {
                 "gametype": resolved.get("gametype") or "MTTGeneral",
                 "depth": resolved["depth"],
@@ -817,7 +891,7 @@ def queue_drill_url_for_decisions(
             if key not in seen_params:
                 solution = solution_loader(**params)
                 if not solution:
-                    return base_url
+                    return None
                 nodes.append((solution, resolved["hero_pos"]))
                 seen_params.add(key)
             required_hands.append(dec.get("hero_hand") or hand.get("hero_hand") or "")
@@ -825,7 +899,7 @@ def queue_drill_url_for_decisions(
         from drill_hand_selector import select_preflop_hand_groups
         from gtow_trainer_url import with_trainer_hand_groups
         groups = select_preflop_hand_groups(nodes, required_hands=required_hands)
-        return with_trainer_hand_groups(base_url, groups)
+        return with_trainer_hand_groups(base_url, groups) if groups else None
     except Exception as exc:
         log.warning("queue dynamic hand range unavailable: %s", exc)
         return None
@@ -865,6 +939,13 @@ async def _source_decisions(conn, entries: list[dict]) -> list[dict]:
     return out
 
 
+async def queue_training_scope_from_sources(conn, entries: list[dict]) -> str:
+    """Runtime practice scope; mixed source bands stay together as all-depth."""
+    decisions = await _source_decisions(conn, entries)
+    scopes = {training_scope_for_decision(dec) for dec in decisions}
+    return next(iter(scopes)) if len(scopes) == 1 else "all"
+
+
 async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
     """Backfill queue-source identity and action facts from the ledger."""
     normalized = []
@@ -878,6 +959,9 @@ async def normalize_source_entries(conn, entries: list[dict]) -> list[dict]:
                 fixed.setdefault("src", matches[0].get("hand_source") or "online")
                 fixed["taken_code"] = matches[0].get("taken_code")
                 fixed["best_code"] = matches[0].get("best_code")
+                for key in ("solver_depth_bb", "played_depth_bb", "preflop_depth_bb"):
+                    if matches[0].get(key) is not None:
+                        fixed[key] = matches[0][key]
         normalized.append(fixed)
     return normalized
 
@@ -900,12 +984,12 @@ async def queue_drill_url_from_sources(conn, entries: list[dict],
                 f"cannot build one drill from source spot_leaf values {sorted(leaves)!r}")
         declared_scope = scope_for_depths(depths)
         if declared_scope not in {None, "all"}:
-            source_scopes = {decision.get("eff_stack") for decision in decisions}
+            source_scopes = {training_scope_for_decision(decision) for decision in decisions}
             if source_scopes != {declared_scope}:
                 raise QueueGranularityError(
                     f"{declared_scope} drill has source scopes "
                     f"{sorted(str(scope) for scope in source_scopes)!r}")
-        if depths is None and len({decision.get("eff_stack") for decision in decisions}) > 1:
+        if depths is None and len({training_scope_for_decision(decision) for decision in decisions}) > 1:
             raise QueueGranularityError(
                 "multi-source drill must declare an explicit all-depth or stack-band scope")
     # Source loading plus solver queries are blocking.  One worker call also
@@ -916,9 +1000,43 @@ async def queue_drill_url_from_sources(conn, entries: list[dict],
         solver_refresh_token=solver_refresh_token)
 
 
+async def queue_drill_urls_from_sources(conn, entries: list[dict],
+                                        depths: list[int] | None = None,
+                                        *, solver_user_id: int | None = None,
+                                        solver_refresh_token: str | None = None) -> list[str]:
+    """Resolve runtime child drills without changing the parent queue identity."""
+    from gtow_trainer_url import MTT_DEPTHS, split_trainer_url
+    decisions = await _source_decisions(conn, entries)
+    if not decisions:
+        return []
+    selected = list(depths or MTT_DEPTHS)
+    preflop = all(dec.get("street") == "preflop" for dec in decisions)
+    groups = ([g for g in ([d for d in selected if d <= 25],
+                           [d for d in selected if d > 25]) if g]
+              if preflop else [None])
+    def build():
+        urls = []
+        for group in groups:
+            def loader(dec, **kwargs):
+                hand = _load_source_hand(dec, **kwargs)
+                if group and dec.get("street") == "preflop" and decision_requires_exact_scope(dec):
+                    hand = {**hand, "effective_bb": group[len(group) // 2]}
+                return hand
+            url = queue_drill_url_for_decisions(
+                decisions, group, hand_loader=loader,
+                solver_user_id=solver_user_id,
+                solver_refresh_token=solver_refresh_token)
+            if not url:
+                raise QueueGranularityError(
+                    f"Cannot build a faithful drill for depths {group}")
+            urls.extend(split_trainer_url(url))
+        return list(dict.fromkeys(urls))
+    return await asyncio.to_thread(build)
+
+
 # ── shared upsert policy (the ONE enqueue; live_flow imports this) ────────────
 _OPEN_DRILL_SQL = """
-SELECT id, source_hands, n_sources, total_ev_loss_bb
+SELECT id, source_hands, n_sources, total_ev_loss_bb, depth_scope, status, spot_leaf
 FROM drill_queue
 WHERE spot_leaf = $1 AND depth_scope = $2
   AND kind = 'drill' AND status IN ('pending', 'prescribed')
@@ -970,6 +1088,49 @@ WHERE id=$1
 """
 
 
+async def _reclassify_open_drill(conn, row: dict, scope: str) -> None:
+    """Move legacy training identity without dropping colliding evidence."""
+    entries = _as_list(row["source_hands"])
+    collision = await conn.fetchrow(
+        "SELECT id, source_hands FROM drill_queue WHERE id<>$1 "
+        "AND spot_leaf=$2 AND depth_scope=$3 AND kind='drill' "
+        "AND status='pending' ORDER BY id LIMIT 1",
+        row["id"], row["spot_leaf"], scope)
+    retiring = [row["id"]] if collision else []
+    target_id = collision["id"] if collision else row["id"]
+    if collision:
+        entries = dedupe_entries(_as_list(collision["source_hands"]) + entries)
+        combined_scope = await queue_training_scope_from_sources(conn, entries)
+        if combined_scope != scope:
+            # Two stale identities can swap bands. Keep their complete
+            # evidence in an all-depth parent instead of recursive moves.
+            scope = "all"
+            all_row = await conn.fetchrow(
+                "SELECT id, source_hands FROM drill_queue WHERE id<>ALL($1::bigint[]) "
+                "AND spot_leaf=$2 AND depth_scope='all' AND kind='drill' "
+                "AND status='pending' ORDER BY id LIMIT 1",
+                [row["id"], collision["id"]], row["spot_leaf"])
+            if all_row:
+                entries = dedupe_entries(_as_list(all_row["source_hands"]) + entries)
+                retiring.append(collision["id"])
+                target_id = all_row["id"]
+    url = await queue_drill_url_from_sources(conn, entries, depths=depths_for_scope(scope))
+    if not url:
+        raise QueueGranularityError("Cannot reclassify a legacy drill without a faithful URL")
+    async with conn.transaction():
+        for retired_id in retiring:
+            await conn.execute(
+                "UPDATE drill_queue SET status='cleared', cleared_at=NOW(), "
+                "clear_reason='scope_dedupe' WHERE id=$1", retired_id)
+        await conn.execute(
+            "UPDATE drill_queue SET depth_scope=$2, drill_url=$3, source_hands=$4::jsonb, "
+            "n_sources=$5, total_ev_loss_bb=$6, gtow_settings_hash=NULL, "
+            "gtow_drill_synced_at=NULL, gtow_training_started_at=NULL, "
+            "gtow_baseline_totals=NULL WHERE id=$1", target_id, scope, url,
+            json.dumps(entries), len(entries),
+            sum(float(entry.get("ev_loss_bb") or 0) for entry in entries))
+
+
 async def enqueue_one(conn, it: dict) -> str:
     """Idempotent upsert of one queue item. Returns 'merged' | 'inserted' |
     'noop'. Drill items merge into an OPEN row of the same leaf (dedupe-aware);
@@ -986,12 +1147,27 @@ async def enqueue_one(conn, it: dict) -> str:
         if len(decisions) != len(incoming):
             raise QueueGranularityError(
                 f"resolved {len(decisions)}/{len(incoming)} queue source decisions")
+        scopes = {training_scope_for_decision(dec) for dec in decisions}
+        actual_scope = next(iter(scopes)) if len(scopes) == 1 else "all"
+        numeric_sources = all(any(dec.get(key) is not None for key in
+            ("solver_depth_bb", "played_depth_bb", "preflop_depth_bb", "effective_bb"))
+            or (dec.get("_hand") or {}).get("effective_bb") is not None for dec in decisions)
+        if numeric_sources and it["depth_scope"] != "all" and actual_scope != it["depth_scope"]:
+            it = {**it, "depth_scope": actual_scope, "drill_url": None}
+            it["label"] = compact_spot_name(it)
         validate_queue_sources(it, decisions)
     refresh_bias = "action_bias" in it
     bias = it.get("action_bias") or {}
     if kind == "drill":
         open_row = await conn.fetchrow(
             _OPEN_DRILL_SQL, it["spot_leaf"], it["depth_scope"])
+        if open_row and open_row.get("depth_scope") not in (None, "all"):
+            actual = await queue_training_scope_from_sources(
+                conn, _as_list(open_row["source_hands"]))
+            if actual != open_row["depth_scope"]:
+                await _reclassify_open_drill(conn, dict(open_row), actual)
+                open_row = await conn.fetchrow(
+                    _OPEN_DRILL_SQL, it["spot_leaf"], it["depth_scope"])
         if open_row:
             existing = _as_list(open_row["source_hands"])
             fresh, add_ev = diff_new_entries(existing, incoming)
@@ -1037,7 +1213,7 @@ async def enqueue(conn, items: list[dict]) -> dict:
     return tally
 
 
-_LIVE_EVIDENCE_SQL = """
+_LIVE_EVIDENCE_SQL = f"""
 SELECT count(*)::int n,
        COALESCE(sum(ev_loss_bb), 0)::float total_ev,
        COALESCE(max(ev_loss_bb), 0)::float max_ev
@@ -1045,7 +1221,7 @@ FROM ledger_decisions
 WHERE spot_leaf = $1 AND source = 'live' AND played_at >= $2
   AND ev_loss_bb >= $4 AND NOT excluded AND NOT discarded
   AND NOT limp_origin AND confidence >= 0.8
-  AND ($3 = 'all' OR eff_stack = $3)
+  AND ($3 = 'all' OR ({_TRAINING_SCOPE_SQL}) = $3)
 """
 
 
@@ -1190,9 +1366,10 @@ SELECT spot_leaf, spot_category,
            'decision_idx', decision_idx, 'ev_loss_bb', ev_loss_bb,
            'taken_code', taken_code, 'best_code', best_code,
            'eff_stack', eff_stack,
+           'solver_depth_bb', solver_depth_bb, 'played_depth_bb', played_depth_bb,
            'src', source) ORDER BY played_at) source_hands,
        array_agg(played_at ORDER BY played_at) played_ats,
-       array_agg(eff_stack ORDER BY played_at) source_scopes
+       array_agg({_TRAINING_SCOPE_SQL} ORDER BY played_at) source_scopes
 FROM ledger_decisions
 WHERE {_HONEST} AND played_at >= {win_col} AND ev_loss_bb >= $2
 GROUP BY spot_leaf, spot_category, {_PRESCRIPTION_SCOPE_SQL}
@@ -1454,8 +1631,11 @@ async def refresh_trainer_links(conn, include_all: bool = False) -> dict:
     for row in rows:
         entries = _as_list(row["source_hands"])
         normalized = await normalize_source_entries(conn, entries)
+        scope = row["depth_scope"]
+        if scope != "all":
+            scope = await queue_training_scope_from_sources(conn, normalized)
         rebuilt = await queue_drill_url_from_sources(
-            conn, normalized, depths=depths_for_scope(row["depth_scope"]))
+            conn, normalized, depths=depths_for_scope(scope))
         if not rebuilt:
             tally["unresolved"] += 1
             if normalized != entries:

@@ -1358,8 +1358,8 @@ def test_snap_depth_round_up():
 
 
 def test_snap_depth_tie_rounds_down():
-    """snap_depth: 17.5 → 15 (tie rounds down)"""
-    assert_eq(snap_depth(17.5), 15)
+    """snap_depth: 15.5 → 14 (tie rounds down)"""
+    assert_eq(snap_depth(15.5), 14)
 
 
 def test_snap_depth_clamp_min():
@@ -1378,8 +1378,8 @@ def test_snap_depth_gtow_float_format():
 
 
 def test_snap_depth_boundary_tie_low():
-    """snap_depth: 12.5 → 10 (tie between 10 and 15 rounds down)"""
-    assert_eq(snap_depth(12.5), 10)
+    """snap_depth: 11 → 10 (tie between 10 and 12 rounds down)"""
+    assert_eq(snap_depth(11), 10)
 
 
 def test_build_url_open_raise():
@@ -1391,7 +1391,7 @@ def test_build_url_open_raise():
     assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
     assert_eq(qs["fh_trainer_learning_mode"], ["on"])
     assert_eq(qs["fh_trainer_session"], ["100"])
-    assert_eq(qs["gmff_variant"], ["with_limps"])
+    assert_eq(qs["gmff_variant"], ["no_limps"])
 
 
 def test_apply_trainer_defaults_upgrades_existing_url():
@@ -1404,7 +1404,7 @@ def test_apply_trainer_defaults_upgrades_existing_url():
     assert_eq(qs["fh_trainer_game_speed"], ["turbo"])
     assert_eq(qs["fh_trainer_learning_mode"], ["on"])
     assert_eq(qs["fh_trainer_session"], ["100"])
-    assert_eq(qs["fh_trainer_mode"], ["stop_end_of_hand"])
+    assert_eq(qs["fh_trainer_mode"], ["stop_end_of_street"])
     assert_eq(qs["gmff_variant"], ["with_limps"])
     non_trainer = "https://app.gtowizard.com/solutions?gametype=MTTGeneral"
     assert_eq(apply_trainer_defaults(non_trainer), non_trainer)
@@ -1422,7 +1422,7 @@ def test_mtt_trainer_urls_replace_no_limp_filter_but_cash_does_not_get_one():
     other_mtt = parse_qs(urlparse(build_drill_url(
         "vsOpen", "preflop", 20, ["BB"], opponent_positions=["BTN"],
         gametype="MTTGeneral")).query)
-    assert_eq(other_mtt["gmff_variant"], ["with_limps"])
+    assert_eq(other_mtt["gmff_variant"], ["no_limps"])
 
     cash = parse_qs(urlparse(build_drill_url(
         "RFI", "preflop", 100, ["SB"], gametype="Cash6m50zGeneral"
