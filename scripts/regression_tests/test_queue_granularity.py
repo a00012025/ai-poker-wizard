@@ -329,3 +329,33 @@ def test_queue_scan_sources_carry_depth_for_scope_filtering():
     assert "prescription_scope" in sql
     assert qf._PRESCRIPTION_SCOPE_SQL in sql
     assert qf._PRESCRIPTION_SCOPE_SQL in sr._TOP_SPOTS_SQL
+
+
+def test_queue_audit_migrates_legacy_numeric_depths_without_losing_sources():
+    from audit_queue_granularity import partition_queue_sources
+
+    leaf = 'EP_RFI'
+    for old_scope, depth, new_scope in [('medium', 25.125, 'short'),
+                                         ('large', 60.125, 'medium')]:
+        entry = {'hand_id': str(depth), 'ev_loss_bb': 1.0}
+        decision = {'spot_leaf': leaf, 'spot_category': 'RFI',
+                    'eff_stack': old_scope, 'solver_depth_bb': depth}
+        groups, rejected = partition_queue_sources(
+            {'depth_scope': old_scope}, [(entry, decision)])
+        assert list(groups) == [(leaf, new_scope)]
+        assert groups[(leaf, new_scope)] == [(entry, decision)]
+        assert rejected == []
+
+
+def test_queue_audit_accepts_new_scope_and_rejects_actual_unrelated_scope():
+    from audit_queue_granularity import partition_queue_sources
+
+    leaf = 'EP_RFI'
+    migrated = ({'hand_id': '25'}, {'spot_leaf': leaf, 'spot_category': 'RFI',
+                'eff_stack': 'medium', 'solver_depth_bb': 25.125})
+    unrelated = ({'hand_id': '100'}, {'spot_leaf': leaf, 'spot_category': 'RFI',
+                 'eff_stack': 'large', 'solver_depth_bb': 100.125})
+    groups, rejected = partition_queue_sources({'depth_scope': 'short'},
+                                               [migrated, unrelated])
+    assert groups == {(leaf, 'short'): [migrated]}
+    assert rejected == [unrelated[0]]
