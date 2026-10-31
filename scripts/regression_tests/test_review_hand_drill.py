@@ -331,9 +331,9 @@ def test_review_drill_choices_use_live_flow_compact_names():
         for option in options
     ]
     assert [option["label"] for option in options] == [
-        "HJ RFI (30–60bb)",
-        "SRP｜MP IP｜翻牌 vs X (30–60bb)",
-        "SRP｜MP IP｜翻牌 vs XR (30–60bb)",
+        "HJ RFI (30~50bb)",
+        "SRP｜MP IP｜翻牌 vs X (30~50bb)",
+        "SRP｜MP IP｜翻牌 vs XR (30~50bb)",
     ]
 
 
@@ -384,12 +384,12 @@ def test_599255dd_large_preflop_drill_uses_real_deep_trees_and_position_scope():
     url = build_review_drill_url(hand, option)
     params = parse_qs(urlparse(url).query)
 
-    assert option["label"] == "BB vs EP Open (>60bb)"
+    assert option["label"] == "BB vs EP Open (≥60bb)"
     assert params["fh_start_spot"] == ["preflop"]
     assert params["fh_hero"] == ["BB"]
     assert params["fh_opponent"] == ["UTG,UTG+1"]
-    assert params["depth_list"] == ["80.125,100.125"]
-    assert params["depth"] == ["100.125"]
+    assert params["depth_list"] == ["60.125,80.125,100.125"]
+    assert params["depth"] == ["80.125"]
 
 
 def test_legacy_40bb_preflop_drill_is_not_named_over_50bb():
@@ -402,7 +402,7 @@ def test_legacy_40bb_preflop_drill_is_not_named_over_50bb():
         "spot_category": "vsOpen", "spot_leaf": "BB_vsOpen_EP",
         "drill_url": url,
     })
-    assert label == "BB vs EP Open (30–60bb)"
+    assert label == "BB vs EP Open (30~50bb)"
 
 
 def test_analyze_icm_preflop_review_uses_exact_custom_spot(monkeypatch):
@@ -449,7 +449,7 @@ def test_standard_preflop_drill_can_span_positions_and_stack_band():
     assert params["fh_start_spot"] == ["preflop"]
     assert params["fh_hero"] == ["LJ,HJ"]
     assert params["fh_opponent"] == ["UTG,UTG+1"]
-    assert params["depth_list"] == ["30.125,35.125,40.125,50.125,60.125"]
+    assert params["depth_list"] == ["30.125,35.125,40.125,50.125"]
 
 
 def test_gto_summary_adds_drill_picker_without_losing_study_link():

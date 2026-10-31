@@ -1612,7 +1612,7 @@ class PokerWizardBot:
         if not self._is_owner(update):
             return
         await update.message.reply_text(
-            "🎯 批次建立 drills\nRFI：EP／MP／LP／SB × 短／中／長碼。"
+            "🎯 批次建立 drills\nRFI：EP／MP／LP／SB × ≤25bb／30~50bb／≥60bb。"
             "每個 drill 涵蓋該組所有位置 × 深度的 solver 範圍聯集，保留開池範圍與邊界手牌。",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("建立 RFI drills", callback_data="drills:rfi")],

@@ -24,8 +24,12 @@ def test_matrix_groups_positions_with_exact_depth_bands():
         rows = [s for s in specs if s.category == category]
         assert all(s.positions == seats for s in rows)
         assert {s.band: s.depths for s in rows} == {
-            'short': (8,9,10,12,14,17,20,25), 'medium': (30,35,40,50,60), 'large': (80,100)}
-        assert all(f'{s.depths[0]}–{s.depths[-1]}bb' in s.name for s in rows)
+            'short': (8,9,10,12,14,17,20,25), 'medium': (30,35,40,50), 'large': (60,80,100)}
+        assert {s.band: s.name for s in rows} == {
+            'short': f'RFI｜{category}｜≤25bb',
+            'medium': f'RFI｜{category}｜30~50bb',
+            'large': f'RFI｜{category}｜≥60bb',
+        }
 
 
 def test_batch_preserves_partial_success_on_retry():
@@ -42,7 +46,7 @@ def test_batch_preserves_partial_success_on_retry():
         return SimpleNamespace(created=created)
     result = provision_rfi_drills(solution_loader=loader, ensure_drill=ensure, specs=specs)
     assert (result.created,result.reused,result.failed) == (1,0,1)
-    assert len(calls) == 5  # EP fails first node; LP loads both seats × both depths
+    assert len(calls) == 7  # EP fails first node; LP loads both seats × three depths
     unavailable.clear()
     result = provision_rfi_drills(solution_loader=loader, ensure_drill=ensure, specs=specs)
     assert (result.created,result.reused,result.failed) == (1,1,0)
@@ -52,8 +56,10 @@ def test_all_position_depth_nodes_contribute_continues_and_boundary_folds():
     from rfi_drills import build_rfi_specs, provision_rfi_drills
     from hh_deviation_check import HANDS_169
     specs = [s for s in build_rfi_specs() if s.category == 'LP' and s.band == 'large']
-    contributions = {('F-F-F-F',80.125): ('72o','82o'),
+    contributions = {('F-F-F-F',60.125): ('62o','73o'),
+                     ('F-F-F-F',80.125): ('72o','82o'),
                      ('F-F-F-F',100.125): ('92o','T2o'),
+                     ('F-F-F-F-F',60.125): ('J3o','Q3o'),
                      ('F-F-F-F-F',80.125): ('J2o','Q2o'),
                      ('F-F-F-F-F',100.125): ('Q7o','Q6o')}
     seen = []

@@ -121,7 +121,7 @@ def test_single_depth_builder_never_uses_unavailable_fifteen_bb_tree():
     assert p['depth_list'] == '14.125'
 
 
-@pytest.mark.parametrize('depth,scope', [(25,'short'),(25.1,'medium'),(60,'medium'),(60.1,'large')])
+@pytest.mark.parametrize('depth,scope', [(25,'short'),(25.1,'medium'),(50,'medium'),(50.1,'large'),(60,'large')])
 def test_training_depth_scope_keeps_boundary_source(depth, scope):
     from gtow_trainer_url import training_depth_scope
     assert training_depth_scope(depth) == scope
@@ -131,7 +131,7 @@ def test_live_training_scope_uses_actual_depth_not_legacy_tag():
     from live_flow import drill_url_for
     p = params(drill_url_for({'street':'preflop','spot_category':'RFI',
         'position':'BTN','eff_stack':'large','_hand':{'effective_bb':60}}))
-    assert p['depth_list'] == '30.125,35.125,40.125,50.125,60.125'
+    assert p['depth_list'] == '60.125,80.125,100.125'
 
 
 def test_review_training_scope_does_not_reclassify_diagnostics():
@@ -140,10 +140,10 @@ def test_review_training_scope_does_not_reclassify_diagnostics():
         'players_at_table':8,'hero_position':'BTN','hero_hand':'AsKs',
         'preflop_actions':'F-F-F-F-F-R2-F-F','streets':[]}, 'H9999')
     assert options[0]['eff_stack'] == 'large'
-    assert options[0]['depth_scope'] == 'medium'
+    assert options[0]['depth_scope'] == 'large'
 
 
 def test_live_training_label_uses_actual_source_depth():
     from live_flow import spot_label_zh
     assert spot_label_zh({'spot_category':'RFI','spot_leaf':'BTN_RFI',
-        'position':'BTN','eff_stack':'large','_hand':{'effective_bb':60}}) == 'BTN RFI (30–60bb)'
+        'position':'BTN','eff_stack':'large','_hand':{'effective_bb':60}}) == 'BTN RFI (≥60bb)'

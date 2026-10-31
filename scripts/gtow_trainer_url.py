@@ -187,8 +187,8 @@ MTT_DEPTHS: tuple[int, ...] = (10, 12, 14, 17, 20, 25, 30, 35, 40, 50, 60, 80, 1
 # Stack bands map only to trees inside their stated interval.
 DEPTH_BAND_DEPTHS: dict[str, list[int]] = {
     "short": [10, 12, 14, 17, 20, 25],  # <=25bb
-    "medium": [30, 35, 40, 50, 60],     # 30-60bb
-    "large": [80, 100],                  # >60bb
+    "medium": [30, 35, 40, 50],         # 30-50bb
+    "large": [60, 80, 100],             # >=60bb
 }
 
 
@@ -474,4 +474,4 @@ def training_depth_scope(effective_bb: float | None) -> str:
         return "all"
     if not math.isfinite(depth) or depth <= 0:
         return "all"
-    return "short" if depth <= 25 else "medium" if depth <= 60 else "large"
+    return "short" if depth <= 25 else "medium" if depth <= 50 else "large"
