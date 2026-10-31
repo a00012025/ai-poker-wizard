@@ -161,6 +161,11 @@ git worktree remove ~/ai-poker-wizard-leak-detection
 - Supabase migrations 在任何 worktree 中都可以跑 `supabase db push`
 - `regression_test.py` 在每個 worktree 中獨立執行
 
+## Python Environment and Temporary Files
+
+- Use `uv` to create Python environments, install dependencies, and run Python tools. Keep task-specific environments and other temporary files only as long as needed; delete those created for the task during cleanup.
+- Reuse an existing suitable environment or temporary location when practical. Do not accumulate task-specific directories under `/tmp` or the repository.
+
 ## Ad-hoc Python Scripts
 
 When running ad-hoc Python snippets for debugging/testing, write them to `scripts/_tmp.py` (gitignored) instead of inline `python -c`. This keeps one-off code reviewable and reusable.
