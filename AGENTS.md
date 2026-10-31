@@ -137,6 +137,8 @@ cd ~/ai-poker-wizard-leak-detection
 
 ### 完成後
 
+**收尾必做：工作完成且 PR 合併後，清理本次建立的所有開發與測試 worktree（包含 detached baseline worktree），不要留到下次工作。** 先確認修改已提交並合併，且沒有部署、測試或其他程序仍依賴該目錄，再執行 `git worktree remove`；最後用 `git worktree list` 確認清理結果。若有未提交內容或其他工作仍使用該 worktree，先保留並說明原因，不得強制刪除或清理其他任務的 worktree。
+
 ```bash
 # 1. 在 worktree 中 commit + push
 git push -u origin feat/leak-detection
