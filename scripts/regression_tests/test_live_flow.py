@@ -2797,8 +2797,8 @@ def test_compact_drill_names_append_only_restricted_stack_band():
     base = {"spot_category": "vsOpen", "spot_leaf": "LJ_vsOpen_EP"}
     cases = [
         (DEPTH_BAND_DEPTHS["short"], "LJ vs EP Open (≤25bb)"),
-        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (30–60bb)"),
-        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (>60bb)"),
+        (DEPTH_BAND_DEPTHS["medium"], "LJ vs EP Open (30~50bb)"),
+        (DEPTH_BAND_DEPTHS["large"], "LJ vs EP Open (≥60bb)"),
         (list(MTT_DEPTHS), "LJ vs EP Open"),
     ]
     for depths, expected in cases:

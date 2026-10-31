@@ -1,8 +1,8 @@
 """Solver-grounded RFI batches; providers are injected at the boundary.
 
 Each drill unions the ranges of every selected position × depth. The
-short/medium/large bands are 8–25, 30–60,
-and 80–100bb, aligned to available solver depths. The adapter
+short/medium/large bands are 8–25, 30–50,
+and 60–100bb, aligned to available solver depths. The adapter
 caller serializes provisioning per user; remote settings identity makes retries
 reuse drills already created by an earlier partial run.
 """
@@ -16,14 +16,14 @@ from gtow_trainer_url import (
     CAT_POSITIONS, build_drill_url,
 )
 
-_BAND_LABELS = {'short': '短碼', 'medium': '中碼', 'large': '長碼'}
+_BAND_LABELS = {'short': '≤25bb', 'medium': '30~50bb', 'large': '≥60bb'}
 # RFI curriculum bands are deliberately independent of historical ledger
 # taxonomy bands. 8/9bb trees are preflop-only; no-limp starts at 8bb, so SB
 # shares that minimum for consistent coverage across all position groups.
 RFI_DEPTH_BANDS = {
     'short': (8, 9, 10, 12, 14, 17, 20, 25),
-    'medium': (30, 35, 40, 50, 60),
-    'large': (80, 100),
+    'medium': (30, 35, 40, 50),
+    'large': (60, 80, 100),
 }
 log = logging.getLogger(__name__)
 
@@ -37,8 +37,7 @@ class RfiDrillSpec:
 
     @property
     def name(self) -> str:
-        span = str(self.depths[0]) if len(self.depths) == 1 else f'{self.depths[0]}–{self.depths[-1]}'
-        return f'RFI｜{self.category}｜{_BAND_LABELS[self.band]} {span}bb'
+        return f'RFI｜{self.category}｜{_BAND_LABELS[self.band]}'
 
 
 @dataclass(frozen=True)

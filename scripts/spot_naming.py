@@ -18,8 +18,8 @@ _FACING = {
 
 _STACK_SUFFIX = {
     "short": " (≤25bb)",
-    "medium": " (30–60bb)",
-    "large": " (>60bb)",
+    "medium": " (30~50bb)",
+    "large": " (≥60bb)",
 }
 
 
@@ -51,7 +51,7 @@ def _depth_band_from_url(url: str) -> tuple[bool, str | None]:
     # Exact custom spots use one solver depth rather than a band list.
     if len(depths) == 1:
         depth = depths[0]
-        return True, "short" if depth <= 25 else ("medium" if depth <= 60 else "large")
+        return True, "short" if depth <= 25 else ("medium" if depth <= 50 else "large")
     return False, None
 
 
