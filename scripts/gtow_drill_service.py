@@ -183,6 +183,18 @@ class GTOWDrillClient:
             return payload
         return list(payload.get("results") or payload.get("data") or [])
 
+    def ensure_tag(self, name: str) -> str:
+        """Resolve a private practice tag to its UUID, creating it once."""
+        tags = self._request("GET", "/tags/")
+        existing = next((tag for tag in tags
+                         if tag.get("name") == name and not tag.get("public")), None)
+        if existing is None:
+            color = {"RFI": "#3b82f6", "BB Defend": "#f59e0b"}.get(name, "#64748b")
+            existing = self._request("POST", "/tags/", json={
+                "name": name, "color_hex": color,
+            })
+        return str(existing["id"])
+
     def ensure_drill(self, trainer_url: str, name: str, *,
                      known_drill_id: str | None = None,
                      known_drill_name: str | None = None,
@@ -211,7 +223,11 @@ class GTOWDrillClient:
         if drill is None:
             drill = find_matching_drill(self.list_drills(), settings)
         wanted_name = preset_name(name)
-        wanted_tags = list(dict.fromkeys([*(drill.get('tags') or []), *tags])) if drill else list(dict.fromkeys(tags))
+        existing_tag_ids = [str(tag["id"] if isinstance(tag, dict) else tag)
+                            for tag in (drill.get("tags") or [])] if drill else []
+        wanted_tags = list(dict.fromkeys([
+            *existing_tag_ids, *(self.ensure_tag(tag) for tag in tags),
+        ]))
         remote_settings_changed = (
             settings_hash(drill.get("settings")) != fingerprint
             if drill is not None else False)
@@ -230,7 +246,7 @@ class GTOWDrillClient:
             created = True
         elif (not remote_verified and known_drill_id
               or str(drill.get("name") or "") != wanted_name
-              or list(drill.get("tags") or []) != wanted_tags
+              or existing_tag_ids != wanted_tags
               or bound_settings_changed or remote_settings_changed):
             drill_id = str(drill["id"])
             payload = {
