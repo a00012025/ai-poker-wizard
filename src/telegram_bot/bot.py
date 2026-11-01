@@ -1613,9 +1613,11 @@ class PokerWizardBot:
             return
         await update.message.reply_text(
             "🎯 批次建立 drills\nRFI：EP／MP／LP／SB × ≤25bb／30~50bb／≥60bb。"
-            "每個 drill 涵蓋該組所有位置 × 深度的 solver 範圍聯集，保留開池範圍與邊界手牌。",
+            "\nBB Defend：vs EP／MP／LP／SB × 相同深度。"
+            "每個 drill 涵蓋該組所有位置 × 深度的 solver 範圍聯集，保留可繼續範圍與邊界手牌。",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("建立 RFI drills", callback_data="drills:rfi")],
+                [InlineKeyboardButton("建立 BB Defend drills", callback_data="drills:bb_defend")],
             ]),
         )
 
@@ -1625,13 +1627,18 @@ class PokerWizardBot:
         if not self._is_owner(update):
             await self._answer_callback_safely(query, "僅限 owner。", show_alert=True)
             return
-        if query.data != "drills:rfi":
+        batch = {
+            "drills:rfi": ("RFI", "RFI"),
+            "drills:bb_defend": ("BB Defend", "BB Defend"),
+        }.get(query.data)
+        if batch is None:
             await self._answer_callback_safely(query, "不支援的 drill 類型。", show_alert=True)
             return
+        label, tag = batch
         if not (self.db and self.db.pool):
             await self._answer_callback_safely(query, "資料庫未連線。", show_alert=True)
             return
-        await self._answer_callback_safely(query, "正在建立 RFI drills…")
+        await self._answer_callback_safely(query, f"正在建立 {label} drills…")
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         try:
@@ -1640,16 +1647,24 @@ class PokerWizardBot:
                 await context.bot.send_message(chat_id, "請先使用 /settoken 綁定 GTO Wizard 帳號。")
                 return
             from rfi_drills import provision_rfi_drills
+            from bb_defend_drills import provision_bb_defend_drills
             from gtow_drill_service import GTOWDrillClient
-            from gto_api import get_spot_solution
+            from gto_api import get_next_actions, get_spot_solution
             client = GTOWDrillClient(user_id, refresh_token)
 
             def provision():
                 self._setup_user_token(user_id, refresh_token)
                 try:
-                    return provision_rfi_drills(
+                    ensure = lambda url, name: client.ensure_drill(url, name, tags=(tag,))
+                    if query.data == "drills:rfi":
+                        return provision_rfi_drills(
+                            solution_loader=get_spot_solution,
+                            ensure_drill=ensure,
+                        )
+                    return provision_bb_defend_drills(
                         solution_loader=get_spot_solution,
-                        ensure_drill=client.ensure_drill,
+                        next_actions_loader=get_next_actions,
+                        ensure_drill=ensure,
                     )
                 finally:
                     self._clear_user_token()
@@ -1658,14 +1673,14 @@ class PokerWizardBot:
                 async with conn.transaction():
                     acquired = await conn.fetchval(
                         "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
-                        f"rfi-drills:{user_id}",
+                        f"batch-drills:{user_id}",
                     )
                     if not acquired:
-                        await context.bot.send_message(chat_id, "RFI drills 正在建立中，完成後會通知你。")
+                        await context.bot.send_message(chat_id, f"{label} drills 正在建立中，完成後會通知你。")
                         return
                     await context.bot.send_message(chat_id, "正在取得各位置與深度的 solver 範圍並建立 drills，可能需要幾分鐘。")
                     result = await asyncio.to_thread(provision)
-            text = (f"🎯 RFI drills：新建 {result.created}，沿用 {result.reused}，"
+            text = (f"🎯 {label} drills：新建 {result.created}，沿用 {result.reused}，"
                     f"失敗 {result.failed}。")
             if result.failed:
                 failed_names = [item.name for item in result.items if item.error]
@@ -1675,13 +1690,13 @@ class PokerWizardBot:
                 chat_id, text,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("開啟 GTOW Drills", url="https://app.gtowizard.com/practice/drills")],
-                    [InlineKeyboardButton("重新建立／補齊", callback_data="drills:rfi")],
+                    [InlineKeyboardButton("重新建立／補齊", callback_data=query.data)],
                 ]),
             )
         except Exception:
-            self.log.exception("RFI drill batch failed for user %s", user_id)
+            self.log.exception("%s drill batch failed for user %s", label, user_id)
             await context.bot.send_message(
-                chat_id, "建立 RFI drills 失敗。請使用 /drills 重試，已建立的 drills 會沿用。"
+                chat_id, f"建立 {label} drills 失敗。請使用 /drills 重試，已建立的 drills 會沿用。"
             )
 
     async def drill_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
