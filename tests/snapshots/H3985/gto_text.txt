@@ -1,0 +1,73 @@
+==================================================
+籌碼深度: 16.6bb（使用 17bb solver）
+Hero: BB T☘️2☘️
+
+
+==================================================
+【Preflop】
+【BB 在 Preflop 】底池 4.500bb
+  Fold: 15.5%（205 combos）
+  Call: 73.4%（973 combos）
+  All-in 17.000: 11.1%（147 combos）
+
+【BB T2s】
+  Range 頻率: 100.0%（4.0/4 combos）
+  EV: 0.34bb
+  策略:
+    Call: 100.0%（4.0 combos） EV 0.34bb
+
+==================================================
+【Flop: Q♥️Q☘️5♥️】
+Hero T☘️2☘️ 牌型: 高牌 (T) + 後門花聽牌
+【BB 在 Flop Q♥️Q☘️5♥️】底池 5.500bb
+  Check: 100.0%（853 combos）
+
+【BB T☘️2☘️（T2s）】
+  策略: Check 100%（EV 0.00bb）
+  T2s 其他花色:
+    T🔷2🔷: Check 100%（EV 0.0bb）
+    T♥️2♥️: Check 100%（EV 2.3bb）
+    T♠️2♠️: Check 100%（EV 0.0bb）
+  → 實際行動: BB X（solver code: X）
+
+
+==================================================
+【Turn: J♠️（Board: Q♥️Q☘️5♥️J♠️）】
+Hero T☘️2☘️ 牌型: 高牌 (T)
+【BB 在 Turn Q♥️Q☘️5♥️J♠️】底池 5.500bb
+  Check: 98.9%（806 combos）
+  BET 1.1（20% pot）: 0.3%（2 combos）
+  BET 3（55% pot）: 0.1%（1 combos）
+  BET 4.55（83% pot）: 0.2%（1 combos）
+  BET 6.9（125% pot）: 0.2%（1 combos）
+  All-in 15.000: 0.3%（3 combos）
+
+【BB T☘️2☘️（T2s）】
+  策略: Check 100%（EV 0.32bb）
+  T2s 其他花色:
+    T♥️2♥️: Check 97%, Bet 1.1（20% pot） 1%, Bet 3（55% pot） 1%, Bet 4.55（83% pot） 1%（EV 2.3bb）
+    T🔷2🔷: Check 100%（EV 0.3bb）
+    T♠️2♠️: Check 100%（EV 0.3bb）
+  → 實際行動: BB X（solver code: X）
+
+
+==================================================
+【River: 4☘️（Board: Q♥️Q☘️5♥️J♠️4☘️）】
+Hero T☘️2☘️ 牌型: 高牌 (T)
+【BB 在 River Q♥️Q☘️5♥️J♠️4☘️】底池 5.500bb
+  Check: 74.5%（577 combos）
+  BET 1（18% pot）: 1.2%（9 combos）
+  BET 2.5（45% pot）: 15.2%（118 combos）
+  BET 4（73% pot）: 1.1%（8 combos）
+  All-in 15.000: 8.0%（62 combos）
+
+【BB T☘️2☘️（T2s）】
+  策略: Check 100%（EV -0.00bb）
+  T2s 其他花色:
+    T♠️2♠️: Check 70%, Bet 2.5（45% pot） 15%, Bet 4（73% pot） 9%, All-in 5%（EV -0.0bb）
+    T🔷2🔷: Check 86%, Bet 2.5（45% pot） 8%, Bet 4（73% pot） 3%, All-in 3%（EV -0.0bb）
+    T♥️2♥️: Check 97%, Bet 2.5（45% pot） 3%（EV -0.0bb）
+⚠ EV 損失 0.13bb（Bet 4（73% pot） -0.13bb vs Check -0.00bb）
+  → 實際行動: BB R4.1 4.1bb（solver code: R4）
+
+⏱ Discovery: 0.0s | Analysis: 0.1s | Total: 0.1s

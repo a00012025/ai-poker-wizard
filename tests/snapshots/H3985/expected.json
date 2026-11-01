@@ -1,0 +1,51 @@
+{
+  "streets": [
+    {
+      "board": "QhQc5h",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "HJ"
+        }
+      ]
+    },
+    {
+      "card": "Js",
+      "actions": [
+        {
+          "action": "X",
+          "position": "BB"
+        },
+        {
+          "action": "X",
+          "position": "HJ"
+        }
+      ]
+    },
+    {
+      "card": "4c",
+      "actions": [
+        {
+          "size": 4.1,
+          "action": "R4.1",
+          "position": "BB"
+        },
+        {
+          "action": "F",
+          "position": "HJ"
+        }
+      ]
+    }
+  ],
+  "gametype": "MTTGeneral",
+  "hero_hand": "Tc2c",
+  "effective_bb": 16.6,
+  "hero_position": "BB",
+  "preflop_actions": "F-R2-F-F-F-C",
+  "players_at_table": 6,
+  "hero_starting_stack": 16.6
+}
