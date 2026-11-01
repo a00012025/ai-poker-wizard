@@ -25,11 +25,13 @@ def test_batch_drill_tags_create_and_update_without_erasing_existing_tags(monkey
                         SimpleNamespace(access_token='access', client_id=None))
     settings = svc.settings_from_trainer_url(_trainer_url())
     existing = {'id': 'old', 'name': 'old name', 'settings': settings,
-                'tags': ['weekly']}
+                'tags': [{'id': 'weekly-id', 'name': 'weekly'}]}
     calls = []
 
-    def request(method, _url, **kwargs):
-        calls.append((method, kwargs.get('json')))
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs.get('json')))
+        if url.endswith('/tags/'):
+            return _Response([{'id': 'defend-id', 'name': 'BB Defend'}])
         if method == 'GET':
             return _Response([existing])
         return _Response({'id': 'old', **kwargs['json']})
@@ -37,9 +39,9 @@ def test_batch_drill_tags_create_and_update_without_erasing_existing_tags(monkey
     client = svc.GTOWDrillClient(7, 'refresh', request)
     binding = client.ensure_drill(_trainer_url(), 'BB Defend', tags=('BB Defend',))
     assert not binding.created
-    assert [method for method, _ in calls] == ['GET', 'PATCH']
-    assert calls[1][1]['tags'] == ['weekly', 'BB Defend']
-    assert calls[1][1]['settings'] == settings
+    assert [method for method, _, _ in calls] == ['GET', 'GET', 'PATCH']
+    assert calls[2][2]['tags'] == ['weekly-id', 'defend-id']
+    assert calls[2][2]['settings'] == settings
 
 
 def test_batch_drill_tag_is_sent_on_create(monkeypatch):
@@ -49,15 +51,20 @@ def test_batch_drill_tag_is_sent_on_create(monkeypatch):
                         SimpleNamespace(access_token='access', client_id=None))
     calls = []
 
-    def request(method, _url, **kwargs):
-        calls.append((method, kwargs.get('json')))
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs.get('json')))
+        if url.endswith('/tags/'):
+            if method == 'GET':
+                return _Response([])
+            return _Response({'id': 'rfi-id', 'name': 'RFI'})
         return _Response([] if method == 'GET' else {'id': 'new', **kwargs['json']})
 
     client = svc.GTOWDrillClient(7, 'refresh', request)
     binding = client.ensure_drill(_trainer_url(), 'RFI', tags=('RFI',))
     assert binding.created
-    assert [method for method, _ in calls] == ['GET', 'POST']
-    assert calls[1][1]['tags'] == ['RFI']
+    assert [method for method, _, _ in calls] == ['GET', 'GET', 'POST', 'POST']
+    assert calls[2][2]['name'] == 'RFI'
+    assert calls[3][2]['tags'] == ['rfi-id']
 
 
 def _trainer_url(**overrides):
