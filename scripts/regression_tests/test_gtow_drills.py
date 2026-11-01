@@ -18,6 +18,48 @@ class _Response:
         return self._payload
 
 
+def test_batch_drill_tags_create_and_update_without_erasing_existing_tags(monkeypatch):
+    import gtow_drill_service as svc
+
+    monkeypatch.setattr(svc, 'get_user_credentials', lambda *_a, **_k:
+                        SimpleNamespace(access_token='access', client_id=None))
+    settings = svc.settings_from_trainer_url(_trainer_url())
+    existing = {'id': 'old', 'name': 'old name', 'settings': settings,
+                'tags': ['weekly']}
+    calls = []
+
+    def request(method, _url, **kwargs):
+        calls.append((method, kwargs.get('json')))
+        if method == 'GET':
+            return _Response([existing])
+        return _Response({'id': 'old', **kwargs['json']})
+
+    client = svc.GTOWDrillClient(7, 'refresh', request)
+    binding = client.ensure_drill(_trainer_url(), 'BB Defend', tags=('BB Defend',))
+    assert not binding.created
+    assert [method for method, _ in calls] == ['GET', 'PATCH']
+    assert calls[1][1]['tags'] == ['weekly', 'BB Defend']
+    assert calls[1][1]['settings'] == settings
+
+
+def test_batch_drill_tag_is_sent_on_create(monkeypatch):
+    import gtow_drill_service as svc
+
+    monkeypatch.setattr(svc, 'get_user_credentials', lambda *_a, **_k:
+                        SimpleNamespace(access_token='access', client_id=None))
+    calls = []
+
+    def request(method, _url, **kwargs):
+        calls.append((method, kwargs.get('json')))
+        return _Response([] if method == 'GET' else {'id': 'new', **kwargs['json']})
+
+    client = svc.GTOWDrillClient(7, 'refresh', request)
+    binding = client.ensure_drill(_trainer_url(), 'RFI', tags=('RFI',))
+    assert binding.created
+    assert [method for method, _ in calls] == ['GET', 'POST']
+    assert calls[1][1]['tags'] == ['RFI']
+
+
 def _trainer_url(**overrides):
     params = {
         "solution_type": "gwiz",

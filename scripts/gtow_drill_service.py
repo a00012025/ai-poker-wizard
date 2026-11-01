@@ -186,7 +186,8 @@ class GTOWDrillClient:
     def ensure_drill(self, trainer_url: str, name: str, *,
                      known_drill_id: str | None = None,
                      known_drill_name: str | None = None,
-                     known_settings_hash: str | None = None) -> DrillBinding:
+                     known_settings_hash: str | None = None,
+                     tags: tuple[str, ...] = ()) -> DrillBinding:
         settings = settings_from_trainer_url(trainer_url)
         fingerprint = settings_hash(settings)
         drill = None
@@ -210,6 +211,7 @@ class GTOWDrillClient:
         if drill is None:
             drill = find_matching_drill(self.list_drills(), settings)
         wanted_name = preset_name(name)
+        wanted_tags = list(dict.fromkeys([*(drill.get('tags') or []), *tags])) if drill else list(dict.fromkeys(tags))
         remote_settings_changed = (
             settings_hash(drill.get("settings")) != fingerprint
             if drill is not None else False)
@@ -223,11 +225,12 @@ class GTOWDrillClient:
                 "description": "",
                 "favorite": False,
                 "settings": settings,
-                "tags": [],
+                "tags": wanted_tags,
             })
             created = True
         elif (not remote_verified and known_drill_id
               or str(drill.get("name") or "") != wanted_name
+              or list(drill.get("tags") or []) != wanted_tags
               or bound_settings_changed or remote_settings_changed):
             drill_id = str(drill["id"])
             payload = {
@@ -240,7 +243,7 @@ class GTOWDrillClient:
                 "settings": (settings if (bound_settings_changed
                                            or remote_settings_changed)
                              else drill.get("settings") or settings),
-                "tags": list(drill.get("tags") or []),
+                "tags": wanted_tags,
             }
             patched = self._request(
                 "PATCH", f"/drills/{drill_id}/", json=payload)

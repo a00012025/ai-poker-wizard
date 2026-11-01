@@ -37,6 +37,47 @@ def test_drills_menu_offers_batch_rfi():
     markup = update.message.reply_text.call_args.kwargs['reply_markup']
     assert markup.inline_keyboard[0][0].callback_data == 'drills:rfi'
     assert markup.inline_keyboard[0][0].text == '建立 RFI drills'
+    assert markup.inline_keyboard[1][0].callback_data == 'drills:bb_defend'
+    assert markup.inline_keyboard[1][0].text == '建立 BB Defend drills'
+
+
+def test_bb_defend_callback_provisions_its_own_batch_and_tag(monkeypatch):
+    import sys
+    from unittest.mock import Mock
+    import gtow_drill_service
+
+    bot, update = make_bot()
+    update.callback_query.data = 'drills:bb_defend'
+    bot._get_user_refresh_token = AsyncMock(return_value='fake')
+    bot._setup_user_token = Mock()
+    bot._clear_user_token = Mock()
+    locks = []
+
+    class Context:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def transaction(self): return self
+        async def fetchval(self, _sql, key):
+            locks.append(key)
+            return True
+
+    bot.db.pool = SimpleNamespace(acquire=Context)
+    def provision(**kwargs):
+        kwargs['ensure_drill']('url', 'BB Defend｜vs EP｜≤25bb')
+        return SimpleNamespace(created=12, reused=0, failed=0, items=[])
+    provision = Mock(side_effect=provision)
+    monkeypatch.setitem(sys.modules, 'bb_defend_drills',
+                        SimpleNamespace(provision_bb_defend_drills=provision))
+    client = Mock()
+    monkeypatch.setattr(gtow_drill_service, 'GTOWDrillClient', Mock(return_value=client))
+    tg = SimpleNamespace(send_message=AsyncMock())
+
+    asyncio.run(bot.handle_drills_button(update, SimpleNamespace(bot=tg)))
+    assert locks == ['batch-drills:7']
+    assert provision.call_count == 1
+    client.ensure_drill.assert_called_once_with('url', 'BB Defend｜vs EP｜≤25bb', tags=('BB Defend',))
+    assert 'BB Defend' in tg.send_message.call_args.args[1]
+    assert tg.send_message.call_args.kwargs['reply_markup'].inline_keyboard[1][0].callback_data == 'drills:bb_defend'
 
 
 def test_drills_menu_is_owner_only():
@@ -87,7 +128,7 @@ def test_batch_callback_reports_partial_failure_and_holds_user_lock(monkeypatch)
     monkeypatch.setattr(gtow_drill_service, 'GTOWDrillClient', Mock())
     tg = SimpleNamespace(send_message=AsyncMock())
     asyncio.run(bot.handle_drills_button(update, SimpleNamespace(bot=tg)))
-    assert locks == ['rfi-drills:7']
+    assert locks == ['batch-drills:7']
     assert provision.call_count == 1
     bot._setup_user_token.assert_called_once_with(7, 'fake')
     bot._clear_user_token.assert_called_once()
