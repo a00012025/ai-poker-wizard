@@ -908,6 +908,21 @@ def _classify_hero_crops(
             rank = top_rank["rank"]
             rank_conf = top_rank["rank_conf"]
             rank_source = "sticker_free_top"
+        # A WIN sticker can make the full right card look like K even though
+        # its printed 2 is unobstructed (H3985). Read a slightly taller top
+        # slice only for this uncertain K/2 case; the existing short slice
+        # contains too little of the 2 glyph to distinguish it from noise.
+        if (
+            i == 1 and rank == "K" and rank_conf < 0.90
+            and np.any(masked_crops[i] != crops[i])
+        ):
+            crop = crops[i]
+            upper = crop[:int(crop.shape[0] * 0.60), :int(crop.shape[1] * 0.70)]
+            upper_rank = clf.classify_batch_detailed_tta([upper])[0]
+            if upper_rank["rank"] == "2" and upper_rank["rank_conf"] >= 0.75:
+                rank = "2"
+                rank_conf = upper_rank["rank_conf"]
+                rank_source = "sticker_free_upper"
         corner_rank, corner_conf = _rank_from_corner_ocr(crops[i])
         if _corner_rank_can_override(
             cnn_rank=rank,

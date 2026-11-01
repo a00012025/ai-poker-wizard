@@ -73,5 +73,10 @@
     "hand_id": "H2505",
     "source_type": "image",
     "has_image": true
+  },
+  {
+    "hand_id": "H3985",
+    "source_type": "image",
+    "has_image": true
   }
 ]
