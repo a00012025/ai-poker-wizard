@@ -3036,8 +3036,8 @@ def test_live_exact_preflop_drill_uses_only_solved_depths_in_its_band(monkeypatc
         "_hand": {"gametype": "MTTGeneral", "hero_position": "BB"},
     })
 
-    assert_eq(seen, [80.125, 100.125])
-    assert_eq(result, [80])
+    assert_eq(seen, [60.125, 80.125, 100.125])
+    assert_eq(result, [60, 80])
 
 
 def test_live_icm_drill_url_never_falls_back_to_generic_bucket():

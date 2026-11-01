@@ -5,7 +5,8 @@ import asyncio
 def test_source_numeric_depth_overrides_historical_band():
     from queue_feed import training_scope_for_decision
     assert training_scope_for_decision({"solver_depth_bb": 25.125, "eff_stack": "medium"}) == "short"
-    assert training_scope_for_decision({"played_depth_bb": 60, "eff_stack": "large"}) == "medium"
+    assert training_scope_for_decision({"played_depth_bb": 50, "eff_stack": "large"}) == "medium"
+    assert training_scope_for_decision({"played_depth_bb": 60, "eff_stack": "medium"}) == "large"
     assert training_scope_for_decision({"effective_bb": 25.125, "eff_stack": "short"}) == "medium"
     assert training_scope_for_decision({"_hand": {"effective_bb": 80}}) == "large"
 
@@ -13,9 +14,11 @@ def test_source_numeric_depth_overrides_historical_band():
 def test_source_scope_filter_uses_numeric_training_depth():
     from queue_feed import source_entries_for_depth_scope
     entries = [{"solver_depth_bb": 25.125, "eff_stack": "medium"},
-               {"solver_depth_bb": 60.125, "eff_stack": "large"}]
+                   {"solver_depth_bb": 50.125, "eff_stack": "large"},
+                   {"solver_depth_bb": 60.125, "eff_stack": "medium"}]
     assert source_entries_for_depth_scope(entries, "short") == entries[:1]
-    assert source_entries_for_depth_scope(entries, "medium") == entries[1:]
+    assert source_entries_for_depth_scope(entries, "medium") == entries[1:2]
+    assert source_entries_for_depth_scope(entries, "large") == entries[2:]
 
 
 def test_queue_scope_from_sources_preserves_cross_band_evidence(monkeypatch):
@@ -24,7 +27,8 @@ def test_queue_scope_from_sources_preserves_cross_band_evidence(monkeypatch):
         return [{"solver_depth_bb": x} for x in entries]
     monkeypatch.setattr(q, "_source_decisions", sources)
     assert asyncio.run(q.queue_training_scope_from_sources(None, [25.125])) == "short"
-    assert asyncio.run(q.queue_training_scope_from_sources(None, [60.125])) == "medium"
+    assert asyncio.run(q.queue_training_scope_from_sources(None, [50.125])) == "medium"
+    assert asyncio.run(q.queue_training_scope_from_sources(None, [60.125])) == "large"
     assert asyncio.run(q.queue_training_scope_from_sources(None, [25.125, 60.125])) == "all"
 
 
