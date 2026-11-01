@@ -1646,8 +1646,10 @@ class PokerWizardBot:
             if not refresh_token:
                 await context.bot.send_message(chat_id, "請先使用 /settoken 綁定 GTO Wizard 帳號。")
                 return
-            from rfi_drills import provision_rfi_drills
-            from bb_defend_drills import provision_bb_defend_drills
+            if query.data == "drills:rfi":
+                from rfi_drills import provision_rfi_drills
+            else:
+                from bb_defend_drills import provision_bb_defend_drills
             from gtow_drill_service import GTOWDrillClient
             from gto_api import get_next_actions, get_spot_solution
             client = GTOWDrillClient(user_id, refresh_token)

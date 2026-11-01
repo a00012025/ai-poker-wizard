@@ -351,12 +351,11 @@ def test_validator_soft_size_exceeds_stack():
     assert_true(r.ok, "size check is SOFT — must not invalidate")
 
 
-# Known triaged hands whose STORED parse legitimately violates the rules — every
+# Known triaged hands whose stored parse legitimately violates the rules — every
 # one is a confirmed silent parse bug (position mislabel, duplicate card, orphan
-# call, or dropped pre-flop seat).  The corpus gate asserts the validator flags
-# NOTHING outside this set; a new entry here must come with a triage note, and a
-# new *un-triaged* flag fails the build (forces a participant-model/aggression fix
-# before merge).  See docs/handoffs/2026-06-08-poker-rules-validator.md §7.3.
+# call, or dropped pre-flop seat). The deterministic corpus gate below asserts
+# the validator flags nothing outside this set in committed snapshots. Live DB
+# findings belong in scripts/validation_report.py, not the offline test suite.
 KNOWN_VALIDATOR_FLAGS = {
     # ACT_AFTER_FOLD — a live player's action mislabeled onto a folded seat:
     "H2492", "H2496", "H2543", "H2548", "H2549", "H2630", "H2838",
@@ -372,49 +371,24 @@ KNOWN_VALIDATOR_FLAGS = {
 
 
 def test_validator_corpus_no_new_false_positives():
-    """Corpus gate: validator must flag nothing outside the triaged bug set.
-
-    Runs validate_hand over every stored snapshot's parse.  Guards against a
-    participant-model/aggression regression silently re-introducing false
-    positives (e.g. the AI14 or multiway-reconcile classes).  Skips when the DB
-    is unreachable so offline core runs still pass.
-    """
-    import asyncio
+    """Committed snapshots guard validator behavior without a mutable DB."""
     from hand_validator import validate_hand
 
-    dsn = os.environ.get("SUPABASE_CONN")
-    if not dsn:
-        return
-    try:
-        import asyncpg
-    except ImportError:
-        return
-
-    async def _scan():
-        conn = await asyncpg.connect(dsn, statement_cache_size=0)
-        try:
-            rows = await conn.fetch(
-                "SELECT hand_id, expected_json, parsed_json FROM analysis_snapshots")
-        finally:
-            await conn.close()
-        flagged = {}
-        for row in rows:
-            raw = row["expected_json"] or row["parsed_json"]
-            if not raw:
-                continue
-            try:
-                hand = json.loads(raw)
-            except Exception:
-                continue
-            rep = validate_hand(hand)
-            if not rep.ok:
-                flagged[row["hand_id"]] = sorted({i.code for i in rep.hard})
-        return flagged
-
-    try:
-        flagged = asyncio.run(_scan())
-    except Exception:
-        return
+    snapshots = REPO_ROOT / "tests" / "snapshots"
+    manifest = json.loads((snapshots / "manifest.json").read_text())
+    assert_true(manifest, "snapshot corpus must not be empty")
+    flagged = {}
+    checked = 0
+    for entry in manifest:
+        hand_id = entry["hand_id"]
+        path = snapshots / hand_id / "expected.json"
+        if not path.exists():
+            continue
+        checked += 1
+        report = validate_hand(json.loads(path.read_text()))
+        if not report.ok:
+            flagged[hand_id] = sorted({issue.code for issue in report.hard})
+    assert_true(checked > 0, "snapshot corpus has no expected hands to validate")
 
     new_fps = {h: c for h, c in flagged.items() if h not in KNOWN_VALIDATOR_FLAGS}
     assert_eq(new_fps, {},

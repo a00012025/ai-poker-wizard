@@ -336,7 +336,7 @@ def test_queue_audit_migrates_legacy_numeric_depths_without_losing_sources():
 
     leaf = 'EP_RFI'
     for old_scope, depth, new_scope in [('medium', 25.125, 'short'),
-                                         ('large', 60.125, 'medium')]:
+                                         ('medium', 60.125, 'large')]:
         entry = {'hand_id': str(depth), 'ev_loss_bb': 1.0}
         decision = {'spot_leaf': leaf, 'spot_category': 'RFI',
                     'eff_stack': old_scope, 'solver_depth_bb': depth}
