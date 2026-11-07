@@ -979,10 +979,10 @@ def parse_simple_preflop_block(block: str) -> dict | None:
     if len(lines) != 1:
         return None
     toks = re.split(r"\s+", lines[0])
-    pos = None
+    pos = _extract_live_metadata(block).get("hero_position")
     start = 0
     hero_idx = next((i for i, t in enumerate(toks) if _clean_word(t) == "hero"), None)
-    if hero_idx is not None and hero_idx + 1 < len(toks):
+    if pos is None and hero_idx is not None and hero_idx + 1 < len(toks):
         pos = _norm_pos(toks[hero_idx + 1])
         start = hero_idx + 2
     if pos is None:
@@ -1170,14 +1170,20 @@ def _extract_live_metadata(block: str) -> dict:
     effective = _effective_bb_from_preflop_tokens(toks, hero_idx)
     hero_position = None
     if hero_idx is not None:
-        # Position may follow a stack phrase: "hero has 16bb +1 raise".
-        for tok in toks[hero_idx + 1:hero_idx + 7]:
-            pos = _norm_pos(tok)
-            if pos:
-                hero_position = pos
+        # A later "hero LJ" action is authoritative when the header says
+        # "hero has 37bb, SB has 60bb". Never borrow SB from that header.
+        for i, tok in enumerate(toks[:-1]):
+            if _clean_word(tok) == "hero" and _norm_pos(toks[i + 1]):
+                hero_position = _norm_pos(toks[i + 1])
                 break
-            if _canon_hand_token(tok):
-                break
+        if hero_position is None:
+            # Legacy compact form: "hero has 16bb +1 raise". Only accept
+            # the seat when the stack phrase has no comma boundary.
+            tail = toks[hero_idx + 1:]
+            if len(tail) >= 3 and _clean_word(tail[0]) == "has" \
+                    and _bb_number_with_unit(tail[1]) is not None \
+                    and not tail[1].rstrip().endswith(','):
+                hero_position = _norm_pos(tail[2])
     if hero_position is None and hero_hand:
         hand_idx = next(
             (i for i, tok in enumerate(toks)
@@ -1244,17 +1250,17 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     if avg_match:
         out["average_stack_bb"] = float(avg_match.group(1) or avg_match.group(2))
 
-    pos_token = r"(?:utg\+?1|utg\+?2|utg|lj|hj|co|btn|sb|bb)"
-    stacks: list[float | None] = list(hand.get("player_stacks") or [None] * players)
+    pos_token = r"(?:utg\+?1|utg\+?2|\+1|\+2|utg|lj|hj|co|btn|sb|bb)"
+    explicit_stacks: dict[str, float] = {}
     for match in re.finditer(
-        rf"\b({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
+        rf"(?<!\w)({pos_token})\b\s*(?:has|有|籌碼(?:量)?(?:是|為)?)?\s*"
         r"(\d+(?:\.\d+)?)\s*bb\b",
         low,
         re.I,
     ):
         pos = _norm_pos(match.group(1))
         if pos in order:
-            stacks[order.index(pos)] = float(match.group(2))
+            explicit_stacks[pos] = float(match.group(2))
     for match in re.finditer(
         rf"\b(\d+(?:\.\d+)?)\s*bb\b\s*({pos_token})\b",
         low,
@@ -1262,12 +1268,25 @@ def _extract_live_icm_metadata(block: str, hand: dict) -> dict:
     ):
         if avg_match and avg_match.start() <= match.start() < avg_match.end():
             continue
+        # "hero has 26bb hj has 37bb" names HJ's own stack after HJ;
+        # 26bb belongs to hero, not to the following HJ token.
+        if re.search(r"(?:\bhas|有|籌碼(?:量)?(?:是|為)?)\s*$", low[:match.start()]):
+            continue
         pos = _norm_pos(match.group(2))
         if pos in order:
-            stacks[order.index(pos)] = float(match.group(1))
+            explicit_stacks.setdefault(pos, float(match.group(1)))
 
     hero_pos = hand.get("hero_position")
     hero_stack = hand.get("effective_bb")
+    hero_match = re.search(r"\bhero\s+(?:has|stack)\s+(\d+(?:\.\d+)?)\s*bb\b", low)
+    if hero_match and hero_pos in order:
+        explicit_stacks[hero_pos] = float(hero_match.group(1))
+    # An explicit stack header is the source of truth. Do not retain model
+    # guesses for seats absent from that header.
+    stacks: list[float | None] = ([None] * players if explicit_stacks
+        else list(hand.get("player_stacks") or [None] * players))
+    for pos, stack in explicit_stacks.items():
+        stacks[order.index(pos)] = stack
     if hero_pos in order and hero_stack and stacks[order.index(hero_pos)] is None:
         stacks[order.index(hero_pos)] = float(hero_stack)
     if any(stack is not None for stack in stacks):
@@ -1952,7 +1971,6 @@ def parse_block(block: str, client=None, model: str | None = None,
             structured_icm["_parse_flags"] = []
             return structured_icm
     injected_client = client is not None
-    client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     model = model or os.getenv(
         "GEMINI_LIVE_PARSE_MODEL", "gemini-3.6-flash")
     contents = block
@@ -1971,6 +1989,7 @@ def parse_block(block: str, client=None, model: str | None = None,
             return _replay_and_lock_live_tokens(block, standard)
         except LiveReplayError:
             pass
+    client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     for attempt in range(2):
         try:
             resp = client.models.generate_content(

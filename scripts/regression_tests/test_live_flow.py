@@ -20,6 +20,60 @@ import pytest
 
 pytestmark = pytest.mark.telegram
 
+
+@pytest.mark.parametrize('raw,position,hero_stack,seat_stacks', [
+    ('Icm 9% avg 29bb hero has 37bb, sb has 60bb, +1 has 20bb, +1 r2 hero lj r5 AQo sb r11 +1 fold hero fold', 'LJ', 37, {'LJ': 37, 'SB': 60, 'UTG+1': 20}),
+    ('Icm 8% avg 30bb hero has 30bb, lj has 50bb, utg has 28bb, Utg r2 lj call hero sb call 66', 'SB', 30, {'SB': 30, 'LJ': 50, 'UTG': 28}),
+    ('Icm 7% avg 32bb hero has 26bb hj has 37bb, hj r2 hero bb call Q6o', 'BB', 26, {'BB': 26, 'HJ': 37}),
+    ('Icm 6% avg 27bb hj has 20bb hero has 21bb, hj r2 hero btn call AdTh', 'BTN', 21, {'BTN': 21, 'HJ': 20}),
+    ('Icm 5% avg 27bb hero has 19bb sb has 40bb, hero hj r2 Ad6d sb call', 'HJ', 19, {'HJ': 19, 'SB': 40}),
+    ('Icm 5% avg 27bb, Hero has 16bb, lj has 30bb, hero utg r2 99 lj r6 hero fold', 'UTG', 16, {'UTG': 16, 'LJ': 30}),
+])
+def test_reported_icm_seat_stacks(raw, position, hero_stack, seat_stacks):
+    from live_flow import parse_simple_preflop_block
+    from hh_parser import POSITION_ORDERS
+    hand = parse_simple_preflop_block(raw)
+    assert hand is not None
+    assert hand['hero_position'] == position
+    assert hand['effective_bb'] == hero_stack
+    expected = [None] * 8
+    for seat, stack in seat_stacks.items():
+        expected[POSITION_ORDERS[8].index(seat)] = stack
+    assert hand['player_stacks'] == expected
+
+
+@pytest.mark.parametrize('raw,position,hero_stack,opponent,opponent_stack', [
+    ('Icm 6% avg 27bb hj has 20bb hero has 21bb, hj r2 hero btn call AdTh\nQd7h4s b2 fold', 'BTN', 21, 'HJ', 20),
+    ('Icm 5% avg 27bb hero has 19bb sb has 40bb, hero hj r2 Ad6d sb call\n9h7h4s x x\n7d x x\nJd x x', 'HJ', 19, 'SB', 40),
+])
+def test_reported_icm_multistreet_stacks(raw, position, hero_stack,
+                                         opponent, opponent_stack, monkeypatch):
+    from live_flow import parse_block
+    from hh_parser import POSITION_ORDERS
+    monkeypatch.setenv('GEMINI_API_KEY', 'offline-test')
+    hand = parse_block(raw)
+    assert hand['hero_position'] == position
+    assert hand['effective_bb'] == hero_stack
+    order = POSITION_ORDERS[8]
+    assert hand['player_stacks'][order.index(position)] == hero_stack
+    assert hand['player_stacks'][order.index(opponent)] == opponent_stack
+
+
+def test_icm_raw_seat_stacks_override_llm_seat_guess():
+    from live_flow import _extract_live_icm_metadata
+    from hh_parser import POSITION_ORDERS
+    order = POSITION_ORDERS[8]
+    guessed = [None] * 8
+    guessed[order.index('SB')] = 37
+    guessed[order.index('HJ')] = 60
+    result = _extract_live_icm_metadata(
+        'Icm 9% avg 29bb hero has 37bb, sb has 60bb, +1 has 20bb, +1 r2 hero lj r5 AQo',
+        {'hero_position': 'LJ', 'effective_bb': 37, 'player_stacks': guessed})
+    expected = [None] * 8
+    for seat, stack in {'LJ': 37, 'SB': 60, 'UTG+1': 20}.items():
+        expected[order.index(seat)] = stack
+    assert result['player_stacks'] == expected
+
 from urllib.parse import parse_qs, urlparse
 
 from live_flow import _next_depth_up
