@@ -3124,7 +3124,7 @@ def process_batch(text: str, date_str: str | None = None,
 
 def build_icm_review_urls(hand: dict, decisions: list[dict], *,
                           _builder=None) -> dict:
-    """Link the last graded preflop and postflop hero nodes separately."""
+    """Link the last preflop and first postflop graded hero nodes."""
     if _builder is None:
         from gtow_solution_url import build_last_hero_hand_url
         _builder = build_last_hero_hand_url
@@ -3135,10 +3135,10 @@ def build_icm_review_urls(hand: dict, decisions: list[dict], *,
         url = _builder(hand, preflop)
         if url:
             urls["preflop"] = url
-    for street in ("river", "turn", "flop"):
+    for street in ("flop", "turn", "river"):
         street_decisions = [d for d in graded if d.get("street") == street]
         if street_decisions:
-            url = _builder(hand, street_decisions)
+            url = _builder(hand, street_decisions[:1])
             if url:
                 urls["postflop"] = {"street": street, "url": url}
                 break

@@ -5950,6 +5950,23 @@ def test_icm_review_urls_follow_graded_decision_streets():
     assert calls == [['preflop'], ['flop']]
 
 
+def test_icm_postflop_review_starts_at_first_graded_street():
+    from live_flow import build_icm_review_urls
+
+    def fake_builder(_hand, decisions):
+        return 'https://example.com/' + decisions[0]['street']
+
+    urls = build_icm_review_urls({'tournament_type': 'icm'}, [
+        {'street': 'preflop', 'excluded': False},
+        {'street': 'flop', 'excluded': False},
+        {'street': 'turn', 'excluded': False},
+        {'street': 'river', 'excluded': False},
+    ], _builder=fake_builder)
+    assert urls['postflop'] == {
+        'street': 'flop', 'url': 'https://example.com/flop',
+    }
+
+
 def test_icm_preflop_only_hand_keeps_one_button_row():
     from live_flow import session_page_buttons
     result = _mk_result(1)
