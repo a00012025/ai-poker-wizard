@@ -3447,7 +3447,27 @@ def _hand_desc_line(h: dict) -> str:
     depth_s = f"{depth:g}bb" if depth else ""
     pot = _pot_type_zh(row.get("pot_type"))
     sev = _hand_severity(h)
-    bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev]
+    parsed = row.get("parsed_json") or {}
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (ValueError, TypeError):
+            parsed = {}
+    stage = ""
+    if isinstance(parsed, dict) and parsed.get("tournament_type") == "icm":
+        phase = str(parsed.get("phase") or "")
+        percent = parsed.get("players_remaining_percent")
+        raw = h.get("raw") or row.get("raw_text") or ""
+        if re.search(r"\bnear\s+bubble\b", raw, re.I) \
+                and not re.search(r"\d+(?:\.\d+)?\s*%", raw):
+            stage = f"ICM near bubble ({percent:g}%)" if percent else "ICM near bubble"
+        elif phase:
+            stage = f"ICM {phase}"
+        elif percent:
+            stage = f"ICM {percent:g}%"
+        else:
+            stage = "ICM"
+    bits = [f"<b>Hand {h['idx']}</b>", f"{pos} {hand}".strip(), depth_s, pot, sev, stage]
     return " · ".join(b for b in bits if b)
 
 

@@ -5847,6 +5847,35 @@ def test_live_render_terminology():
     assert_true("主線" not in html, "must not contain 主線")
 
 
+@pytest.mark.parametrize('raw,phase,percent,expected', [
+    ('Icm 9% avg 29bb hero lj AQo', '9%', 9, 'ICM 9%'),
+    ('Icm near bubble avg 30bb hero lj AQo', '15.2%', 15.2, 'ICM near bubble (15.2%)'),
+    ('Icm FT hero lj AQo', 'FT', None, 'ICM FT'),
+])
+def test_live_hand_title_shows_icm_stage(raw, phase, percent, expected):
+    hand = _mk_hand(7)
+    hand['raw'] = raw
+    hand['hand_row']['parsed_json'] = json.dumps({
+        'tournament_type': 'icm', 'phase': phase,
+        'players_remaining_percent': percent,
+    })
+    result = _mk_result(1)
+    result['hands'] = [hand]
+    html, _prev, _next = render_session_page(result)
+    assert_in(f'Hand 7</b> · CO A7s · 30bb · SRP · ✅ · {expected}', html)
+
+
+def test_live_hand_title_does_not_show_icm_stage_for_chipev():
+    hand = _mk_hand(7)
+    hand['hand_row']['parsed_json'] = json.dumps({
+        'tournament_type': 'chipev', 'phase': '9%',
+    })
+    result = _mk_result(1)
+    result['hands'] = [hand]
+    html, _prev, _next = render_session_page(result)
+    assert_not_in('ICM 9%', html)
+
+
 def test_per_hand_buttons():
     result = _mk_result(12)                       # 2 pages
     result["hands"][1]["ok"] = False
