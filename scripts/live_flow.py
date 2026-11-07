@@ -3434,6 +3434,7 @@ def _taken_frequency(d: dict, h: dict | None = None) -> float | None:
 
 
 def _zero_frequency_low_loss(d: dict, h: dict | None = None) -> bool:
+    """Surface rare, low-loss solver branches as information, not EV errors."""
     ev_loss = d.get("ev_loss")
     taken_freq = _taken_frequency(d, h)
     return (
@@ -3441,7 +3442,7 @@ def _zero_frequency_low_loss(d: dict, h: dict | None = None) -> bool:
         and ev_loss < QUEUE_EV_MIN
         and d.get("taken") != d.get("best")
         and taken_freq is not None
-        and taken_freq <= 0.0005
+        and taken_freq <= 0.02
         and not d.get("discarded")
     )
 
@@ -3595,9 +3596,19 @@ def render_session_page(result: dict, page: int = 0,
                 d.get("taken_label"),
                 actual_sizes.get((d.get("street"), int(d.get("idx") or 0))))
             taken = escape(taken_label or d["taken"] or "?")
-            if zero_frequency:
+            if (offrange_low_frequency_branch and taken_freq > 0.0005
+                    and d["ev_loss"] < QUEUE_EV_MIN):
                 L.append(
-                    f"　☑️ {d['street']} {taken}（GTO {taken_freq*100:.0f}%）"
+                    f"　ℹ️ {d['street']} {taken}"
+                    f"（GTO {taken_freq*100:.1f}%）"
+                    f" → 建議 {escape(str(best))}{freq}"
+                    f" · EV 差 {d['ev_loss']:.2f}bb{approx}")
+            elif zero_frequency:
+                taken_pct = (f"{taken_freq*100:.0f}"
+                             if taken_freq <= 0.0005
+                             else f"{taken_freq*100:.1f}")
+                L.append(
+                    f"　☑️ {d['street']} {taken}（GTO {taken_pct}%）"
                     f"→ 建議 {escape(str(best))}{freq} · EV 差 {d['ev_loss']:.2f}bb{approx}")
             elif (offrange_low_frequency_branch
                   and d["ev_loss"] < QUEUE_EV_MIN):
