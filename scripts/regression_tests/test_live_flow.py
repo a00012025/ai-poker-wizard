@@ -5847,6 +5847,25 @@ def test_live_render_terminology():
     assert_true("主線" not in html, "must not contain 主線")
 
 
+def test_live_hand_11_marks_one_percent_flop_check_as_low_frequency():
+    hand = _mk_hand(11)
+    hand['decisions'] = [{
+        'street': 'flop', 'idx': 0, 'leaf': 'l', 'ev_loss': 0.0,
+        'severity': '✅', 'taken': 'X', 'best': 'R1.5',
+        'taken_label': 'Check', 'best_label': 'BET 1.5bb',
+        'gto_freq': 0.922000050545, 'taken_freq': 0.0110000008717,
+        'ungraded_reason': None, 'discarded': False, 'limp_origin': False,
+        'depth_escalated': None,
+    }]
+    result = _mk_result(1)
+    result['hands'] = [hand]
+    html, _prev, _next = render_session_page(result)
+    assert_in('Hand 11</b> · CO A7s · 30bb · SRP · ☑️', html)
+    assert_in('☑️ 低頻 1', html)
+    assert_in('flop Check（GTO 1.1%）', html)
+    assert_in('EV 差 0.00bb', html)
+
+
 @pytest.mark.parametrize('raw,phase,percent,expected', [
     ('Icm 9% avg 29bb hero lj AQo', '9%', 9, 'ICM 9%'),
     ('Icm near bubble avg 30bb hero lj AQo', '15.2%', 15.2, 'ICM near bubble (15.2%)'),
