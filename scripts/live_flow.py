@@ -3111,12 +3111,38 @@ def process_batch(text: str, date_str: str | None = None,
             from gtow_solution_url import build_last_hero_hand_url
             entry["review_url"] = build_last_hero_hand_url(
                 hand, [d for d in d_rows if not d.get("excluded")])
+            if hand.get("tournament_type") == "icm":
+                entry["review_urls"] = build_icm_review_urls(hand, d_rows,
+                    _builder=build_last_hero_hand_url)
         except Exception:
             log.debug("live review_url generation failed for %s", hand_id,
                       exc_info=True)
             entry["review_url"] = None
     result["queue"] = select_queue_items(all_dec_rows)
     return result
+
+
+def build_icm_review_urls(hand: dict, decisions: list[dict], *,
+                          _builder=None) -> dict:
+    """Link the last graded preflop and postflop hero nodes separately."""
+    if _builder is None:
+        from gtow_solution_url import build_last_hero_hand_url
+        _builder = build_last_hero_hand_url
+    graded = [d for d in decisions if not d.get("excluded")]
+    urls: dict = {}
+    preflop = [d for d in graded if d.get("street") == "preflop"]
+    if preflop:
+        url = _builder(hand, preflop)
+        if url:
+            urls["preflop"] = url
+    for street in ("river", "turn", "flop"):
+        street_decisions = [d for d in graded if d.get("street") == street]
+        if street_decisions:
+            url = _builder(hand, street_decisions)
+            if url:
+                urls["postflop"] = {"street": street, "url": url}
+                break
+    return urls
 
 
 def _recompute_totals(hands: list[dict]) -> dict:
@@ -3657,7 +3683,27 @@ def session_page_buttons(result: dict, session_id: int, page: int,
                           "callback_data": f"lvr:{session_id}:{idx0}"}])
             continue
         row: list[dict] = []
-        if h.get("review_url"):
+        parsed = (h.get("hand_row") or {}).get("parsed_json") or {}
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except (ValueError, TypeError):
+                parsed = {}
+        icm = isinstance(parsed, dict) and parsed.get("tournament_type") == "icm"
+        review_urls = h.get("review_urls") or {}
+        if icm and review_urls:
+            links = []
+            if review_urls.get("preflop"):
+                links.append({"text": f"翻前 ICM H{h['idx']}",
+                              "url": review_urls["preflop"]})
+            postflop = review_urls.get("postflop") or {}
+            if postflop.get("url"):
+                street = str(postflop.get("street") or "flop").capitalize()
+                links.append({"text": f"翻後 chipEV · {street} H{h['idx']}",
+                              "url": postflop["url"]})
+            if links:
+                rows.append(links)
+        elif h.get("review_url"):
             row.append({"text": f"復盤 H{h['idx']}", "url": h["review_url"]})
         row.append({"text": "💬 教練", "callback_data": f"lvd:{h['hand_id']}"})
         row.append({"text": "➕ 加練", "callback_data": f"lvadd:{session_id}:{idx0}"})

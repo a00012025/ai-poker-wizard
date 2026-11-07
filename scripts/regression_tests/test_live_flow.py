@@ -5893,6 +5893,55 @@ def test_per_hand_buttons():
     assert_eq(rows[1], [{"text": "🔁 重傳", "callback_data": "lvr:7:1"}])
 
 
+def test_icm_hand_buttons_use_two_rows_and_leave_chipev_hand_unchanged():
+    from live_flow import session_page_buttons
+    result = _mk_result(2)
+    icm = result['hands'][0]
+    icm['hand_row']['parsed_json'] = json.dumps({'tournament_type': 'icm'})
+    icm['review_urls'] = {
+        'preflop': 'https://app.gtowizard.com/preflop',
+        'postflop': {'street': 'flop', 'url': 'https://app.gtowizard.com/flop'},
+    }
+    rows = session_page_buttons(result, session_id=7, page=0)
+    assert rows[0] == [
+        {'text': '翻前 ICM H1', 'url': 'https://app.gtowizard.com/preflop'},
+        {'text': '翻後 chipEV · Flop H1', 'url': 'https://app.gtowizard.com/flop'},
+    ]
+    assert [b['text'] for b in rows[1]] == ['💬 教練', '➕ 加練', '🔁 重傳']
+    assert [b['text'] for b in rows[2]] == ['復盤 H2', '💬 教練', '➕ 加練', '🔁 重傳']
+
+
+def test_icm_review_urls_follow_graded_decision_streets():
+    from live_flow import build_icm_review_urls
+    calls = []
+
+    def fake_builder(_hand, decisions):
+        calls.append([d['street'] for d in decisions])
+        return 'https://example.com/' + decisions[-1]['street']
+
+    urls = build_icm_review_urls({'tournament_type': 'icm'}, [
+        {'street': 'preflop', 'excluded': False},
+        {'street': 'flop', 'excluded': False},
+        {'street': 'turn', 'excluded': True},
+    ], _builder=fake_builder)
+    assert urls == {
+        'preflop': 'https://example.com/preflop',
+        'postflop': {'street': 'flop', 'url': 'https://example.com/flop'},
+    }
+    assert calls == [['preflop'], ['flop']]
+
+
+def test_icm_preflop_only_hand_keeps_one_button_row():
+    from live_flow import session_page_buttons
+    result = _mk_result(1)
+    hand = result['hands'][0]
+    hand['hand_row']['parsed_json'] = json.dumps({'tournament_type': 'icm'})
+    hand['review_urls'] = {'preflop': 'https://app.gtowizard.com/preflop'}
+    rows = session_page_buttons(result, session_id=7, page=0)
+    assert [b['text'] for b in rows[0]] == ['翻前 ICM H1']
+    assert [b['text'] for b in rows[1]] == ['💬 教練', '➕ 加練', '🔁 重傳']
+
+
 def test_live_json_out_retains_dec_rows_and_still_renders():
     from datetime import datetime, timezone
 
