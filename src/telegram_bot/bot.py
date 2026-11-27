@@ -1186,7 +1186,7 @@ class PokerWizardBot:
     async def _send_pending_range_images(
         self, update: Update, chat_id: int, label: str
     ):
-        """Send at most one range grid image (last street with data).
+        """Send initial range grids and the latest explicitly queried grid.
 
         Uses update.effective_chat so it works for both messages and
         callback queries (where update.message is None).
@@ -1194,36 +1194,43 @@ class PokerWizardBot:
         chat = update.effective_chat
         try:
             ctx = self.session_manager.hand_contexts.get(chat_id)
-            if ctx:
+            if ctx and not ctx.get("_range_img_sent"):
                 hand = ctx.get("hand", {})
-                no_hero = hand.get("no_hero_hand")
-                is_icm = ctx.get("is_icm", False)
-                # Send range image once after initial analysis:
-                # 1. no_hero_hand queries (asking about a position's range)
-                # 2. ICM preflop-only spots (push/fold ranges are critical)
-                # Flag prevents re-sending on follow-up messages.
-                if (no_hero or is_icm) and not ctx.get("_range_img_sent"):
-                    hero_pos = hand.get("hero_position", "")
-                    # Find the LAST street with solver data
-                    last_spot, last_sol = None, None
-                    for spot, sol in zip(
-                        ctx.get("hero_spots", []), ctx.get("solutions", [])
-                    ):
-                        if sol is not None:
-                            last_spot, last_sol = spot, sol
-                    if last_spot and last_sol:
-                        from range_image import generate_range_grid
+                spots = ctx.get("hero_spots", [])
+                solved = [
+                    (spot, sol)
+                    for spot, sol in zip(spots, ctx.get("solutions", []))
+                    if sol
+                ]
+                preflop_only = not hand.get("streets") and all(
+                    spot.get("street") == "preflop" for spot in spots
+                )
+                if hand.get("no_hero_hand") or (ctx.get("is_icm") and not preflop_only):
+                    solved = solved[-1:]
+                elif not preflop_only:
+                    solved = []
+                if solved:
+                    from range_image import generate_range_grid
 
-                        st = last_spot.get("street", "").capitalize()
-                        board = last_spot.get("params", {}).get("board", "")
-                        title = f"{hero_pos} {st}"
+                    hero_pos = hand.get("hero_position", "")
+                    sent_count = ctx.get("_range_imgs_sent_count", 0)
+                    for index, (spot, sol) in enumerate(solved[sent_count:], sent_count + 1):
+                        street = spot.get("street", "")
+                        label_text = (
+                            spot["header"].removeprefix("【").removesuffix("】")
+                            if preflop_only and spot.get("header")
+                            else street.capitalize()
+                        )
+                        board = spot.get("params", {}).get("board", "")
+                        title = f"{hero_pos} {label_text}"
                         if board:
                             title += f" | {cards_to_emoji(board)}"
-                        solver_pos = last_spot.get("solver_hero_pos", hero_pos)
-                        img = generate_range_grid(last_sol, solver_pos, title=title)
+                        solver_pos = spot.get("solver_hero_pos", hero_pos)
+                        img = generate_range_grid(sol, solver_pos, title=title)
                         if img:
                             await chat.send_photo(photo=img, caption=f"📊 {title}")
-                            ctx["_range_img_sent"] = True
+                        ctx["_range_imgs_sent_count"] = index
+                    ctx["_range_img_sent"] = True
 
             # Send queued images from tool calls (query_gto with position, no hand)
             pending = self.session_manager.pending_images.get(chat_id, [])

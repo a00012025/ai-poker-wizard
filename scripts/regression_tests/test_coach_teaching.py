@@ -4404,3 +4404,56 @@ def test_h4018_fallback_keeps_both_solved_preflop_decisions():
     assert audit_draft(grounded, digest).ok
     invented = "Preflop ② 這個 hand class 的 all-in 頻率是 99%。"
     assert not audit_draft(invented, digest).ok
+
+
+def test_h4020_preflop_review_explains_range_role_without_repeating_verdict():
+    from coach_teaching import audit_draft, build_teaching_digest, render_fallback, render_prompt_block
+    from hh_deviation_check import HAND_TO_169
+
+    idx = HAND_TO_169["QJo"]
+
+    def hand_array(value):
+        values = [0.0] * 169
+        values[idx] = value
+        return values
+
+    actions = [
+        ("F", 0, 0, 0, 0.708),
+        ("C", 0, 0.737, 0.241, 0.088),
+        ("R6", 0.63, 0.086, 0.239, 0.029),
+        ("RAI", 0, 0.176, 0.240, 0.176),
+    ]
+    prefix = "F-F-F-F-F-R2.1"
+    digest = build_teaching_digest({
+        "hero_position": "SB",
+        "hero_hand": "QJo",
+        "preflop_actions": prefix + "-C-F",
+        "hero_spots": [{"street": "preflop", "params": {"preflop_actions": prefix}}],
+        "solutions": [{
+            "game": {"active_position": "SB", "pot": 4.6, "players": [
+                {"position": pos} for pos in ("UTG", "UTG+1", "LJ", "HJ", "CO", "BTN", "SB", "BB")
+            ]},
+            "players_info": [{"player": {"position": "SB"}, "range": hand_array(0.998)}],
+            "action_solutions": [
+                {
+                    "action": {"code": code, "betsize_by_pot": size},
+                    "strategy": hand_array(frequency),
+                    "evs": hand_array(ev),
+                    "total_frequency": range_frequency,
+                }
+                for code, size, frequency, ev, range_frequency in actions
+            ],
+        }],
+    })
+
+    answer = render_fallback(digest)
+
+    for output in (answer, render_prompt_block(digest)):
+        assert "73.7%" in output
+        assert "8.8%" in output
+        assert "EV 接近" in output
+    assert "BTN" in answer
+    assert "QJo" in answer
+    assert "call 正確" not in answer
+    assert "預設" in answer
+    assert audit_draft(answer, digest).ok

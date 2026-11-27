@@ -534,3 +534,52 @@ def test_hh_delivery_failure_restores_history(monkeypatch):
     asyncio.run(bot._analyze_hh_hand(update, hand, "question"))
 
     assert session.histories[42] == ["old"]
+
+
+def test_preflop_only_hand_sends_open_and_three_bet_range_images(monkeypatch):
+    import range_image
+
+    class Chat:
+        def __init__(self):
+            self.sent = []
+            self.fail_once = True
+
+        async def send_photo(self, *, photo, caption):
+            if self.fail_once and photo == b"versus-three-bet":
+                self.fail_once = False
+                raise RuntimeError("telegram unavailable")
+            self.sent.append((photo, caption))
+
+    context = {
+        "hand": {"hero_position": "UTG+1", "hero_hand": "AKo"},
+        "is_icm": False,
+        "hero_spots": [
+            {"street": "preflop", "header": "【Preflop】", "solver_hero_pos": "UTG+1"},
+            {"street": "preflop", "header": "【Preflop — Facing 3-bet】",
+             "solver_hero_pos": "UTG+1"},
+        ],
+        "solutions": [{"png": b"open"}, {"png": b"versus-three-bet"}],
+    }
+    session = SimpleNamespace(hand_contexts={42: context}, pending_images={})
+    bot = _bot(session)
+    chat = Chat()
+    update = SimpleNamespace(effective_chat=chat)
+
+    def render(solution, position, *, title):
+        assert position == "UTG+1"
+        return solution["png"]
+
+    monkeypatch.setattr(range_image, "generate_range_grid", render)
+
+    async def deliver():
+        await bot._send_pending_range_images(update, 42, "test")
+        assert chat.sent == [(b"open", "📊 UTG+1 Preflop")]
+        await bot._send_pending_range_images(update, 42, "test")
+        await bot._send_pending_range_images(update, 42, "test")
+
+    asyncio.run(deliver())
+
+    assert chat.sent == [
+        (b"open", "📊 UTG+1 Preflop"),
+        (b"versus-three-bet", "📊 UTG+1 Preflop — Facing 3-bet"),
+    ]

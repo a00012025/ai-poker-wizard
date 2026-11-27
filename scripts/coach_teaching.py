@@ -9,6 +9,7 @@ LLM may explain this card, but it must not invent a different range story.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -426,6 +427,26 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
     ev_loss = max(0.0, best["ev_bb"] - actual["ev_bb"]) if actual else 0.0
     pot = _float((solution.get("game") or {}).get("pot"))
     range_plan = _range_plan(solution)
+    mixed_codes = {row["code"] for row in actions if row["frequency"] >= 0.01}
+    mixed_evs = [
+        _float(evs[combo_idx], math.nan)
+        for row in solution["action_solutions"]
+        if (row.get("action") or {}).get("code") in mixed_codes
+        and len(evs := row.get("evs") or []) > combo_idx
+    ]
+    close_mix_evs = (
+        len(mixed_evs) == len(mixed_codes) > 1
+        and all(math.isfinite(ev) for ev in mixed_evs)
+        and max(mixed_evs) - min(mixed_evs) <= 0.01
+    )
+    range_call = next((
+        _float(row.get("total_frequency"), math.nan) for row in solution["action_solutions"]
+        if (row.get("action") or {}).get("code") == "C"
+    ), math.nan)
+    call_comparison = (
+        range_call if preferred["code"] == "C"
+        and 0 <= range_call <= preferred["frequency"] - 0.10 else None
+    )
     return {
         "street": "preflop",
         "board": "",
@@ -437,6 +458,8 @@ def _preflop_decision(context: dict, spot: dict, solution: dict,
         "preferred_action": preferred,
         "best_action_by_ev": best,
         "available_actions": actions,
+        "close_preflop_mix_evs": close_mix_evs,
+        "preflop_range_call_comparison": call_comparison,
         "ev_loss_bb": ev_loss,
         "ev_loss_pot": ev_loss / pot if pot > 0 else None,
         "range_plan": range_plan,
@@ -705,10 +728,29 @@ def _decision_brief_reason(decision: dict) -> str:
             decision["available_actions"], key=lambda row: row["frequency"], reverse=True,
         )
         mix = "，".join(
-            f"{_pct(action['frequency'])}% {action['label']}"
+            f"{round(100 * action['frequency'], 1):g}% {action['label']}"
             for action in actions if action["frequency"] >= 0.01
         )
-        return f"{decision['hero_hand']} 在這個 solver 節點的策略是 {mix}"
+        roles = decision.get("preflop_roles") or {}
+        opener = next((pos for pos, role in roles.items() if role == "opener"), None)
+        heading = (
+            f"{decision['hero']} 面對 {opener} 開池，"
+            if opener and opener != decision["hero"] and not any(
+                role.endswith("bettor") for role in roles.values()
+            ) else ""
+        )
+        note = f"{heading}{decision['hero_hand']} 的策略是 {mix}"
+        range_call = decision.get("preflop_range_call_comparison")
+        if range_call is not None:
+            note += (
+                f"。{decision['hero']} 整體範圍僅跟注 {range_call:.1%}，"
+                f"{decision['hero_hand']} 在這個節點明顯偏向用跟注防守"
+            )
+        if decision.get("close_preflop_mix_evs"):
+            note += "。這些分支的 EV 接近"
+            if decision["preferred_action"]["code"] == "C" and range_call is not None:
+                note += "，可以把跟注當成這個節點的預設打法"
+        return note
     if decision.get("draw_aggression"):
         story = decision["draw_aggression"]
         return (
@@ -2652,6 +2694,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
     allowed_bb = set()
     for row in all_decisions:
         role = row.get("hero_role") or {}
+        if (range_call := row.get("preflop_range_call_comparison")) is not None:
+            allowed_percentages.add(round(100 * range_call, 1))
         if row.get("preflop_range_only"):
             allowed_percentages.add(0.0)
         if role.get("made_hand"):
@@ -3084,6 +3128,7 @@ def render_prompt_block(digest: dict | None) -> str:
     lines.extend([
         "• 逐個說明 Hero 的每個決策，依 Preflop → Flop → Turn → River 排列；同一街有多次決策時，按實際行動先後說明。",
         "• 每一步用上面的 verdict 與理由講實戰意義；不要逐行複製第一則 solver 卡片。下方教學焦點可多展開，但不可跳過非焦點節點。",
+        "• 翻牌前優先說明這手牌相對於位置整體範圍的打法，以及已有證據的 EV 取捨。結論說一次，再說明它對實戰選擇的意義。",
         "• off-tree 節點只能說已知到達原因及缺少此手牌的後續策略；不得自行補後續 action 或 EV。",
         "• 若有 preflop range-only 事實，先說前一個實際決策，再說其 solver 動作如何使這手牌沒有後續策略，最後列相關整體範圍。",
         "",
@@ -3502,16 +3547,14 @@ def render_fallback(digest: dict) -> str:
         )
     }
     off_tree = [row for row in coverage if row.get("off_tree")]
+    single_preflop = len(coverage) == 1 and coverage[0]["street"] == "preflop"
     if primary.get("off_tree"):
         summary = (
             f"{primary['coverage_label']} 的實戰動作屬 off-tree，"
             "沒有 exact-combo solver 對照，無法判定對錯。"
         )
-    elif len(coverage) == 1 and coverage[0]["street"] == "preflop":
-        summary = (
-            f"目前可評分的 preflop 決策：{primary['coverage_verdict']}；"
-            f"{primary['coverage_reason']}。"
-        )
+    elif single_preflop:
+        summary = ""
     elif (
         (primary.get("ev_loss_pot") or 0.0) >= 0.003
         or (
@@ -3555,12 +3598,14 @@ def render_fallback(digest: dict) -> str:
             detail = None
         heading = (
             f"*{decision['street'].capitalize()}*\n"
-            if decision["street"] != previous_street else ""
+            if decision["street"] != previous_street and not single_preflop else ""
         )
         previous_street = decision["street"]
-        sentence = (
-            f"{heading}{label}：{decision['coverage_verdict']}；{reason}。"
-        )
+        actual_frequency = (decision.get("actual_action") or {}).get("frequency", 0)
+        if single_preflop and actual_frequency >= 0.01:
+            sentence = f"{label}：{reason}。"
+        else:
+            sentence = f"{heading}{label}：{decision['coverage_verdict']}；{reason}。"
         if detail:
             sentence += " " + detail
         fact = decision.get("preflop_range_fact") or {}
@@ -3574,9 +3619,10 @@ def render_fallback(digest: dict) -> str:
             )
         ordered_reasons.append(sentence)
     caveat_text = "；".join(digest.get("caveats") or [])
-    if caveat_text:
-        summary = caveat_text + "。\n\n" + summary
-    answer = summary + "\n\n" + "\n".join(ordered_reasons)
+    intro = [caveat_text + "。"] if caveat_text else []
+    if summary:
+        intro.append(summary)
+    answer = "\n\n".join([*intro, "\n".join(ordered_reasons)])
     audit = audit_draft(answer, digest)
     if audit.ok:
         return answer
@@ -3598,7 +3644,7 @@ def render_fallback(digest: dict) -> str:
             "本手的精確 solver verdict 如上；這裡只保留已驗證的 action 與 EV 結論，"
             "不補未被骨架支持的 range 牌型。"
         ]
-    safe_answer = summary + "\n\n" + "\n\n".join(safe_reasons)
+    safe_answer = "\n\n".join([*intro, *safe_reasons])
     if audit_draft(safe_answer, digest).ok:
         return safe_answer
     neutral = (
