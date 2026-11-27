@@ -4343,3 +4343,64 @@ def test_range_only_can_reference_verified_earlier_preflop_actor():
         digest,
     )
     assert_true(audit.ok, audit.violations)
+
+
+def test_h4018_fallback_keeps_both_solved_preflop_decisions():
+    """An AKo open and four-bet shove both have preflop solver evidence."""
+    from coach_teaching import audit_draft, build_teaching_digest, render_fallback
+    from hh_deviation_check import HAND_TO_169
+
+    idx = HAND_TO_169["AKo"]
+
+    def hand_array(value):
+        values = [0.0] * 169
+        values[idx] = value
+        return values
+
+    def node(pot, actions):
+        return {
+            "game": {"active_position": "UTG+1", "pot": pot},
+            "players_info": [{"player": {"position": "UTG+1"}, "range": hand_array(1)}],
+            "action_solutions": [
+                {
+                    "action": {"code": code, "betsize_by_pot": size},
+                    "strategy": hand_array(frequency),
+                    "evs": hand_array(ev),
+                }
+                for code, size, frequency, ev in actions
+            ],
+        }
+
+    facing_three_bet = "F-R2.3-R6.9-F-F-F-F-F"
+    digest = build_teaching_digest({
+        "hero_position": "UTG+1",
+        "hero_hand": "AKo",
+        "preflop_actions": facing_three_bet + "-RAI",
+        "hero_spots": [
+            {"street": "preflop", "params": {"preflop_actions": "F"}},
+            {"street": "preflop", "params": {"preflop_actions": facing_three_bet},
+             "taken_code": "RAI"},
+        ],
+        "solutions": [
+            node(2.5, [("F", 0, 0, 0), ("R2.3", 0.37, 1, 2.01)]),
+            node(11.7, [
+                ("F", 0, 0, 0), ("C", 0, 0, 0),
+                ("R16", 0.56, 0.15, 4.22), ("RAI", 0, 0.85, 4.22),
+            ]),
+        ],
+    })
+
+    answer = render_fallback(digest)
+
+    assert "Preflop ①" in answer
+    assert "Preflop ②" in answer
+    assert "AKo" in answer
+    assert "85%" in answer
+    assert "15%" in answer
+    assert "缺少可用" not in answer
+    assert audit_draft(answer, digest).ok
+
+    grounded = "Preflop ② 面對 3-bet，這個 hand class 主要選 all-in，偶爾作較小加注。"
+    assert audit_draft(grounded, digest).ok
+    invented = "Preflop ② 這個 hand class 的 all-in 頻率是 99%。"
+    assert not audit_draft(invented, digest).ok
