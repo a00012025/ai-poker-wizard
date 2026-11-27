@@ -701,9 +701,14 @@ def _decision_brief_reason(decision: dict) -> str:
     if decision.get("off_tree"):
         return "這個 exact combo 在 solver 中 0% 到達，缺少可比較的 action EV"
     if decision.get("street") == "preflop":
-        preferred = decision.get("preferred_action") or {}
-        purity = "幾乎純用" if preferred.get("frequency", 0.0) >= 0.97 else "以此動作為主"
-        return f"這個 hand class 在目前 preflop node {purity} {preferred.get('label', '該動作')}"
+        actions = sorted(
+            decision["available_actions"], key=lambda row: row["frequency"], reverse=True,
+        )
+        mix = "，".join(
+            f"{_pct(action['frequency'])}% {action['label']}"
+            for action in actions if action["frequency"] >= 0.01
+        )
+        return f"{decision['hero_hand']} 在這個 solver 節點的策略是 {mix}"
     if decision.get("draw_aggression"):
         story = decision["draw_aggression"]
         return (
@@ -2671,6 +2676,8 @@ def build_teaching_digest(context: dict, *, response_loader=None) -> dict | None
                 if action.get("actual_pot_ratio") is not None:
                     allowed_percentages.add(round(100 * action["actual_pot_ratio"], 1))
         for action in row.get("available_actions") or []:
+            if row["street"] == "preflop" and action["frequency"] >= 0.01:
+                allowed_percentages.add(round(100 * action["frequency"], 1))
             if action.get("frequency", 0.0) >= 0.005 and action.get("pot_ratio", -1.0) >= 0:
                 allowed_percentages.add(round(100 * action["pot_ratio"], 1))
         if row.get("ev_loss_bb") is not None:
@@ -3523,7 +3530,9 @@ def render_fallback(digest: dict) -> str:
             f"{row['coverage_label']} {row['coverage_verdict']}"
             for row in focus
         )
-        summary = f"整手沒有實質 EV 損失；{focus_verdicts}。"
+        summary = "在對應的 solver 節點，沒有實質 EV 損失。"
+        if focus_verdicts:
+            summary += f" {focus_verdicts}。"
         if off_tree:
             first = off_tree[0]
             summary += (
@@ -4738,14 +4747,31 @@ def audit_draft(text: str, digest: dict, source_texts: list[str] | None = None) 
         violations.append("raw equity used to choose aggressive action")
 
     supports_size_choice = any(row.get("size_choice") for row in digest["decisions"])
-    if not supports_size_choice and re.search(
+    sizing_claim = re.compile(
         r"(?:hand class|同類手牌|同一[^。；\n]{0,16}(?:牌型|手牌)|"
-        r"所有可達[^。；\n]{0,16}(?:combo|組合))[^。；\n]{0,36}"
-        r"(?:size|bucket|下注尺度|分配到|all[- ]?in|全下)",
-        body,
+        r"所有可達[^。；\n]{0,16}(?:combo|組合))[^。；\n]{0,36}?"
+        r"(?P<kind>size|bucket|下注尺度|分配到|all[- ]?in|全下)",
         re.I,
-    ):
-        violations.append("unsupported exact-class sizing claim")
+    )
+    if not supports_size_choice:
+        covered = _covered_decisions(digest)
+        covered_streets = {row["street"] for row in covered}
+        # Preflop is solved by hand class. A supported shove is already
+        # encoded in that strategy and needs no postflop sizing evidence.
+        preflop_shove = any(
+            row["street"] == "preflop"
+            and _family_frequency(row, "allin", range_level=False) >= 0.01
+            for row in covered
+        )
+        for sentence in re.split(r"[。！？；\n]", body):
+            streets = _mentioned_streets(sentence) or covered_streets
+            if any(
+                streets != {"preflop"} or not preflop_shove
+                or not re.fullmatch(_ACTION_TEXT_PATTERNS["allin"], match["kind"], re.I)
+                for match in sizing_claim.finditer(sentence)
+            ):
+                violations.append("unsupported exact-class sizing claim")
+                break
 
     induced_claim = re.search(
         r"(?:誘導|引誘)[^。；\n]{0,20}(?:詐唬|bluff)|"
